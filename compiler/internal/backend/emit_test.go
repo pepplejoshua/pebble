@@ -2370,7 +2370,8 @@ func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
 
 // emitAndRunWithSymbols is emitAndRun for programs whose lowering needs the
 // symbol table: the wrapping u64 builtins resolve their symbol back to a
-// BuiltinFunction identity through emitSymbols (like externCName does), so the
+// BuiltinFunction identity through the symbol result threaded into Emit (like
+// externCName does), so the
 // fixture is built with buildFixtureWithSymbols and Emit is called with the
 // resolution threaded through. Behavior is otherwise identical to emitAndRun:
 // compile the emitted C against the runtime in SAFE mode and assert the exit
@@ -2549,6 +2550,7 @@ func emitArgvAndRun(t *testing.T, sourceText string, args []string, wantCode int
 // value-grammar rule (it fails identically for a plain `let s str = "hi";
 // return s.len;`), not anything argv-specific.
 func TestEntryArgvSlice(t *testing.T) {
+	t.Parallel()
 	const program = "fn main(argv []str) int { return argv.len as int; }"
 	emitArgvAndRun(t, program, nil, 1)
 	emitArgvAndRun(t, program, []string{"alpha"}, 2)
@@ -2561,6 +2563,7 @@ func TestEntryArgvSlice(t *testing.T) {
 // (void)pebble_local_<sym>; keeps the -Wall -Wextra -Werror build clean even
 // though the body never reads the parameter.
 func TestEntryArgvVoid(t *testing.T) {
+	t.Parallel()
 	emitArgvAndRun(t, "fn main(argv []str) void { }", []string{"a", "b"}, 0)
 }
 
@@ -2570,6 +2573,7 @@ func TestEntryArgvVoid(t *testing.T) {
 // pebble_slice_<typeID>_t typedef is involved), and the hosted main adapts the
 // real OS argc/argv instead of discarding them.
 func TestEntryArgvEmittedCShape(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main(argv []str) int { return argv.len as int; }", "main", true)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2652,6 +2656,7 @@ func buildEntryWithParamsUnit(t *testing.T, snapshot *types.Snapshot, entryID sy
 }
 
 func TestEntryArgvRejectsTwoParameters(t *testing.T) {
+	t.Parallel()
 	// The two-parameter main(argc int, argv []str) form stays intentionally
 	// unsupported per the project's V1-parity decision — do not implement it.
 	// The checker already rejects it from real source (validArgvParameter
@@ -2672,6 +2677,7 @@ func TestEntryArgvRejectsTwoParameters(t *testing.T) {
 // The checker refuses it from real source too, so the []i32 type is borrowed
 // from a checker-built fixture and the unit is hand-built on the same snapshot.
 func TestEntryArgvRejectsNonStrSliceParameter(t *testing.T) {
+	t.Parallel()
 	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(x []i32) i32 { return x[0]; } fn main() i32 { return 0; }", "main", false)
 	var i32Slice types.TypeID
 	for _, n := range realUnit.Nodes() {

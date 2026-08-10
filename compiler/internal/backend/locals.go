@@ -11,19 +11,19 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
-func buildRuntimeLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.RecordConstruct {
 		// A fresh runtime-typed record construction: only the built-in
 		// Allocator can be constructed from source (`Allocator.{ ptr, alloc,
 		// realloc, free }`), and its RecordConstruct has no parsed
 		// TypeDeclaration (buildStructBraceList would reject it), so it is
 		// emitted here as a designated-initializer PebbleAllocator local.
-		return buildRuntimeAllocatorRecordDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+		return buildRuntimeAllocatorRecordDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 	}
 	if initValue.Kind != tir.FieldValue && initValue.Kind != tir.Load && initValue.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s declares a runtime-typed local initialized from a %s", context, initValue.Kind)
 	}
-	expr, err := buildRuntimeValue(unit, snapshot, fileSet, initValue, scope, width)
+	expr, err := buildRuntimeValue(st, unit, snapshot, fileSet, initValue, scope, width)
 	if err != nil {
 		return "", err
 	}
@@ -48,18 +48,18 @@ func buildRuntimeLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 // tuple local from any other value — a whole-tuple copy of another local,
 // anything else — is a clean rejection. Like every scalar local, the
 // declaration is followed by a (void) cast against -Wunused-variable.
-func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a tuple-returning helper used as the direct initializer of
 		// a matching tuple-typed local — `let t (i32, i32) =
 		// helperReturningTuple();` — the one position (10.26) in which calling
 		// a tuple-returning helper is supported.
-		return buildAggregateCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, true)
+		return buildAggregateCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, true)
 	}
 	if initValue.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal) or a call to a tuple-returning helper; initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
 	}
-	braceList, err := buildTupleBraceList(unit, snapshot, fileSet, initValue, scope, context, width)
+	braceList, err := buildTupleBraceList(st, unit, snapshot, fileSet, initValue, scope, context, width)
 	if err != nil {
 		return "", err
 	}
@@ -76,7 +76,7 @@ func buildTupleLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // statement sequence (bare declaration, one-time-evaluated repeat temp, fill
 // loop) so the repeat value is evaluated exactly once, not once per slot
 // (10.27).
-func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal) or an ArrayRepeat (a [v; N] repeat initializer); initializing an array local from another value is not supported yet", context, describeType(snapshot, initValue.Type), initValue.Kind)
 	}
@@ -112,12 +112,12 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	}
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
 	if initValue.Kind == tir.ArrayRepeat {
-		return buildArrayRepeatLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, length, elementType)
+		return buildArrayRepeatLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, length, elementType)
 	}
 	if len(initValue.Children) != int(length) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
 	}
-	exprs, err := buildArrayBraceElements(unit, snapshot, fileSet, initValue, scope, context, width, elementType)
+	exprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, initValue, scope, context, width, elementType)
 	if err != nil {
 		return "", err
 	}
@@ -134,34 +134,34 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // declaration (buildArrayLocalDeclaration) and for the hidden backing array an
 // array-literal slice initializer constructs before slicing it (the
 // ArrayValue base of buildSliceConstruction).
-func buildArrayBraceElements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, elementType types.TypeID) ([]string, error) {
+func buildArrayBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, elementType types.TypeID) ([]string, error) {
 	exprs := make([]string, len(initValue.Children))
 	for i, child := range initValue.Children {
 		var expr string
 		var err error
 		if isBool(snapshot, elementType) {
-			expr, err = buildBoolExpr(unit, snapshot, fileSet, child, scope, width)
+			expr, err = buildBoolExpr(st, unit, snapshot, fileSet, child, scope, width)
 		} else if isChar(snapshot, elementType) {
-			expr, err = buildCharOperand(unit, snapshot, fileSet, child, scope, width)
+			expr, err = buildCharOperand(st, unit, snapshot, fileSet, child, scope, width)
 		} else if isFloat(snapshot, elementType) {
-			expr, err = buildFloatExpr(unit, snapshot, fileSet, child, scope, resolvedFloatKind(snapshot, elementType))
+			expr, err = buildFloatExpr(st, unit, snapshot, fileSet, child, scope, resolvedFloatKind(snapshot, elementType))
 		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			// An integer element of any fixed-width builtin, not just the
 			// entry's own: each element is built at the element's OWN resolved
 			// width (an element of a [3]u8 array inside an i32 function builds
 			// its value at u8), mirroring how buildScalarInitializeCore builds
 			// a scalar local at its own declared width.
-			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, elementWidth, width)
+			expr, err = buildExpr(st, unit, snapshot, fileSet, child, scope, elementWidth, width)
 		} else if isStr(snapshot, elementType) {
-			expr, err = buildStrOperand(unit, snapshot, fileSet, child, scope, width)
+			expr, err = buildStrOperand(st, unit, snapshot, fileSet, child, scope, width)
 		} else if isTuple(snapshot, elementType) {
-			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
+			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isStruct(snapshot, elementType) {
-			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
+			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isOptional(snapshot, elementType) {
-			expr, err = buildNestedAggregateValue(unit, snapshot, fileSet, child, scope, elementType, context, width)
+			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else {
-			expr, err = buildExpr(unit, snapshot, fileSet, child, scope, width, width)
+			expr, err = buildExpr(st, unit, snapshot, fileSet, child, scope, width, width)
 		}
 		if err != nil {
 			return nil, err
@@ -209,7 +209,7 @@ func buildArrayBraceElements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 // existing Load(CheckedIndexPlace) machinery unchanged — nothing about how
 // the array is read changes, only how it is initialized. Like every local,
 // the sequence ends with the (void) cast against -Wunused-variable.
-func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, length uint64, elementType types.TypeID) (string, error) {
+func buildArrayRepeatLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, length uint64, elementType types.TypeID) (string, error) {
 	if len(initValue.Children) != 2 {
 		return "", fmt.Errorf("%s declares an array-typed local from ArrayRepeat with %d child(ren), want exactly two (the repeated value and the count)", context, len(initValue.Children))
 	}
@@ -232,15 +232,15 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 	}
 	var valueExpr string
 	if isBool(snapshot, elementType) {
-		valueExpr, err = buildBoolExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		valueExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 	} else if isChar(snapshot, elementType) {
-		valueExpr, err = buildCharOperand(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		valueExpr, err = buildCharOperand(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 	} else if isFloat(snapshot, elementType) {
-		valueExpr, err = buildFloatExpr(unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType))
+		valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType))
 	} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
-		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
+		valueExpr, err = buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
 	} else {
-		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
+		valueExpr, err = buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 	}
 	if err != nil {
 		return "", err
@@ -279,7 +279,7 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 // Instead: first store the validated start offset in a temp, then construct
 // the slice struct using the temp for both the pointer offset and the length
 // computation.
-func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildSliceLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a slice-returning helper used as the direct initializer of a
 		// matching slice-typed local — `let s []i32 = helperReturningSlice();` —
@@ -301,7 +301,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		if calleeDecl.ResultType != initValue.Type {
 			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, sliceTypeName(initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -309,7 +309,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
 	if initValue.Kind == tir.SliceFromRaw {
-		construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, initValue, scope, width, context)
+		construction, err := buildRawSliceConstruction(st, unit, snapshot, fileSet, initValue, scope, width, context)
 		if err != nil {
 			return "", err
 		}
@@ -331,7 +331,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s declares a slice-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, sliceTypeName(initValue.Type), len(initValue.Children))
 		}
-		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {
 			return "", fmt.Errorf("%s slice-field read: %v", context, err)
 		}
@@ -341,7 +341,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
-	tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol), fmt.Sprintf("pebble_slice_backing_%d", statement.Symbol))
+	tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol), fmt.Sprintf("pebble_slice_backing_%d", statement.Symbol))
 	if err != nil {
 		return "", err
 	}
@@ -371,7 +371,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // payload type, since this backend emits exactly those two C types as the value
 // field. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
-func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, id tir.NodeID) (string, error) {
+func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, id tir.NodeID) (string, error) {
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
 		return "", fmt.Errorf("%s declares an optional-typed local whose type %d is not in the type snapshot", context, initValue.Type)
@@ -398,25 +398,25 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			// Any fixed-width integer payload other than uint (uint flows
 			// through its own dedicated grammar below) is built at its OWN
 			// resolved width, mirroring buildCallArgument/buildComparisonOperand.
-			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, payloadWidth, width)
+			expr, err := buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadWidth, width)
 			if err != nil {
 				return "", err
 			}
 			valueExpr = expr
 		case isUint(snapshot, payloadType):
-			expr, err := buildUintExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			expr, err := buildUintExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 			if err != nil {
 				return "", err
 			}
 			valueExpr = expr
 		case isBool(snapshot, payloadType):
-			expr, err := buildBoolExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			expr, err := buildBoolExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 			if err != nil {
 				return "", err
 			}
 			valueExpr = expr
 		case isTuple(snapshot, payloadType):
-			expr, err := buildNestedAggregateValue(unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
+			expr, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -433,7 +433,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			// but it is a real payload the optional must carry, not the bare
 			// tag enum a plain-enum payload's only-supported integer cast
 			// lowers through.
-			expr, err := buildUnionValueExpr(unit, snapshot, fileSet, initValue.Children[0], scope, context, payloadType, width)
+			expr, err := buildUnionValueExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, context, payloadType, width)
 			if err != nil {
 				return "", err
 			}
@@ -446,7 +446,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			// payload is a clean rejection naming the shape.
 			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from some with an enum payload %s; the only supported enum-payload optional initializer is an integer-to-optional-enum cast (e.g. 5 as ?Color)", context, optionalTypeName(initValue.Type), enumTypeName(payloadType))
 		case isStruct(snapshot, payloadType):
-			expr, err := buildNestedAggregateValue(unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
+			expr, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -457,7 +457,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 			// a pointer-typed local reference, or a pointer-returning call) —
 			// buildExpr's isPointer bypass handles the shape regardless of the
 			// ambient width args, so no width is threaded here.
-			expr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
+			expr, err := buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -486,7 +486,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// integer-to-optional-enum cast) in which an optional-typed local
 		// may be initialized, mirroring the tuple/struct aggregate-call
 		// initializer shape (buildAggregateCallInitializer).
-		return buildOptionalCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+		return buildOptionalCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 	case tir.OptionalIntegerToEnum:
 		// An integer cast to an optional enum used directly as a local
 		// declaration's initializer (`var c ?Color = 5 as ?Color;`). The
@@ -496,7 +496,7 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 		// buildOptionalIntegerToEnumDeclaration) — the one position this
 		// backend supports the cast in, because a declaration statement has a
 		// natural place to prepend the temp's own statement line.
-		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, context, id, width)
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, context, id, width)
 		if err != nil {
 			return "", err
 		}
@@ -537,13 +537,13 @@ func buildOptionalLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 // set), so a later field read resolves the struct type being projected. Like
 // every scalar local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
-func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a struct-returning helper used as the direct initializer of
 		// a matching struct-typed local — `let p Point =
 		// helperReturningPoint();` — the one position (10.26) in which calling
 		// a struct-returning helper is supported.
-		return buildAggregateCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, false)
+		return buildAggregateCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, false)
 	}
 	if initValue.Kind == tir.Load {
 		// A by-value read used as the whole-struct initializer, in two shapes:
@@ -578,7 +578,7 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 		if place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
 			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value struct-element read) or a DereferencePlace (a by-value whole-struct read through a pointer)", context, structTypeName(initValue.Type), place.Kind)
 		}
-		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {
 			return "", fmt.Errorf("%s struct-element read: %v", context, err)
 		}
@@ -591,7 +591,7 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 	if initValue.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal) or a call to a struct-returning helper; initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
 	}
-	preStatements, braceList, err := buildStructBraceList(unit, snapshot, fileSet, initValue, scope, indent, context, width)
+	preStatements, braceList, err := buildStructBraceList(st, unit, snapshot, fileSet, initValue, scope, indent, context, width)
 	if err != nil {
 		return "", err
 	}
@@ -633,7 +633,7 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 // reassignment, switch subject, or comparison resolves the enum type being
 // used. Like every scalar local, the declaration is followed by a (void) cast
 // against -Wunused-variable.
-func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {
@@ -656,7 +656,7 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	}
 	scope[statement.Symbol] = localInfo{enumType: initValue.Type}
 	if initValue.Kind == tir.CheckedIntegerToEnum {
-		castExpr, err := buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, initValue, scope, context, width)
+		castExpr, err := buildCheckedIntegerToEnumExpr(st, unit, snapshot, fileSet, initValue, scope, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -703,7 +703,7 @@ func buildEnumLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // the optional `?Color` — the destination enum is its payload, unwrapped via
 // TypeKey.Child() the same way buildOptionalLocalDeclaration unwraps an
 // optional-typed initializer's payload.
-func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, id tir.NodeID, width types.BuiltinKind) (string, string, error) {
+func buildOptionalIntegerToEnumDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, id tir.NodeID, width types.BuiltinKind) (string, string, error) {
 	if initValue.Kind != tir.OptionalIntegerToEnum {
 		return "", "", fmt.Errorf("%s contains a %s, want an OptionalIntegerToEnum", context, initValue.Kind)
 	}
@@ -740,7 +740,7 @@ func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snaps
 	if !ok || cType(childWidth) == "" {
 		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
 	}
-	childExpr, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, childWidth, width)
+	childExpr, err := buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, childWidth, width)
 	if err != nil {
 		return "", "", fmt.Errorf("%s integer-to-optional-enum cast child: %v", context, err)
 	}
@@ -770,11 +770,11 @@ func buildOptionalIntegerToEnumDeclaration(unit *tir.Unit, snapshot *types.Snaps
 // subject, reassignment, or reference resolves the union type being used.
 // Like every local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
-func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, unions map[types.TypeID]unionInfo, width types.BuiltinKind) (string, error) {
+func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, unions map[types.TypeID]unionInfo, width types.BuiltinKind) (string, error) {
 	if _, ok := unions[initValue.Type]; !ok {
 		return "", fmt.Errorf("%s declares an enum-typed local of type %s, which is not a tagged-union type in this program", context, describeType(snapshot, initValue.Type))
 	}
-	construction, err := buildUnionConstruction(unit, snapshot, fileSet, initValue, scope, context, unions[initValue.Type], width)
+	construction, err := buildUnionConstruction(st, unit, snapshot, fileSet, initValue, scope, context, unions[initValue.Type], width)
 	if err != nil {
 		return "", err
 	}
@@ -806,7 +806,7 @@ func buildUnionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 // str-returning function return resolves the operand as a
 // str local. Like every scalar local, the declaration is followed by a (void)
 // cast against -Wunused-variable.
-func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a str-returning helper used as the direct initializer of a
 		// matching str-typed local — `let s str = helperReturningStr();` — the
@@ -829,7 +829,7 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if calleeDecl.ResultType != initValue.Type {
 			return "", fmt.Errorf("%s declares a str-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, describeType(snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -865,7 +865,7 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // The scope entry records functionType so a later reference, reassignment, or
 // indirect call resolves the local's declared function type. Like every local,
 // the declaration is followed by a (void) cast against -Wunused-variable.
-func buildFunctionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildFunctionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	fnType := initValue.Type
 	if !isFunctionType(snapshot, fnType) {
 		return "", fmt.Errorf("%s declares a local of type %s, want a function type", context, describeType(snapshot, fnType))
@@ -873,7 +873,7 @@ func buildFunctionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
 		return "", fmt.Errorf("%s: %v", context, err)
 	}
-	valueText, err := buildFunctionValue(unit, snapshot, fileSet, initValue, scope, context, width)
+	valueText, err := buildFunctionValue(st, unit, snapshot, fileSet, initValue, scope, context, width)
 	if err != nil {
 		return "", err
 	}
@@ -891,19 +891,19 @@ func buildFunctionLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fil
 // (*p) or address-of (&y) resolves the pointer type correctly. Like every
 // scalar local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
-func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildPointerLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	pointerTypeID := initValue.Type
 	pointeeTypeID, ok := pointerPointeeType(snapshot, pointerTypeID)
 	if !ok {
 		return "", fmt.Errorf("%s declares a pointer-typed local with invalid pointer type", context)
 	}
-	ctypeName := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
+	ctypeName := pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID)
 	if ctypeName == "" {
 		return "", fmt.Errorf("%s declares a pointer-typed local with unsupported pointee type %s", context, describeType(snapshot, pointeeTypeID))
 	}
 	switch initValue.Kind {
 	case tir.Load:
-		fieldText, err := buildRuntimeValue(unit, snapshot, fileSet, initValue, scope, width)
+		fieldText, err := buildRuntimeValue(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -916,7 +916,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s address-of initializer has %d children, want exactly one", context, len(initValue.Children))
 		}
-		placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		placeLValue, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {
 			return "", fmt.Errorf("%s address-of place: %v", context, err)
 		}
@@ -938,7 +938,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		// A call to a pointer-returning helper used as the direct
 		// initializer of a matching pointer-typed local: `let p *i32 =
 		// helperReturningPointer();`.
-		callPre, callText, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callText, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -966,7 +966,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("%s force-unwrap initializer references invalid child node %d", context, initValue.Children[0])
 		}
 		if child.Kind == tir.DirectCall || child.Kind == tir.MethodCall {
-			callPre, callText, err := buildDirectCallWithPre(unit, snapshot, fileSet, child, scope, width)
+			callPre, callText, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, child, scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -975,14 +975,14 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 			scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 			return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s %s = %s;\n%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(child.Type), tempName, callText, indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol)), nil
 		}
-		unwrapText, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, width, width)
+		unwrapText, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, width, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, unwrapText, indent, statement.Symbol), nil
 	case tir.IndirectCall:
-		callText, err := buildIndirectCall(unit, snapshot, fileSet, initValue, scope, width)
+		callText, err := buildIndirectCall(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -996,7 +996,7 @@ func buildPointerLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, file
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s pointer cast initializer has %d children, want exactly one", context, len(initValue.Children))
 		}
-		childText, err := buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
+		childText, err := buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 		if err != nil {
 			return "", fmt.Errorf("%s pointer cast child: %v", context, err)
 		}

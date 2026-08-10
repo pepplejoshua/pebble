@@ -7,6 +7,7 @@ import (
 )
 
 func TestEmitOpaqueExternTypeWritesRealCTypeName(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape assertion: *FILE must be the real `FILE *`, never
 	// a synthesized pebble_struct_<id>_t, and no bogus empty struct typedef
 	// for FILE may be emitted (collectStructTypes must exclude an opaque
@@ -42,6 +43,7 @@ fn main() int {
 }
 
 func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check: the uint field's typedef must declare uint64_t,
 	// not the entry width's own C type or a rejection.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Counter = struct { n uint; }; fn main() i32 { var c Counter = Counter.{ n = 5 }; return c.n as i32; }", "main", false)
@@ -56,6 +58,7 @@ func TestEmitStructWithUintFieldWritesUint64T(t *testing.T) {
 }
 
 func TestEmitU8SliceWritesUint8CType(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check: a []u8 array/slice pair must declare uint8_t,
 	// not the ambient entry width's C type (int32_t) or any other width —
 	// arrayElementCType's scalar fallback previously returned cType(width)

@@ -952,7 +952,7 @@ func pointerPointeeType(snapshot *types.Snapshot, pointerType types.TypeID) (typ
 // authored C name (FILE, DIR, ...). The mapping is resolved the same way
 // externCName resolves a function's real C name: a Nominal type's key carries
 // its declaring symbol.SymbolID (see types.NominalKey), and the symbol table
-// threaded into Emit (emitSymbols) classifies that declaration as
+// threaded into Emit (st.symbols) classifies that declaration as
 // SymbolExternType and holds the exact identifier written after `type` in the
 // source. An ordinary Pebble struct/enum/union is a SymbolType symbol, never
 // SymbolExternType, so the kind check is what distinguishes an opaque extern
@@ -960,8 +960,8 @@ func pointerPointeeType(snapshot *types.Snapshot, pointerType types.TypeID) (typ
 // missing symbol table yields ok=false: without the table the real name cannot
 // be known, and the caller must not guess a pebble_struct_<id>_t name for a
 // type whose layout it does not describe.
-func opaqueExternTypeName(snapshot *types.Snapshot, id types.TypeID) (string, bool) {
-	if snapshot == nil || emitSymbols == nil || emitSymbols.Symbols == nil {
+func opaqueExternTypeName(st *emitState, snapshot *types.Snapshot, id types.TypeID) (string, bool) {
+	if snapshot == nil || st.symbols == nil || st.symbols.Symbols == nil {
 		return "", false
 	}
 	key, ok := snapshot.Key(id)
@@ -972,7 +972,7 @@ func opaqueExternTypeName(snapshot *types.Snapshot, id types.TypeID) (string, bo
 	if !ok {
 		return "", false
 	}
-	s, ok := emitSymbols.Symbols.Symbol(decl)
+	s, ok := st.symbols.Symbols.Symbol(decl)
 	if !ok || s.Kind != symbol.SymbolExternType {
 		return "", false
 	}
@@ -987,8 +987,8 @@ func opaqueExternTypeName(snapshot *types.Snapshot, id types.TypeID) (string, bo
 // libc header the preamble already includes — so collecting it as a struct
 // would both emit a bogus empty typedef and break resolveStructInfo's
 // field-resolution assumptions.
-func isOpaqueExternType(snapshot *types.Snapshot, id types.TypeID) bool {
-	_, ok := opaqueExternTypeName(snapshot, id)
+func isOpaqueExternType(st *emitState, snapshot *types.Snapshot, id types.TypeID) bool {
+	_, ok := opaqueExternTypeName(st, snapshot, id)
 	return ok
 }
 
@@ -999,11 +999,11 @@ func isOpaqueExternType(snapshot *types.Snapshot, id types.TypeID) bool {
 // preamble hasCExterns includes), etc. The pointee
 // type must be a valid type in the snapshot. Returns "" for any unsupported
 // pointee kind (defense for hand-built IR).
-func pointerTypeName(snapshot *types.Snapshot, pointee types.TypeID) string {
-	return pointerTypeNameForUnit(nil, snapshot, pointee)
+func pointerTypeName(st *emitState, snapshot *types.Snapshot, pointee types.TypeID) string {
+	return pointerTypeNameForUnit(st, nil, snapshot, pointee)
 }
 
-func pointerTypeNameForUnit(unit *tir.Unit, snapshot *types.Snapshot, pointee types.TypeID) string {
+func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, pointee types.TypeID) string {
 	if snapshot == nil {
 		return ""
 	}
@@ -1043,7 +1043,7 @@ func pointerTypeNameForUnit(unit *tir.Unit, snapshot *types.Snapshot, pointee ty
 	// synthesized pebble_struct_<id>_t a struct-typed pointee would get, and
 	// the C that results actually agrees with the libc declaration of every
 	// function that takes or returns such a pointer.
-	if name, ok := opaqueExternTypeName(snapshot, pointee); ok {
+	if name, ok := opaqueExternTypeName(st, snapshot, pointee); ok {
 		return name + " *"
 	}
 	if isUnionEnumType(unit, snapshot, pointee) {
@@ -1173,7 +1173,7 @@ func enumTypeName(id types.TypeID) string {
 // storage by the aggregate's OWN typedef, never the fallback sizeof(uint64_t)
 // the builtin-only dispatch would produce. Anything without a C type this
 // backend emits is a clean rejection naming the type.
-func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (string, error) {
+func sizeofCTypeName(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (string, error) {
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
@@ -1226,7 +1226,7 @@ func sizeofCTypeName(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 	}
 	if isPointer(snapshot, id) {
 		if pointee, ok := pointerPointeeType(snapshot, id); ok {
-			if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
+			if name := pointerTypeNameForUnit(st, unit, snapshot, pointee); name != "" {
 				return name, nil
 			}
 		}
@@ -1314,7 +1314,7 @@ func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // C type. Any other field type — a char field — is a clean rejection naming
 // what was found, since this backend emits exactly those C types as struct
 // fields.
-func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
 		return cType(fieldWidth), nil
 	}
@@ -1362,7 +1362,7 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 		if !ok {
 			return "", fmt.Errorf("field type %s has no pointer pointee", describeType(snapshot, id))
 		}
-		if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
+		if name := pointerTypeNameForUnit(st, unit, snapshot, pointee); name != "" {
 			return name, nil
 		}
 	}
@@ -1406,7 +1406,7 @@ func structFieldCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 // `<pointee> *` via pointerTypeName. Any other payload type is a clean
 // rejection naming what was found, since this backend emits exactly those C
 // types as optional value fields.
-func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if payloadWidth, integerPayload := resolvedBuiltin(snapshot, id); integerPayload && cType(payloadWidth) != "" {
 		return cType(payloadWidth), nil
 	}
@@ -1439,7 +1439,7 @@ func optionalPayloadCType(unit *tir.Unit, snapshot *types.Snapshot, width types.
 		if !ok {
 			return "", fmt.Errorf("payload type %s has no pointer pointee", describeType(snapshot, id))
 		}
-		if name := pointerTypeNameForUnit(unit, snapshot, pointee); name != "" {
+		if name := pointerTypeNameForUnit(st, unit, snapshot, pointee); name != "" {
 			return name, nil
 		}
 		return "", fmt.Errorf("payload type %s has a pointee %s whose C type is unsupported", describeType(snapshot, id), describeType(snapshot, pointee))
@@ -1486,7 +1486,7 @@ func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 // validateFunctionTypeSignature admits.
 // Anything else is a clean rejection, defense for hand-built IR (the
 // validation has already ruled every reachable parameter shape out).
-func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
+func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
 	switch {
 	case isWidth(snapshot, width, param):
 		return cType(width), nil
@@ -1509,7 +1509,7 @@ func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, p
 		if !ok {
 			return "", fmt.Errorf("function type parameter type %s has no pointer pointee", describeType(snapshot, param))
 		}
-		if ctypeName := pointerTypeName(snapshot, pointeeTypeID); ctypeName != "" {
+		if ctypeName := pointerTypeName(st, snapshot, pointeeTypeID); ctypeName != "" {
 			return ctypeName, nil
 		}
 		return "", fmt.Errorf("function type parameter type %s has a pointee %s whose C type is unsupported", describeType(snapshot, param), describeType(snapshot, pointeeTypeID))
@@ -1526,7 +1526,7 @@ func functionTypeParamCType(snapshot *types.Snapshot, width types.BuiltinKind, p
 // validateFunctionTypeSignature admits. Anything else is a clean rejection,
 // defense for hand-built IR (the validation has already ruled every reachable
 // result shape out).
-func functionTypeResultCType(snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
+func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
 	switch {
 	case isWidth(snapshot, width, result):
 		return cType(width), nil
@@ -1547,7 +1547,7 @@ func functionTypeResultCType(snapshot *types.Snapshot, width types.BuiltinKind, 
 		if !ok {
 			return "", fmt.Errorf("function type result type %s has no pointer pointee", describeType(snapshot, result))
 		}
-		if ctypeName := pointerTypeName(snapshot, pointeeTypeID); ctypeName != "" {
+		if ctypeName := pointerTypeName(st, snapshot, pointeeTypeID); ctypeName != "" {
 			return ctypeName, nil
 		}
 		return "", fmt.Errorf("function type result type %s has a pointee %s whose C type is unsupported", describeType(snapshot, result), describeType(snapshot, pointeeTypeID))

@@ -139,7 +139,7 @@ func validateSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, width ty
 // flows into whatever consumes the call. No pebble_fn_<symbolID> prototype,
 // definition, or body lookup is ever attempted for an extern, and it is never
 // added to the reachable-helper emission order (see reachabilityWalk.visit).
-func validateExternSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snapshot) error {
+func validateExternSignature(st *emitState, unit *tir.Unit, decl tir.Node, snapshot *types.Snapshot) error {
 	if decl.Kind != tir.ExternDeclaration {
 		return fmt.Errorf("called function symbol %d is not an extern declaration", decl.Symbol)
 	}
@@ -153,11 +153,11 @@ func validateExternSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		return fmt.Errorf("called extern function symbol %d is variadic, which this backend does not support yet", decl.Symbol)
 	}
 	for i, param := range decl.Parameters {
-		if _, err := externCType(snapshot, param.Type); err != nil {
+		if _, err := externCType(st, snapshot, param.Type); err != nil {
 			return fmt.Errorf("called extern function symbol %d parameter %d (symbol %d) %v", decl.Symbol, i, param.Symbol, err)
 		}
 	}
-	if _, err := externCType(snapshot, decl.ResultType); err != nil {
+	if _, err := externCType(st, snapshot, decl.ResultType); err != nil {
 		return fmt.Errorf("called extern function symbol %d result type %v", decl.Symbol, err)
 	}
 	return nil

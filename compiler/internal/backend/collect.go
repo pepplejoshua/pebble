@@ -240,8 +240,9 @@ func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 // THROUGH the entry function is the one cycle shape still rejected (the entry
 // has the fixed C name pebble_user_main, not a pebble_fn_<symbolID> helper
 // name the forward-declaration pass covers).
-func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDecl tir.Node, entryBlockID tir.NodeID, width types.BuiltinKind) ([]helperInfo, error) {
+func discoverReachableHelpers(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, entryDecl tir.Node, entryBlockID tir.NodeID, width types.BuiltinKind) ([]helperInfo, error) {
 	walk := &reachabilityWalk{
+		st:       st,
 		unit:     unit,
 		snapshot: snapshot,
 		width:    width,
@@ -815,7 +816,7 @@ func collectFunctionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 // by struct TypeID and each resolved to its declared field order, so every
 // distinct struct type yields exactly one typedef, emitted before any function
 // definition in the final output.
-func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, optionalTypes []types.TypeID) ([]structInfo, error) {
+func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, optionalTypes []types.TypeID) ([]structInfo, error) {
 	fieldTypes := make(map[symbol.SymbolID]types.TypeID)
 	var collected []types.TypeID
 	if err := collectStructTypesWalk(unit, snapshot, entryBlockID, &collected, fieldTypes); err != nil {
@@ -852,7 +853,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// the helper's C signature even if no reachable body ever constructs a
 		// struct of that type, so its typedef must be discovered here too.
 		for _, param := range helper.decl.Parameters {
-			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) && !isOpaqueExternType(snapshot, param.Type) {
+			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) && !isOpaqueExternType(st, snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
 			// A pointer-typed parameter whose pointee is a struct (including
@@ -860,7 +861,7 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 			// pointee's typedef in its own C signature, the same reason a
 			// plain struct parameter does above.
 			if isPointer(snapshot, param.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) {
 					collected = append(collected, pointee)
 				}
 			}
@@ -875,11 +876,11 @@ func collectStructTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID t
 		// produce a struct to return — and resolveStructInfo still needs the
 		// field types the body walk accumulates — so this closes the same class
 		// of gap 10.24's Parameters scan closed, for the return side.)
-		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) && !isOpaqueExternType(snapshot, helper.decl.ResultType) {
+		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) && !isOpaqueExternType(st, snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
 		}
 		if isPointer(snapshot, helper.decl.ResultType) {
-			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(snapshot, pointee) {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) {
 				collected = append(collected, pointee)
 			}
 		}
@@ -1352,7 +1353,7 @@ func indexOfFunction(keys []helperKey, key helperKey) int {
 
 // collectRuntimeAllocatorAdapters walks the reachable tree (the entry body
 // followed by every reachable helper's body) for runtime Allocator
-// RecordConstructs and registers, into the package-level emitAllocatorAdapters
+// RecordConstructs and registers, into the package-level st.allocatorAdapters
 // map, the C bridge each callback field needs. The walk must run before any
 // function body is emitted: a helper body that constructs an Allocator literal
 // references its bridges by name in the construction's designated initializers,
@@ -1367,7 +1368,7 @@ func indexOfFunction(keys []helperKey, key helperKey) int {
 // registered-but-unreferenced static bridge would trip -Wunused-function under
 // the mandated -Wall -Wextra -Werror build), so the registered set is exactly
 // the set the emitted bodies reference.
-func collectRuntimeAllocatorAdapters(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) error {
+func collectRuntimeAllocatorAdapters(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo) error {
 	var walk func(nodeID tir.NodeID) error
 	walk = func(nodeID tir.NodeID) error {
 		node, ok := unit.Node(nodeID)
@@ -1383,7 +1384,7 @@ func collectRuntimeAllocatorAdapters(unit *tir.Unit, snapshot *types.Snapshot, e
 					if !ok {
 						return fmt.Errorf("runtime-allocator walk references invalid field value node %d", field.Value)
 					}
-					if _, err := buildRuntimeAllocatorCallbackAdapter(unit, snapshot, field.Field, valueNode, "runtime-allocator walk"); err != nil {
+					if _, err := buildRuntimeAllocatorCallbackAdapter(st, unit, snapshot, field.Field, valueNode, "runtime-allocator walk"); err != nil {
 						return err
 					}
 				}

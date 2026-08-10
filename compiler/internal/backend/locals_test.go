@@ -7,6 +7,7 @@ import (
 )
 
 func TestEmitUintHelperCallAsLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A call to a uint-returning helper used as a uint local's declaration
 	// initializer (`var n = get_count();`) — the buildUintExpr DirectCall
 	// gap: the checker routes a uint-typed initializer through buildUintExpr
@@ -21,6 +22,7 @@ func TestEmitUintHelperCallAsLocalInitializerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUintHelperCallWithArgsAsLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The read_line-shaped variant of the buildUintExpr DirectCall gap: a
 	// uint-returning helper taking a pointer and a char address-of cast to
 	// *void, called as a uint local's initializer — the std/io.peb shape
@@ -34,6 +36,7 @@ func TestEmitUintHelperCallWithArgsAsLocalInitializerCompilesAndRuns(t *testing.
 }
 
 func TestEmitLocalDeclarationsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two locals feeding the return: x = 1, y = 2, return x + y = 3. Each
 	// local emits one `const int32_t pebble_local_<id> = ...;` declaration in
 	// declaration order, and the return expression references them by name.
@@ -41,6 +44,7 @@ func TestEmitLocalDeclarationsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLocalReferencingEarlierLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A local's initializer references an earlier local (y = x + x = 20) and
 	// the final return references a later one (y - x = 10), confirming the
 	// locals-so-far set is threaded through both the initializer and return
@@ -49,6 +53,7 @@ func TestEmitLocalReferencingEarlierLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLocalOverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// 2147483647 + 1 overflows i32. The overflow must survive through a local
 	// reference, not just literal operands: x holds the max literal and the
 	// return's x + 1 lowers to pebble_rt_checked_add_i32(pebble_local_<x>, 1),
@@ -59,6 +64,7 @@ func TestEmitLocalOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitIfElseLocalConditionAndArm(t *testing.T) {
+	t.Parallel()
 	// A local declared before the if is visible in both the condition (x >= 10
 	// is false for x = 7, so the else arm runs) and the else arm's return value
 	// (x itself), proving the same locals set threads through the condition and
@@ -67,6 +73,7 @@ func TestEmitIfElseLocalConditionAndArm(t *testing.T) {
 }
 
 func TestEmitLogicalBoolLocalCombinationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The bool-local combination fixture: a && !b combines a bare bool local, a
 	// negation of another bool local, and the && operator — three different
 	// operand shapes in one ShortCircuitValue. a = true and !b = !false = true,
@@ -75,6 +82,7 @@ func TestEmitLogicalBoolLocalCombinationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLocalInArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A local declared inside an arm is now a supported block under the
 	// recursive grammar: the then-arm's block is one Initialize followed by
 	// its Return, and the local is visible to that same arm's return. This is
@@ -84,6 +92,7 @@ func TestEmitLocalInArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitScopeIsolationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Both arms declare a source-level local named `a` with a different value,
 	// and each arm references only its own `a`. The checker assigns the two
 	// declarations distinct symbol IDs (confirmed against a real fixture
@@ -95,6 +104,7 @@ func TestEmitScopeIsolationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLocalsBeforeIfAndInArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A local declared before the if is visible inside an arm, and the arm's
 	// own local builds on top of it: x = 1, then-arm declares y = x + 1 and
 	// returns it (2), while the else-arm returns the outer x (1). This proves
@@ -104,6 +114,7 @@ func TestEmitLocalsBeforeIfAndInArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitReassignLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassignment of a `var` local is now a supported statement: x is
 	// declared once and reassigned, and the final return reads the
 	// reassigned value. This is exactly the shape 10.6 rejected (an
@@ -113,6 +124,7 @@ func TestEmitReassignLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
+	t.Parallel()
 	// A compound assignment combines at the local's own declared width, not the
 	// entry's: an i64 local inside an i64 entry combines through the _i64
 	// checked helper (the checkedSuffix selection mirrors buildStoreCore's
@@ -135,6 +147,7 @@ func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
 }
 
 func TestEmitCompoundI64LocalInsideI32Function(t *testing.T) {
+	t.Parallel()
 	// An i64 local inside an i32 entry combines at i64 (buildExpr at the
 	// local's own width, the _i64 checked helper) even though the entry's
 	// resolved width is i32 — the same width independence a plain i64
@@ -144,6 +157,7 @@ func TestEmitCompoundI64LocalInsideI32Function(t *testing.T) {
 }
 
 func TestEmitCompoundFloatLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A float compound assignment (checker-reachable: the -=, *=, /= families
 	// are NumericSame and += is Add, both admitting floats) combines with the
 	// same plain C operator buildFloatExpr's BinaryValue case uses — floats
@@ -154,6 +168,7 @@ func TestEmitCompoundFloatLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolLocalDeclarationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// 10.14 makes a bool local with a bool literal initializer a supported
 	// shape: the local emits `bool pebble_local_<id> = true;` and the i32
 	// entry body continues to the return. This is exactly the fixture 10.13
@@ -164,6 +179,7 @@ func TestEmitBoolLocalDeclarationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolLocalIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture: a bare bool local as an if condition. flag is
 	// declared true and used directly (no comparison), so the then-arm runs
 	// and the process exits 1 — proving a condition can be a bare reference to
@@ -173,6 +189,7 @@ func TestEmitBoolLocalIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolLocalIfWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the bare-bool if: the bool local must be declared with
 	// the C bool keyword (backed by #include <stdbool.h>) and referenced
 	// directly in the if condition, with the arms' returns indented one level.
@@ -200,6 +217,7 @@ func TestEmitBoolLocalIfWritesC(t *testing.T) {
 }
 
 func TestEmitBoolLocalReassignCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool local reassigned: flag is declared false, then a Store reassigns
 	// it to true before the bare-bool if, so the then-arm runs and the process
 	// exits 1. This proves a Store into a bool local is emitted and validated
@@ -208,6 +226,7 @@ func TestEmitBoolLocalReassignCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolEqualityLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The bare bool-local version: a == b compares two declared bool locals
 	// directly, the same BinaryValue(Equal) shape with SymbolValue operands
 	// instead of wrapped comparisons (confirmed against the real fixture dump).
@@ -222,12 +241,14 @@ func TestEmitBoolEqualityLocalCompilesAndRuns(t *testing.T) {
 		{"equal true", "fn main() i32 { var a bool = true; var b bool = true; if a == b { return 1; } else { return 2; } }", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitI64NowDeclaresI32Local(t *testing.T) {
+	t.Parallel()
 	// Stage 2's fix inverted this test's original assertion: an i32 local
 	// inside an i64 entry was previously a clean width-mismatch rejection and
 	// is now a legal, supported declaration (the local's own declared width,
@@ -238,6 +259,7 @@ func TestEmitI64NowDeclaresI32Local(t *testing.T) {
 }
 
 func TestEmitI32NowDeclaresI64Local(t *testing.T) {
+	t.Parallel()
 	// Stage 2's fix inverted this test's original assertion: an i64 local
 	// inside an i32 entry was previously a clean width-mismatch rejection and
 	// is now a legal, supported declaration (the local's own declared width,
@@ -248,6 +270,7 @@ func TestEmitI32NowDeclaresI64Local(t *testing.T) {
 }
 
 func TestEmitDeclaresI64LocalInsideI32Function(t *testing.T) {
+	t.Parallel()
 	// Stage 2's minimal repro: a local declared at a different integer width
 	// than its own function. var y i64 = 100; inside an i32-returning
 	// function is a plain i64 local used only internally (never returned or
@@ -258,6 +281,7 @@ func TestEmitDeclaresI64LocalInsideI32Function(t *testing.T) {
 }
 
 func TestEmitI64LocalsArithmeticInsideI32Function(t *testing.T) {
+	t.Parallel()
 	// A local of the other width actually used in arithmetic with other
 	// locals of that same other width, not just declared and ignored: two
 	// i64 locals inside an i32 function are added together at i64 (buildExpr
@@ -268,6 +292,7 @@ func TestEmitI64LocalsArithmeticInsideI32Function(t *testing.T) {
 }
 
 func TestEmitReassignsI64LocalInsideI32Function(t *testing.T) {
+	t.Parallel()
 	// A reassignment (a Store), not just the initial Initialize: an i64
 	// local declared inside an i32 function is reassigned later in the same
 	// body. buildStoreCore must build the new value at the local's own
@@ -278,6 +303,7 @@ func TestEmitReassignsI64LocalInsideI32Function(t *testing.T) {
 }
 
 func TestEmitDeclaresU32LocalInsideI32Function(t *testing.T) {
+	t.Parallel()
 	// A uint-family local (u32, not the i32/i64 pair) to confirm the fix is
 	// generic across integer widths rather than hardcoded: a u32 local is
 	// declared and then reassigned inside an i32 function, its value cast
@@ -287,6 +313,7 @@ func TestEmitDeclaresU32LocalInsideI32Function(t *testing.T) {
 }
 
 func TestEmitF64LocalDeclaresAndReturns(t *testing.T) {
+	t.Parallel()
 	// Float Stage A's minimal repro (the required test 1): an f64 local is
 	// declared, read back by a bare reference (the Return's SymbolValue), and
 	// returned from an f64-returning main. buildScalarInitializeCore must emit
@@ -320,6 +347,7 @@ func TestEmitF64LocalDeclaresAndReturns(t *testing.T) {
 }
 
 func TestEmitF32LocalDeclaresAndReturns(t *testing.T) {
+	t.Parallel()
 	// Confirms the float case is not hardcoded to one width (required test
 	// 2): an f32 local (not f64) is declared and returned from an f32-
 	// returning main. buildScalarInitializeCore must pick floatCType(F32) =
@@ -346,6 +374,7 @@ func TestEmitF32LocalDeclaresAndReturns(t *testing.T) {
 }
 
 func TestEmitReassignsF64LocalAndReturns(t *testing.T) {
+	t.Parallel()
 	// Required test 4: a Store reassigns an already-declared f64 local
 	// (x = 2.5;), so buildStoreCore's float case must build the new value via
 	// buildFloatExpr at the local's own recorded f64 kind and emit
@@ -374,12 +403,14 @@ func TestEmitReassignsF64LocalAndReturns(t *testing.T) {
 }
 
 func TestEmitFloatComparisonBetweenLocalsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Float comparisons use the same BinaryValue condition path as integer
 	// comparisons, but operands are built by buildFloatExpr at f64 width.
 	emitAndRun(t, "fn main() f64 { var a f64 = 1.5; var b f64 = 2.5; if a < b { return 7.0; } else { return 3.0; } }", false, 7, false)
 }
 
 func TestEmitIntegerToFloatOfI64LocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The IntegerToFloat child is resolved at its OWN integer width, not the
 	// entry's: an i64 local (different from the f64 main's own width grammar)
 	// cast to a float must still build the child via buildExpr at i64 width.
@@ -390,6 +421,7 @@ func TestEmitIntegerToFloatOfI64LocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitHelperCallInLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper call in a local's initializer: x is declared as the helper's
 	// result, and the return reads it — the locals scope threads through the
 	// call expression like any other expression of the entry's width.
@@ -397,6 +429,7 @@ func TestEmitHelperCallInLocalInitializerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrLocalUnusedCompilesClean(t *testing.T) {
+	t.Parallel()
 	// A str-typed local declared and never referenced beyond its own
 	// declaration must still compile clean under -Wall -Wextra -Werror: the
 	// emitted PebbleStr declaration carries the escaped bytes and compile-time
@@ -406,6 +439,7 @@ func TestEmitStrLocalUnusedCompilesClean(t *testing.T) {
 }
 
 func TestEmitStrLocalEscapedUnusedCompilesClean(t *testing.T) {
+	t.Parallel()
 	// Same unused-local shape but with a decoded content that forces C escapes
 	// (newline, tab, quote, backslash, and a control byte), so the escaped
 	// C literal itself is exercised under -Wall -Wextra -Werror (a malformed
@@ -415,6 +449,7 @@ func TestEmitStrLocalEscapedUnusedCompilesClean(t *testing.T) {
 }
 
 func TestEmitStrLocalAndLiteralEqualCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str local compared against a string literal — the mixed-operand shape:
 	// one SymbolValue (a str local) and one StringLiteral. The local was
 	// declared from the same decoded bytes as the literal, so equality holds
@@ -423,6 +458,7 @@ func TestEmitStrLocalAndLiteralEqualCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrParameterLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-typed parameter passed a str-typed local (not a literal directly)
 	// at the call site: the local's decoded content flows into the callee
 	// through the parameter, proving the value is passed rather than
@@ -437,12 +473,14 @@ func TestEmitStrParameterLocalCompilesAndRuns(t *testing.T) {
 		{"local differs from literal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { let x str = \"ho\"; return f(x); }", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitStrReturningHelperLocalDeclarationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-returning helper whose result is used in a str-typed local's
 	// declaration, then compared: g returns "hi", the entry declares s from the
 	// call (the one supported call position for declaring a str local — the
@@ -453,6 +491,7 @@ func TestEmitStrReturningHelperLocalDeclarationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-returning helper forwarding an already-declared str local: g
 	// declares its own str local and `return s;` forwards it (a plain
 	// SymbolValue return, the str analog of the tuple/struct forward), so the
@@ -462,6 +501,7 @@ func TestEmitStrReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexRuntimeLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The index is a runtime-computed width-typed local, not a literal: i is
 	// declared i32 and computed by checked arithmetic (1 + 1 = 2), so the
 	// CheckedIndex's index child is a CheckedArithmetic node built by
@@ -470,6 +510,7 @@ func TestEmitStrIndexRuntimeLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexLocalReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The index is a plain width-typed local reference (a SymbolValue built by
 	// buildExpr), reaching s[i] at a runtime-computed position: i = 1, so
 	// s[1] = 'i'. Proves the width-typed SymbolValue index path, distinct from
@@ -478,6 +519,7 @@ func TestEmitStrIndexLocalReferenceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchMultipleCasesWithLocalsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A switch where each case body declares its own local — confirming
 	// scope isolation between arms. Case 1 declares x=10 and returns x; case
 	// 2 declares x=20 and returns x; else returns 0. Subject 2 returns 20.
@@ -485,6 +527,7 @@ func TestEmitSwitchMultipleCasesWithLocalsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferNestedScopesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Defers in multiple nested scopes crossing an exit: a defer at the
 	// function's top level, a while loop with its own defer, and a break
 	// inside the loop. The break's DeferChain should include the loop's
@@ -498,6 +541,7 @@ func TestEmitDeferNestedScopesCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharLocalEqualityTrueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared from a literal, compared for equality,
 	// driving a return value — the true outcome: c and d both hold 'a', so
 	// c == d and the process exits 1. Exercises the full char path: a
@@ -507,6 +551,7 @@ func TestEmitCharLocalEqualityTrueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharLocalEqualityFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The false outcome of the equality fixture: d holds 'b' instead of 'a',
 	// so c == d is false and the process exits 0 — proving the comparison
 	// actually distinguishes the two scalar values rather than always being
@@ -515,6 +560,7 @@ func TestEmitCharLocalEqualityFalseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharReassignmentFromLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed reassignment from another char-typed local: a holds 'a', b
 	// holds 'b', a = b copies b's scalar value into a, and comparing a against
 	// 'b' afterwards proves the copy landed — the char-typed local reference
@@ -523,6 +569,7 @@ func TestEmitCharReassignmentFromLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharLocalFromLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared from a char-typed local reference: b is
 	// declared from a (confirmed checker-reachable against a real fixture), so
 	// b holds 'a' and the comparison is true. This exercises the SymbolValue
@@ -531,6 +578,7 @@ func TestEmitCharLocalFromLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-returning helper whose result is forwarded through its own local:
 	// f declares x from its char parameter and returns x, proving a char local
 	// inside a helper and a char return value both build correctly, and main
@@ -539,6 +587,7 @@ func TestEmitCharReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharCallArgumentLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local passed as a call argument: main declares c from a
 	// literal and passes it to f, which compares it against 'a' — the
 	// char-typed local reference is a valid call-site argument for a char
@@ -547,6 +596,7 @@ func TestEmitCharCallArgumentLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharLocalFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared from a call to a char-returning helper
 	// (confirmed checker-reachable against a real fixture): c is declared from
 	// f('a') and compared, proving the DirectCall initializer shape works for
@@ -555,12 +605,14 @@ func TestEmitCharLocalFromCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNilPointerLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// let p *i32 = nil; return 0;
 	// Declaring a nil pointer local is valid; we just don't dereference it.
 	emitAndRun(t, "fn main() i32 { let p *i32 = nil; return 0; }", false, 0, false)
 }
 
 func TestEmitFunctionTypedLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro: a function-typed local initialized from a bare
 	// top-level function reference (a HoistedFunctionValue), called through
 	// an indirect call. add's own C name (pebble_fn_<symbol>) decays to a
@@ -570,12 +622,14 @@ func TestEmitFunctionTypedLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedLocalReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a function-typed local to a different function of the same
 	// signature (f = sub;) — the buildStoreCore functionType branch.
 	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn sub(a int, b int) int { return a - b; } fn main() int { var f fn(int, int) int = add; f = sub; return f(5, 2); }", false, 3, false)
 }
 
 func TestEmitFunctionTypedLocalBoolSignatureCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-parameter/bool-result function type — confirms the
 	// parameter/result C-type dispatch isn't hardcoded to int. This also
 	// exercises the bool-returning-helper support added as a genuine
@@ -587,6 +641,7 @@ func TestEmitFunctionTypedLocalBoolSignatureCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the typedef shape
 	// (typedef <ret> (*pebble_fnptr_<id>_t)(PebbleContext *ctx, ...);), the
 	// function value assigned bare (no cast) at the declaration site, and the
@@ -613,6 +668,7 @@ func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
 }
 
 func TestEmitPointerFunctionTypeLocalParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro for the pointer PARAMETER gap: a function-typed
 	// local whose signature takes a `*int` parameter (`fn(*int) int`), called
 	// through an indirect call with the address of an entry local. The fnptr

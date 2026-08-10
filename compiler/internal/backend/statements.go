@@ -43,7 +43,7 @@ import (
 // for the entry body itself); statements and the if/else braces are indented
 // one level per depth so nested output stays well-formed C. Any other shape is
 // rejected with a descriptive error, not best-effort lowered.
-func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildBlock(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, blockID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	block, ok := unit.Node(blockID)
 	if !ok {
 		return "", fmt.Errorf("entry function body references invalid block node %d", blockID)
@@ -72,7 +72,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// body is its own scope (buildWhile clones, exactly as buildIf's
 			// arms do), so nothing the loop declares leaks into this block's
 			// scope map.
-			whileText, err := buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+			whileText, err := buildWhile(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -85,7 +85,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// bound iterator. Its body is its own scope (buildRangeLoop seeds
 			// the iterator and buildLoopBody clones), so nothing the loop
 			// declares leaks into this block's scope map.
-			rangeText, err := buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+			rangeText, err := buildRangeLoop(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -99,7 +99,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// its own scope (buildFor seeds the initializer's local and
 			// buildLoopBody clones), so nothing the loop declares leaks into
 			// this block's scope map.
-			forText, err := buildFor(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+			forText, err := buildFor(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -113,7 +113,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			// is only ever emitted at exit points whose DeferChain references it.
 			continue
 		}
-		text, err := buildLeadingStatement(unit, snapshot, fileSet, block.Children[i], scope, indent, depth, "entry function body block", width, result, unions)
+		text, err := buildLeadingStatement(st, unit, snapshot, fileSet, block.Children[i], scope, indent, depth, "entry function body block", width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -131,7 +131,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		// shape are all built by the shared buildReturnStatement (also used by
 		// buildFallthroughBody for a return inside a fall-through statement
 		// sequence), so the emission logic lives in exactly one place.
-		text, err := buildReturnStatement(unit, snapshot, fileSet, last, scope, indent, "entry function body block", width, result, unions)
+		text, err := buildReturnStatement(st, unit, snapshot, fileSet, last, scope, indent, "entry function body block", width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -151,7 +151,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		if result.kind != types.Void {
 			return "", fmt.Errorf("entry function body block statement is an ImplicitReturn, want a Return of an integer expression, a two-armed if/else, or a switch (an implicit fall-through tail only appears in a void function, but the enclosing function resolves to a non-void result)")
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, fileSet, last.DeferChain, scope, indent, "entry function body block", width, unions)
+		deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, last.DeferChain, scope, indent, "entry function body block", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -159,13 +159,13 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			statements = append(statements, deferText)
 		}
 	case tir.If:
-		ifText, err := buildIf(unit, snapshot, fileSet, last, scope, depth, width, result, unions)
+		ifText, err := buildIf(st, unit, snapshot, fileSet, last, scope, depth, width, result, unions)
 		if err != nil {
 			return "", err
 		}
 		statements = append(statements, ifText)
 	case tir.Switch:
-		switchText, err := buildSwitch(unit, snapshot, fileSet, last, scope, depth, width, result, unions)
+		switchText, err := buildSwitch(st, unit, snapshot, fileSet, last, scope, depth, width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -188,7 +188,7 @@ func buildBlock(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		// result and stays rejected with the same message the default case
 		// below would produce.
 		if terminalWhileIsExhaustive(unit, last) {
-			whileText, err := buildWhile(unit, snapshot, fileSet, last, scope, depth, width, result, unions)
+			whileText, err := buildWhile(st, unit, snapshot, fileSet, last, scope, depth, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -308,7 +308,7 @@ func loopBodyHasBreakTargeting(unit *tir.Unit, nodeID tir.NodeID, loopRegion tir
 // Any other shape — a return with a child count other than exactly one — is a
 // clean rejection naming what was found. context names the enclosing
 // construct in error messages.
-func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, returnNode tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildReturnStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, returnNode tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(returnNode.Children) != 1 {
 		if len(returnNode.Children) == 0 && result.kind == types.Void {
 			// A bare `return;` inside a void-returning helper's body — the
@@ -317,7 +317,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// function, and lowers to a plain C `return;` after any deferred
 			// statements fire, exactly as the void helper's ImplicitReturn tail
 			// emits nothing but its deferred statements.
-			deferText, err := buildDeferredStatements(unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+			deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -338,7 +338,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// than buildExpr, which rejects a bool-typed value. Supported return
 		// shapes are a SymbolValue naming a bool-typed local in scope, a bool
 		// literal, a comparison, a ! negation, or an && / || combination.
-		returnValue, err = buildBoolExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildBoolExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.isChar {
 		// The enclosing function returns char (a reachable helper whose
 		// ResultType is char — the entry always threads a scalar resultInfo),
@@ -347,7 +347,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// char-typed value. Supported return shapes are a SymbolValue
 		// naming a char-typed local in scope, a char literal, or a call to
 		// another char-returning helper.
-		returnValue, err = buildCharOperand(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildCharOperand(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.isStr {
 		// The enclosing function returns str (a reachable helper whose
 		// ResultType is str — the entry always threads a scalar resultInfo),
@@ -356,7 +356,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// value. Supported return shapes are a SymbolValue naming a
 		// str-typed local in scope, a string literal, or a call to another
 		// str-returning helper.
-		returnValue, err = buildStrOperand(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildStrOperand(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.tuple != 0 || result.structType != 0 {
 		// The enclosing function returns a tuple/struct (a reachable helper
 		// whose ResultType is an aggregate — the entry always threads a
@@ -371,7 +371,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// builder returns a (pre, expr) pair — the DirectCall shape's
 		// construction pre is threaded into the statement sequence ahead of
 		// the final return line, exactly as the slice path below does.
-		preReturn, returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
+		preReturn, returnValue, err = buildAggregateReturnValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
 	} else if result.unionType != 0 {
 		// The enclosing function returns a tagged union (a reachable helper
 		// whose ResultType is a tagged-union type — the entry always threads
@@ -384,7 +384,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// VariantConstruct with a payload), a union-typed struct field read, or
 		// a union-payload optional force-unwrap; anything else is a clean
 		// rejection.
-		returnValue, err = buildUnionValueExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, "entry function body return statement", result.unionType, width)
+		returnValue, err = buildUnionValueExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, "entry function body return statement", result.unionType, width)
 	} else if result.enumType != 0 {
 		// The enclosing function returns a plain enum (a reachable helper
 		// whose ResultType is an enum type — the entry always threads a scalar
@@ -396,9 +396,9 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// naming an enum-typed local or parameter in scope, an integer-to-enum
 		// cast, an enum-typed struct field read, or an enum-payload optional
 		// force-unwrap; anything else is a clean rejection.
-		returnValue, err = buildEnumValue(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildEnumValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.arrayType != 0 {
-		returnValue, err = buildArrayReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
+		returnValue, err = buildArrayReturnValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
 	} else if result.sliceType != 0 {
 		// The enclosing function returns a slice (a reachable helper whose
 		// ResultType is a slice type), so the return value is built under
@@ -412,7 +412,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// statement, the same mechanical shape the deferred statements
 		// below demonstrate — just for construction complexity rather than
 		// deferred cleanup.
-		preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
+		preReturn, returnValue, err = buildSliceReturnValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result, indent, width)
 	} else if result.optionalType != 0 {
 		// The enclosing function returns an optional (a reachable helper
 		// whose ResultType is an optional type), so the return value is
@@ -426,7 +426,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// forward), or a bare payload value whose implicit injection into
 		// the optional is supplied here; anything else is a clean
 		// rejection.
-		returnValue, err = buildOptionalValue(unit, snapshot, fileSet, returnNode.Children[0], scope, result.optionalType, "entry function body return statement", width)
+		returnValue, err = buildOptionalValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.optionalType, "entry function body return statement", width)
 	} else if result.functionType != 0 {
 		// The enclosing function returns a function type (a reachable helper
 		// whose ResultType is a function type — the entry always threads a
@@ -440,7 +440,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// to another function-returning helper (a DirectCall whose result type
 		// is the function type — a return forward); anything else is a clean
 		// rejection.
-		returnValue, err = buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, returnNode.Children[0]), scope, "entry function body return statement", width)
+		returnValue, err = buildFunctionValue(st, unit, snapshot, fileSet, mustNode(unit, returnNode.Children[0]), scope, "entry function body return statement", width)
 	} else if result.kind == types.F32 || result.kind == types.F64 {
 		// A float-returning entry (a main declared to return f32/f64 — the
 		// one float-returning position Float Stage A supports; float helper
@@ -450,7 +450,7 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// than buildExpr, which rejects a float-typed value. Supported
 		// return shapes are a float literal or a SymbolValue naming a
 		// float-typed local in scope of the same float kind.
-		returnValue, err = buildFloatExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
+		returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
 	} else if result.kind == types.Uint {
 		// A uint-returning helper (a reachable helper whose ResultType is
 		// uint — helperSignature records resultInfo{kind: types.Uint} and
@@ -461,14 +461,14 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// shapes are a SymbolValue naming a uint-typed local in scope, a
 		// uint-typed checked-arithmetic tree, a sizeof result, or an
 		// integer literal.
-		returnValue, err = buildUintExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width)
+		returnValue, err = buildUintExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else {
-		returnValue, err = buildExpr(unit, snapshot, fileSet, returnNode.Children[0], scope, width, width)
+		returnValue, err = buildExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width, width)
 	}
 	if err != nil {
 		return "", err
 	}
-	deferText, err := buildDeferredStatements(unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -525,8 +525,8 @@ func buildReturnStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // fall-through twin, buildLoopSwitch, reuses this same core via
 // buildSwitchStatement with fallthrough set, so the subject-building and
 // case-grouping logic lives in exactly one place.
-func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
-	return buildSwitchStatement(unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, false)
+func buildSwitch(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildSwitchStatement(st, unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, false)
 }
 
 // buildLoopSwitch validates and builds the C text for a switch statement used
@@ -543,8 +543,8 @@ func buildSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 // substantive difference, since a break/continue inside a case body targets
 // the nearest enclosing loop or switch by Pebble's own control-flow rules,
 // and the emitted C break/continue resolves to the same construct.
-func buildLoopSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
-	return buildSwitchStatement(unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, true)
+func buildLoopSwitch(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildSwitchStatement(st, unit, snapshot, fileSet, switchNode, locals, depth, width, result, unions, true)
 }
 
 // buildSwitchStatement is the shared core behind buildSwitch and
@@ -554,7 +554,7 @@ func buildLoopSwitch(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // fallthrough: false selects buildSwitchCaseBody (each body must end in a
 // return), true selects buildLoopSwitchCaseBody (each body is an ordinary
 // fall-through statement sequence that may or may not return).
-func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
+func buildSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
 	if len(switchNode.Children) < 2 {
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
@@ -616,14 +616,14 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			case tir.SymbolValue:
 				info, declared := locals[subjectNode.Symbol]
 				if !declared || info.enumType == 0 {
-					if ginfo, isGlobal := emitGlobals[subjectNode.Symbol]; isGlobal {
+					if ginfo, isGlobal := st.globals[subjectNode.Symbol]; isGlobal {
 						if ginfo.info.enumType != enumSubject {
 							return "", fmt.Errorf("switch subject references global symbol %d, a global of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, ginfo.info.enumType), unionTypeName(enumSubject))
 						}
 						subjectExpr = fmt.Sprintf("pebble_global_%d.tag", subjectNode.Symbol)
 						break
 					}
-					if einfo, isExtern := emitExternData[subjectNode.Symbol]; isExtern {
+					if einfo, isExtern := st.externData[subjectNode.Symbol]; isExtern {
 						if einfo.info.enumType != enumSubject {
 							return "", fmt.Errorf("switch subject references extern variable symbol %d, an extern variable of type %s, not the subject's union type %s", subjectNode.Symbol, describeType(snapshot, einfo.info.enumType), unionTypeName(enumSubject))
 						}
@@ -637,7 +637,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				}
 				subjectExpr = fmt.Sprintf("pebble_local_%d.tag", subjectNode.Symbol)
 			case tir.VariantConstruct, tir.EnumVariantValue:
-				construction, buildErr := buildUnionConstruction(unit, snapshot, fileSet, subjectNode, locals, "switch subject", unions[enumSubject], width)
+				construction, buildErr := buildUnionConstruction(st, unit, snapshot, fileSet, subjectNode, locals, "switch subject", unions[enumSubject], width)
 				if buildErr != nil {
 					return "", buildErr
 				}
@@ -649,7 +649,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// A plain-enum-typed subject: a reference to an enum-typed local
 			// (a SymbolValue) or a variant literal (an EnumVariantValue /
 			// zero-payload VariantConstruct) — buildEnumValue handles all three.
-			subjectExpr, err = buildEnumValue(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+			subjectExpr, err = buildEnumValue(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 		}
 	} else if integerSubjectWidth, integerSubject := resolvedBuiltin(snapshot, subjectNode.Type); integerSubject && cType(integerSubjectWidth) != "" && !isUint(snapshot, subjectNode.Type) && !isAbstractInt(snapshot, subjectNode.Type) {
 		// Any concrete fixed-width integer subject, not just the entry's own
@@ -669,7 +669,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// an unanchored-int subject is either an integer literal or a
 		// SymbolValue, both handled directly by the two branches below.
 		subjectIntWidth = integerSubjectWidth
-		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, integerSubjectWidth, width)
+		subjectExpr, err = buildExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, integerSubjectWidth, width)
 	} else if isUint(snapshot, subjectNode.Type) {
 		// A uint-typed subject (the word-sized unsigned builtin,
 		// snapshot.Builtins().Uint, deliberately excluded from the fixed-width
@@ -682,21 +682,21 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// every unsigned value — keeping the case constants' C type aligned
 		// with the uint64_t subject.
 		subjectIntWidth = types.Uint
-		subjectExpr, err = buildUintExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		subjectExpr, err = buildUintExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isBool(snapshot, subjectNode.Type) {
-		subjectExpr, err = buildBoolExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		subjectExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isChar(snapshot, subjectNode.Type) {
 		// A char-typed subject: built by buildCharOperand, the same builder
 		// every other char-typed position in this backend uses. A char's C
 		// type is the fixed int32_t, so the subject is an integral value the
 		// C switch can compare against char-literal case labels (emitted by
 		// buildCaseLabel as `case (int32_t)<scalar>:`).
-		subjectExpr, err = buildCharOperand(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		subjectExpr, err = buildCharOperand(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isStr(snapshot, subjectNode.Type) {
 		// A str-typed subject cannot use a native C switch (C switch labels
 		// must be integer-constant expressions). Lowered as an if/else chain
 		// calling the runtime helper pebble_rt_str_eq for each case.
-		return buildStrSwitchStatement(unit, snapshot, fileSet, switchNode, subjectNode, locals, depth, width, result, unions, fallThrough)
+		return buildStrSwitchStatement(st, unit, snapshot, fileSet, switchNode, subjectNode, locals, depth, width, result, unions, fallThrough)
 	} else if subjectNode.Kind == tir.IntegerLiteral && subjectNode.Type == snapshot.Builtins().Int {
 		// An int-typed integer literal as the subject: the checker leaves
 		// it as the unanchored int builtin when no width-anchoring position
@@ -711,7 +711,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// An int-typed SymbolValue: only reachable from hand-built IR in
 		// this backend's grammar (no real source produces an int-typed
 		// local), but accepted for completeness.
-		if name, ok := localOrGlobalName(subjectNode.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, subjectNode.Symbol, locals); ok {
 			subjectExpr = name
 		} else {
 			return "", fmt.Errorf("switch subject references symbol %d, which is not a local in scope", subjectNode.Symbol)
@@ -767,7 +767,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	for _, g := range groups {
 		if g.elseID != 0 {
 			// The else/default arm.
-			bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
+			bodyText, err := buildSwitchCaseBodyOrFallthrough(st, unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
 			if err != nil {
 				return "", err
 			}
@@ -784,7 +784,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			parts = append(parts, fmt.Sprintf("%s%s", caseIndent, label))
 		}
 		// The body is shared across all cases in the group.
-		bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
+		bodyText, err := buildSwitchCaseBodyOrFallthrough(st, unit, snapshot, fileSet, g.bodyID, locals, depth+2, width, result, unions, fallThrough)
 		if err != nil {
 			return "", err
 		}
@@ -798,11 +798,11 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // false) builds the body under buildSwitchCaseBody's every-arm-must-return
 // grammar; a fall-through switch (fallthrough true) builds it under
 // buildLoopSwitchCaseBody's may-fall-through grammar.
-func buildSwitchCaseBodyOrFallthrough(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
+func buildSwitchCaseBodyOrFallthrough(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
 	if fallThrough {
-		return buildLoopSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+		return buildLoopSwitchCaseBody(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 	}
-	return buildSwitchCaseBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+	return buildSwitchCaseBody(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 }
 
 // switchCaseGroup groups one switch case arm's SwitchCase nodes by their shared
@@ -884,14 +884,14 @@ func groupSwitchCases(unit *tir.Unit, caseIDs []tir.NodeID) ([]switchCaseGroup, 
 // (0) block, the idiomatic C pattern that gives the emitted `break;` a valid
 // enclosing loop/switch construct to target — the break then exits the chain,
 // i.e. breaks out of the switch, exactly as it does in the native C switch.
-func buildStrSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, subjectNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
+func buildStrSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, switchNode tir.Node, subjectNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, fallThrough bool) (string, error) {
 	if len(switchNode.Children) < 2 {
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
 	// The str subject is built by the same buildStrOperand every other
 	// str-typed position in this backend uses (a str local reference, a
 	// string literal, or a call to a str-returning helper).
-	subjectExpr, err := buildStrOperand(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+	subjectExpr, err := buildStrOperand(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -922,7 +922,7 @@ func buildStrSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 	}
 	var lines []string
 	for idx, g := range groups {
-		bodyText, err := buildSwitchCaseBodyOrFallthrough(unit, snapshot, fileSet, g.bodyID, locals, depth+1, width, result, unions, fallThrough)
+		bodyText, err := buildSwitchCaseBodyOrFallthrough(st, unit, snapshot, fileSet, g.bodyID, locals, depth+1, width, result, unions, fallThrough)
 		if err != nil {
 			return "", err
 		}
@@ -1059,13 +1059,13 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 // supported bare statement is a Return (the case body must end in a return),
 // built at the next nesting depth with the same expression grammar buildBlock's
 // tail return uses.
-func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildSwitchCaseBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	bodyNode, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("switch case body references invalid node %d", bodyID)
 	}
 	if bodyNode.Kind == tir.Block {
-		return buildBlock(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+		return buildBlock(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 	}
 	// Bare single-statement case body: must be a Return.
 	if bodyNode.Kind == tir.Return {
@@ -1081,11 +1081,11 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			// returning a char value: built under the char grammar by
 			// buildCharOperand, exactly like buildBlock's tail-position Return
 			// case.
-			returnValue, err = buildCharOperand(unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
+			returnValue, err = buildCharOperand(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
 		} else if result.isStr {
-			returnValue, err = buildStrOperand(unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
+			returnValue, err = buildStrOperand(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
 		} else if result.tuple != 0 || result.structType != 0 {
-			preReturn, returnValue, err = buildAggregateReturnValue(unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
+			preReturn, returnValue, err = buildAggregateReturnValue(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
 		} else if result.sliceType != 0 {
 			// A slice-returning function's bare single-statement case body
 			// returning a fresh slice construction: the construction needs the
@@ -1094,20 +1094,20 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 			// separately and joined into the case body ahead of the final
 			// return line, the same mechanical shape the deferred statements
 			// below demonstrate.
-			preReturn, returnValue, err = buildSliceReturnValue(unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
+			preReturn, returnValue, err = buildSliceReturnValue(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
 		} else if result.kind == types.F32 || result.kind == types.F64 {
 			// A float-returning entry's bare single-statement case body
 			// returning a float value: built under the float grammar by
 			// buildFloatExpr, exactly like buildBlock's tail-position Return
 			// case.
-			returnValue, err = buildFloatExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind)
+			returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind)
 		} else {
-			returnValue, err = buildExpr(unit, snapshot, fileSet, bodyNode.Children[0], locals, width, width)
+			returnValue, err = buildExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width, width)
 		}
 		if err != nil {
 			return "", err
 		}
-		deferText, err := buildDeferredStatements(unit, snapshot, fileSet, bodyNode.DeferChain, locals, indent, "switch case body", width, unions)
+		deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, bodyNode.DeferChain, locals, indent, "switch case body", width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -1142,20 +1142,20 @@ func buildSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // text with a trailing `break;` inside the case's braces, since a C case body
 // that does not itself end in a jump must break to avoid leaking into the
 // next case (see bodyWrap there).
-func buildLoopSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildLoopSwitchCaseBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	bodyNode, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("switch case body references invalid node %d", bodyID)
 	}
 	if bodyNode.Kind == tir.Block {
-		return buildFallthroughBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "switch case body")
+		return buildFallthroughBody(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "switch case body")
 	}
 	// Bare single-statement case body: built as one fall-through statement by
 	// the same dispatch a statement inside a Block case body (or a loop body,
 	// or an if arm) goes through, so it may be a Store, a call, a print, a
 	// return, a nested if/switch, and so on — not just a Return.
 	indent := strings.Repeat("    ", depth+1)
-	return buildFallthroughStatement(unit, snapshot, fileSet, bodyID, locals, indent, depth, width, result, unions, "switch case body")
+	return buildFallthroughStatement(st, unit, snapshot, fileSet, bodyID, locals, indent, depth, width, result, unions, "switch case body")
 }
 
 // buildIf validates and builds the C text for a two-armed if/else block: a
@@ -1175,22 +1175,22 @@ func buildLoopSwitchCaseBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 // Any other shape — an If without an else, an arm that is not a Block, or a
 // block with the wrong child count — is a clean rejection naming what was
 // found.
-func buildIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if !ifNode.HasElse {
 		return "", fmt.Errorf("entry function body ends with an if without an else; this backend only supports the two-armed if/else whose arms each end in one return, found an if with no else")
 	}
 	if len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body ends with an if with %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
-	condition, err := buildCondition(unit, snapshot, fileSet, ifNode.Children[0], locals, width)
+	condition, err := buildCondition(st, unit, snapshot, fileSet, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildBlock(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
+	thenText, err := buildBlock(st, unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
-	elseText, err := buildBlock(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
+	elseText, err := buildBlock(st, unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -1215,15 +1215,15 @@ func buildIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, 
 //
 // Any other shape — a wrong child count, or a body that is not a Block — is a
 // clean rejection naming what was found.
-func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildWhile(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, whileNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(whileNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop has %d child(ren), want exactly 2 (the condition, then the loop body)", len(whileNode.Children))
 	}
-	condition, err := buildCondition(unit, snapshot, fileSet, whileNode.Children[0], locals, width)
+	condition, err := buildCondition(st, unit, snapshot, fileSet, whileNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, whileNode.Children[1], locals, depth+1, width, result, unions)
+	bodyText, err := buildLoopBody(st, unit, snapshot, fileSet, whileNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -1274,7 +1274,7 @@ func buildWhile(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 // ... }` with no `: name`, which has no way to be observed from inside and is
 // low-value), or a body that is not a Block — is a clean rejection naming
 // what was found.
-func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildRangeLoop(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, rangeNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(rangeNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block range loop has %d child(ren), want exactly 3 (the start value, the end value, then the loop body)", len(rangeNode.Children))
 	}
@@ -1286,11 +1286,11 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// lowered with a synthetic counter the source never names.
 		return "", fmt.Errorf("entry function body block contains an unbound range loop (loop start..end { ... } with no `: name` iterator); only the bound `loop start..end : name { ... }` form is supported")
 	}
-	startText, err := buildRangeBound(unit, snapshot, fileSet, rangeNode.Children[0], locals, width)
+	startText, err := buildRangeBound(st, unit, snapshot, fileSet, rangeNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	endText, err := buildRangeBound(unit, snapshot, fileSet, rangeNode.Children[1], locals, width)
+	endText, err := buildRangeBound(st, unit, snapshot, fileSet, rangeNode.Children[1], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -1319,7 +1319,7 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	}
 	loopScope := cloneLocals(locals)
 	loopScope[rangeNode.Symbol] = localInfo{kind: boundType}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, rangeNode.Children[2], loopScope, depth+1, width, result, unions)
+	bodyText, err := buildLoopBody(st, unit, snapshot, fileSet, rangeNode.Children[2], loopScope, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -1397,7 +1397,7 @@ func buildRangeLoop(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // bound — int-typed arithmetic from a loop whose iterator is never used —
 // reaches buildExpr and is rejected there by its width gate, exactly as the
 // rest of this backend treats int-typed arithmetic.
-func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildRangeBound(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body block range loop references invalid bound node %d", id)
@@ -1410,7 +1410,7 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		return text, nil
 	}
 	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
-		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, node.Symbol, locals); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("entry function body block range loop bound references symbol %d, which is not a local in scope", node.Symbol)
@@ -1431,12 +1431,12 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	// bound's own resolved width.
 	boundWidth, integerBound := resolvedBuiltin(snapshot, node.Type)
 	if integerBound && cType(boundWidth) != "" && !isUint(snapshot, node.Type) {
-		return buildExpr(unit, snapshot, fileSet, id, locals, boundWidth, width)
+		return buildExpr(st, unit, snapshot, fileSet, id, locals, boundWidth, width)
 	}
 	if isUint(snapshot, node.Type) {
-		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
+		return buildUintExpr(st, unit, snapshot, fileSet, id, locals, width)
 	}
-	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
+	return buildExpr(st, unit, snapshot, fileSet, id, locals, width, width)
 }
 
 // buildFor validates and builds the C text for a classic for loop statement
@@ -1493,7 +1493,7 @@ func buildRangeBound(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // range loop made). Any other shape — an ambiguous clause list, an
 // out-of-scope initializer or update, a missing or non-Block body — is a
 // clean rejection naming what was found.
-func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildFor(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, forNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(forNode.Children) < 1 || len(forNode.Children) > 4 {
 		return "", fmt.Errorf("entry function body block for loop has %d child(ren), want 1 to 4 (the optional initializer, condition, and update clauses, then the loop body)", len(forNode.Children))
 	}
@@ -1547,7 +1547,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			return "", fmt.Errorf("entry function body block for loop has %d clause(s) after its condition, want at most one (the update)", len(clauses)-condIndex-1)
 		}
 		if condIndex == 1 {
-			pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+			pre, text, symbol, err := buildForInitClause(st, unit, snapshot, fileSet, clauses[0], loopScope, width)
 			if err != nil {
 				return "", err
 			}
@@ -1555,14 +1555,14 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			initPre = pre
 			initSymbol = symbol
 		}
-		cond, err := buildCondition(unit, snapshot, fileSet, clauses[condIndex], loopScope, width)
+		cond, err := buildCondition(st, unit, snapshot, fileSet, clauses[condIndex], loopScope, width)
 		if err != nil {
 			return "", err
 		}
 		condText = cond
 		if len(clauses)-condIndex-1 == 1 {
 			updateID = clauses[len(clauses)-1]
-			pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[len(clauses)-1], loopScope, width, unions)
+			pre, text, err := buildForUpdateClause(st, unit, snapshot, fileSet, clauses[len(clauses)-1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1581,7 +1581,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			clause, _ := unit.Node(clauses[0])
 			switch clause.Kind {
 			case tir.Initialize:
-				pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+				pre, text, symbol, err := buildForInitClause(st, unit, snapshot, fileSet, clauses[0], loopScope, width)
 				if err != nil {
 					return "", err
 				}
@@ -1599,7 +1599,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 				// same update-only shape for a compound assignment or postfix
 				// increment (`for ; ; i++ { ... }`).
 				updateID = clauses[0]
-				pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
+				pre, text, err := buildForUpdateClause(st, unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
 				if err != nil {
 					return "", err
 				}
@@ -1607,7 +1607,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 				updatePre = pre
 			case tir.CompoundStore:
 				updateID = clauses[0]
-				pre, text, err := buildForUpdateClause(unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
+				pre, text, err := buildForUpdateClause(st, unit, snapshot, fileSet, clauses[0], loopScope, width, unions)
 				if err != nil {
 					return "", err
 				}
@@ -1625,7 +1625,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			if updateClause.Kind != tir.Store && updateClause.Kind != tir.CompoundStore {
 				return "", fmt.Errorf("entry function body block for loop with no condition follows the initializer with a %s clause, want a Store or CompoundStore (the update)", updateClause.Kind)
 			}
-			pre, text, symbol, err := buildForInitClause(unit, snapshot, fileSet, clauses[0], loopScope, width)
+			pre, text, symbol, err := buildForInitClause(st, unit, snapshot, fileSet, clauses[0], loopScope, width)
 			if err != nil {
 				return "", err
 			}
@@ -1633,7 +1633,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			initPre = pre
 			initSymbol = symbol
 			updateID = clauses[1]
-			pre, text, err = buildForUpdateClause(unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
+			pre, text, err = buildForUpdateClause(st, unit, snapshot, fileSet, clauses[1], loopScope, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -1643,7 +1643,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 			return "", fmt.Errorf("entry function body block for loop with no condition has %d clause(s), want at most two (an initializer and an update)", len(clauses))
 		}
 	}
-	bodyText, err := buildLoopBody(unit, snapshot, fileSet, bodyID, loopScope, depth+1, width, result, unions)
+	bodyText, err := buildLoopBody(st, unit, snapshot, fileSet, bodyID, loopScope, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -1673,7 +1673,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 		if !ok || len(updateNode.Children) == 0 {
 			return "", fmt.Errorf("entry function body block for loop update references invalid compound place")
 		}
-		lvalue, _, err := buildPlaceLValue(unit, snapshot, fileSet, updateNode.Children[0], loopScope, width)
+		lvalue, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, updateNode.Children[0], loopScope, width)
 		if err != nil {
 			return "", err
 		}
@@ -1710,7 +1710,7 @@ func buildFor(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet,
 // optional-typed local (the two have different C types, and a for-header
 // declaration is a single C declaration) — mirroring the updatePre mechanism
 // buildCompoundStore uses.
-func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, symbol.SymbolID, error) {
+func buildForInitClause(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, symbol.SymbolID, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", "", 0, fmt.Errorf("entry function body block for loop initializer references invalid node %d", id)
@@ -1739,14 +1739,14 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// returned as a pre statement buildFor emits before the for statement,
 		// and the header clause is the optional-typed local's own declaration
 		// reading that temp.
-		pre, core, err := buildOptionalIntegerToEnumDeclaration(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", id, width)
+		pre, core, err := buildOptionalIntegerToEnumDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", id, width)
 		if err != nil {
 			return "", "", 0, err
 		}
 		scope[statement.Symbol] = localInfo{optional: initValue.Type}
 		return pre, core, statement.Symbol, nil
 	}
-	pre, core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", width)
+	pre, core, err := buildScalarInitializeCore(st, unit, snapshot, fileSet, statement, initValue, scope, "entry function body block for loop initializer", width)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -1765,7 +1765,7 @@ func buildForInitClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // `step++`), validated and emitted by buildCompoundStore; a discarded-
 // expression update (`for x + 1; ...`) is reachable from real source but out
 // of scope and cleanly rejected.
-func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, string, error) {
+func buildForUpdateClause(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", "", fmt.Errorf("entry function body block for loop update references invalid node %d", id)
@@ -1774,9 +1774,9 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		return "", "", fmt.Errorf("entry function body block for loop update is a %s, want a Store (a reassignment of a local already in scope) or a CompoundStore (a compound assignment or postfix increment/decrement); a for-loop update must be a single assignment", statement.Kind)
 	}
 	if statement.Kind == tir.CompoundStore {
-		return buildCompoundStore(unit, snapshot, fileSet, id, statement, scope, "entry function body block for loop update", width)
+		return buildCompoundStore(st, unit, snapshot, fileSet, id, statement, scope, "entry function body block for loop update", width)
 	}
-	core, err := buildStoreCore(unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width, unions)
+	core, err := buildStoreCore(st, unit, snapshot, fileSet, statement, scope, "entry function body block for loop update", width, unions)
 	return "", core, err
 }
 
@@ -1790,8 +1790,8 @@ func buildForUpdateClause(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // sequence, no forced tail" capability. An empty loop body (zero children) is
 // legal — `while cond {}` is a real, if useless, program — and emits no
 // statements at all.
-func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
-	return buildFallthroughBody(unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "entry function body block while loop body")
+func buildLoopBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	return buildFallthroughBody(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions, "entry function body block while loop body")
 }
 
 // buildFallthroughBody validates and builds the C statement sequence for an
@@ -1825,7 +1825,7 @@ func buildLoopBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 // kind is a clean rejection naming what was found. An empty block (zero
 // children) emits no statements at all. context names the enclosing construct
 // in error messages.
-func buildFallthroughBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
+func buildFallthroughBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
 	body, ok := unit.Node(bodyID)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid node %d", context, bodyID)
@@ -1840,7 +1840,7 @@ func buildFallthroughBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for _, childID := range body.Children {
-		text, err := buildFallthroughStatement(unit, snapshot, fileSet, childID, scope, indent, depth, width, result, unions, context)
+		text, err := buildFallthroughStatement(st, unit, snapshot, fileSet, childID, scope, indent, depth, width, result, unions, context)
 		if err != nil {
 			return "", err
 		}
@@ -1868,7 +1868,7 @@ func buildFallthroughBody(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // depth, passed to the nested control-flow builders unchanged so they open
 // their own bodies one level deeper. context names the enclosing construct in
 // error messages.
-func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, childID tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
+func buildFallthroughStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, childID tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
 	statement, ok := unit.Node(childID)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, childID)
@@ -1881,19 +1881,19 @@ func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// unchanged: it already recurses into buildLoopBody (via
 		// buildFallthroughBody) for its own body, so nested loops compose
 		// without any change to buildWhile itself.
-		text, err = buildWhile(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		text, err = buildWhile(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	case tir.RangeLoop:
 		// A nested range loop inside a fall-through sequence (a loop body, an
 		// if arm, or a switch case body) reuses buildRangeLoop unchanged: it
 		// recurses into this same builder for its own body, so nested range
 		// loops compose exactly like nested whiles do.
-		text, err = buildRangeLoop(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		text, err = buildRangeLoop(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	case tir.For:
 		// A nested classic for loop inside a fall-through sequence reuses
 		// buildFor unchanged: it recurses into this same builder for its own
 		// body, so nested classic for loops compose exactly like nested whiles
 		// and range loops do.
-		text, err = buildFor(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		text, err = buildFor(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	case tir.If:
 		// A conditional statement inside a fall-through sequence is built by
 		// buildLoopIf: its arms are themselves fall-through sequences (no
@@ -1901,7 +1901,7 @@ func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// tail-requiring buildIf. Because buildLoopIf recurses into
 		// buildLoopBody for each arm, a break or continue inside an arm is
 		// handled by this same switch, unchanged.
-		text, err = buildLoopIf(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		text, err = buildLoopIf(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	case tir.Switch:
 		// A switch statement inside a fall-through sequence is built by
 		// buildLoopSwitch: its case bodies are themselves fall-through
@@ -1911,17 +1911,17 @@ func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// is handled here, unchanged — C's own break/continue scoping resolves
 		// it to the nearest enclosing loop or switch, which matches Pebble's
 		// break-target rules (see buildLoopSwitch).
-		text, err = buildLoopSwitch(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		text, err = buildLoopSwitch(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	case tir.Return:
 		// A return inside a fall-through sequence — an if arm, a switch case
 		// body, or a loop body — exits the enclosing function immediately,
 		// built by the same shared buildReturnStatement the block-tail Return
 		// case uses.
-		text, err = buildReturnStatement(unit, snapshot, fileSet, statement, scope, indent, context, width, result, unions)
+		text, err = buildReturnStatement(st, unit, snapshot, fileSet, statement, scope, indent, context, width, result, unions)
 	case tir.Break:
-		text, err = buildLoopJump(unit, snapshot, fileSet, statement, "break", indent, context, scope, width, unions)
+		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "break", indent, context, scope, width, unions)
 	case tir.Continue:
-		text, err = buildLoopJump(unit, snapshot, fileSet, statement, "continue", indent, context, scope, width, unions)
+		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "continue", indent, context, scope, width, unions)
 	case tir.DeferRegister:
 		// A DeferRegister in a fall-through statement sequence is a
 		// registration marker the checker's analysis already consumed; the
@@ -1936,14 +1936,14 @@ func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// spelled out so this switch documents the supported kinds the way it
 		// does for While/RangeLoop/For/If/Switch/Return/Break/Continue/
 		// DeferRegister.)
-		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+		text, err = buildLeadingStatement(st, unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
 	case tir.Print:
 		// A print statement — `print a, b;` on its own line — flows through
 		// the same shared leading-statement builder buildBlock uses, so the
 		// emission logic lives in exactly one place.
-		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+		text, err = buildLeadingStatement(st, unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
 	default:
-		text, err = buildLeadingStatement(unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
+		text, err = buildLeadingStatement(st, unit, snapshot, fileSet, childID, scope, indent, depth, context, width, result, unions)
 	}
 	if err != nil {
 		return "", err
@@ -1980,18 +1980,18 @@ func buildFallthroughStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 //
 // Any other shape — a child count inconsistent with HasElse, or an arm that is
 // not a Block — is a clean rejection naming what was found.
-func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildLoopIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("entry function body block while loop body if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", len(ifNode.Children))
 	}
 	if !ifNode.HasElse && len(ifNode.Children) != 2 {
 		return "", fmt.Errorf("entry function body block while loop body if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", len(ifNode.Children))
 	}
-	condition, err := buildCondition(unit, snapshot, fileSet, ifNode.Children[0], locals, width)
+	condition, err := buildCondition(st, unit, snapshot, fileSet, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
+	thenText, err := buildLoopBody(st, unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -1999,7 +1999,7 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 	if !ifNode.HasElse {
 		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
 	}
-	elseText, err := buildLoopBody(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
+	elseText, err := buildLoopBody(st, unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2040,18 +2040,18 @@ func buildLoopIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileS
 // not a Block — is a clean rejection naming what was found. context names the
 // enclosing construct in error messages and is prefixed with " arm" for each
 // arm's own error messages.
-func buildLeadingIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
+func buildLeadingIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, ifNode tir.Node, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo, context string) (string, error) {
 	if ifNode.HasElse && len(ifNode.Children) != 3 {
 		return "", fmt.Errorf("%s if has an else arm but %d child(ren), want exactly 3 (condition, then-arm, else-arm)", context, len(ifNode.Children))
 	}
 	if !ifNode.HasElse && len(ifNode.Children) != 2 {
 		return "", fmt.Errorf("%s if has no else arm but %d child(ren), want exactly 2 (condition, then-arm)", context, len(ifNode.Children))
 	}
-	condition, err := buildCondition(unit, snapshot, fileSet, ifNode.Children[0], locals, width)
+	condition, err := buildCondition(st, unit, snapshot, fileSet, ifNode.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildFallthroughBody(unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions, context+" arm")
+	thenText, err := buildFallthroughBody(st, unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions, context+" arm")
 	if err != nil {
 		return "", err
 	}
@@ -2059,7 +2059,7 @@ func buildLeadingIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	if !ifNode.HasElse {
 		return fmt.Sprintf("%sif (%s) {\n%s\n%s}", indent, condition, thenText, indent), nil
 	}
-	elseText, err := buildFallthroughBody(unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions, context+" arm")
+	elseText, err := buildFallthroughBody(st, unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions, context+" arm")
 	if err != nil {
 		return "", err
 	}
@@ -2081,7 +2081,7 @@ func buildLeadingIf(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // same buildExpressionStatement the leading-statement case uses). A
 // DeferRegister whose child is an unsupported
 // statement kind is a clean rejection naming what was found.
-func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(chain) == 0 {
 		return "", nil
 	}
@@ -2103,7 +2103,7 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 		}
 		switch stmt.Kind {
 		case tir.Store:
-			core, err := buildStoreCore(unit, snapshot, fileSet, stmt, scope, context, width, unions)
+			core, err := buildStoreCore(st, unit, snapshot, fileSet, stmt, scope, context, width, unions)
 			if err != nil {
 				return "", err
 			}
@@ -2113,7 +2113,7 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			// `defer i += 1;` — built by the same shared buildCompoundStore a
 			// non-deferred compound assignment uses, so the emission logic
 			// lives in exactly one place.
-			pre, core, err := buildCompoundStore(unit, snapshot, fileSet, deferReg.Children[0], stmt, scope, context, width)
+			pre, core, err := buildCompoundStore(st, unit, snapshot, fileSet, deferReg.Children[0], stmt, scope, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -2128,7 +2128,7 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			// logic lives in exactly one place. The builder rejects a deferred
 			// call to a non-void-returning function (and any non-call discarded
 			// expression) cleanly.
-			text, err := buildExpressionStatement(unit, snapshot, fileSet, stmt, scope, indent, context, width)
+			text, err := buildExpressionStatement(st, unit, snapshot, fileSet, stmt, scope, indent, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -2140,7 +2140,7 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			// operand's temp declaration is returned as a leading pre-statement
 			// at the same indent, the same mechanical shape the deferred
 			// CompoundStore pre uses.
-			pre, text, err := buildPrint(unit, snapshot, fileSet, stmt, scope, indent, context, width)
+			pre, text, err := buildPrint(st, unit, snapshot, fileSet, stmt, scope, indent, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -2175,8 +2175,8 @@ func buildDeferredStatements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 // value never needs to be consulted or compared; it is confirmed (against a
 // nested-loop fixture) to name the loop that actually contains the jump, and
 // the checker (C0611) already guarantees that loop is an enclosing one.
-func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
-	deferText, err := buildDeferredStatements(unit, snapshot, fileSet, statement.DeferChain, scope, indent, context, width, unions)
+func buildLoopJump(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, statement.DeferChain, scope, indent, context, width, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2228,7 +2228,7 @@ func buildLoopJump(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 // caller is responsible for having already cloned scope if the statements must
 // not leak into a sibling or enclosing scope (buildBlock and buildLoopBody both
 // do). Any other statement kind is a clean rejection naming what was found.
-func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+func buildLeadingStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, depth int, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	statement, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid statement node %d", context, id)
@@ -2251,13 +2251,13 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// a real fixture). The supported initializer is a tuple literal
 			// (TupleValue); every other tuple initializer shape is a clean
 			// rejection.
-			return buildTupleLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildTupleLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isArray(snapshot, initValue.Type) {
 			if initValue.Kind == tir.DirectCall {
-				return buildArrayCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+				return buildArrayCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 			}
-			return buildArrayLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildArrayLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isOptional(snapshot, initValue.Type) {
 			// An optional-typed local: its type is the initializer value's
@@ -2267,7 +2267,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// since the OptionalIntegerToEnum slice an integer-to-optional-
 			// enum cast (`5 as ?Color`); every other optional initializer
 			// shape is a clean rejection.
-			return buildOptionalLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, id)
+			return buildOptionalLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, id)
 		}
 		if isEnumType(unit, snapshot, initValue.Type) {
 			// An enum-typed local: its type is the initializer value's Type
@@ -2291,25 +2291,25 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 				// enum/union helper-return support (see
 				// buildEnumCallInitializer / buildUnionCallInitializer).
 				if _, isUnion := unions[initValue.Type]; isUnion {
-					return buildUnionCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+					return buildUnionCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 				}
-				return buildEnumCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+				return buildEnumCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 			}
 			if _, isUnion := unions[initValue.Type]; isUnion {
-				return buildUnionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, unions, width)
+				return buildUnionLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, unions, width)
 			}
-			return buildEnumLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildEnumLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isStruct(snapshot, initValue.Type) {
 			if runtimeType(unit, snapshot, initValue.Type) != 0 {
-				return buildRuntimeLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+				return buildRuntimeLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 			}
 			// A struct-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, confirmed against
 			// a real fixture — same as tuple/array/optional locals). The
 			// supported initializer is a RecordConstruct (a struct literal);
 			// every other struct initializer shape is a clean rejection.
-			return buildStructLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildStructLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isStr(snapshot, initValue.Type) {
 			// A str-typed local: its type is the initializer value's Type
@@ -2320,7 +2320,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// result type is str, the one supported call position for
 			// declaring a str local); every other str initializer shape is a
 			// clean rejection.
-			return buildStrLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildStrLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isSlice(snapshot, initValue.Type) {
 			// A slice-typed local: its type is the initializer value's Type
@@ -2331,7 +2331,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// slice type, the one supported call position for declaring a
 			// slice local); every other slice initializer
 			// shape is a clean rejection.
-			return buildSliceLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildSliceLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isPointer(snapshot, initValue.Type) {
 			// A pointer-typed local: its type is the initializer value's Type
@@ -2341,7 +2341,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// (pointer-to-pointer copy), a nil literal, a pointer-returning
 			// call, or an explicit pointer-to-pointer cast; every other
 			// pointer initializer shape is a clean rejection.
-			return buildPointerLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildPointerLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isFunctionType(snapshot, initValue.Type) {
 			// A function-typed local: its type is the initializer value's Type
@@ -2351,9 +2351,9 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 			// another function-typed local (a SymbolValue); every other
 			// function initializer shape is a clean rejection (see
 			// buildFunctionLocalDeclaration).
-			return buildFunctionLocalDeclaration(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+			return buildFunctionLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
-		pre, core, err := buildScalarInitializeCore(unit, snapshot, fileSet, statement, initValue, scope, context, width)
+		pre, core, err := buildScalarInitializeCore(st, unit, snapshot, fileSet, statement, initValue, scope, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -2383,7 +2383,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// for-loop update clause); the indent and the trailing `;` turn it
 		// into this full statement, byte-identical to before the helper was
 		// extracted.
-		core, err := buildStoreCore(unit, snapshot, fileSet, statement, scope, context, width, unions)
+		core, err := buildStoreCore(st, unit, snapshot, fileSet, statement, scope, context, width, unions)
 		if err != nil {
 			return "", err
 		}
@@ -2397,7 +2397,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// like a Store. The value text is built by buildCompoundStore (shared
 		// with the for-loop update clause); the indent and the trailing `;`
 		// turn it into this full statement, mirroring the Store case.
-		pre, core, err := buildCompoundStore(unit, snapshot, fileSet, id, statement, scope, context, width)
+		pre, core, err := buildCompoundStore(st, unit, snapshot, fileSet, id, statement, scope, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -2414,7 +2414,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// (also used by buildDeferredStatements for a deferred call); any other
 		// discarded expression — a non-call value, or a call to a non-void-
 		// returning function — is a clean rejection naming what was found.
-		return buildExpressionStatement(unit, snapshot, fileSet, statement, scope, indent, context, width)
+		return buildExpressionStatement(st, unit, snapshot, fileSet, statement, scope, indent, context, width)
 	case tir.Print:
 		// A print statement — `print a, b, c;` — emitted as one combined
 		// printf call by the shared buildPrint (also used by buildLoopBody's
@@ -2423,7 +2423,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// slice-index operand's temp declaration is returned as a leading
 		// pre-statement and threaded into this statement sequence before the
 		// printf line, exactly as a return threads its pre-return temp.
-		pre, line, err := buildPrint(unit, snapshot, fileSet, statement, scope, indent, context, width)
+		pre, line, err := buildPrint(st, unit, snapshot, fileSet, statement, scope, indent, context, width)
 		if err != nil {
 			return "", err
 		}
@@ -2437,14 +2437,14 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		// followed by more code. Its arms are fall-through statement sequences
 		// (no required tail, optional else), built by buildLeadingIf, the
 		// top-level twin of buildLoopIf.
-		return buildLeadingIf(unit, snapshot, fileSet, statement, scope, depth, width, result, unions, context)
+		return buildLeadingIf(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions, context)
 	case tir.Switch:
 		// A switch statement as an ordinary leading statement — a non-tail
 		// switch whose case bodies may fall through or return, built by
 		// buildLoopSwitch (the same fall-through switch the loop-body/arm
 		// position uses). This is the only place a top-level function body can
 		// contain a non-tail switch; see buildLoopSwitch.
-		return buildLoopSwitch(unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
+		return buildLoopSwitch(st, unit, snapshot, fileSet, statement, scope, depth, width, result, unions)
 	default:
 		return "", fmt.Errorf("%s statement is a %s, want a local declaration (Initialize), a reassignment (Store), a compound assignment or postfix increment/decrement (CompoundStore), a call to a void-returning function used as a statement (ExpressionStatement), a print statement (Print), a conditional if statement (If), or a switch statement (Switch)", context, statement.Kind)
 	}
@@ -2476,7 +2476,7 @@ func buildLeadingStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // ExpressionStatement case (which covers both buildBlock's and buildLoopBody's
 // leading-statement sequences) and buildDeferredStatements' deferred-statement
 // case, so the emission logic lives in exactly one place.
-func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildExpressionStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if len(statement.Children) != 1 {
 		return "", fmt.Errorf("%s discarded-expression statement has %d child(ren), want exactly one (the expression being discarded)", context, len(statement.Children))
 	}
@@ -2485,7 +2485,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		return "", fmt.Errorf("%s discarded-expression statement references invalid value node %d", context, statement.Children[0])
 	}
 	if expr.Kind == tir.IndirectCall {
-		callExpr, err := buildIndirectCall(unit, snapshot, fileSet, expr, scope, width)
+		callExpr, err := buildIndirectCall(st, unit, snapshot, fileSet, expr, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -2494,7 +2494,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 	if expr.Kind != tir.DirectCall && expr.Kind != tir.MethodCall {
 		return "", fmt.Errorf("%s discarded-expression statement discards a %s, which is not supported as a bare statement yet (only a direct, method, or indirect call is)", context, expr.Kind)
 	}
-	callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, expr, scope, width)
+	callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, expr, scope, width)
 	if err != nil {
 		return "", err
 	}
@@ -2585,7 +2585,7 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // leading-statement sequences), buildLoopBody's explicit Print case, and
 // buildDeferredStatements' deferred-statement case, so the emission logic
 // lives in exactly one place.
-func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	operands, hasComposite, err := unwrapPrintOperands(unit, snapshot, statement, context)
 	if err != nil {
 		return "", "", err
@@ -2598,7 +2598,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 	// all-scalar print keeps the pre-existing single-combined-printf shape,
 	// exactly as the tests that assert that shape expect.
 	if hasComposite {
-		return buildSequentialPrint(unit, snapshot, fileSet, statement, operands, scope, indent, context, width)
+		return buildSequentialPrint(st, unit, snapshot, fileSet, statement, operands, scope, indent, context, width)
 	}
 	var formatParts []string
 	var args []string
@@ -2624,7 +2624,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
 					formatParts = append(formatParts, `"%s"`)
-					boolExpr, err := buildBoolExpr(unit, snapshot, fileSet, part.Value, scope, width)
+					boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
 					if err != nil {
 						return "", "", err
 					}
@@ -2635,7 +2635,7 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			}
 			continue
 		}
-		format, arg, pres, err := buildScalarPrintOperand(unit, snapshot, fileSet, operandID, child, scope, width, context)
+		format, arg, pres, err := buildScalarPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, width, context)
 		if err != nil {
 			return "", "", err
 		}
@@ -2708,7 +2708,7 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 // fprintf call. Scalar formatting is NEVER reimplemented here — it lives in
 // buildScalarPrintParts, the single formatting site a struct field's scalar
 // value shares with a bare scalar operand.
-func buildScalarPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, string, []string, error) {
+func buildScalarPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, string, []string, error) {
 	kind, ok := resolvedBuiltin(snapshot, child.Type)
 	if !ok {
 		return "", "", nil, fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
@@ -2740,26 +2740,26 @@ func buildScalarPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 		// local declaration does). A slice-index operand's read (element C
 		// type) carries the same width as its element.
 		if isSliceIndex {
-			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+			sliceIndexPre, expr, err = buildSliceIndexValue(st, unit, snapshot, fileSet, operandID, child, scope, width, false)
 		} else {
-			expr, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
+			expr, err = buildExpr(st, unit, snapshot, fileSet, operandID, scope, kind, width)
 		}
 	case kind == types.Bool:
 		if isSliceIndex {
-			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, true)
+			sliceIndexPre, expr, err = buildSliceIndexValue(st, unit, snapshot, fileSet, operandID, child, scope, width, true)
 		} else {
-			expr, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
+			expr, err = buildBoolExpr(st, unit, snapshot, fileSet, operandID, scope, width)
 		}
 	case kind == types.Char:
 		if isSliceIndex {
-			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+			sliceIndexPre, expr, err = buildSliceIndexValue(st, unit, snapshot, fileSet, operandID, child, scope, width, false)
 		} else {
-			expr, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+			expr, err = buildCharOperand(st, unit, snapshot, fileSet, operandID, scope, width)
 		}
 	case kind == types.Str:
-		expr, err = buildStrOperand(unit, snapshot, fileSet, operandID, scope, width)
+		expr, err = buildStrOperand(st, unit, snapshot, fileSet, operandID, scope, width)
 	case kind == types.F32 || kind == types.F64:
-		expr, err = buildFloatExpr(unit, snapshot, fileSet, operandID, scope, kind)
+		expr, err = buildFloatExpr(st, unit, snapshot, fileSet, operandID, scope, kind)
 	default:
 		return "", "", nil, fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
 	}
@@ -2878,7 +2878,7 @@ func (c printFprintfCall) text(indent string) string {
 // a tuple, pebble_print_array_<nodeID> for an array) so a composite-returning
 // call operand is evaluated exactly once, and every field/element is then read
 // off the temp.
-func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, operands []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, operands []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	var preParts []string
 	var calls []printFprintfCall
 	for _, operandID := range operands {
@@ -2900,7 +2900,7 @@ func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 					if !ok || valueKind != types.Bool {
 						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
-					boolExpr, err := buildBoolExpr(unit, snapshot, fileSet, part.Value, scope, width)
+					boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
 					if err != nil {
 						return "", "", err
 					}
@@ -2912,7 +2912,7 @@ func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			continue
 		}
 		if _, ok := resolvedBuiltin(snapshot, child.Type); ok {
-			format, arg, pres, err := buildScalarPrintOperand(unit, snapshot, fileSet, operandID, child, scope, width, context)
+			format, arg, pres, err := buildScalarPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, width, context)
 			if err != nil {
 				return "", "", err
 			}
@@ -2927,11 +2927,11 @@ func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		var err error
 		switch {
 		case isTuple(snapshot, child.Type):
-			compositeCalls, pres, err = buildTuplePrintOperand(unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+			compositeCalls, pres, err = buildTuplePrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isArray(snapshot, child.Type):
-			compositeCalls, pres, err = buildArrayPrintOperand(unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+			compositeCalls, pres, err = buildArrayPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
-			compositeCalls, pres, err = buildStructPrintOperand(unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
 		if err != nil {
 			return "", "", err
@@ -2964,7 +2964,7 @@ func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // call `fprintf(stdout, "<name>{ }")`. The struct's declared type name and
 // field names are recovered from the unit + file set rather than the symbol
 // table so the emission works whether or not Emit was given a symbol result.
-func buildStructPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+func buildStructPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
 	info, err := resolveStructInfo(unit, snapshot, child.Type, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s print operand is a struct of type %s: %v", context, structTypeName(child.Type), err)
@@ -2973,7 +2973,7 @@ func buildStructPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 	if err != nil {
 		return nil, nil, err
 	}
-	valueExpr, err := buildStructPrintValueExpr(unit, snapshot, fileSet, operandID, child, scope, context, width)
+	valueExpr, err := buildStructPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3028,7 +3028,7 @@ func buildStructPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 // the tuple type's own Elements() key, never from the construction site, so
 // the printed order is the declared type's element order regardless of how the
 // operand was written.
-func buildTuplePrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+func buildTuplePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
 	key, ok := snapshot.Key(child.Type)
 	if !ok {
 		return nil, nil, fmt.Errorf("%s print operand is a tuple of type %s, which is not in the type snapshot", context, tupleTypeName(child.Type))
@@ -3037,7 +3037,7 @@ func buildTuplePrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return nil, nil, fmt.Errorf("%s print operand is a tuple of type %s, which has no element list", context, tupleTypeName(child.Type))
 	}
-	valueExpr, err := buildTuplePrintValueExpr(unit, snapshot, fileSet, operandID, child, scope, context, width)
+	valueExpr, err := buildTuplePrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3084,7 +3084,7 @@ func buildTuplePrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // struct field unrolling; every scalar element is formatted by the same
 // buildScalarPrintParts a bare scalar print operand uses. Elements are read
 // off the temp as <temp>.data[<i>] (the array typedef wraps a data[N] field).
-func buildArrayPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+func buildArrayPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
 	key, ok := snapshot.Key(child.Type)
 	if !ok {
 		return nil, nil, fmt.Errorf("%s print operand is an array of type %s, which is not in the type snapshot", context, describeType(snapshot, child.Type))
@@ -3093,7 +3093,7 @@ func buildArrayPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if !ok {
 		return nil, nil, fmt.Errorf("%s print operand is an array of type %s, which has no length and element type", context, describeType(snapshot, child.Type))
 	}
-	valueExpr, err := buildArrayPrintValueExpr(unit, snapshot, fileSet, operandID, child, scope, context, width)
+	valueExpr, err := buildArrayPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3136,7 +3136,7 @@ func buildArrayPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // by buildTupleValueExpr), or a call to a tuple-returning helper (a DirectCall,
 // emitted as the call expression). Any other shape is a clean rejection, never a
 // guessed lowering.
-func buildTuplePrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildTuplePrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	switch child.Kind {
 	case tir.SymbolValue:
 		info, ok := scope[child.Symbol]
@@ -3148,7 +3148,7 @@ func buildTuplePrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if len(child.Children) != 1 {
 			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
 		}
-		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], scope, width)
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -3157,9 +3157,9 @@ func buildTuplePrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		}
 		return lvalue, nil
 	case tir.TupleValue:
-		return buildTupleValueExpr(unit, snapshot, fileSet, child, scope, context, width)
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, child, scope, context, width)
 	case tir.DirectCall:
-		return buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
 	}
 	return "", fmt.Errorf("%s print operand is a %s of tuple type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
 }
@@ -3176,7 +3176,7 @@ func buildTuplePrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // buildArrayBraceElements element builder), or a call to an array-returning
 // helper (a DirectCall, emitted as the call expression). Any other shape is a
 // clean rejection, never a guessed lowering.
-func buildArrayPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildArrayPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(child.Type)
 	if !ok {
 		return "", fmt.Errorf("%s print operand is an array of type %s, which is not in the type snapshot", context, describeType(snapshot, child.Type))
@@ -3203,7 +3203,7 @@ func buildArrayPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if len(child.Children) != 1 {
 			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
 		}
-		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], scope, width)
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -3216,7 +3216,7 @@ func buildArrayPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		}
 		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(child.Type), strings.Join(values, ", ")), nil
 	case tir.ArrayValue:
-		elementExprs, err := buildArrayBraceElements(unit, snapshot, fileSet, child, scope, context, width, element)
+		elementExprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, child, scope, context, width, element)
 		if err != nil {
 			return "", err
 		}
@@ -3225,7 +3225,7 @@ func buildArrayPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		}
 		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(child.Type), strings.Join(elementExprs, ", ")), nil
 	case tir.DirectCall:
-		return buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
 	}
 	return "", fmt.Errorf("%s print operand is a %s of array type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
 }
@@ -3239,10 +3239,10 @@ func buildArrayPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // (a RecordConstruct, emitted as its C99 compound literal), or a call to a
 // struct-returning helper (a DirectCall, emitted as the call expression). Any
 // other shape is a clean rejection, never a guessed lowering.
-func buildStructPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildStructPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	switch child.Kind {
 	case tir.SymbolValue:
-		if name, ok := localOrGlobalName(child.Symbol, scope); ok {
+		if name, ok := localOrGlobalName(st, child.Symbol, scope); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("%s print operand references symbol %d, which is not a struct-typed local or global in scope", context, child.Symbol)
@@ -3250,7 +3250,7 @@ func buildStructPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		if len(child.Children) != 1 {
 			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
 		}
-		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], scope, width)
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -3259,9 +3259,9 @@ func buildStructPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		return lvalue, nil
 	case tir.RecordConstruct:
-		return buildStructValueExpr(unit, snapshot, fileSet, child, scope, context, width)
+		return buildStructValueExpr(st, unit, snapshot, fileSet, child, scope, context, width)
 	case tir.DirectCall:
-		return buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
 	}
 	return "", fmt.Errorf("%s print operand is a %s of struct type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
 }

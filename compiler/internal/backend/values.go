@@ -11,7 +11,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
-func buildRuntimeValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildRuntimeValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if node.Kind == tir.SymbolValue {
 		if node.Symbol == unit.Runtime().Context {
 			return "(*ctx)", nil
@@ -25,7 +25,7 @@ func buildRuntimeValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 		if !ok {
 			return "", fmt.Errorf("invalid runtime receiver")
 		}
-		base, err := buildRuntimeValueNode(unit, snapshot, fileSet, node.Children[0], scope, width)
+		base, err := buildRuntimeValueNode(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -40,13 +40,13 @@ func buildRuntimeValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source
 			return "", fmt.Errorf("invalid runtime field place")
 		}
 		if place.Kind == tir.FieldPlace {
-			return buildStructFieldRead(unit, snapshot, fileSet, place, scope, width, false)
+			return buildStructFieldRead(st, unit, snapshot, fileSet, place, scope, width, false)
 		}
 	}
 	return "", fmt.Errorf("runtime value %s is not supported", node.Kind)
 }
 
-func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildRuntimeValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("invalid runtime value node %d", id)
@@ -54,7 +54,7 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 	if node.Kind == tir.ContextValue {
 		return "(*ctx)", nil
 	}
-	return buildRuntimeValue(unit, snapshot, fileSet, node, scope, width)
+	return buildRuntimeValue(st, unit, snapshot, fileSet, node, scope, width)
 }
 
 // buildTupleValueExpr builds a freshly-constructed tuple value as an ordinary
@@ -71,18 +71,18 @@ func buildRuntimeValueNode(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // tuple-typed parameter (buildAggregateArgument). The node must be a
 // TupleValue; the caller already guarantees this, so the kind check is defense
 // for hand-built IR.
-func buildTupleValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildTupleValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s contains a %s, want a TupleValue (a tuple literal)", context, node.Kind)
 	}
-	braceList, err := buildTupleBraceList(unit, snapshot, fileSet, node, scope, context, width)
+	braceList, err := buildTupleBraceList(st, unit, snapshot, fileSet, node, scope, context, width)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("(%s)%s", tupleTypeName(node.Type), braceList), nil
 }
 
-func buildNestedAggregateValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, typ types.TypeID, context string, width types.BuiltinKind) (string, error) {
+func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, typ types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid aggregate value", context)
@@ -99,16 +99,16 @@ func buildNestedAggregateValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	}
 	switch {
 	case isTuple(snapshot, typ):
-		return buildTupleValueExpr(unit, snapshot, fileSet, node, scope, context, width)
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isStruct(snapshot, typ):
-		return buildStructValueExpr(unit, snapshot, fileSet, node, scope, context, width)
+		return buildStructValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isOptional(snapshot, typ):
-		return buildOptionalValueExpr(unit, snapshot, fileSet, node, scope, context, width)
+		return buildOptionalValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	}
 	return "", fmt.Errorf("%s aggregate type is unsupported", context)
 }
 
-func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok || !isUint(snapshot, node.Type) {
 		return "", fmt.Errorf("uint expression has invalid node or type")
@@ -118,7 +118,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("uint source alias has %d children", len(node.Children))
 		}
-		return buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		return buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 	case tir.IntegerLiteral:
 		litWidth, _ := resolvedBuiltin(snapshot, node.Type)
 		return integerLiteralText(node.Literal.IntegerNum, litWidth), nil
@@ -134,13 +134,13 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		// sizeof(uint64_t) the builtin-only three-width dispatch would fall
 		// through to (that would size the allocation 8 bytes per Entry
 		// instead of 12, corrupting the rehash table).
-		typeName, err := sizeofCTypeName(unit, snapshot, node.TypeArg)
+		typeName, err := sizeofCTypeName(st, unit, snapshot, node.TypeArg)
 		if err != nil {
 			return "", err
 		}
 		return "sizeof(" + typeName + ")", nil
 	case tir.SymbolValue:
-		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, node.Symbol, locals); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("uint expression references unknown symbol %d", node.Symbol)
@@ -168,9 +168,9 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		var childExpr string
 		var err error
 		if isUint(snapshot, child.Type) {
-			childExpr, err = buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+			childExpr, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		} else if integerChild && cType(childWidth) != "" {
-			childExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+			childExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
 		} else {
 			return "", fmt.Errorf("uint expression IntegerCast child has type %s, want a fixed-width integer", describeType(snapshot, child.Type))
 		}
@@ -188,7 +188,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("uint expression contains a PointerToInteger with %d children, want exactly one", len(node.Children))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, width)
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, width)
 		if err != nil {
 			return "", err
 		}
@@ -205,7 +205,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("uint expression contains a Load with %d children, want exactly one place", len(node.Children))
 		}
-		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", fmt.Errorf("uint expression place: %v", err)
 		}
@@ -243,11 +243,11 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("uint arithmetic has %d operands", len(node.Children))
 		}
-		left, err := buildUintExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildUintExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -287,7 +287,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if !isUint(snapshot, calleeDecl.ResultType) {
 			return "", fmt.Errorf("uint expression contains a call to symbol %d whose declared result type %s is not uint", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -297,7 +297,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 	}
 }
 
-func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
 		return "", fmt.Errorf("%s optional value type %d is not in the type snapshot", context, node.Type)
@@ -317,13 +317,13 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	payloadWidth, integerPayload := resolvedBuiltin(snapshot, payload)
 	switch {
 	case integerPayload && cType(payloadWidth) != "" && !isUint(snapshot, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, payloadWidth, width)
+		value, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, payloadWidth, width)
 	case isUint(snapshot, payload):
-		value, err = buildUintExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+		value, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isBool(snapshot, payload):
-		value, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+		value, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isTuple(snapshot, payload):
-		value, err = buildTupleValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isTaggedUnionType(unit, snapshot, payload):
 		// A tagged-union payload's some/injected value is a union value (a
 		// reference to an already-declared union-typed local, a variant
@@ -334,15 +334,15 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		// case below exactly as the SomeOptional case's own union branch
 		// precedes isEnumType: a tagged union is Nominal like a struct but its
 		// value is a union value, never a RecordConstruct.
-		value, err = buildUnionValueExpr(unit, snapshot, fileSet, node.Children[0], scope, context, payload, width)
+		value, err = buildUnionValueExpr(st, unit, snapshot, fileSet, node.Children[0], scope, context, payload, width)
 	case isStruct(snapshot, payload):
-		value, err = buildStructValueExpr(unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+		value, err = buildStructValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isPointer(snapshot, payload):
 		// A pointer payload's value is built by the same buildExpr path a
 		// pointer-typed value takes anywhere else (AddressOf, NilPointer, a
 		// pointer-typed local reference, or a pointer-returning call), whose
 		// isPointer bypass ignores the ambient width args.
-		value, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+		value, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width, width)
 	default:
 		return "", fmt.Errorf("%s optional payload %s is unsupported", context, describeType(snapshot, payload))
 	}
@@ -367,11 +367,11 @@ func buildOptionalValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // struct-typed parameter (buildAggregateArgument). The node must be a
 // RecordConstruct; the caller already guarantees this, so the kind check is
 // defense for hand-built IR.
-func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)
 	}
-	preStatements, braceList, err := buildStructBraceList(unit, snapshot, fileSet, node, scope, "", context, width)
+	preStatements, braceList, err := buildStructBraceList(st, unit, snapshot, fileSet, node, scope, "", context, width)
 	if err != nil {
 		return "", err
 	}
@@ -421,7 +421,7 @@ func buildStructValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // enum value wherever one is needed this slice: an enum-typed local's
 // declaration initializer, a reassignment's new value, an enum switch's
 // subject, and an enum comparison's operand.
-func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -440,13 +440,13 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.enumType == 0 {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if ginfo.info.enumType == 0 {
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not an enum-typed global", node.Symbol)
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if einfo.info.enumType == 0 {
 					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not an enum-typed extern variable", node.Symbol)
 				}
@@ -485,7 +485,7 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !isEnumType(unit, snapshot, calleeDecl.ResultType) {
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose declared result type %s is not an enum type", node.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -498,9 +498,9 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
-		return buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+		return buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 	case tir.CheckedIntegerToEnum:
-		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression", width)
+		return buildCheckedIntegerToEnumExpr(st, unit, snapshot, fileSet, node, locals, "entry function body expression", width)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an enum-payload optional (`c!` where c is
 		// ?Color), used as an enum value — the read-back path for an
@@ -564,7 +564,7 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !isEnumType(unit, snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want an enum type", describeType(snapshot, node.Type))
 		}
-		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an enum variant literal (an EnumVariantValue) or a reference to an enum-typed local", node.Kind)
 	}
@@ -589,7 +589,7 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // real variant exactly when 0 <= value < variant_count — the runtime primitive
 // enforces exactly that bound (see pebble_rt.h), SAFE panicking out-of-range
 // and RELEASE returning the value unchecked.
-func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, entryWidth types.BuiltinKind) (string, error) {
+func buildCheckedIntegerToEnumExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, entryWidth types.BuiltinKind) (string, error) {
 	if node.Kind != tir.CheckedIntegerToEnum {
 		return "", fmt.Errorf("%s contains a %s, want a CheckedIntegerToEnum", context, node.Kind)
 	}
@@ -615,7 +615,7 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 	if !ok || cType(childWidth) == "" {
 		return "", fmt.Errorf("%s integer-to-enum cast child has non-integer type %s", context, describeType(snapshot, child.Type))
 	}
-	childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
+	childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 	if err != nil {
 		return "", fmt.Errorf("%s integer-to-enum cast child: %v", context, err)
 	}
@@ -643,7 +643,7 @@ func buildCheckedIntegerToEnumExpr(unit *tir.Unit, snapshot *types.Snapshot, fil
 // IR) and emits a value of that union's own pebble_union_<typeID>_t C type, so
 // the value is trivially valid wherever the union typedef is expected. Any
 // other node kind is a clean rejection, never a guessed lowering.
-func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, context string, want types.TypeID, width types.BuiltinKind) (string, error) {
+func buildUnionValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, context string, want types.TypeID, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid node %d", context, id)
@@ -652,13 +652,13 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.enumType == 0 {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if ginfo.info.enumType != want {
 					return "", fmt.Errorf("%s references global symbol %d, which is not a tagged-union-typed global of type %s", context, node.Symbol, unionTypeName(want))
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if einfo.info.enumType != want {
 					return "", fmt.Errorf("%s references extern variable symbol %d, which is not a tagged-union-typed extern variable of type %s", context, node.Symbol, unionTypeName(want))
 				}
@@ -695,7 +695,7 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if node.Type != want {
 			return "", fmt.Errorf("%s contains a call to symbol %d whose declared result type %s is not the union type %s", context, node.Symbol, describeType(snapshot, node.Type), unionTypeName(want))
 		}
-		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, node, locals, width)
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -708,7 +708,7 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if err != nil {
 			return "", err
 		}
-		return buildUnionConstruction(unit, snapshot, fileSet, node, locals, context, info, width)
+		return buildUnionConstruction(st, unit, snapshot, fileSet, node, locals, context, info, width)
 	case tir.Load:
 		// A read of a union-typed struct field (`h.tag`, the struct-field
 		// read-back shape): a Load of a FieldPlace whose place's declared field
@@ -728,7 +728,7 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if node.Type != want {
 			return "", fmt.Errorf("%s contains a Load of type %s, want a field of the union type %s", context, describeType(snapshot, node.Type), unionTypeName(want))
 		}
-		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of a union-payload optional (`o!`, the optional
 		// read-back shape): the unwrap's own Type is the union, and the optional
@@ -737,12 +737,12 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		if node.Type != want {
 			return "", fmt.Errorf("%s contains a CheckedOptionalUnwrap of union type %s, want %s", context, unionTypeName(node.Type), unionTypeName(want))
 		}
-		return buildUnionUnwrapExpr(unit, snapshot, fileSet, node, locals, width)
+		return buildUnionUnwrapExpr(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.SourceAlias:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
 		}
-		return buildUnionValueExpr(unit, snapshot, fileSet, node.Children[0], locals, context, want, width)
+		return buildUnionValueExpr(st, unit, snapshot, fileSet, node.Children[0], locals, context, want, width)
 	default:
 		return "", fmt.Errorf("%s contains a %s of tagged-union type, want a reference to a union-typed local, a union variant construction, a union-typed struct field read, or a union-payload optional force-unwrap", context, node.Kind)
 	}
@@ -767,7 +767,7 @@ func buildUnionValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // (a Load of a FieldPlace, the `b.value!` shape); the optional's payload must
 // be exactly the unwrap's own union Type (guaranteed for real source by the
 // checker; the check is defense for hand-built IR).
-func buildUnionUnwrapExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildUnionUnwrapExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if len(node.Children) != 1 {
 		return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
 	}
@@ -789,7 +789,7 @@ func buildUnionUnwrapExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if len(child.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s, want a place", child.Kind)
 		}
-		expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+		expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -863,15 +863,15 @@ func buildCharLiteralValue(node tir.Node) (string, error) {
 // a bool operand, or a && / || combination of any of these (a
 // tir.ShortCircuitValue) — is routed through buildBoolExpr. Anything else is
 // rejected by whichever builder it reaches.
-func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildCondition(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body condition references invalid node %d", id)
 	}
 	if node.Kind == tir.BinaryValue {
-		return buildComparison(unit, snapshot, fileSet, id, locals, width)
+		return buildComparison(st, unit, snapshot, fileSet, id, locals, width)
 	}
-	return buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
+	return buildBoolExpr(st, unit, snapshot, fileSet, id, locals, width)
 }
 
 // buildComparison builds the C text for an if condition. It accepts exactly a
@@ -912,7 +912,7 @@ func buildCondition(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // BinaryValue (bitwise), is a clean rejection. The && / || that lower to
 // ShortCircuitValue nodes are not this function's concern — buildCondition
 // routes them to buildBoolExpr.
-func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildComparison(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid node %d", id)
@@ -947,11 +947,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		// an in-scope str local, or a string literal embedded as a PebbleStr
 		// compound literal — so a literal operand participates in a comparison
 		// without needing a declared local.
-		left, err := buildStrOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildStrOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildStrOperand(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildStrOperand(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -979,11 +979,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		// local reference, or a call to a char-returning helper), each
 		// emitted as an int32_t value, so a literal operand participates
 		// without needing a declared local.
-		left, err := buildCharOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildCharOperand(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildCharOperand(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -1001,11 +1001,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if node.Operator != syntax.Equal && node.Operator != syntax.NotEqual {
 			return "", fmt.Errorf("entry function body if condition compares two bool operands with operator %s, want == or !=", node.Operator)
 		}
-		left, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildBoolExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -1015,11 +1015,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		// Float arithmetic and comparisons have defined C semantics, including
 		// overflow, infinities, NaNs, and division by zero. Emit the comparison
 		// directly after building both operands at their shared float width.
-		left, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, leftOperand.Type))
+		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, leftOperand.Type))
 		if err != nil {
 			return "", err
 		}
-		right, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[1], locals, resolvedFloatKind(snapshot, rightOperand.Type))
+		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, resolvedFloatKind(snapshot, rightOperand.Type))
 		if err != nil {
 			return "", err
 		}
@@ -1039,11 +1039,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if leftOperand.Type != rightOperand.Type {
 			return "", fmt.Errorf("entry function body if condition compares two enum values of different types %s and %s", enumTypeName(leftOperand.Type), enumTypeName(rightOperand.Type))
 		}
-		left, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildEnumValue(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildEnumValue(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -1065,11 +1065,11 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	if leftInteger && rightInteger && cType(leftWidth) != "" && cType(rightWidth) != "" && leftWidth != rightWidth {
 		return "", fmt.Errorf("entry function body if condition compares two integer values of different widths %s and %s", wantName(leftWidth), wantName(rightWidth))
 	}
-	left, err := buildComparisonOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
+	left, err := buildComparisonOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
-	right, err := buildComparisonOperand(unit, snapshot, fileSet, node.Children[1], locals, width)
+	right, err := buildComparisonOperand(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -1108,7 +1108,7 @@ func buildComparison(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // checked negation
 // and checked +, -, *, /, % arithmetic — and is delegated to buildExpr, whose
 // own width gate and kind switch do the rejecting.
-func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildComparisonOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body if condition references invalid operand node %d", id)
@@ -1121,19 +1121,19 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		return text, nil
 	}
 	if node.Kind == tir.SymbolValue && node.Type == snapshot.Builtins().Int {
-		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, node.Symbol, locals); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("entry function body if condition references symbol %d, which is not a local in scope", node.Symbol)
 	}
 	operandWidth, integerOperand := resolvedBuiltin(snapshot, node.Type)
 	if integerOperand && cType(operandWidth) != "" && !isUint(snapshot, node.Type) {
-		return buildExpr(unit, snapshot, fileSet, id, locals, operandWidth, width)
+		return buildExpr(st, unit, snapshot, fileSet, id, locals, operandWidth, width)
 	}
 	if isUint(snapshot, node.Type) {
-		return buildUintExpr(unit, snapshot, fileSet, id, locals, width)
+		return buildUintExpr(st, unit, snapshot, fileSet, id, locals, width)
 	}
-	return buildExpr(unit, snapshot, fileSet, id, locals, width, width)
+	return buildExpr(st, unit, snapshot, fileSet, id, locals, width, width)
 }
 
 // buildStrOperand builds one str value in a position that accepts a str
@@ -1156,7 +1156,7 @@ func buildComparisonOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // a call-site argument for a str parameter (buildCallArguments), and a
 // str-returning helper's tail-position return value (buildBlock /
 // buildSwitchCaseBody dispatch on resultInfo.isStr).
-func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildStrOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -1165,13 +1165,13 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if !ginfo.info.isStr {
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a str-typed global", node.Symbol)
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if !einfo.info.isStr {
 					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a str-typed extern variable", node.Symbol)
 				}
@@ -1199,7 +1199,7 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 		if !isStr(snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want str", node.Symbol, describeType(snapshot, node.Type))
 		}
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.Load:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
@@ -1212,12 +1212,12 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 			return "", fmt.Errorf("entry function body expression contains a Load of type %s, want str", describeType(snapshot, node.Type))
 		}
 		if place.Kind == tir.CheckedIndexPlace {
-			return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+			return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 		}
 		if place.Kind != tir.FieldPlace {
 			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
 		}
-		return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
 	}
@@ -1247,7 +1247,7 @@ func buildStrOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.F
 // argument for a char parameter (buildCallArguments), and a char-returning
 // helper's tail-position return value (buildBlock / buildSwitchCaseBody
 // dispatch on resultInfo.isChar).
-func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildCharOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -1262,13 +1262,13 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if !ginfo.info.isChar {
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a char-typed global", node.Symbol)
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if !einfo.info.isChar {
 					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a char-typed extern variable", node.Symbol)
 				}
@@ -1290,7 +1290,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if !isChar(snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want char", node.Symbol, describeType(snapshot, node.Type))
 		}
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.IndirectCall:
 		// A call through a function-typed value whose result is char
 		// (confirmed checker-reachable: `let c char = f('a');` lowers the
@@ -1302,7 +1302,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if !isChar(snapshot, node.Type) {
 			return "", fmt.Errorf("entry function body expression contains an indirect call whose result type is %s, want char", describeType(snapshot, node.Type))
 		}
-		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildIndirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.Load:
 		// A char-typed element read of a char-element slice (`let c char =
 		// s[0];`). The checker lowers s[i] to Load(CheckedIndexPlace), exactly
@@ -1322,7 +1322,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if place.Kind != tir.CheckedIndexPlace {
 			return "", fmt.Errorf("entry function body expression contains a char Load whose place is a %s, want a CheckedIndexPlace (a char-element slice read)", place.Kind)
 		}
-		return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+		return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	case tir.CheckedIndex:
 		// String indexing s[i]. The checker produces a bare tir.CheckedIndex —
 		// not Load(CheckedIndexPlace), the node array/slice indexing uses —
@@ -1369,7 +1369,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			return "", err
 		}
 		if !strBase {
-			pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, false)
+			pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, width, false)
 			if err != nil {
 				return "", err
 			}
@@ -1385,7 +1385,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want exactly two (the str value being indexed and the index)", len(node.Children))
 		}
-		base, err := buildStrOperand(unit, snapshot, fileSet, node.Children[0], locals, width)
+		base, err := buildStrOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -1405,7 +1405,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			// buildComparisonOperand and buildArrayPlaceRead handle), and the
 			// iterator is always declared in C at the entry's width, so its
 			// name is the correct C lvalue for the index.
-			if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+			if name, ok := localOrGlobalName(st, indexNode.Symbol, locals); ok {
 				index = name
 			} else {
 				return "", fmt.Errorf("str index references symbol %d, which is not a local in scope", indexNode.Symbol)
@@ -1414,12 +1414,12 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			// A uint-typed str index (a uint-typed local or loop iterator):
 			// built by the dedicated uint grammar, mirroring the slice/array
 			// index dispatch.
-			index, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+			index, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 			if err != nil {
 				return "", fmt.Errorf("str index: %v", err)
 			}
 		} else {
-			index, err = buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, width)
+			index, err = buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width, width)
 			if err != nil {
 				return "", fmt.Errorf("str index: %v", err)
 			}
@@ -1490,7 +1490,7 @@ func buildCharOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 // pebble_rt_checked_index_i32/_i64, whose helper exists only at i32/i64) can
 // always pick the entry's helper rather than the element's possibly-empty
 // checkedSuffix.
-func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, entryWidth types.BuiltinKind) (string, error) {
+func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, entryWidth types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -1510,10 +1510,10 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		}
 	}
 	if node.Kind == tir.IndirectCall {
-		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildIndirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	}
 	if node.Kind == tir.SliceFromRaw {
-		return buildRawSliceConstruction(unit, snapshot, fileSet, node, locals, width, "entry function body expression")
+		return buildRawSliceConstruction(st, unit, snapshot, fileSet, node, locals, width, "entry function body expression")
 	}
 	// A pointer-typed node's Type is never the entry's width, so it must
 	// bypass the width gate below. This covers every shape a pointer value
@@ -1528,7 +1528,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains an AddressOf with %d children, want exactly one", len(node.Children))
 			}
-			placeLValue, _, err := buildPlaceLValue(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+			placeLValue, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
 			if err != nil {
 				return "", fmt.Errorf("entry function body address-of place: %v", err)
 			}
@@ -1536,13 +1536,13 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains an AddressOf with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
+			return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
 		case tir.NilPointer:
 			pointeeTypeID, ok := pointerPointeeType(snapshot, node.Type)
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains a NilPointer with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(NULL)", nil
+			return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(NULL)", nil
 		case tir.SymbolValue:
 			if _, declared := locals[node.Symbol]; !declared {
 				return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
@@ -1552,12 +1552,12 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if len(node.Children) == 1 {
 				place, ok := unit.Node(node.Children[0])
 				if ok && place.Kind == tir.FieldPlace {
-					return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+					return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 				}
 			}
 			return "", fmt.Errorf("entry function body expression contains an unsupported pointer Load")
 		case tir.DirectCall:
-			return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+			return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 		case tir.CheckedOptionalUnwrap:
 			// A force-unwrap of an optional whose payload is a pointer
 			// (`let p *i32 = o!;` or an inline `*(o!)`): the unwrap is only
@@ -1580,7 +1580,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 				if _, ok := unit.Node(child.Children[0]); !ok {
 					return "", fmt.Errorf("invalid optional place")
 				}
-				expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+				expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, width)
 				if err != nil {
 					return "", err
 				}
@@ -1603,12 +1603,12 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains a pointer-typed SourceAlias with %d child(ren), want exactly one", len(node.Children))
 			}
-			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+			return buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		case tir.PointerCast:
 			if len(node.Children) != 1 {
 				return "", fmt.Errorf("entry function body expression contains a PointerCast with %d children, want exactly one", len(node.Children))
 			}
-			child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+			child, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 			if err != nil {
 				return "", fmt.Errorf("entry function body pointer cast child: %v", err)
 			}
@@ -1616,7 +1616,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains a PointerCast with unsupported pointer type %s", describeType(snapshot, node.Type))
 			}
-			return "(" + pointerTypeNameForUnit(unit, snapshot, pointeeTypeID) + ")(" + child + ")", nil
+			return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(" + child + ")", nil
 		default:
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
@@ -1635,7 +1635,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	// at the top of this function, whose callee child is a function-typed node
 	// routed through this same bypass.)
 	if isFunctionType(snapshot, node.Type) {
-		return buildFunctionValue(unit, snapshot, fileSet, node, locals, "entry function body expression", width)
+		return buildFunctionValue(st, unit, snapshot, fileSet, node, locals, "entry function body expression", width)
 	}
 	// A node carrying the abstract `int` builtin (types.Int) is accepted at any
 	// integer width. The checker deliberately leaves a value at this unanchored
@@ -1690,7 +1690,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(childWidth) == "" {
 			return "", fmt.Errorf("entry function body IntegerCast child has non-integer type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer cast child: %v", err)
 		}
@@ -1727,7 +1727,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains an EnumToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
-		childExpr, err := buildEnumValue(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+		childExpr, err := buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1762,7 +1762,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains a CharToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
-		childExpr, err := buildCharOperand(unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+		childExpr, err := buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1790,7 +1790,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains a PointerToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1820,7 +1820,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedIntegerToEnum with %d children, want exactly one", len(node.Children))
 		}
-		return buildCheckedIntegerToEnumExpr(unit, snapshot, fileSet, node, locals, "entry function body expression", entryWidth)
+		return buildCheckedIntegerToEnumExpr(st, unit, snapshot, fileSet, node, locals, "entry function body expression", entryWidth)
 	case tir.OptionalIntegerToEnum:
 		// An integer cast to an optional enum (`5 as ?Color`): the ONE
 		// supported position is a local variable declaration's initializer
@@ -1860,7 +1860,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if childWidth == 0 {
 			return "", fmt.Errorf("entry function body FloatToInteger child has non-float type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body float-to-integer cast child: %v", err)
 		}
@@ -1873,7 +1873,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if node.Operator != syntax.Minus {
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate with operator %s, want -", node.Operator)
 		}
-		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		child, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1902,11 +1902,11 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %% (at u64, only +, -, and * have a checked runtime helper)", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		left, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
+		right, err := buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1919,7 +1919,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedShift with operator %s, want << or >>", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		left, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1935,7 +1935,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok || cType(amountWidth) == "" {
 			return "", fmt.Errorf("entry function body shift amount has non-integer type %s", describeType(snapshot, amountNode.Type))
 		}
-		amount, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, amountWidth, entryWidth)
+		amount, err := buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, amountWidth, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1951,11 +1951,11 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a BinaryValue with operator %s, want &, |, or ^", node.Operator)
 		}
-		left, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		left, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildExpr(unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
+		right, err := buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -1967,13 +1967,13 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if node.Operator != syntax.Tilde {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want ~", node.Operator)
 		}
-		child, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+		child, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
 		return "~(" + child + ")", nil
 	case tir.SymbolValue:
-		if name, ok := localOrGlobalName(node.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, node.Symbol, locals); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("entry function body expression references symbol %d, which is not a local declared earlier in the entry body", node.Symbol)
@@ -1998,7 +1998,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
 		}
 		if child.Kind == tir.Load && len(child.Children) == 1 {
-			expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+			expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, width)
 			if err != nil {
 				return "", err
 			}
@@ -2041,17 +2041,17 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		}
 		if place.Kind != tir.TuplePlace {
 			if place.Kind == tir.CheckedIndexPlace {
-				return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, entryWidth, false)
+				return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, entryWidth, false)
 			}
 			if place.Kind == tir.FieldPlace {
-				return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, false)
+				return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 			}
 			if place.Kind == tir.DereferencePlace {
-				return buildDereferencePlaceRead(unit, snapshot, fileSet, place, locals, width, node.Span, false)
+				return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
 			}
 			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, FieldPlace, or DereferencePlace", place.Kind)
 		}
-		return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+		return buildTuplePlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	case tir.TupleElementValue:
 		// The checker produces a TupleElementValue only when a tuple literal is
 		// indexed directly — (1, 2).1 — whose child is the TupleValue being
@@ -2076,14 +2076,14 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 			if !ok || place.Kind != tir.TuplePlace {
 				return "", fmt.Errorf("tuple element base is not a tuple place")
 			}
-			return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, false)
+			return buildTuplePlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 		}
 		if base.Kind == tir.SourceAlias && len(base.Children) == 1 {
 			inner, ok := unit.Node(base.Children[0])
 			if ok && inner.Kind == tir.Load && len(inner.Children) == 1 {
 				place, ok := unit.Node(inner.Children[0])
 				if ok && place.Kind == tir.TuplePlace && len(place.Children) == 1 {
-					baseExpr, _, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+					baseExpr, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 					if err != nil {
 						return "", err
 					}
@@ -2117,7 +2117,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if strBase {
 			return "", fmt.Errorf("entry function body expression contains a str index whose result type is %s, want %s", describeType(snapshot, node.Type), wantName(width))
 		}
-		pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, false)
+		pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, width, false)
 		if err != nil {
 			return "", err
 		}
@@ -2133,9 +2133,9 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if len(node.Children) == 1 {
 			child, ok := unit.Node(node.Children[0])
 			if ok && child.Kind == tir.TupleElementValue {
-				return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+				return buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 			}
-			return buildExpr(unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
+			return buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		}
 		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
 	case tir.DirectCall, tir.MethodCall:
@@ -2148,7 +2148,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		// initializer (buildAggregateCallInitializer) — context and argument
 		// handling are identical there; only the result type differs from the
 		// scalar case.
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, bitwise &, |, ^, ~, or a call to another function", node.Kind)
 	}
@@ -2199,7 +2199,7 @@ func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.Buil
 // (buildFunctionIndirectCall, also reachable through buildExpr's function-type
 // bypass for a fn-typed node used as a value). Any other shape is a clean
 // rejection naming what was found.
-func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildFunctionValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	switch node.Kind {
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
@@ -2242,7 +2242,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// `pebble_fn_<callee>(ctx, ...)` — a C function call whose return
 		// type IS the callee's declared fnptr typedef, so the expression is a
 		// function pointer of the exact value's C type, no cast needed.
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.SourceAlias:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
@@ -2251,7 +2251,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if !ok {
 			return "", fmt.Errorf("%s contains a SourceAlias referencing invalid node %d", context, node.Children[0])
 		}
-		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context, width)
+		return buildFunctionValue(st, unit, snapshot, fileSet, child, locals, context, width)
 	case tir.FieldValue:
 		// A function-typed struct field read (`t.op`, function-types slice 2;
 		// `self.hash_fn`/`self.eq_fn`, the std/hmap.peb insert/get shapes):
@@ -2309,7 +2309,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if !ok {
 			return "", fmt.Errorf("%s contains a Load referencing invalid node %d", context, node.Children[0])
 		}
-		return buildFunctionValue(unit, snapshot, fileSet, child, locals, context, width)
+		return buildFunctionValue(st, unit, snapshot, fileSet, child, locals, context, width)
 	case tir.FieldPlace:
 		// The lvalue-place form of a function-typed struct field read (the
 		// shape a Load's child takes, as opposed to FieldValue's rvalue
@@ -2386,7 +2386,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // parameter <M>" for a call argument). width is the entry's
 // resolved integer width, threaded through to the inline builders so each
 // payload is built at the width the target type's own typedef uses.
-func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, optionalType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+func buildOptionalValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, optionalType types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s references invalid value node %d", context, id)
@@ -2408,7 +2408,7 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// and OptionalInject cases — both carry exactly one payload child
 		// and lower to the identical C — and handles the NoneOptional
 		// zero-child form.
-		return buildOptionalValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+		return buildOptionalValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
 	}
 	if node.Kind == tir.DirectCall {
 		// A forward of another optional-returning helper's result:
@@ -2418,7 +2418,7 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// optional type, so a plain buildDirectCall of
 		// the call node is the whole lowering — the call already returns
 		// the optional's own C type.
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	}
 	// The remaining supported shape is the bare scalar payload the checker
 	// produces for implicit injection in a return (`return 5;` in a ?int
@@ -2442,18 +2442,18 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	payloadWidth, integerPayload := resolvedBuiltin(snapshot, payload)
 	switch {
 	case integerPayload && cType(payloadWidth) != "" && !isUint(snapshot, payload):
-		value, err = buildExpr(unit, snapshot, fileSet, id, locals, payloadWidth, width)
+		value, err = buildExpr(st, unit, snapshot, fileSet, id, locals, payloadWidth, width)
 	case isUint(snapshot, payload):
-		value, err = buildUintExpr(unit, snapshot, fileSet, id, locals, width)
+		value, err = buildUintExpr(st, unit, snapshot, fileSet, id, locals, width)
 	case isBool(snapshot, payload):
-		value, err = buildBoolExpr(unit, snapshot, fileSet, id, locals, width)
+		value, err = buildBoolExpr(st, unit, snapshot, fileSet, id, locals, width)
 	case isPointer(snapshot, payload):
 		// A bare pointer payload implicitly injected into a ?*T optional (a
 		// return/argument whose payload value is the pointer itself, e.g. a
 		// `return &y;` inside a ?*int helper with no explicit some keyword) —
 		// built by the same buildExpr pointer path any pointer-typed value
 		// takes, whose isPointer bypass ignores the ambient width args.
-		value, err = buildExpr(unit, snapshot, fileSet, id, locals, width, width)
+		value, err = buildExpr(st, unit, snapshot, fileSet, id, locals, width, width)
 	default:
 		return "", fmt.Errorf("%s implicitly injects a payload value of type %s, want a fixed-width integer or bool", context, describeType(snapshot, payload))
 	}
@@ -2536,7 +2536,7 @@ func buildOptionalValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // A SymbolValue referencing anything else — an integer local, a global, a
 // parameter — and any other node kind at any position is a clean rejection
 // naming what was found.
-func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildBoolExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -2552,13 +2552,13 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		return "false", nil
 	case tir.SymbolValue:
 		if locals[node.Symbol].kind != types.Bool {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if ginfo.info.kind != types.Bool {
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a bool-typed global", node.Symbol)
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if einfo.info.kind != types.Bool {
 					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a bool-typed extern variable", node.Symbol)
 				}
@@ -2568,7 +2568,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	case tir.DirectCall, tir.MethodCall:
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.IndirectCall:
 		// A call through a function-typed value whose result is bool
 		// (confirmed checker-reachable: `if f(true) { ... }` lowers the
@@ -2577,7 +2577,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		// uses — the callee and every argument are built under the callee's
 		// own function type — and the result is a C bool, which this position
 		// accepts directly.
-		return buildIndirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildIndirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of an optional-typed local with a bool payload (x!).
 		// The child is a SymbolValue naming the optional local, and this
@@ -2595,7 +2595,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 			if _, ok := unit.Node(child.Children[0]); !ok {
 				return "", fmt.Errorf("invalid optional place")
 			}
-			expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], locals, width)
+			expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, width)
 			if err != nil {
 				return "", err
 			}
@@ -2629,17 +2629,17 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		}
 		if place.Kind != tir.TuplePlace {
 			if place.Kind == tir.CheckedIndexPlace {
-				return buildArrayPlaceRead(unit, snapshot, fileSet, place, locals, width, true)
+				return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, width, true)
 			}
 			if place.Kind == tir.FieldPlace {
-				return buildStructFieldRead(unit, snapshot, fileSet, place, locals, width, true)
+				return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, true)
 			}
 			if place.Kind == tir.DereferencePlace {
-				return buildDereferencePlaceRead(unit, snapshot, fileSet, place, locals, width, node.Span, true)
+				return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, true)
 			}
 			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a TuplePlace, CheckedIndexPlace, FieldPlace, or DereferencePlace", place.Kind)
 		}
-		return buildTuplePlaceRead(unit, snapshot, fileSet, place, locals, width, true)
+		return buildTuplePlaceRead(st, unit, snapshot, fileSet, place, locals, width, true)
 	case tir.CheckedIndex:
 		// A bare CheckedIndex in a pure bool-expression position — a
 		// slice-element read of a bool-typed value with no addressable place
@@ -2658,7 +2658,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if strBase {
 			return "", fmt.Errorf("entry function body expression contains a str index whose result type is %s, want bool", describeType(snapshot, node.Type))
 		}
-		pre, read, err := buildSliceIndexValue(unit, snapshot, fileSet, id, node, locals, width, true)
+		pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, width, true)
 		if err != nil {
 			return "", err
 		}
@@ -2694,7 +2694,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
 		}
-		child, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		child, err := buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -2705,7 +2705,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		// shape buildComparison already lowers for a top-level condition, so it
 		// is delegated unchanged. Non-comparison operators and non-integer
 		// operands are rejected by buildComparison itself.
-		return buildComparison(unit, snapshot, fileSet, id, locals, width)
+		return buildComparison(st, unit, snapshot, fileSet, id, locals, width)
 	case tir.ShortCircuitValue:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a ShortCircuitValue with %d operand(s), want exactly two", len(node.Children))
@@ -2714,11 +2714,11 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a ShortCircuitValue with operator %s, want && or ||", node.Operator)
 		}
-		left, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildBoolExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -2729,7 +2729,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
-		return buildBoolExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		return buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a bool literal, a reference to a bool local declared earlier in the body, a comparison, a && / || combination, or a ! negation", node.Kind)
 	}
@@ -2774,7 +2774,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 // operand (buildPrint), and a float-returning entry's or helper's
 // tail-position return value (buildBlock / buildSwitchCaseBody dispatch on
 // resultInfo.kind).
-func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -2796,13 +2796,13 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.kind != width {
-			if ginfo, isGlobal := emitGlobals[node.Symbol]; isGlobal {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
 				if ginfo.info.kind != width {
 					return "", fmt.Errorf("entry function body expression references global symbol %d, which is not a %s global", node.Symbol, wantName(width))
 				}
 				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
 			}
-			if einfo, isExtern := emitExternData[node.Symbol]; isExtern {
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
 				if einfo.info.kind != width {
 					return "", fmt.Errorf("entry function body expression references extern variable symbol %d, which is not a %s extern variable", node.Symbol, wantName(width))
 				}
@@ -2817,7 +2817,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
-		return buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		return buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 	case tir.PrefixValue:
 		// A unary minus on a float (`-x`, `-3.5`) arrives as a PrefixValue
 		// with operator -: the checker only lowers a negate to CheckedNegate
@@ -2832,7 +2832,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if node.Operator != syntax.Minus {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want -", node.Operator)
 		}
-		child, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		child, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -2846,7 +2846,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// the call is built by the same buildDirectCall machinery a
 		// scalar-width call uses, so context and argument handling are
 		// identical.
-		return buildDirectCall(unit, snapshot, fileSet, node, locals, width)
+		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.BinaryValue:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body float arithmetic has %d operands, want exactly two", len(node.Children))
@@ -2855,11 +2855,11 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !ok || node.Operator == syntax.Percent {
 			return "", fmt.Errorf("entry function body float arithmetic uses operator %s, want +, -, *, or /", node.Operator)
 		}
-		left, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
 		if err != nil {
 			return "", err
 		}
@@ -2900,7 +2900,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if !ok || cType(childWidth) == "" {
 			return "", fmt.Errorf("entry function body IntegerToFloat child has non-integer type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer-to-float cast child: %v", err)
 		}
@@ -2935,7 +2935,7 @@ func buildFloatExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		if childWidth == 0 {
 			return "", fmt.Errorf("entry function body expression contains a FloatCast with non-float child type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildFloatExpr(unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body float cast child: %v", err)
 		}

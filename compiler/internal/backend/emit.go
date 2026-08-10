@@ -458,51 +458,44 @@ import (
 // the entry function itself (the entry is emitted under the fixed C name
 // pebble_user_main, not as a pebble_fn_<symbolID> helper the forward-
 // declaration pass covers).
-// emitSymbols is the symbol result Emit resolves extern declarations against,
-// scoped to one Emit invocation: it is set at the top of Emit and cleared by a
-// deferred call when Emit returns, so a lookahead to the next Emit can never
-// observe a stale table. It is package-level shared mutable state by deliberate
-// tradeoff, NOT an oversight: this package assumes Emit is called
-// single-threaded and non-reentrant (one Emit runs to completion before the
-// next begins), so a package-level scoped slot is safe and avoids threading
-// the table through the ~19-call-site buildDirectCall/externCName chain every
-// builder in this file would otherwise have to carry. Emit itself guards this
-// invariant: if a future caller ever does call Emit reentrantly or
-// concurrently, Emit panics loudly rather than silently corrupting state. A
-// future caller that needs concurrent compilation (a watch-mode compiler, a
-// language server, parallel test execution) must thread this symbol table
-// through the builders properly instead — that is a known, deliberate cost of
-// the current design, documented here so it is not mistaken for an oversight.
-var emitSymbols *symbol.Result
-
-// emitAllocatorAdapters is the collection of file-scope C bridge functions a
-// runtime Allocator record construction's callback fields need, scoped to one
-// Emit invocation exactly like emitSymbols (set at the top of Emit, cleared by
-// the same deferred call, guarded by the same reentrancy panic): keyed by the
-// bridge's C name, deduplicated (two constructions referencing the same source
-// function for the same slot share one bridge), and populated both by
-// collectRuntimeAllocatorAdapters (which runs before any function body is
-// emitted, so every bridge's prototype can be merged into the helper-prototype
-// pass) and again — idempotently — by buildRuntimeAllocatorRecordDeclaration
-// while it builds a construction's C text. Each entry carries the bridge's C
-// prototype and definition, which Emit appends to the helper-prototype and
-// helper-definition regions respectively. A bridge exists only for a callback
-// field whose construction value is a reference to a top-level source function
-// (a HoistedFunctionValue, the shape the checker produces for `alloc =
-// my_alloc`); the bridge has the exact runtime callback ABI (hidden
-// PebbleContext *ctx first parameter, size_t sizes) and forwards into the
-// user's emitted helper, whose own C signature is necessarily different (its
-// source-level ctx *void parameter is a separate C parameter after the implicit
-// PebbleContext *ctx). The bridge is required because no incompatible
-// function-pointer cast may appear in emitted C: the backend's cc build runs
-// -Wall -Wextra -Werror, under which clang's -Wcast-function-type-mismatch
-// rejects a direct cast from the user function's C type to the runtime ABI type.
-var emitAllocatorAdapters map[string]runtimeAllocatorAdapter
+// emitState is the request-scoped state one Emit invocation carries, created
+// fresh inside each Emit call instead of as package-level globals so Emit is
+// safe to call concurrently from multiple goroutines (each with its own
+// unit/snapshot/symbols): the resolved extern symbol table (symbols), the
+// mutable module-level globals the reachable program actually references
+// (globals), the extern variables it references (externData), and the
+// file-scope C bridge functions a runtime Allocator record construction's
+// callback fields need (allocatorAdapters). Every builder that used to read
+// the package-level emitSymbols/emitGlobals/emitExternData/
+// emitAllocatorAdapters variables now threads a *emitState parameter instead.
+//
+// allocatorAdapters is keyed by the bridge's C name, deduplicated (two
+// constructions referencing the same source function for the same slot share
+// one bridge), and populated both by collectRuntimeAllocatorAdapters (which
+// runs before any function body is emitted, so every bridge's prototype can be
+// merged into the helper-prototype pass) and again — idempotently — by
+// buildRuntimeAllocatorRecordDeclaration while it builds a construction's C
+// text. Each entry carries the bridge's C prototype and definition, which Emit
+// appends to the helper-prototype and helper-definition regions respectively.
+// A bridge exists only for a callback field whose construction value is a
+// reference to a top-level source function (a HoistedFunctionValue, the shape
+// the checker produces for `alloc = my_alloc`); the bridge has the exact
+// runtime callback ABI (hidden PebbleContext *ctx first parameter, size_t
+// sizes) and forwards into the user's emitted helper, whose own C signature is
+// necessarily different (its source-level ctx *void parameter is a separate C
+// parameter after the implicit PebbleContext *ctx). The bridge is required
+// because no incompatible function-pointer cast may appear in emitted C: the
+// backend's cc build runs -Wall -Wextra -Werror, under which clang's
+// -Wcast-function-type-mismatch rejects a direct cast from the user function's
+// C type to the runtime ABI type.
+type emitState struct {
+	symbols           *symbol.Result
+	globals           map[symbol.SymbolID]globalInfo
+	externData        map[symbol.SymbolID]externDataInfo
+	allocatorAdapters map[string]runtimeAllocatorAdapter
+}
 
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
-	if emitSymbols != nil {
-		panic("backend: Emit called reentrantly/concurrently — this package's backend state is not safe for concurrent Emit calls")
-	}
 	if unit == nil {
 		return fmt.Errorf("cannot emit C: nil typed-IR unit")
 	}
@@ -512,11 +505,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if w == nil {
 		return fmt.Errorf("cannot emit C: nil writer")
 	}
-	emitSymbols = symbols
-	emitGlobals = nil
-	emitExternData = nil
-	emitAllocatorAdapters = make(map[string]runtimeAllocatorAdapter)
-	defer func() { emitSymbols = nil; emitGlobals = nil; emitExternData = nil; emitAllocatorAdapters = nil }()
+	st := &emitState{
+		symbols:           symbols,
+		allocatorAdapters: make(map[string]runtimeAllocatorAdapter),
+	}
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)
 	if err != nil {
@@ -553,7 +545,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		}
 		return emitEntryC(w, "", "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false)
 	}
-	helpers, err := discoverReachableHelpers(unit, snapshot, decl, blockID, result)
+	helpers, err := discoverReachableHelpers(st, unit, snapshot, decl, blockID, result)
 	if err != nil {
 		return err
 	}
@@ -575,7 +567,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	}
 	used := collectReferencedGlobals(unit, blockID, helpers, candidates)
 	if len(used) > 0 {
-		emitGlobals = make(map[symbol.SymbolID]globalInfo, len(used))
+		st.globals = make(map[symbol.SymbolID]globalInfo, len(used))
 		for id := range used {
 			g, ok := globalDeclBySymbol(unit, id)
 			if !ok {
@@ -585,7 +577,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			if resolveErr != nil {
 				return resolveErr
 			}
-			emitGlobals[id] = info
+			st.globals[id] = info
 		}
 	}
 	// Resolve the extern variables the reachable program actually references
@@ -608,21 +600,21 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	}
 	externUsed := collectReferencedExternData(unit, blockID, helpers, externCandidates)
 	if len(externUsed) > 0 {
-		emitExternData = make(map[symbol.SymbolID]externDataInfo, len(externUsed))
+		st.externData = make(map[symbol.SymbolID]externDataInfo, len(externUsed))
 		for id, typ := range externUsed {
 			info, resolveErr := resolveExternDataInfo(unit, snapshot, id, typ)
 			if resolveErr != nil {
 				return resolveErr
 			}
-			name, nameErr := externDataName(id)
+			name, nameErr := externDataName(st, id)
 			if nameErr != nil {
 				return nameErr
 			}
 			info.name = name
-			emitExternData[id] = info
+			st.externData[id] = info
 		}
 	}
-	if err := collectRuntimeAllocatorAdapters(unit, snapshot, blockID, helpers); err != nil {
+	if err := collectRuntimeAllocatorAdapters(st, unit, snapshot, blockID, helpers); err != nil {
 		return err
 	}
 	tupleTypes, err := collectTupleTypes(unit, snapshot, blockID, helpers)
@@ -633,7 +625,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	structInfos, err := collectStructTypes(unit, snapshot, blockID, helpers, optionalTypes)
+	structInfos, err := collectStructTypes(st, unit, snapshot, blockID, helpers, optionalTypes)
 	if err != nil {
 		return err
 	}
@@ -705,7 +697,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			functionTypes = append(functionTypes, field.typ)
 		}
 	}
-	functionTypedefs, err := buildFunctionTypedefs(snapshot, result, functionTypes)
+	functionTypedefs, err := buildFunctionTypedefs(st, snapshot, result, functionTypes)
 	if err != nil {
 		return err
 	}
@@ -731,7 +723,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// sliceElementForwardDeclaredAggregates), so the forward declaration and
 	// the definition complete the same C type.
 	sliceElementAggregates := sliceElementForwardDeclaredAggregates(snapshot, sliceInfos)
-	aggTypedefs, err := buildAggregateTypedefs(unit, snapshot, result, ordered.all, ordered.structs, sliceElementAggregates)
+	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, result, ordered.all, ordered.structs, sliceElementAggregates)
 	if err != nil {
 		return err
 	}
@@ -767,23 +759,23 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	}
 	sliceForwardDecls := buildAggregateForwardDeclarations(snapshot, sliceElementAggregates)
 	typedefs = appendTypedefBlock(sliceForwardDecls, appendTypedefBlock(sliceTypedefs, typedefs))
-	helperPrototypes, err := buildHelperPrototypes(unit, snapshot, helpers, result)
+	helperPrototypes, err := buildHelperPrototypes(st, unit, snapshot, helpers, result)
 	if err != nil {
 		return err
 	}
-	helpersText, err := buildHelperFunctions(unit, snapshot, fileSet, helpers, result, unions)
+	helpersText, err := buildHelperFunctions(st, unit, snapshot, fileSet, helpers, result, unions)
 	if err != nil {
 		return err
 	}
-	statements, err := buildBlock(unit, snapshot, fileSet, blockID, entryLocals, 0, result, resultInfo{kind: result}, unions)
+	statements, err := buildBlock(st, unit, snapshot, fileSet, blockID, entryLocals, 0, result, resultInfo{kind: result}, unions)
 	if err != nil {
 		return err
 	}
-	globalStorage, err := buildGlobalStorage(unit, snapshot)
+	globalStorage, err := buildGlobalStorage(st, unit, snapshot)
 	if err != nil {
 		return err
 	}
-	externDataDeclarations, err := buildExternDataDeclarations(unit, snapshot)
+	externDataDeclarations, err := buildExternDataDeclarations(st, unit, snapshot)
 	if err != nil {
 		return err
 	}
@@ -802,17 +794,17 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// also constructs one. Both are appended to the prototype and definition
 	// regions Emit already emits, sorted by bridge name so the output is
 	// deterministic despite the map's nondeterministic iteration order.
-	if len(emitAllocatorAdapters) > 0 {
-		names := make([]string, 0, len(emitAllocatorAdapters))
-		for name := range emitAllocatorAdapters {
+	if len(st.allocatorAdapters) > 0 {
+		names := make([]string, 0, len(st.allocatorAdapters))
+		for name := range st.allocatorAdapters {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		adapterPrototypes := make([]string, 0, len(names))
 		adapterDefinitions := make([]string, 0, len(names))
 		for _, name := range names {
-			adapterPrototypes = append(adapterPrototypes, emitAllocatorAdapters[name].prototype)
-			adapterDefinitions = append(adapterDefinitions, emitAllocatorAdapters[name].definition)
+			adapterPrototypes = append(adapterPrototypes, st.allocatorAdapters[name].prototype)
+			adapterDefinitions = append(adapterDefinitions, st.allocatorAdapters[name].definition)
 		}
 		helperPrototypes += "\n" + strings.Join(adapterPrototypes, "\n")
 		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
@@ -876,17 +868,17 @@ func substitutionSuffix(substitutions map[symbol.SymbolID]types.TypeID) string {
 
 // externCName returns the real C name an extern function must be called by
 // (malloc, free, fopen — never a pebble_fn_<symbolID> helper name). The name
-// is resolved from the symbol table threaded into Emit (emitSymbols), mapping
+// is resolved from the symbol table threaded into Emit (st.symbols), mapping
 // the extern declaration's stable symbol.SymbolID back to the authored
 // identifier. A nil or missing symbol table is a clean error, never a guessed
 // name: an extern call without its real C name would emit an undeclared
 // identifier that fails the mandated -Werror build, so failing loudly here is
 // strictly better.
-func externCName(decl tir.Node) (string, error) {
-	if emitSymbols == nil || emitSymbols.Symbols == nil {
+func externCName(st *emitState, decl tir.Node) (string, error) {
+	if st.symbols == nil || st.symbols.Symbols == nil {
 		return "", fmt.Errorf("extern function symbol %d has no symbol-table lookup (Emit was called without a symbol result, so an extern call cannot be lowered to its real C name)", decl.Symbol)
 	}
-	s, ok := emitSymbols.Symbols.Symbol(decl.Symbol)
+	s, ok := st.symbols.Symbols.Symbol(decl.Symbol)
 	if !ok {
 		return "", fmt.Errorf("extern function symbol %d is not in the symbol table", decl.Symbol)
 	}
@@ -896,18 +888,18 @@ func externCName(decl tir.Node) (string, error) {
 // builtinFunctionCName reports the runtime C helper a compiler-owned builtin
 // function call must lower to, resolving the call's symbol back to its
 // BuiltinFunction identity via the symbol table threaded into Emit
-// (emitSymbols, exactly like externCName). The wrapping u64 builtins lower to
+// (st.symbols, exactly like externCName). The wrapping u64 builtins lower to
 // the runtime's pebble_rt_wrapping_<op>_u64 helpers, which implement plain
 // modular-arithmetic wraparound in both SAFE and RELEASE modes and take no
 // context. A symbol that is not a recognized builtin function reports false;
 // a missing symbol table is a clean false (the caller then falls through to
 // the ordinary declaration-resolution machinery, whose own error is the more
 // precise one for a genuinely unresolvable callee).
-func builtinFunctionCName(symbolID symbol.SymbolID) (string, bool) {
-	if emitSymbols == nil || emitSymbols.Symbols == nil {
+func builtinFunctionCName(st *emitState, symbolID symbol.SymbolID) (string, bool) {
+	if st.symbols == nil || st.symbols.Symbols == nil {
 		return "", false
 	}
-	s, ok := emitSymbols.Symbols.Symbol(symbolID)
+	s, ok := st.symbols.Symbols.Symbol(symbolID)
 	if !ok || s.Error || s.Kind != symbol.SymbolBuiltinFunction {
 		return "", false
 	}
@@ -963,6 +955,7 @@ type helperKey struct {
 // (done), the functions on the current DFS path (stack — a callee found on
 // the path is a cycle), and the post-order emission list (order).
 type reachabilityWalk struct {
+	st       *emitState
 	unit     *tir.Unit
 	snapshot *types.Snapshot
 	width    types.BuiltinKind
@@ -1038,7 +1031,7 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID, substitution
 		// the runtime's pebble_rt_wrapping_<op>_u64 helper, which the runtime
 		// library provides, so the callee is skipped exactly like an extern
 		// declaration is skipped below — no body walk, no order entry.
-		if _, builtin := builtinFunctionCName(call.Symbol); builtin {
+		if _, builtin := builtinFunctionCName(w.st, call.Symbol); builtin {
 			continue
 		}
 		var calleeDecl tir.Node
@@ -1066,7 +1059,7 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID, substitution
 		// can emit) and then skipped: no body walk, no order entry, so no
 		// helper prototype or definition is ever generated for it.
 		if calleeDecl.Kind == tir.ExternDeclaration {
-			if err := validateExternSignature(w.unit, calleeDecl, w.snapshot); err != nil {
+			if err := validateExternSignature(w.st, w.unit, calleeDecl, w.snapshot); err != nil {
 				return err
 			}
 			continue
@@ -1484,7 +1477,7 @@ func wantName(width types.BuiltinKind) string {
 // form is spellable), or an
 // opaque struct pointer whose pointee this backend cannot spell — is a clean
 // rejection naming what was found, never a guessed C type.
-func externCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
+func externCType(st *emitState, snapshot *types.Snapshot, id types.TypeID) (string, error) {
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if c := cType(builtin); c != "" {
 			return c, nil
@@ -1506,7 +1499,7 @@ func externCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
 	}
 	if isPointer(snapshot, id) {
 		if pointee, ok := pointerPointeeType(snapshot, id); ok {
-			if name := pointerTypeName(snapshot, pointee); name != "" {
+			if name := pointerTypeName(st, snapshot, pointee); name != "" {
 				return name, nil
 			}
 		}

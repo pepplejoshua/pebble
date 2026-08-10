@@ -27,26 +27,13 @@ type externDataInfo struct {
 	name string
 }
 
-// emitExternData is the set of extern variables the current Emit invocation
-// resolves reads and writes against, scoped to one Emit exactly like
-// emitSymbols and emitGlobals (set at the top of Emit, cleared by the same
-// deferred call, guarded by the same reentrancy panic). It holds only extern
-// variables actually referenced by the reachable program — those are the only
-// ones a forward declaration is emitted for, and the only ones a read/write
-// reference can resolve to. A name resolution failure (no symbol table, or a
-// symbol missing from it) is surfaced eagerly here at population time rather
-// than at a read site, because resolving the name is what this map is for; a
-// package-level map is used by the same deliberate tradeoff as emitSymbols and
-// emitGlobals.
-var emitExternData map[symbol.SymbolID]externDataInfo
-
 // externDataCName returns the real C name (errno) of an extern variable that
 // is one of the current Emit's referenced extern data. It is the single name
 // source for every extern-variable read and write resolution site, exactly as
 // globalCName is for globals — a reference resolves to the variable's real C
 // name, never a synthesized pebble_global_<symbolID>.
-func externDataCName(symbolID symbol.SymbolID) (string, bool) {
-	info, ok := emitExternData[symbolID]
+func externDataCName(st *emitState, symbolID symbol.SymbolID) (string, bool) {
+	info, ok := st.externData[symbolID]
 	if !ok {
 		return "", false
 	}
@@ -56,16 +43,16 @@ func externDataCName(symbolID symbol.SymbolID) (string, bool) {
 // externDataName returns the real C name an extern variable must be declared
 // and referenced by, mapping the extern binding's stable symbol.SymbolID back
 // to the authored identifier via the symbol table threaded into Emit
-// (emitSymbols) — exactly the lookup externCName performs for extern functions,
-// with extern-variable-appropriate error text. A nil or missing symbol table
-// is a clean error, never a guessed name: an extern variable referenced under
-// a made-up name would emit an undeclared identifier that fails the mandated
-// -Werror build.
-func externDataName(symbolID symbol.SymbolID) (string, error) {
-	if emitSymbols == nil || emitSymbols.Symbols == nil {
+// (emitState.symbols) — exactly the lookup externCName performs for extern
+// functions, with extern-variable-appropriate error text. A nil or missing
+// symbol table is a clean error, never a guessed name: an extern variable
+// referenced under a made-up name would emit an undeclared identifier that
+// fails the mandated -Werror build.
+func externDataName(st *emitState, symbolID symbol.SymbolID) (string, error) {
+	if st.symbols == nil || st.symbols.Symbols == nil {
 		return "", fmt.Errorf("extern variable symbol %d has no symbol-table lookup (Emit was called without a symbol result, so an extern variable cannot be lowered to its real C name)", symbolID)
 	}
-	s, ok := emitSymbols.Symbols.Symbol(symbolID)
+	s, ok := st.symbols.Symbols.Symbol(symbolID)
 	if !ok {
 		return "", fmt.Errorf("extern variable symbol %d is not in the symbol table", symbolID)
 	}
@@ -151,19 +138,19 @@ func resolveExternDataInfo(unit *tir.Unit, snapshot *types.Snapshot, symbolID sy
 // must follow the emitted typedefs (an enum-typed extern variable names its
 // own enum typedef), which it does: it lands in the same file-scope region as
 // buildGlobalStorage.
-func buildExternDataDeclarations(unit *tir.Unit, snapshot *types.Snapshot) (string, error) {
-	ids := make([]symbol.SymbolID, 0, len(emitExternData))
-	for id := range emitExternData {
+func buildExternDataDeclarations(st *emitState, unit *tir.Unit, snapshot *types.Snapshot) (string, error) {
+	ids := make([]symbol.SymbolID, 0, len(st.externData))
+	for id := range st.externData {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	lines := make([]string, 0, len(ids))
 	for _, id := range ids {
-		ctype, err := globalStorageCType(unit, snapshot, emitExternData[id].info, "extern variable")
+		ctype, err := globalStorageCType(unit, snapshot, st.externData[id].info, "extern variable")
 		if err != nil {
 			return "", fmt.Errorf("extern variable symbol %d: %v", id, err)
 		}
-		lines = append(lines, fmt.Sprintf("extern %s %s;", ctype, emitExternData[id].name))
+		lines = append(lines, fmt.Sprintf("extern %s %s;", ctype, st.externData[id].name))
 	}
 	return strings.Join(lines, "\n"), nil
 }

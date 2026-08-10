@@ -18,6 +18,7 @@ import (
 )
 
 func TestEmitUnionVariantPayloadWriteUpdatesTag(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `
 type Choice = union enum {
     Ok i32;
@@ -38,6 +39,7 @@ fn main() i32 {
 }
 
 func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { var values []i32 = mem::new_slice[i32](3); values[0] = 42; return values[0]; }`, "main")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -47,6 +49,7 @@ func TestEmitStdMemNewSliceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildStdFixture(t, "fn main() i32 { var value i32 = 42; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }", "main")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -56,22 +59,27 @@ func TestEmitSliceFromRawCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRuntimeAllocatorValueCompiles(t *testing.T) {
+	t.Parallel()
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; return 0; }", 0)
 }
 
 func TestEmitRuntimeAllocatorStateFieldCompiles(t *testing.T) {
+	t.Parallel()
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; let p = a.ptr; return 0; }", 0)
 }
 
 func TestEmitRuntimeAllocatorRoundTrip(t *testing.T) {
+	t.Parallel()
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = (a.alloc)(a.ptr, 4) as *i32; *p = 42; let value = *p; (a.free)(a.ptr, p as *void); return value; }", 42)
 }
 
 func TestEmitRuntimeAllocatorUnparenthesizedRoundTrip(t *testing.T) {
+	t.Parallel()
 	emitRuntimeAndRun(t, "fn main() i32 { let a = context.default_allocator; var p *i32 = a.alloc(a.ptr, 4) as *i32; *p = 42; let value = *p; a.free(a.ptr, p as *void); return value; }", 42)
 }
 
 func TestEmitStructWithAllocatorFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The standalone synthetic repro of the runtime-builtin struct-field-typedef
 	// gap: a struct with an Allocator-typed field (mirroring std/hmap.peb's
 	// HashMap[K,V].backing Allocator), constructed from context.default_allocator
@@ -87,6 +95,7 @@ func TestEmitStructWithAllocatorFieldCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the struct's own typedef carries its real
 	// field AND the Allocator field declared as the hand-written PebbleAllocator
 	// (NOT a per-TypeID pebble_struct_<id>_t, whose typedef orderAggregateTypes
@@ -123,6 +132,7 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 }
 
 func TestEmitRuntimeAllocatorRecordConstructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact Slice 1 boundary reproduction, now closed: constructing an
 	// Allocator literal (Allocator.{ ptr, alloc, realloc, free }) from source
 	// is a RecordConstruct whose Type is the nominal Allocator runtime type,
@@ -147,6 +157,7 @@ fn main() int {
 }
 
 func TestEmitRuntimeAllocatorRecordConstructWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the Allocator literal lowers to a
 	// PebbleAllocator local declared with a C99 designated-initializer brace
 	// list over the hand-written runtime struct, the ptr field maps to .state,
@@ -190,6 +201,7 @@ fn main() int {
 }
 
 func TestEmitRuntimeAllocatorRecordConstructInitializerNotIgnored(t *testing.T) {
+	t.Parallel()
 	// Prove the ptr initializer is actually stored, not zeroed: the literal
 	// stores (&x) as *void into the .state field, reading the field back into a
 	// pointer local and dereferencing it must yield x's value. A construction
@@ -212,6 +224,7 @@ fn main() int {
 }
 
 func TestEmitRuntimeAllocatorRecordConstructCallbackInvoked(t *testing.T) {
+	t.Parallel()
 	// Prove the alloc callback initializer is actually stored and invoked, not
 	// ignored: the literal stores my_alloc (which returns its first argument,
 	// the allocator's own state pointer) in the .alloc field, and calling it
@@ -237,6 +250,7 @@ fn main() int {
 }
 
 func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An ordinary (non-generic) struct field typed as uint -- the same narrow
 	// entry-width/bool-only gate already widened this session for optional
 	// payloads (d737242), slice elements (f85b4a0), and function-type
@@ -249,6 +263,7 @@ func TestEmitStructWithUintFieldCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructEnumFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The standalone synthetic repro of the enum-typed-struct-field gap: a
 	// struct with a plain-enum-typed field mirroring std/hmap.peb's Entry
 	// exactly (type EntryState = enum { Empty, Tombstone, Occupied }; struct
@@ -268,6 +283,7 @@ func TestEmitStructEnumFieldCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructEnumFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check: the struct field whose type is a plain enum is
 	// declared with the enum's OWN typedef name — pebble_enum_<typeID>_t, the
 	// identical C type an enum-typed local/parameter/result uses (see
@@ -295,15 +311,18 @@ func TestEmitStructEnumFieldWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `fn main() i32 { let present ?i32 = some 7; if present.has_value { return 1; } else { return 0; } }`, false, 1, false)
 	emitAndRun(t, `fn main() i32 { let absent ?i32 = none; if !absent.has_value { return 1; } else { return 0; } }`, false, 1, false)
 }
 
 func TestEmitFieldNilAssignmentRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type P = struct { d *i32; }; fn main() i32 { var value i32 = 7; var p P = P.{ d = &value }; p.d = nil; if p.d == nil { return 1; } else { return 0; } }`, false, 1, false)
 }
 
 func TestEmitGenericStructDataFieldsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Generic struct data fields slice 1: a generic struct whose fields are the
 	// struct's own type parameters (`key K`, `value V`) must emit per
 	// -specialization concrete field types, so Pair[int, int] constructs and
@@ -317,6 +336,7 @@ func TestEmitGenericStructDataFieldsCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Two specializations of the SAME generic struct in one program must emit
 	// two DISTINCT, independently-correct C typedefs (pebble_struct_<typeID>_t
 	// per specialization TypeID): Pair[int, int]'s value field is int while
@@ -330,6 +350,7 @@ func TestEmitGenericStructTwoSpecializationsCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructOptionalFieldSingleCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Generic struct compound fields, optional-wrapped: a single
 	// specialization of `Box[K] = struct { value ?K; }` with K = int must
 	// compile AND run with the correct unwrapped value. The field's member
@@ -341,6 +362,7 @@ func TestEmitGenericStructOptionalFieldSingleCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructOptionalTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// The exact repro that was broken before this slice: TWO specializations
 	// of the same generic struct in one program, the field type a compound
 	// wrapping the struct's own parameter. Before the fix, Box[bool]'s struct
@@ -361,6 +383,7 @@ func TestEmitGenericStructOptionalTwoSpecializationsCompileAndRun(t *testing.T) 
 }
 
 func TestEmitGenericStructPointerFieldSingleCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Generic struct compound fields, pointer-wrapped: a single specialization
 	// of `Ref[K] = struct { ptr *K; }` with K = int must compile AND run with
 	// the correct dereferenced value. The member's template wraps the struct's
@@ -372,6 +395,7 @@ func TestEmitGenericStructPointerFieldSingleCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructPointerTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// The pointer analogue of the two-specialization repro: before this slice,
 	// Ref[bool]'s struct typedef field reused Ref[int]'s pointee (both declared
 	// `bool *` or both `int32_t *` depending on node order) — silently wrong
@@ -385,6 +409,7 @@ func TestEmitGenericStructPointerTwoSpecializationsCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructNestedFieldCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Nested-generic struct fields: a generic struct field typed as ANOTHER
 	// generic struct instantiated with the outer's own parameter
 	// (`Outer[K] = struct { inner Inner[K]; }`). The inner construction
@@ -401,6 +426,7 @@ func TestEmitGenericStructNestedFieldCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericStructNestedFieldTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Two specializations of the outer struct in one program, each carrying a
 	// DIFFERENT nested specialization (`Inner[int]` vs `Inner[bool]`): every
 	// field symbol is shared across specializations (they come from the same
@@ -414,6 +440,7 @@ func TestEmitGenericStructNestedFieldTwoSpecializationsCompileAndRun(t *testing.
 }
 
 func TestEmitGenericStructDataFieldsCrossModuleContextCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Generic struct data fields slice 1 (254a00c) substituted a directly
 	// parameter-typed field from the struct's generic declaration key in the
 	// snapshot — but only when that declaration key was the FIRST
@@ -496,11 +523,13 @@ fn newo[K](v K) Outer[K] {
 }
 
 func TestEmitFixedStrArrayLocalDeclarationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Fixed str arrays are supported for array-literal local declarations.
 	emitAndRun(t, `fn main() i32 { let values [2]str = ["first", "second"]; return 0; }`, false, 0, false)
 }
 
 func TestEmitFixedStrArrayElementReadInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The missing Load(CheckedIndexPlace) case in buildStrOperand: the checker
 	// lowers values[i] for a fixed [N]str local to a str-typed Load whose place
 	// is a CheckedIndexPlace, and the backend now emits the read through
@@ -512,6 +541,7 @@ func TestEmitFixedStrArrayElementReadInComparisonCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFixedStrArrayElementReadAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same fixed [N]str indexed read used as a call-site argument (the
 	// exact std/hmap.peb insert shape, which passes a str element into a
 	// str-taking helper): the argument is built by buildStrOperand, which now
@@ -522,6 +552,7 @@ func TestEmitFixedStrArrayElementReadAsCallArgumentCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitCompoundSliceElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment to a slice element — s[0] += 4 — is a
 	// CompoundStore whose place is a CheckedIndexPlace over a slice base,
 	// emitted as s.data[pebble_rt_checked_index_i32(...)] both read and
@@ -530,6 +561,7 @@ func TestEmitCompoundSliceElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopArrayIndexCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The iterator used as an array index (`a[i]`): the int-typed iterator
 	// SymbolValue is lowered as its pebble_local_<symbol> name by the
 	// array-index int-typed-SymbolValue case, so the sum of the three elements
@@ -538,6 +570,7 @@ func TestEmitRangeLoopArrayIndexCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	output := emitAndRunCaptureBounded(t, `fn sort_once(values [5]int) [5]int {
     if values[0] > values[1] {
         let first = values[0];
@@ -559,10 +592,12 @@ fn main() int {
 }
 
 func TestEmitArrayHelperLiteralArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn f(a [3]i32) i32 { return 1; } fn main() i32 { return f([10, 20, 30]); }", false, 1, false)
 }
 
 func TestEmitTupleTwoElementReadBackCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture for tuple construction and an element read: a
 	// two-element (i32, i32) tuple is declared from a tuple literal and its
 	// second element is read back into the return value. The tuple type emits
@@ -573,12 +608,14 @@ func TestEmitTupleTwoElementReadBackCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleElementsReadBackAndAddedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The "elements read back and added" fixture: a three-element tuple's
 	// elements 1 and 2 are read back and added: t.1 + t.2 = 20 + 30 = 50.
 	emitAndRun(t, "fn main() i32 { let t (i32, i32, i32) = (10, 20, 30); return t.1 + t.2; }", false, 50, false)
 }
 
 func TestEmitTupleElementZeroReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Regression test: reading a tuple's element 0 (t.0) used to be impossible
 	// from any source — the tir verifier rejected a TuplePlace/TupleElementValue
 	// with Ordinal 0, because Node.Ordinal is a zero-based element index (0 is
@@ -594,6 +631,7 @@ func TestEmitTupleElementZeroReadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleThreeElementWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the three-element tuple: one struct typedef with three
 	// positional fields written before pebble_user_main (definition before
 	// use), the local declared as the typedef type and initialized with the
@@ -625,6 +663,7 @@ func TestEmitTupleThreeElementWritesC(t *testing.T) {
 }
 
 func TestEmitTupleBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple with a bool element mixed beside an integer element: the bool
 	// element read (t.1) drives an if condition. t.1 = true runs the then-arm
 	// (exit 10); with the bool element false the else-arm runs (exit 20). The
@@ -639,12 +678,14 @@ func TestEmitTupleBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
 		{"bool false", "fn main() i32 { let t (i32, bool) = (1, false); if t.1 { return 10; } else { return 20; } }", 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the bool-element-if fixture: the typedef's second field
 	// must be the C bool, the local's initializer carries the integer and bool
 	// literals in order, and the if condition is the raw field read
@@ -671,6 +712,7 @@ func TestEmitTupleBoolElementDrivesIfWritesC(t *testing.T) {
 }
 
 func TestEmitTupleElementAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple element read composes with 10.18's call-argument building: each
 	// argument of add is a read of the tuple local's element 1. buildCallArguments
 	// builds each argument with buildExpr, which lowers the Load(TuplePlace) read
@@ -680,6 +722,7 @@ func TestEmitTupleElementAsCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the call-argument fixture: the tuple typedef precedes
 	// both the helper and the entry, the local initializes to { 20, 22 }, and
 	// the call site passes the two element reads after ctx. Symbols 24 (add),
@@ -707,6 +750,7 @@ func TestEmitTupleElementAsCallArgumentWritesC(t *testing.T) {
 }
 
 func TestEmitTupleLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-typed local declared inside a reachable helper's body, not the
 	// entry's: the typedef-collection pass must walk helper bodies too, so the
 	// tuple typedef is emitted before the helper's definition (which is before
@@ -717,6 +761,7 @@ func TestEmitTupleLocalInsideHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64TupleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width discipline extends to tuple element types: an i64 entry's
 	// (i64, i64) tuple's typedef fields are int64_t, the local is int64_t
 	// backed, and the element read feeds the i64 entry's return. Exit code 22.
@@ -724,6 +769,7 @@ func TestEmitI64TupleCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64TupleWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the i64 tuple must use int64_t for both typedef fields
 	// and for the pebble_user_main return type, proving the entry's width
 	// threads into the tuple layout, not just the scalar declarations.
@@ -749,30 +795,37 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 }
 
 func TestEmitArrayElementReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", false, 20, false)
 }
 
 func TestEmitArrayBoolElementDrivesIf(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [2]bool = [false, true]; if a[1] { return 10; } else { return 20; } }", false, 10, false)
 }
 
 func TestEmitArrayExpressionIndexCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; let i i32 = 1; return a[i + 1]; }", false, 30, false)
 }
 
 func TestEmitArrayOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [2]i32 = [10, 20]; let i i32 = 2; return a[i]; }", false, 0, true)
 }
 
 func TestEmitIntEntryArrayElementReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() int { let a [3]int = [10, 20, 30]; return a[1]; }", true, 20, false)
 }
 
 func TestEmitIntEntryArrayOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() int { let a [2]int = [10, 20]; let i int = 2; return a[i]; }", true, 0, true)
 }
 
 func TestEmitCheckedArrayIndexEmitsRealSourceLoc(t *testing.T) {
+	t.Parallel()
 	// Since 10.44, checked array indexing carries a real, resolved Pebble
 	// source location (the CheckedIndexPlace node's own Span) as its final
 	// argument, not the zero-valued placeholder 10.43 deliberately left here
@@ -794,14 +847,17 @@ func TestEmitCheckedArrayIndexEmitsRealSourceLoc(t *testing.T) {
 }
 
 func TestEmitArrayElementAsCallArgument(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn add(a i32, b i32) i32 { return a + b; } fn main() i32 { let a [2]i32 = [20, 22]; return add(a[0], a[1]); }", false, 42, false)
 }
 
 func TestEmitI64ArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i64 { let a [2]i64 = [20, 22]; return a[1]; }", false, 22, false)
 }
 
 func TestEmitArrayWritesC(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -819,6 +875,7 @@ func TestEmitArrayWritesC(t *testing.T) {
 }
 
 func TestEmitArrayRepeatSumCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship ArrayRepeat fixture (10.27): [5; 3] initializes all three
 	// slots from a single evaluation of 5, so the sum of every element read is
 	// 5 + 5 + 5 = 15. This is the end-to-end confirmation that the
@@ -829,6 +886,7 @@ func TestEmitArrayRepeatSumCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayRepeatExprValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A repeat value that is itself a non-trivial expression: x * 5 references
 	// an earlier local through checked arithmetic, so the single evaluation is
 	// pebble_rt_checked_mul_i32(pebble_local_<x>, 5) = 10, and all three slots
@@ -839,6 +897,7 @@ func TestEmitArrayRepeatExprValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayRepeatBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-element array repeat: [true; 2] fills both bool slots from one
 	// evaluation of true, and the element read drives an if condition through
 	// the existing Load(CheckedIndexPlace) bool path. a[1] is true, so the
@@ -847,6 +906,7 @@ func TestEmitArrayRepeatBoolElementDrivesIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayRepeatI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width discipline extends to array repeat element types: an i64
 	// entry's [2]i64 repeat fills both int64_t slots, the reads lower through
 	// pebble_rt_checked_index_i64, and 7 + 7 = 14 is the process exit code.
@@ -854,6 +914,7 @@ func TestEmitArrayRepeatI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayRepeatWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: an ArrayRepeat-initialized local
 	// is three C statements instead of one declaration line — the array's own
 	// bare declaration, a synthetic temp (pebble_repeat_<symbolID>) holding
@@ -879,6 +940,7 @@ func TestEmitArrayRepeatWritesC(t *testing.T) {
 }
 
 func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
+	t.Parallel()
 	// The single-evaluation proof: a repeat value that is a call to a helper
 	// function. A naive brace-list duplication ({ v, v, v }) would have
 	// emitted pebble_fn_<five>(ctx) three times — once per slot — evaluating
@@ -908,10 +970,12 @@ func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
 }
 
 func TestEmitNestedTupleElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let inner (i32, i32) = (20, 22); let outer ((i32, i32), bool) = (inner, true); return (outer.0).1; }", false, 22, false)
 }
 
 func TestEmitTupleParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship tuple-parameter fixture: sumT takes a whole (i32, i32)
 	// tuple as its parameter and reads both elements back inside the callee,
 	// including element 0 (confirming 10.19's tir-ordinal fix still holds in
@@ -923,6 +987,7 @@ func TestEmitTupleParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: the tuple typedef must precede
 	// the helper, the helper's signature declares the parameter as
 	// pebble_tuple_<typeID>_t pebble_local_<paramSymbol> (symbol 25, the t
@@ -957,6 +1022,7 @@ func TestEmitTupleParameterWritesC(t *testing.T) {
 }
 
 func TestEmitTupleParameterUsedInBoolElementAndSecondCall(t *testing.T) {
+	t.Parallel()
 	// A tuple parameter whose element types are mixed width/bool: the callee
 	// reads the bool element to drive an if and the i32 element as a value.
 	// This proves the parameter's element reads route through buildBoolExpr
@@ -966,6 +1032,7 @@ func TestEmitTupleParameterUsedInBoolElementAndSecondCall(t *testing.T) {
 }
 
 func TestEmitOptionalNoneNeverUnwrappedCompilesClean(t *testing.T) {
+	t.Parallel()
 	// Regression coverage: `none` was initially thought unreachable from real
 	// source (a since-fixed checker bug, compiler/internal/check's
 	// shapeLeaf, made `let x ?i32 = none;` fail to type-check). It is
@@ -975,12 +1042,14 @@ func TestEmitOptionalNoneNeverUnwrappedCompilesClean(t *testing.T) {
 }
 
 func TestEmitOptionalUnwrapNoneAborts(t *testing.T) {
+	t.Parallel()
 	// Force-unwrapping a none-initialized local panics via
 	// pebble_rt_checked_unwrap_i32, aborting the process.
 	emitAndRun(t, "fn main() i32 { let x ?i32 = none; return x!; }", false, 0, true)
 }
 
 func TestEmitOptionalUnwrapNoneEmitsRealSourceLoc(t *testing.T) {
+	t.Parallel()
 	// The absent-optional unwrap still panics (the process aborts via
 	// pebble_rt_checked_unwrap_i32), and — new for this slice — the emitted
 	// unwrap call now carries the CheckedOptionalUnwrap node's own resolved
@@ -1004,6 +1073,7 @@ func TestEmitOptionalUnwrapNoneEmitsRealSourceLoc(t *testing.T) {
 }
 
 func TestEmitOptionalSomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture for optional construction and force-unwrap: a
 	// some <expr> local is declared and force-unwrapped as the return value.
 	// The optional type emits one struct typedef with has_value/value fields,
@@ -1014,6 +1084,7 @@ func TestEmitOptionalSomeUnwrapCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalSomeUnwrapI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The i64 width discipline extends to optional payload types: an i64
 	// entry's ?i64 optional's typedef value field is int64_t, the local is
 	// initialized with the i64 payload, and the force-unwrap lowers to
@@ -1022,6 +1093,7 @@ func TestEmitOptionalSomeUnwrapI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalBoolPayloadDrivesIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-payload optional, force-unwrapped to drive an if condition. The
 	// unwrap lowers to pebble_rt_checked_unwrap_bool, whose result drives the
 	// if condition directly. With the bool payload true the then-arm runs
@@ -1035,12 +1107,14 @@ func TestEmitOptionalBoolPayloadDrivesIfCompilesAndRuns(t *testing.T) {
 		{"bool false", "fn main() i32 { let x ?bool = some false; if x! { return 10; } else { return 20; } }", 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitOptionalUnwrapAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An unwrapped optional element used as a call argument: the force-unwrap
 	// produces an ordinary i32 value that is passed to a helper function.
 	// add(x!, y!) = 10 + 20 = 30 is the process exit code.
@@ -1048,6 +1122,7 @@ func TestEmitOptionalUnwrapAsCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalSomeUnwrapWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the some-unwrap fixture: the optional typedef with
 	// has_value/value fields, the local initialized with the struct literal
 	// initializer, and the unwrap call site using pebble_rt_checked_unwrap_i32.
@@ -1075,6 +1150,7 @@ func TestEmitOptionalSomeUnwrapWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalI64WritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the i64 optional must use int64_t for the typedef
 	// value field and int64_t for pebble_user_main's return type, proving the
 	// entry's width threads into the optional layout.
@@ -1098,6 +1174,7 @@ func TestEmitOptionalI64WritesC(t *testing.T) {
 }
 
 func TestEmitOptionalBoolWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the bool optional must use bool for the typedef value
 	// field and the unwrap must use pebble_rt_checked_unwrap_bool.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x ?bool = some true; if x! { return 10; } else { return 20; } }", "main", false)
@@ -1117,6 +1194,7 @@ func TestEmitOptionalBoolWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An optional-typed local declared inside a reachable helper's body, not
 	// the entry's: the typedef-collection pass must walk helper bodies too, so
 	// the optional typedef is emitted before the helper's definition (which is
@@ -1127,6 +1205,7 @@ func TestEmitOptionalLocalInsideHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalLocalStoreCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning an optional-typed local (x = some 5) is now supported —
 	// the std/hmap.peb insert shape (`tombstone_index = some index;`) needed
 	// it, and buildStoreCore's optional-local case routes the new value
@@ -1140,6 +1219,7 @@ func TestEmitOptionalLocalStoreCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalUintSomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The std/hmap.peb-motivating payload width: a uint-payload optional
 	// constructed with some and force-unwrapped. The typedef's .value field is
 	// uint64_t (uint resolves to its OWN C width via the generic
@@ -1152,6 +1232,7 @@ func TestEmitOptionalUintSomeUnwrapCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalUintNoneHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The none side of a uint-payload optional: zeroOptionalPayloadLiteral
 	// must pick a warning-clean zero literal for the uint64_t .value field (a
 	// bare 0, scalar), the local initializes with has_value = false, and the
@@ -1161,6 +1242,7 @@ func TestEmitOptionalUintNoneHasValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalUintSomeHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same has_value check with a some-initialized uint optional, so the
 	// true arm is taken: proves the has_value tag is set by the some
 	// construction and read back correctly for a uint payload (exit 1).
@@ -1168,6 +1250,7 @@ func TestEmitOptionalUintSomeHasValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalU64SomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// u64 shares the uint64_t C representation (and thus the same generic
 	// resolvedBuiltin/cType typedef and the same pebble_rt_checked_unwrap_u64
 	// unwrap helper) as uint, but is a DISTINCT builtin that flows through the
@@ -1177,12 +1260,14 @@ func TestEmitOptionalU64SomeUnwrapCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalU64NoneHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The none side of a u64-payload optional: the .value zero literal (0) and
 	// the has_value=false tag both hold for a u64 payload.
 	emitAndRun(t, "fn main() i32 { var o ?u64 = none; if o.has_value { return 1; } else { return 0; } }", false, 0, false)
 }
 
 func TestEmitOptionalUintHmapInsertShapeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The real motivating fixture, mirroring std/hmap.peb's actual insert
 	// shape without touching the std module: a none-initialized ?uint local
 	// (tombstone_index), a has_value check, and a force-unwrap into a uint
@@ -1194,6 +1279,7 @@ func TestEmitOptionalUintHmapInsertShapeCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalUintHmapInsertShapeSomeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same insert-shaped fixture with tombstone_index some-initialized, so
 	// the has_value true arm runs: the force-unwrap binds t as a uint local
 	// and its value (7) is cast to int and returned — the exact statement
@@ -1203,6 +1289,7 @@ func TestEmitOptionalUintHmapInsertShapeSomeCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerSomeHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro for pointer-payload optionals: a helper returns
 	// `?*int` built from `some &y` / `none`, consumed in the entry via a
 	// direct-call initializer and a `.has_value` read. The optional's .value
@@ -1216,6 +1303,7 @@ func TestEmitOptionalPointerSomeHasValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerForceUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The force-unwrap path for a pointer payload: `find(&v)!` unwraps an
 	// optional-pointer call result (hoisted into a pebble_temp_<id> optional
 	// local so the call runs exactly once) through the new
@@ -1226,6 +1314,7 @@ func TestEmitOptionalPointerForceUnwrapCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerNoneHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The none side of a pointer-payload optional: get_by_ref-style `return
 	// none;` produces a { .has_value = false, .value = 0 } optional (a null
 	// pointer constant 0 is a warning-clean initializer for the int32_t *
@@ -1235,6 +1324,7 @@ func TestEmitOptionalPointerNoneHasValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerNoneLocalDeclCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// zeroOptionalPayloadLiteral's pointer-payload shape, in the one position
 	// that exercises it as a local declaration's initializer: `var o ?*int =
 	// none;`. The .value field's zero literal must be warning-clean against
@@ -1245,6 +1335,7 @@ func TestEmitOptionalPointerNoneLocalDeclCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerSomeLocalDeclAndDerefCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A some-initialized pointer-payload optional local (`var o ?*int = some
 	// &y;`), unwrapped and dereferenced: `*(o!)` exercises the pointer-typed
 	// CheckedOptionalUnwrap (via pebble_rt_checked_unwrap_ptr) feeding the
@@ -1255,6 +1346,7 @@ func TestEmitOptionalPointerSomeLocalDeclAndDerefCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerNoneForceUnwrapPanics(t *testing.T) {
+	t.Parallel()
 	// A force-unwrap of an absent pointer-payload optional must panic with
 	// PEBBLE_PANIC_UNWRAP_FAILED, exactly like every other payload width: the
 	// pebble_rt_checked_unwrap_ptr helper has no null special-case — a null
@@ -1265,6 +1357,7 @@ func TestEmitOptionalPointerNoneForceUnwrapPanics(t *testing.T) {
 }
 
 func TestEmitOptionalPointerHmapGetByRefGetShapeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The real motivating fixture, mirroring std/hmap.peb's actual
 	// get_by_ref/get shape WITHOUT touching the std module: get_by_ref returns
 	// `?*int` built from `some &entry.value` (the address of a struct field
@@ -1277,6 +1370,7 @@ func TestEmitOptionalPointerHmapGetByRefGetShapeCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalPointerHmapGetByRefGetShapeNoneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The none side of the same hmap-shaped fixture: get_by_ref returns none
 	// for a negative key, get sees !ptr.has_value and returns `none` (an
 	// int-payload optional), and main's has_value check falls to the else arm.
@@ -1285,6 +1379,7 @@ func TestEmitOptionalPointerHmapGetByRefGetShapeNoneCompilesAndRuns(t *testing.T
 }
 
 func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture for struct construction and a field read: a
 	// two-field Point { x i32; y i32; } is declared from a struct literal and
 	// its x field is read back into the return value. The struct type emits
@@ -1297,6 +1392,7 @@ func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructFieldsWrittenOutOfDeclaredOrderCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The out-of-declaration-order construction fixture: Point.{ y = ..., x =
 	// ... } writes the fields in the opposite order from the struct's declared
 	// order, so the RecordConstruct's Fields list is [y, x], not [x, y]
@@ -1315,12 +1411,14 @@ func TestEmitStructFieldsWrittenOutOfDeclaredOrderCompilesAndRuns(t *testing.T) 
 		{"y read back", "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 20, x = 22 }; return point.y; }", 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitStructBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct with a bool field beside an integer field: the bool field read
 	// (p.b) drives an if condition. b = true runs the then-arm (exit 10);
 	// with the bool field false the else-arm runs (exit 20). The read is a
@@ -1335,12 +1433,14 @@ func TestEmitStructBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
 		{"bool false", "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = false }; if p.b { return 10; } else { return 20; } }", 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitStructFieldAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct field read composes with 10.18's call-argument building: each
 	// argument of add is a read of the struct local's field. buildCallArguments
 	// builds each argument with buildExpr, which lowers the Load(FieldPlace)
@@ -1351,6 +1451,7 @@ func TestEmitStructFieldAsCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructThreeFieldTwoReadsAddedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The "two fields read and added" fixture: a three-field struct's a and c
 	// fields are read back and added: t.a + t.c = 10 + 30 = 40. The typedef's
 	// fields follow the declared order (a, b, c), and the two reads resolve
@@ -1359,6 +1460,7 @@ func TestEmitStructThreeFieldTwoReadsAddedCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64StructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width discipline extends to struct field types: an i64 entry's
 	// (i64, i64) struct's typedef fields are int64_t, and the field read feeds
 	// the i64 entry's return. Exit code 22.
@@ -1366,6 +1468,7 @@ func TestEmitI64StructCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole struct-typed local from another struct-typed local
 	// (`p = q;`), the reproduction's plain-local shape: the Store's place names
 	// a struct-typed local and the new value is a reference to an in-scope
@@ -1376,6 +1479,7 @@ func TestEmitStructWholeReassignmentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructWholeReassignmentFromLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole struct-typed local from a fresh struct literal
 	// (`p = Point.{ x = 3, y = 4 };`): the Store's new value is a
 	// RecordConstruct, emitted as the same designated-initializer compound
@@ -1386,6 +1490,7 @@ func TestEmitStructWholeReassignmentFromLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructPointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole struct through a pointer deref (`*self = other;`),
 	// the reproduction's reset shape: the Store's place is a DereferencePlace
 	// whose resolved element type is the struct type, and the new value is a
@@ -1397,6 +1502,7 @@ func TestEmitStructPointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole struct-typed local from a call to a struct-returning
 	// helper (`p = make_point();`), the reproduction's plain-local shape: the
 	// Store's place names a struct-typed local and the new value is a DirectCall
@@ -1409,6 +1515,7 @@ func TestEmitStructWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructPointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole struct through a pointer deref from a call to a
 	// struct-returning helper (`*self = make_point();`), the reproduction's
 	// reset shape: the Store's place is a DereferencePlace whose resolved
@@ -1422,6 +1529,7 @@ func TestEmitStructPointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testi
 }
 
 func TestEmitStructPointerDerefLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A whole struct read through a pointer deref used as a struct-typed
 	// local's declaration initializer (`let q = *ptr;`), the reproduction's
 	// local shape: the local's initializer is a Load whose place is a
@@ -1433,6 +1541,7 @@ func TestEmitStructPointerDerefLocalInitializerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructPointerDerefCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A whole struct read through a pointer deref used directly as a call
 	// argument (`use_point(*ptr);`), the reproduction's direct-argument shape:
 	// the argument is a Load whose place is a DereferencePlace, emitted as the
@@ -1442,6 +1551,7 @@ func TestEmitStructPointerDerefCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructPointerDerefLocalInitializerWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the reproduction's local-initializer shape: the
 	// struct-typed local's initializer lowers to a whole-struct copy
 	// declaration whose value is the null-checked dereference
@@ -1465,6 +1575,7 @@ func TestEmitStructPointerDerefLocalInitializerWritesC(t *testing.T) {
 }
 
 func TestEmitStructPointerDerefCallArgumentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the reproduction's direct-argument shape: the call
 	// argument lowers to the null-checked dereference value passed directly in
 	// the call `pebble_fn_<id>(ctx, *(pebble_struct_<typeID>_t)
@@ -1483,6 +1594,7 @@ func TestEmitStructPointerDerefCallArgumentWritesC(t *testing.T) {
 }
 
 func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the plain-local whole-struct reassignment: the store
 	// lowers to a plain C struct assignment `pebble_local_<p> = pebble_local_<q>;`
 	// — the struct's own pebble_struct_<typeID>_t typedef makes the by-value
@@ -1504,6 +1616,7 @@ func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
 }
 
 func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct-typed local declared inside a reachable helper's body, not the
 	// entry's: the typedef-collection pass must walk helper bodies too, so the
 	// struct typedef is emitted before the helper's definition (which is
@@ -1514,26 +1627,31 @@ func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructContainingTupleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	src := "type HasTuple = struct { t (i32, i32); x i32; }; fn main() i32 { let t (i32, i32) = (20, 22); let h HasTuple = HasTuple.{ t = t, x = 1 }; return h.t.1; }"
 	emitAndRun(t, src, false, 22, false)
 }
 
 func TestEmitTupleContainingStructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.y; }"
 	emitAndRun(t, src, false, 22, false)
 }
 
 func TestEmitArrayOfStructsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let a [2]Point = [p, p]; return a[1].x + a[1].y; }"
 	emitAndRun(t, src, false, 42, false)
 }
 
 func TestEmitStructContainingOptionalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	src := "type HasOpt = struct { o ?i32; x i32; }; fn main() i32 { let o ?i32 = some 42; let h HasOpt = HasOpt.{ o = o, x = 1 }; return h.o!; }"
 	emitAndRun(t, src, false, 42, false)
 }
 
 func TestEmitStructOutOfOrderWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the out-of-declaration-order construction fixture.
 	// The typedef's fields must be in the struct's *declared* order (x = 25
 	// then y = 26, from TypeDecl.Members), NOT the construction order the
@@ -1567,6 +1685,7 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 }
 
 func TestEmitStructBoolFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the bool-field-if fixture: the typedef's second field
 	// must be the C bool, the local's initializer carries the integer and bool
 	// field values under their designated fields, and the if condition is the
@@ -1591,6 +1710,7 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 }
 
 func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the call-argument fixture: the struct typedef precedes
 	// both the helper and the entry, the local initializes to a designated
 	// struct literal, and the call site passes the two field reads after ctx.
@@ -1619,6 +1739,7 @@ func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
 }
 
 func TestEmitI64StructWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the i64 struct must use int64_t for both typedef
 	// fields and for the pebble_user_main return type, proving the entry's
 	// width threads into the struct layout, not just the scalar declarations.
@@ -1644,6 +1765,7 @@ func TestEmitI64StructWritesC(t *testing.T) {
 }
 
 func TestEmitStrStructFieldLiteralC(t *testing.T) {
+	t.Parallel()
 	// A struct whose field type is str now emits: the struct typedef declares
 	// the field as the runtime's PebbleStr (the same C type a str local is
 	// declared with), and a literal construction value lowers through
@@ -1669,6 +1791,7 @@ func TestEmitStrStructFieldLiteralC(t *testing.T) {
 }
 
 func TestEmitStrStructFieldLiteralRuns(t *testing.T) {
+	t.Parallel()
 	// A struct with a str field constructed from a string literal compiles
 	// and runs: the byte-oriented PebbleStr field is part of the struct
 	// layout, the designated initializer places the literal into it, and the
@@ -1679,6 +1802,7 @@ func TestEmitStrStructFieldLiteralRuns(t *testing.T) {
 }
 
 func TestEmitStrStructFieldLocalValueRuns(t *testing.T) {
+	t.Parallel()
 	// A str field constructed from an in-scope str local (the SymbolValue
 	// shape buildStrOperand accepts for a str call argument) compiles and
 	// runs: the construction copies the local's PebbleStr by value into the
@@ -1687,12 +1811,14 @@ func TestEmitStrStructFieldLocalValueRuns(t *testing.T) {
 }
 
 func TestEmitStrStructFieldCallValueRuns(t *testing.T) {
+	t.Parallel()
 	// A str field constructed from a call to a str-returning helper (the
 	// DirectCall shape buildStrOperand accepts) compiles and runs.
 	emitAndRun(t, "fn mk() str { return \"hi\"; }\ntype S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = mk(), n = 7 }; return x.n; }", false, 7, false)
 }
 
 func TestEmitStrStructFieldReadEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The str field READ path (the missing Load(FieldPlace) case in
 	// buildStrOperand): a struct's str field is read back and used as a str
 	// operand in an existing str operation. The equality comparison lowers
@@ -1704,6 +1830,7 @@ func TestEmitStrStructFieldReadEqualityCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrStructFieldReadGenericKeyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact std/hmap.peb shape without touching the std module: a generic
 	// Entry[K, V] struct specialized with a str key (Entry[str, uint].key),
 	// read back through the Load(FieldPlace) path buildStrOperand now
@@ -1714,6 +1841,7 @@ func TestEmitStrStructFieldReadGenericKeyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrStructFieldReadAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The str field read as a call-site argument (the exact std/hmap.peb
 	// insert shape, `self.eq_fn(entry.key, key)`): a str-taking helper's
 	// argument is built by buildStrOperand, which now accepts the
@@ -1723,6 +1851,7 @@ func TestEmitStrStructFieldReadAsCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrStructFieldReadWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the str field read: the Load(FieldPlace) of the str
 	// field must lower to the plain projection pebble_local_<sym>.pebble_field_
 	// <member> — the field's PebbleStr C type is exactly the str value's C
@@ -1741,10 +1870,12 @@ func TestEmitStrStructFieldReadWritesC(t *testing.T) {
 }
 
 func TestEmitStructStrFieldAssignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Holder = struct { value str; }; fn main() i32 { var h Holder = Holder.{ value = "old" }; var replacement str = "new"; h.value = replacement; if h.value == "new" { return 0; } return 1; }`, false, 0, false)
 }
 
 func TestEmitInlineTupleArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship 10.25 tuple fixture (10.24's TestEmitRejectsTupleParameter
 	// fixture, now the positive case): a freshly-constructed tuple built inline
 	// at the call site — f((20, 22)) — rather than passed as an already-
@@ -1757,6 +1888,7 @@ func TestEmitInlineTupleArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitInlineStructArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship 10.25 struct fixture (10.24's
 	// TestEmitRejectsStructTypedParameter fixture, now the positive case): a
 	// freshly-constructed struct built inline at the call site —
@@ -1771,6 +1903,7 @@ func TestEmitInlineStructArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitInlineStructArgumentOutOfOrderCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The designated-initializer reuse, verified in the inline-argument
 	// position too: Point.{ y = 22, x = 20 } writes the fields in the opposite
 	// order from the struct's declared order, and the compound literal still
@@ -1784,6 +1917,7 @@ func TestEmitInlineStructArgumentOutOfOrderCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship struct-parameter fixture: f takes a whole Point struct as
 	// its parameter and reads both fields back inside the callee. The entry
 	// declares a struct local and passes it by value; the callee's parameter
@@ -1794,10 +1928,12 @@ func TestEmitStructParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerStructFieldReadWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "type P = struct { cap i32; }; fn mutate(p *P) void { p.cap = 9; } fn main() i32 { var p P = P.{ cap = 1 }; let pointer *P = &p; mutate(pointer); return p.cap; }", false, 9, false)
 }
 
 func TestEmitStructParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: the struct typedef must precede
 	// the helper, the helper's signature declares the parameter as
 	// pebble_struct_<typeID>_t pebble_local_<paramSymbol> (symbol 28, the p
@@ -1833,6 +1969,7 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 }
 
 func TestEmitStructParameterBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct parameter whose fields are mixed width/bool: the callee reads
 	// the bool field to drive an if and an integer field as a value. This
 	// proves the parameter's field reads route through buildBoolExpr (the
@@ -1842,6 +1979,7 @@ func TestEmitStructParameterBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship tuple-return fixture: makeT returns a fresh (i32, i32)
 	// tuple constructed inline in its return statement, the entry declares a
 	// matching tuple local from the call (the one supported call position for
@@ -1854,6 +1992,7 @@ func TestEmitTupleReturningHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructReturningHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship struct-return fixture, mirroring the tuple one: makeP
 	// returns a fresh Point constructed inline in its return statement, the
 	// entry declares a matching struct local from the call and reads both
@@ -1863,6 +2002,7 @@ func TestEmitStructReturningHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-returning helper whose return statement forwards an
 	// already-declared aggregate-typed local (a plain SymbolValue, not a fresh
 	// construction): x is declared in the helper's body from a tuple literal,
@@ -1873,6 +2013,7 @@ func TestEmitTupleReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The struct side of forwarding an already-declared local: p is declared
 	// in the helper's body from a struct literal and `return p;` forwards it,
 	// emitting `return pebble_local_<p>;`. The entry assigns the call to a
@@ -1882,6 +2023,7 @@ func TestEmitStructReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructReturningHelperForwardsCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct-returning helper whose tail return is a DirectCall to another
 	// struct-returning helper (`return helper();` — the return-forwarding
 	// shape io.peb's `return string::new();` uses), with no intermediate
@@ -1894,6 +2036,7 @@ func TestEmitStructReturningHelperForwardsCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperWithBoolElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A mixed width/bool tuple result: the bool element is built by
 	// buildBoolExpr inside the tuple's brace list (proving the element grammar
 	// dispatch in the return path, not just the local-declaration path), and
@@ -1903,6 +2046,7 @@ func TestEmitTupleReturningHelperWithBoolElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperIfElseTailCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-returning helper whose body tail is a two-armed if/else (not a
 	// bare return): each arm's return is a fresh tuple construction, proving
 	// buildIf threads the enclosing function's resultInfo into both arms so
@@ -1912,6 +2056,7 @@ func TestEmitTupleReturningHelperIfElseTailCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the tuple flagship: the tuple typedef must precede the
 	// helper, the helper's signature declares its return type as
 	// pebble_tuple_23_t (the aggregate's own typedef, not the entry's scalar
@@ -1945,6 +2090,7 @@ func TestEmitTupleReturningHelperWritesC(t *testing.T) {
 }
 
 func TestEmitStructReturningHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the struct flagship: the struct typedef precedes the
 	// helper, the helper's signature declares its return type as
 	// pebble_struct_23_t, its return statement emits the designated-
@@ -1977,6 +2123,7 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the local-forwarding return: the helper's return
 	// statement emits `return pebble_local_<x>;` (the already-declared local's
 	// own C name, no re-construction). Symbols 24 (makeT), 25 (main), 26 (x
@@ -2000,6 +2147,7 @@ func TestEmitTupleReturningHelperForwardsLocalWritesC(t *testing.T) {
 }
 
 func TestEmitTupleReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The typedef-discovery fixture (10.26): the (i32, i32) tuple type appears
 	// only as makeT's result type — makeT constructs a tuple of that type in
 	// its return (never anywhere in main, which only assigns the call to a
@@ -2011,6 +2159,7 @@ func TestEmitTupleReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The struct side of the typedef-discovery fixture: the Point type appears
 	// only as makeP's result type — makeP constructs a Point in its return,
 	// and main only assigns the call to a matching local and never reads a
@@ -2021,6 +2170,7 @@ func TestEmitStructReturnResultTypeOnlyHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTupleReturningHelperInIfArmLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-returning helper called from an if/else arm's own local
 	// declaration: the arm is a block built by the same recursive buildBlock,
 	// so the DirectCall initializer is handled by the identical
@@ -2031,6 +2181,7 @@ func TestEmitTupleReturningHelperInIfArmLocalInitializerCompilesAndRuns(t *testi
 }
 
 func TestEmitTupleReturningHelperInLoopBodyLocalInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-returning helper called from a while loop body's local
 	// declaration: the loop body is built by buildLoopBody, whose leading
 	// statements go through the same buildLeadingStatement /
@@ -2042,6 +2193,7 @@ func TestEmitTupleReturningHelperInLoopBodyLocalInitializerCompilesAndRuns(t *te
 }
 
 func TestEmitEnumSwitchLeadingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An enum-typed subject in a fall-through (leading-position) switch: the
 	// subject-building and CaseValue label logic shared with the tail-position
 	// buildSwitch is reused unchanged by buildLoopSwitch. c = green hits the
@@ -2051,6 +2203,7 @@ func TestEmitEnumSwitchLeadingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumLocalSwitchGreenCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship fixture from the brief: a plain enum local declared from a
 	// variant literal and switched on, each case returning a distinct value.
 	// c is Color.green (variant 26, ordinal 1), so the green case fires and the
@@ -2061,6 +2214,7 @@ func TestEmitEnumLocalSwitchGreenCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumLocalSwitchBlueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, c = Color.blue (variant 27, ordinal 2): the blue case fires
 	// and the exit code is 2, proving a second variant value dispatches to a
 	// different C case label rather than the switch only ever firing the first
@@ -2069,6 +2223,7 @@ func TestEmitEnumLocalSwitchBlueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumLocalSwitchRedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, c = Color.red (variant 25, ordinal 0): the red case fires
 	// and the exit code is 0, proving the first declared variant (ordinal 0)
 	// matches case label pebble_variant_25 — the 0 constant C assigns first.
@@ -2076,6 +2231,7 @@ func TestEmitEnumLocalSwitchRedCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A multi-value case on an enum subject: `case Color.red, Color.green:`
 	// produces two SwitchCase nodes sharing one body node ID (confirmed against
 	// a real fixture), which must stack as two C case labels sharing one body,
@@ -2085,12 +2241,14 @@ func TestEmitEnumSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumSwitchMultiValueCaseOtherVariantCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same multi-value switch with c = Color.red: the other member of the
 	// multi-value case fires, proving both stacked case labels share the body.
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nswitch c { case Color.red, Color.green: return 10; case Color.blue: return 20; }\n}", false, 10, false)
 }
 
 func TestEmitEnumSwitchElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An else arm on an enum switch: c = Color.blue is covered by no case
 	// (only red and green have cases), so the else/default arm fires and
 	// returns 20.
@@ -2098,12 +2256,14 @@ func TestEmitEnumSwitchElseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumSwitchElseCaseHitCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, c = Color.green: the case fires (10), not the else arm,
 	// proving the else/default arm is not selected when a case matches.
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.green;\nswitch c { case Color.red, Color.green: return 10; else: return 20; }\n}", false, 10, false)
 }
 
 func TestEmitEnumBlockCaseBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A block-wrapped (braced, multi-statement) case body on an enum switch,
 	// exercising the Block-bodied path in buildSwitchCaseBody for an enum
 	// subject: the case declares a local and returns an expression using it.
@@ -2111,12 +2271,14 @@ func TestEmitEnumBlockCaseBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumSwitchBareReturnCaseBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare single-statement case body (no braces) on an enum switch,
 	// exercising the bare-Return path in buildSwitchCaseBody.
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.blue;\nswitch c { case Color.red: return 1; case Color.green: return 2; case Color.blue: return 3; }\n}", false, 3, false)
 }
 
 func TestEmitEnumSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// The base-less .name shorthand for switch case labels (the exact repro:
 	// `case .red:` against a Color-typed subject). Each variant's subject must
 	// fire its own case branch and exit with the matching code, proving the
@@ -2140,12 +2302,14 @@ func TestEmitEnumSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
 		{"blue", "Color.blue", 3},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, "type Color = enum { red, green, blue }; fn main() int {\nvar c Color = "+fixture.value+";\nswitch c { case .red: return 1; case .green: return 2; case .blue: return 3; }\n}", false, fixture.want, false)
 		})
 	}
 }
 
 func TestEmitTaggedUnionSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Same base-less .name shorthand as
 	// TestEmitEnumSwitchBaselessCaseLabelsCompileAndRun, against a tagged
 	// union (union enum) subject instead of a plain enum — confirms the
@@ -2157,6 +2321,7 @@ func TestEmitTaggedUnionSwitchBaselessCaseLabelsCompileAndRun(t *testing.T) {
 }
 
 func TestEmitEnumStoreCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning an enum-typed local (c = Color.red; after declaration) lowers
 	// through buildStoreCore's enum branch to
 	// `pebble_local_<sym> = pebble_variant_<red>;`, so the subsequent switch
@@ -2166,6 +2331,7 @@ func TestEmitEnumStoreCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumVariantCallFormCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A plain enum variant written with explicit empty parens — Color.red() —
 	// is a zero-payload VariantConstruct (confirmed against a real fixture),
 	// the same discriminant value as Color.red, so it is accepted as an enum
@@ -2174,6 +2340,7 @@ func TestEmitEnumVariantCallFormCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Equality between enum values, c == Color.red — confirmed checker-
 	// reachable (it produces a BinaryValue with two enum-typed operands), so it
 	// lowers through buildComparison's enum branch to the plain C == on the
@@ -2183,12 +2350,14 @@ func TestEmitEnumEqualityCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumEqualityTrueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The == comparison with c = red is true, proving the equality actually
 	// evaluates rather than always falling to the else arm.
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nif c == Color.red { return 1; } else { return 5; }\n}", false, 1, false)
 }
 
 func TestEmitEnumShorthandComparisonAndAssignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Enum-variant shorthand literals (.Empty/.Occupied) in a var initializer,
 	// an equality comparison, and an assignment. The loop body is the one
 	// statement position where the backend already supports mid-body conditions
@@ -2204,6 +2373,7 @@ func TestEmitEnumShorthandComparisonAndAssignmentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumOrderingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An ordering comparison on enum values, c < Color.blue — also confirmed
 	// checker-reachable (the checker accepts it, unlike bool ordering). Both
 	// operands lower to their enum constants (green = ordinal 1, blue = ordinal
@@ -2213,6 +2383,7 @@ func TestEmitEnumOrderingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumWhileConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An enum equality comparison as a while condition, reassigning the enum
 	// local inside the loop so the loop terminates. The first iteration sees
 	// c == Color.red true (c = red), so the loop runs once, reassigns c to
@@ -2222,6 +2393,7 @@ func TestEmitEnumWhileConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumLocalUnusedCompilesClean(t *testing.T) {
+	t.Parallel()
 	// A plain enum local declared and never referenced after its declaration
 	// still compiles clean under -Wall -Wextra -Werror: the emitted declaration
 	// is followed by the same (void) cast every other local gets, so the strict
@@ -2230,6 +2402,7 @@ func TestEmitEnumLocalUnusedCompilesClean(t *testing.T) {
 }
 
 func TestEmitEnumWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly for one fixture: the enum typedef's exact
 	// shape (one named constant per variant, in declared order, named from each
 	// variant's symbol ID; the typedef named from the enum's type ID), the
@@ -2267,6 +2440,7 @@ func TestEmitEnumWritesC(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro from the brief: `Color.green as i32` in an i32
 	// entry. The checker lowers the cast to a tir.EnumToInteger whose single
 	// child is the EnumVariantValue Color.green, and the backend lowers it to a
@@ -2276,6 +2450,7 @@ func TestEmitEnumToIntegerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerZeroOrdinalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The first-declared variant (red) has C ordinal 0, so casting it to an
 	// integer yields 0 — proving the cast reads the actual declared-order
 	// discriminant rather than always producing a nonzero value.
@@ -2283,6 +2458,7 @@ func TestEmitEnumToIntegerZeroOrdinalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A different destination integer width than the entry's result type: the
 	// cast's destination (i64) is the entry's own width here, so the
 	// EnumToInteger node's Type matches the surrounding width gate exactly as an
@@ -2291,6 +2467,7 @@ func TestEmitEnumToIntegerI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerUnsignedNestedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An unsigned destination (u32) inside an i32 entry: a cast whose
 	// destination is not the entry's width is only valid where the surrounding
 	// context is that width, so it appears as a u32 local's initializer, then
@@ -2300,6 +2477,7 @@ func TestEmitEnumToIntegerUnsignedNestedCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerFromLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An enum value read from a local (not just a variant literal) cast to an
 	// integer: the EnumToInteger's child is a SymbolValue naming the enum-typed
 	// local, built by buildEnumValue as pebble_local_<sym> and cast directly.
@@ -2308,6 +2486,7 @@ func TestEmitEnumToIntegerFromLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerFromLocalI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The from-a-local form at a different width (i64): the local's value is
 	// read and cast to the destination width, again via the same
 	// buildEnumValue + plain C cast lowering.
@@ -2315,6 +2494,7 @@ func TestEmitEnumToIntegerFromLocalI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumToIntegerWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the EnumToInteger lowers to a plain C
 	// cast of the enum constant to the destination C type, (int32_t)(...), with
 	// no runtime helper and no intermediate enum-typedef step.
@@ -2339,6 +2519,7 @@ func TestEmitEnumToIntegerWritesC(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumOutOfRangeSafePanics(t *testing.T) {
+	t.Parallel()
 	// The minimal repro: `5 as Color` where Color has three variants (red,
 	// green, blue, ordinals 0-2) — 5 names no real variant. Compiled in
 	// PEBBLE_RT_MODE_SAFE, the cast must panic through the runtime's checked
@@ -2351,6 +2532,7 @@ func TestEmitCheckedIntegerToEnumOutOfRangeSafePanics(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumOutOfRangeReleaseDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	// The same `5 as Color` in PEBBLE_RT_MODE_RELEASE: the bounds check is
 	// skipped entirely (release trusts the input), so the cast produces some
 	// enum value and the program runs to its return 0. Which enum value it is
@@ -2360,6 +2542,7 @@ func TestEmitCheckedIntegerToEnumOutOfRangeReleaseDoesNotPanic(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumValidRoundTripsSafe(t *testing.T) {
+	t.Parallel()
 	// An in-range cast, `1 as Color` (ordinal 1, green), verified end to end
 	// by casting it back with EnumToInteger: the round-trip value must be 1 in
 	// SAFE mode.
@@ -2367,12 +2550,14 @@ func TestEmitCheckedIntegerToEnumValidRoundTripsSafe(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumValidRoundTripsRelease(t *testing.T) {
+	t.Parallel()
 	// The same in-range `1 as Color` round trip in RELEASE mode: the unchecked
 	// cast passes 1 through, cast back to i32 it is still 1.
 	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = 1 as Color;\nreturn c as i32;\n}", 1, false)
 }
 
 func TestEmitCheckedIntegerToEnumNegativeSafePanics(t *testing.T) {
+	t.Parallel()
 	// `-1 as Color`: a genuinely negative signed source. The backend widens it
 	// to int64_t (sign-extending), and the primitive's unsigned comparison
 	// (uint64_t)(-1) >= (uint64_t)3 must reject it — the exact case the
@@ -2381,12 +2566,14 @@ func TestEmitCheckedIntegerToEnumNegativeSafePanics(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumNegativeReleaseDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	// The same `-1 as Color` in RELEASE mode: no bounds check, so the program
 	// runs to its return 0 instead of panicking.
 	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet c Color = -1 as Color;\nreturn 0;\n}", 0, false)
 }
 
 func TestEmitCheckedIntegerToEnumFromLocalSafePanics(t *testing.T) {
+	t.Parallel()
 	// A source value from a local (not a literal): `n as Color` where n is an
 	// i32 local holding 5 — out of range for a 3-variant enum. The local read
 	// feeds the same checked cast; SAFE mode panics.
@@ -2394,12 +2581,14 @@ func TestEmitCheckedIntegerToEnumFromLocalSafePanics(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumFromLocalValidRoundTripsSafe(t *testing.T) {
+	t.Parallel()
 	// An in-range local source: n = 2, `n as Color` is ordinal 2 (blue),
 	// round-tripped back through EnumToInteger to 2.
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nlet n i32 = 2;\nlet c Color = n as Color;\nreturn c as i32;\n}", false, 2, false)
 }
 
 func TestEmitCheckedIntegerToEnumStorePositionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A store-position cast: `c = 2 as Color;` reassigns an already-declared
 	// enum local (buildStoreCore's enum branch routes the value through
 	// buildEnumValue, which now accepts the cast), so the store lands ordinal 2
@@ -2408,6 +2597,7 @@ func TestEmitCheckedIntegerToEnumStorePositionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCheckedIntegerToEnumComparisonPositionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A comparison-position cast: `(2 as Color) == Color.blue` compares the
 	// cast result against a variant literal (buildComparison's enum branch),
 	// which is true since the cast produces ordinal 2.
@@ -2415,6 +2605,7 @@ func TestEmitCheckedIntegerToEnumComparisonPositionCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the cast lowers to
 	// `(<enum typedef>)pebble_rt_checked_int_to_enum((int64_t)(<child>),
 	// <variant_count>, <loc>)` — the source widened to the primitive's int64_t
@@ -2441,6 +2632,7 @@ func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseSafe(t *testing.T) {
+	t.Parallel()
 	// The exact repro: `var c ?Color = 5 as ?Color;` where Color has three
 	// variants (red, green, blue, ordinals 0-2) — 5 names no real variant.
 	// The cast must produce an optional whose has_value is false, verified by
@@ -2449,6 +2641,7 @@ func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseSafe(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseRelease(t *testing.T) {
+	t.Parallel()
 	// The same `var c ?Color = 5 as ?Color;` in PEBBLE_RT_MODE_RELEASE.
 	// Unlike the checked cast (which skips its check in RELEASE), the
 	// optional's validity query must be correct in BOTH modes — a wrong
@@ -2458,6 +2651,7 @@ func TestEmitOptionalIntegerToEnumOutOfRangeHasValueFalseRelease(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsSafe(t *testing.T) {
+	t.Parallel()
 	// The strongest confirmation that has_value is false: force-unwrapping
 	// the absent optional (`c!`) panics through
 	// pebble_rt_checked_unwrap_i32 in SAFE mode, so the process terminates
@@ -2466,6 +2660,7 @@ func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsSafe(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsRelease(t *testing.T) {
+	t.Parallel()
 	// The same force-unwrap in RELEASE: unwrapping an absent optional panics
 	// in every configuration (the runtime's unwrap is not mode-gated), so
 	// the process terminates abnormally here too — and the panicking unwrap
@@ -2474,6 +2669,7 @@ func TestEmitOptionalIntegerToEnumOutOfRangeUnwrapPanicsRelease(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumValidRoundTripsSafe(t *testing.T) {
+	t.Parallel()
 	// An in-range cast, `1 as ?Color` (ordinal 1, green): has_value must be
 	// true, and the unwrapped value must be the green variant — verified by a
 	// round trip through EnumToInteger, exactly the CheckedIntegerToEnum
@@ -2483,6 +2679,7 @@ func TestEmitOptionalIntegerToEnumValidRoundTripsSafe(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumValidRoundTripsRelease(t *testing.T) {
+	t.Parallel()
 	// The same in-range `1 as ?Color` round trip in RELEASE mode: the
 	// validity query and the value both behave identically to SAFE, so the
 	// unwrapped value still round-trips to 1 (green).
@@ -2490,6 +2687,7 @@ func TestEmitOptionalIntegerToEnumValidRoundTripsRelease(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumFromLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A source value from a local (not a literal): `n as ?Color` where n is
 	// an i32 local. In range (n = 2, blue), has_value is true and the unwrap
 	// round-trips to 2; out of range (n = 7), has_value is false.
@@ -2500,6 +2698,7 @@ func TestEmitOptionalIntegerToEnumFromLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnce(t *testing.T) {
+	t.Parallel()
 	// The actual point of the pre-statement design: the cast must evaluate
 	// its source integer exactly ONCE. bump(&count) increments count through
 	// the pointer and returns 0; if the source expression were embedded twice
@@ -2509,12 +2708,14 @@ func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnce(t *testing.T) {
 }
 
 func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnceRelease(t *testing.T) {
+	t.Parallel()
 	// The same single-evaluation guarantee in RELEASE mode — identical
 	// behavior, since the temp-hoisting design is mode-independent.
 	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn bump(p *i32) i32 { *p = *p + 1; return 0; } fn main() i32 {\nvar count i32 = 0;\nvar c ?Color = bump(&count) as ?Color;\nif !c.has_value { return 99; }\nreturn count;\n}", 1, false)
 }
 
 func TestEmitOptionalIntegerToEnumForLoopInitializerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The for-loop-initializer position: `for var c ?Color = ...; ...` — the
 	// cast is hoisted into an int64_t temp emitted as a statement before the
 	// for, and the header's init clause is the optional-typed local reading
@@ -2533,6 +2734,7 @@ func TestEmitOptionalIntegerToEnumForLoopInitializerCompilesAndRuns(t *testing.T
 }
 
 func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the source integer is evaluated exactly
 	// once into an int64_t temp (a pre-statement), and the optional local is
 	// then constructed with both fields read from that single temp — the
@@ -2568,6 +2770,7 @@ func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalImplicitInjectionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Implicit optional injection (`var o ?int = 5;`, no `some` keyword) is a
 	// tir.OptionalInject node, distinct from an explicit tir.SomeOptional —
 	// found unimplemented during a real-code audit (checker accepts it,
@@ -2584,6 +2787,7 @@ func TestEmitOptionalImplicitInjectionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionLocalSwitchValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship fixture from the brief: a tagged-union local constructed
 	// with a payload (Choice.value(5)) and switched on by discriminant, each
 	// case returning a distinct value. The union is emitted as a tagged struct
@@ -2594,6 +2798,7 @@ func TestEmitUnionLocalSwitchValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionLocalSwitchEmptyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, c constructed as the payload-less variant (Choice.empty, an
 	// EnumVariantValue): the empty case fires and the exit code is 0, proving
 	// the payload-less variant of a tagged union (whose other variant DOES
@@ -2603,6 +2808,7 @@ func TestEmitUnionLocalSwitchEmptyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A multi-value case on a tagged-union subject: `case Choice.empty,
 	// Choice.value:` produces two SwitchCase nodes sharing one body node ID
 	// (confirmed against a real fixture), which stack as two C case labels
@@ -2612,12 +2818,14 @@ func TestEmitUnionSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionSwitchElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An else arm on a tagged-union switch: c = Choice.empty is covered by no
 	// case (only value has one), so the else/default arm fires and returns 20.
 	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.empty;\nswitch c { case Choice.value: return 10; else: return 20; }\n}", false, 20, false)
 }
 
 func TestEmitUnionStoreCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a tagged-union local from a payload-less construction to a
 	// payload-carrying one (c = Choice.value(5);) lowers through buildStoreCore
 	// to the union's compound literal, so the subsequent switch fires the value
@@ -2627,6 +2835,7 @@ func TestEmitUnionStoreCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionBoolPayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool payload variant (Flag.on(true)): the union member is declared bool
 	// and the payload expression builds under the bool grammar. The on case
 	// fires and the exit code is 1.
@@ -2634,6 +2843,7 @@ func TestEmitUnionBoolPayloadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionTwoPayloadVariantsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tagged union with two non-void variants whose payload types differ (one
 	// i32, one bool): both union members are declared (int32_t and bool), the
 	// construction of each names its own member, and the discriminant alone
@@ -2644,6 +2854,7 @@ func TestEmitUnionTwoPayloadVariantsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionTwoPayloadVariantsOtherCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same two-payload-variant union, switching on the bool-constructed local:
 	// the big case fires (exit 2), proving the discriminant dispatch reaches
 	// the other payload-carrying variant too.
@@ -2651,6 +2862,7 @@ func TestEmitUnionTwoPayloadVariantsOtherCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionRecordConstructQualifiedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The .{ Int = 42 } construction surface for a tagged union, qualified form:
 	// finishRecord routes it to an aggregateTaggedVariant record and the IR
 	// builder produces the same VariantConstruct node as the call-syntax form
@@ -2660,6 +2872,7 @@ func TestEmitUnionRecordConstructQualifiedCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionRecordConstructInferredCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same construction via the inferred receiver form (.{ Int = 42 } against an
 	// annotated destination): the variant symbol is re-derived by name at IR
 	// build time, and the emitted switch still fires the Int case (exit 1).
@@ -2667,6 +2880,7 @@ func TestEmitUnionRecordConstructInferredCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionVariantLiteralSwitchSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A variant construction used directly as the switch subject (switch
 	// Choice.value(5)) — confirmed checker-reachable — is built as the union's
 	// compound literal and its .tag field read, so the value case fires.
@@ -2674,6 +2888,7 @@ func TestEmitUnionVariantLiteralSwitchSubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionPayloadRoundTripsThroughConstruction(t *testing.T) {
+	t.Parallel()
 	// No syntax in the language reads a tagged-union payload back out (a switch
 	// case value is a bare expression — there is no pattern-binding syntax, so
 	// a case can only ever match by discriminant), so the payload's round-trip
@@ -2688,6 +2903,7 @@ func TestEmitUnionPayloadRoundTripsThroughConstruction(t *testing.T) {
 }
 
 func TestEmitUnionAllVoidVariantsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tagged union every variant of which is payload-less (union enum { a
 	// void; b void; } — legal per the grammar, since `union enum` merely marks
 	// the tagged form) reaches this backend with no payload-carrying
@@ -2699,6 +2915,7 @@ func TestEmitUnionAllVoidVariantsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionSwitchInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tagged-union local and switch inside a reachable helper, the entry
 	// calling the helper: collectUnionTypes walks every reachable helper's
 	// body, so the union's typedef pair is discovered and emitted even when no
@@ -2707,6 +2924,7 @@ func TestEmitUnionSwitchInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnionLocalUnusedCompilesClean(t *testing.T) {
+	t.Parallel()
 	// A tagged-union local declared and never referenced after its declaration
 	// still compiles clean under -Wall -Wextra -Werror: the emitted declaration
 	// is followed by the same (void) cast every other local gets, so the strict
@@ -2715,6 +2933,7 @@ func TestEmitUnionLocalUnusedCompilesClean(t *testing.T) {
 }
 
 func TestEmitUnionWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly for one fixture: the tag-enum typedef
 	// (one constant per variant in declared order), the tagged-struct typedef
 	// with its union member(s) named pebble_field_<member> from each
@@ -2761,6 +2980,7 @@ func TestEmitUnionWritesC(t *testing.T) {
 }
 
 func TestEmitNarrowedUnionVariantPayloadReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Slice C's end-to-end program: a narrowed union-variant payload read
 	// (`r.Ok` inside `case .Ok:`) must emit the payload projection the union's
 	// construction side fills — pebble_local_<sym>.payload.pebble_field_<m> —
@@ -2786,6 +3006,7 @@ fn main() int {
 }
 
 func TestEmitTaggedUnionStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The tagged-union-as-struct-field fix (proposal 13, case 1), proven end to
 	// end: a struct whose field type is a tagged union must both (a) declare
 	// the field with the union's own pebble_union_<typeID>_t typedef — never
@@ -2820,6 +3041,7 @@ fn main() int {
 }
 
 func TestEmitTaggedUnionOptionalPayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The tagged-union-as-optional-payload fix (proposal 13, case 2), proven
 	// end to end: an optional whose payload is a tagged union must declare its
 	// .value field with the union's own pebble_union_<typeID>_t typedef, and a
@@ -2851,6 +3073,7 @@ fn main() int {
 }
 
 func TestEmitTaggedUnionOptionalUnwrapNonePanics(t *testing.T) {
+	t.Parallel()
 	// The union-payload optional force-unwrap is a checked operation, not a
 	// bare field read: force-unwrapping a `none`-carrying ?Choice must panic
 	// with the runtime's unwrap-of-empty-optional panic (PEBBLE_PANIC_UNWRAP_
@@ -2879,6 +3102,7 @@ fn main() int {
 }
 
 func TestEmitTaggedUnionStructFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the struct-field fix, locking in the typedef
 	// ORDERING that is bug 1: the union's typedef pair (the discriminant
 	// pebble_enum_<typeID>_t followed by the tagged pebble_union_<typeID>_t
@@ -2924,6 +3148,7 @@ fn main() int {
 }
 
 func TestEmitTaggedUnionOptionalPayloadWritesC(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the optional-payload fix: the optional struct's
 	// .value field must be declared with the union's own
 	// pebble_union_<typeID>_t typedef — never the bare tag-enum
@@ -2963,6 +3188,7 @@ fn main() int {
 }
 
 func TestEmitSizeofTaggedUnionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// sizeof on a tagged union must resolve to the union's OWN typedef
 	// (pebble_union_<typeID>_t) — never the bare tag enum — and the returned
 	// size must be large enough to actually hold a payload-carrying variant's
@@ -2988,6 +3214,7 @@ fn main() int {
 }
 
 func TestEmitSizeofTaggedUnionOnlyReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The tracker's exact repro shape: sizeof Choice is the ONLY reference to
 	// the tagged union in the whole program — no construction, no struct
 	// field, no optional payload — yet the program must compile and run,
@@ -3009,6 +3236,7 @@ fn main() int {
 }
 
 func TestEmitSizeofTaggedUnionOnlyReferenceEmitsUnionTypedef(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the typedef-collection fix, using the exact
 	// repro shape (sizeof is the ONLY reference to the union): the sizeof must
 	// reference the union's own pebble_union_<typeID>_t typedef — never the
@@ -3059,6 +3287,7 @@ fn main() int {
 }
 
 func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// sizeof on a fixed array must resolve to the array's OWN typedef
 	// (pebble_array_<typeID>_t, the struct wrapper the backend emits for every
 	// array type, see buildArrayTypedefs) — never a clean rejection — and the
@@ -3080,6 +3309,7 @@ func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSizeofFixedArrayOnlyReferenceEmitsArrayTypedef(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the typedef-collection fix, using the exact
 	// repro shape (sizeof is the ONLY reference to the array): the sizeof must
 	// reference the array's own pebble_array_<typeID>_t typedef, and the
@@ -3116,6 +3346,7 @@ func TestEmitSizeofFixedArrayOnlyReferenceEmitsArrayTypedef(t *testing.T) {
 }
 
 func TestEmitSizeofPlainStructOnlyReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The tracker's exact repro shape: sizeof Pair is the ONLY reference to
 	// the plain struct in the whole program — no construction, no field
 	// access, no optional payload, no helper signature — yet the program must
@@ -3140,6 +3371,7 @@ fn main() int {
 }
 
 func TestEmitSizeofPlainStructOnlyReferenceEmitsStructTypedef(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the typedef-collection fix, using the exact
 	// repro shape (sizeof is the ONLY reference to the struct): the sizeof must
 	// reference the struct's own pebble_struct_<typeID>_t typedef, and the
@@ -3191,6 +3423,7 @@ fn main() int {
 }
 
 func TestEmitSizeofPlainEnumOnlyReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The tracker's exact repro shape: sizeof Color is the ONLY reference to
 	// the plain enum in the whole program — no variant literal, no
 	// construction, no cast, no local declaration — yet the program must
@@ -3211,6 +3444,7 @@ fn main() int {
 }
 
 func TestEmitSizeofPlainEnumOnlyReferenceEmitsEnumTypedef(t *testing.T) {
+	t.Parallel()
 	// Emitted-C shape check for the typedef-collection fix, using the exact
 	// repro shape (sizeof is the ONLY reference to the enum): the sizeof must
 	// reference the enum's own pebble_enum_<typeID>_t typedef, and the typedef
@@ -3260,6 +3494,7 @@ fn main() int {
 }
 
 func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A plain enum local and switch inside a reachable helper, the entry
 	// calling the helper: collectEnumTypes walks every reachable helper's body,
 	// so the enum typedef is discovered and emitted even when no reachable
@@ -3269,6 +3504,7 @@ func TestEmitEnumSwitchInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitEnumLocalInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An enum-typed local declared inside a while loop body, reassigned and
 	// compared there, and accumulated: the enum dispatch routes through
 	// buildLeadingStatement from buildLoopBody exactly as a scalar local does.
@@ -3279,30 +3515,35 @@ func TestEmitEnumLocalInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceBothBoundsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Slice from array with both bounds explicit: a[1:3] from [1,2,3,4,5]
 	// gives elements [2,3]; s[0] should be 2.
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[0]; }", false, 2, false)
 }
 
 func TestEmitSliceStartOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Slice with only start bound: a[2:] from [10,20,30,40,50] gives
 	// elements [30,40,50]; s[0] should be 30.
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[2:]; return s[0]; }", false, 30, false)
 }
 
 func TestEmitSliceEndOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Slice with only end bound: a[:3] from [10,20,30,40,50] gives
 	// elements [10,20,30]; s[0] should be 10.
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[:3]; return s[0]; }", false, 10, false)
 }
 
 func TestEmitSliceNoBoundsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Slice with no bounds: a[:] from [10,20,30,40,50] gives all 5 elements;
 	// s[2] should be 30.
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [10, 20, 30, 40, 50]; var s []i32 = a[:]; return s[2]; }", false, 30, false)
 }
 
 func TestEmitSliceBoolElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Bool-element slice: a[1:3] from [true, false, true, false] gives
 	// [false, true]; s[0] is false, so if s[0] { return 1 } else { return 0 }
 	// returns 0; s[1] is true, so if s[1] { return 1 } else { return 0 }
@@ -3311,12 +3552,14 @@ func TestEmitSliceBoolElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// i64-entry slice: a[1:3] from [100,200,300,400,500] gives [200,300];
 	// s[0] should be 200.
 	emitAndRun(t, "fn main() i64 { var a [5]i64 = [100, 200, 300, 400, 500]; var s []i64 = a[1:3]; return s[0]; }", false, 200, false)
 }
 
 func TestEmitU8SliceFromArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// []u8, an entry-width-independent fixed-width integer element (main
 	// returns int, not u8): construct a [3]u8 array, slice it, index-read
 	// element 1. Confirms both the array-typed-local element gate and the
@@ -3325,12 +3568,14 @@ func TestEmitU8SliceFromArrayCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharSliceFromArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// []char, mirroring the u8 case above for char specifically (its own
 	// fixed int32_t C representation, not a resolvedBuiltin integer).
 	emitAndRun(t, "fn main() int { var arr [3]char = ['a', 'b', 'c']; var s []char = arr[:]; if s[1] == 'b' { return 1; } else { return 0; } }", false, 1, false)
 }
 
 func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Unlike TestEmitSliceI64CompilesAndRuns (where i64 IS the entry width,
 	// since main returns i64 there), this entry returns int, so i64 here is
 	// genuinely a non-ambient width — the case that previously only worked
@@ -3339,6 +3584,7 @@ func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayLiteralDirectlyInitializesSliceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An array literal directly initializing a slice-typed local in one step
 	// (`var s []int = [1, 2, 3];`), equivalent to constructing the array then
 	// taking a full slice of it: s[1] must read back the literal's second
@@ -3347,6 +3593,7 @@ func TestEmitArrayLiteralDirectlyInitializesSliceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayLiteralDirectlyInitializesStructSliceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The struct-element twin of the array-literal slice initializer: the
 	// literal's record values must construct into the hidden backing array and
 	// be readable through the full slice, returning the second point's x.
@@ -3354,6 +3601,7 @@ func TestEmitArrayLiteralDirectlyInitializesStructSliceCompilesAndRuns(t *testin
 }
 
 func TestEmitArrayLiteralDirectlyInitializesSliceWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the one-step array-literal slice initializer must be
 	// exactly the two-step workaround's lowering: a hidden backing array local
 	// (pebble_slice_backing_<symbol>) holding the literal's elements, then a
@@ -3377,6 +3625,7 @@ func TestEmitArrayLiteralDirectlyInitializesSliceWritesC(t *testing.T) {
 }
 
 func TestEmitU64SliceConstructionInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The slice-start gap this slice closes: constructing an ordinary INT
 	// slice (arr[:]) inside a u64-returning helper — the u64-ness comes from
 	// the AMBIENT function width, not the slice's own element type — must
@@ -3388,6 +3637,7 @@ func TestEmitU64SliceConstructionInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU64SliceConstructionOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	// The out-of-bounds twin of the slice-start fix: a runtime end bound past
 	// the array length inside a u64-returning helper must route through
 	// pebble_rt_checked_slice_start_u64 and panic with
@@ -3398,6 +3648,7 @@ func TestEmitU64SliceConstructionOutOfBoundsAborts(t *testing.T) {
 }
 
 func TestEmitU64SliceConstructionWritesU64Helper(t *testing.T) {
+	t.Parallel()
 	// Assert the exact helper name in the emitted C: a slice construction
 	// inside a u64-returning helper must call pebble_rt_checked_slice_start_u64.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f() u64 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; return s[1] as u64; } fn main() int { return f() as int; }", "main", false)
@@ -3412,6 +3663,7 @@ func TestEmitU64SliceConstructionWritesU64Helper(t *testing.T) {
 }
 
 func TestEmitSliceOutOfBoundsRangeAborts(t *testing.T) {
+	t.Parallel()
 	// Out-of-range slice end bound: use a helper to supply a runtime end
 	// value that exceeds the array length, bypassing the checker's
 	// compile-time validation. pebble_rt_checked_slice_start_i32 must panic.
@@ -3419,12 +3671,14 @@ func TestEmitSliceOutOfBoundsRangeAborts(t *testing.T) {
 }
 
 func TestEmitSliceIndexOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	// Out-of-range index into a valid slice: a[1:3] gives 2 elements [2,3];
 	// s[5] is out of bounds, triggering pebble_rt_checked_index_i32.
 	emitAndRun(t, "fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; var s []i32 = a[1:3]; return s[5]; }", false, 0, true)
 }
 
 func TestEmitSliceRangeOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	t.Parallel()
 	// Since 10.44, the checked slice-range construction call also carries a
 	// real, resolved Pebble source location (the CheckedSlice node's own
 	// Span) instead of the zero-valued placeholder. This proves both that the
@@ -3446,6 +3700,7 @@ func TestEmitSliceRangeOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 }
 
 func TestEmitSliceIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	t.Parallel()
 	// Since 10.44, an out-of-bounds read through a slice (s[5] on a 2-element
 	// slice) also carries a real, resolved Pebble source location on its
 	// checked-index call instead of the zero-valued placeholder.
@@ -3465,6 +3720,7 @@ func TestEmitSliceIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 }
 
 func TestEmitSliceEmittedCDirectly(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: slice typedef shape, construction
 	// compound-literal text (including inline checked-start call), and
 	// indexing expression (including inline checked-index call and .len cast).
@@ -3503,6 +3759,7 @@ func TestEmitSliceEmittedCDirectly(t *testing.T) {
 }
 
 func TestEmitSliceOfStructElementsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The standalone synthetic repro of the slice-of-struct-elements gap: a
 	// []P slice constructed from a [3]P array via arr[:], then every index
 	// shape std/hmap.peb's real insert/get/rehash use — a field write through a
@@ -3518,6 +3775,7 @@ func TestEmitSliceOfStructElementsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceOfStructElementsEmittedCShape(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for a struct-element slice: the slice typedef's
 	// .data field must be a pointer to the struct's OWN typedef name
 	// (pebble_struct_<typeID>_t *data), not a rejection; the element struct's
@@ -3568,6 +3826,7 @@ func TestEmitSliceOfStructElementsEmittedCShape(t *testing.T) {
 }
 
 func TestEmitSliceOfStructElementsFromRawStdCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The SliceFromRaw shape (`slice ptr, n`) with a struct element — how
 	// std/hmap.peb's rehash/with_capacity actually construct
 	// `let entries []Entry[K, V] = slice ptr, cap;` over an allocator-returned
@@ -3587,6 +3846,7 @@ func TestEmitSliceOfStructElementsFromRawStdCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceOfTupleElementsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-element slice, the sibling of the struct-element widening: the
 	// slice element gate (sliceElementCType / isSupportedSliceElementType)
 	// accepts tuples exactly as arrays already do, so `var s [](i32, i32) =
@@ -3600,6 +3860,7 @@ func TestEmitSliceOfTupleElementsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship slice-parameter fixture: first takes a []i32 parameter and
 	// indexes it inside the helper; the entry slices an array into a slice
 	// local and passes that local. s = a[1:3] = [2,3], so s[0] = 2 is the exit
@@ -3610,6 +3871,7 @@ func TestEmitSliceParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUintBoundedRangeLoopReadsSliceLenCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact shape examples/slice_minmax.peb uses (and the regression test
 	// for the emit gap that file surfaced): a uint-bounded range loop whose end
 	// bound is a slice's `.len` structural field — `loop 1..items.len : iter {`
@@ -3626,6 +3888,7 @@ func TestEmitUintBoundedRangeLoopReadsSliceLenCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceParameterBoolElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-element slice parameter: the element-typed index read routes
 	// through the slice's bool element and drives the return. s = a[1:3] =
 	// [false, true], so s[0] is false and the else arm exits 0.
@@ -3633,6 +3896,7 @@ func TestEmitSliceParameterBoolElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceParameterI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width-generic path holds for slice parameters too, mirroring 10.37's
 	// own i64 test: an i64 entry calls an i64 slice-taking helper whose slice
 	// parameter seeds the callee's scope; s = a[1:3] = [200,300], s[0] = 200 is
@@ -3642,6 +3906,7 @@ func TestEmitSliceParameterI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperInlineConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship slice-return fixture: view's tail return constructs the
 	// slice inline (`return a[1:3];` — the Return child is a bare CheckedSlice,
 	// confirmed against a real fixture), so the return needs the same
@@ -3654,6 +3919,7 @@ func TestEmitSliceReturningHelperInlineConstructionCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitSliceReturningHelperForwardsParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A slice-returning helper forwarding its slice-typed parameter unchanged
 	// (`return s;` — a plain SymbolValue return, the single-statement path):
 	// echo passes its parameter back, the entry declares a slice local from the
@@ -3662,6 +3928,7 @@ func TestEmitSliceReturningHelperForwardsParameterCompilesAndRuns(t *testing.T) 
 }
 
 func TestEmitSliceReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The local side of forwarding an already-declared slice value: g declares
 	// its own array and slice local and `return s;` forwards the local (a
 	// plain SymbolValue), emitting `return pebble_local_<s>;`. The entry
@@ -3671,6 +3938,7 @@ func TestEmitSliceReturningHelperForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperI64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The i64 side of the return-side construction: the return temp must be
 	// declared at int64_t (a width bug in exactly this spot was found and fixed
 	// during 10.37's review), and the caller indexes the returned slice.
@@ -3679,6 +3947,7 @@ func TestEmitSliceReturningHelperI64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperIfElseTailsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two slice-construction returns in the two arms of an if/else tail: each
 	// arm's Return child is a bare CheckedSlice, each built with its own temp
 	// (named from the return value node's NodeID, so the two sibling-block
@@ -3688,6 +3957,7 @@ func TestEmitSliceReturningHelperIfElseTailsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperSwitchCasesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A slice-returning helper whose body tail is a switch whose case bodies
 	// are bare single-statement returns of fresh slice constructions: each case
 	// body routes through buildSwitchCaseBody's bare-Return slice path and
@@ -3698,6 +3968,7 @@ func TestEmitSliceReturningHelperSwitchCasesCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the inline-construction-return fixture: the helper's C
 	// signature declares its return type as the slice typedef, its body emits
 	// the two-statement shape (a temp declaration holding the checked-start
@@ -3728,6 +3999,7 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 }
 
 func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
+	t.Parallel()
 	// The i64 counterpart of the return construction, confirming specifically
 	// that the return-side temp is declared at int64_t (the exact spot where a
 	// width bug was found and fixed during 10.37's review) and then running the
@@ -3751,6 +4023,7 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 }
 
 func TestEmitReSliceSliceFieldDefaultEndCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Re-slicing an EXISTING slice-typed struct field with no start bound and
 	// a runtime end — the exact String::as_slice() shape
 	// (`return self.data[:self.len];` in std/string.peb). The CheckedSlice's
@@ -3776,6 +4049,7 @@ fn main() int {
 }
 
 func TestEmitReSliceSliceFieldExplicitStartCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The explicit-start-bound twin of the re-slice fix: `self.data[1:self.len]`
 	// must offset the base slice's own .data pointer by the runtime start, not
 	// decay a raw array — proving the offset math, not just the zero-start
@@ -3797,6 +4071,7 @@ fn main() int {
 }
 
 func TestEmitReSliceSliceFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the re-slice fixture: the helper's CheckedSlice over a
 	// Load(FieldPlace) slice base emits the same two-statement shape as the
 	// array base (a temp declaration holding the checked-start result, then
@@ -3839,6 +4114,7 @@ fn main() int {
 }
 
 func TestEmitPrintIndexesMethodCallSliceResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmed real-world blocking shape: indexing a MethodCall's slice
 	// result directly inside a print statement (`print b.view()[1];`,
 	// examples/read_file.peb's original contents.as_slice()[i] pattern before
@@ -3864,6 +4140,7 @@ fn main() int {
 }
 
 func TestEmitPrintIndexesMethodCallSliceResultEvaluatesBaseOnce(t *testing.T) {
+	t.Parallel()
 	// Correctness-critical: the base method call must run EXACTLY ONCE, not
 	// once for the bounds-check .len and again for the .data read - a naive
 	// lowering that referenced the call expression twice would run the
@@ -3886,6 +4163,7 @@ fn main() int {
 }
 
 func TestEmitPrintIndexesMethodCallSliceResultCharElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The char-element twin: indexing a MethodCall's []char result directly
 	// inside print - the exact type read_file.peb's contents.as_slice()[i]
 	// shape needed. Routed through buildCharOperand's CheckedIndex case
@@ -3907,6 +4185,7 @@ fn main() int {
 }
 
 func TestEmitIndexesSliceTypedFieldDirectlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The "cheap to duplicate" base shape: indexing a slice-typed struct
 	// field directly (self.data[i], a Load of a slice-typed place) needs no
 	// temp - it's a pure, side-effect-free projection, safe to reference
@@ -3925,6 +4204,7 @@ fn main() int {
 }
 
 func TestEmitSliceStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact repro this gap was filed for: a plain, non-generic struct with
 	// a slice-typed field whose construction value is an inline slice
 	// expression (`Bag.{ items = arr[:] }`). The RecordConstruct's field value
@@ -3944,6 +4224,7 @@ fn main() int {
 }
 
 func TestEmitSliceStructFieldInlineConstructionEmitsTempStatement(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the inline-construction fixture: the struct field
 	// construction is the two-statement shape — a pebble_field_slice_<nodeID>
 	// temp declaration holding the checked slice-start result, then the struct
@@ -3979,6 +4260,7 @@ fn main() int {
 }
 
 func TestEmitSliceStructFieldSliceFromRawCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same gap via SliceFromRaw: a raw-pointer-derived slice (`slice ptr,
 	// n` — the raw-slice builtin, restricted to std-package source) used
 	// directly as a slice-typed field's construction value. The RecordConstruct
@@ -4010,6 +4292,7 @@ fn main() i32 {
 }
 
 func TestEmitSliceFieldReassignmentFromRawCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare SliceFromRaw as a slice-field REASSIGNMENT value — the
 	// std/string.peb grow shape (`self.data = slice ptr, new_cap;`), where the
 	// Store's value is a SliceFromRaw node rather than a reference to a
@@ -4035,6 +4318,7 @@ fn main() i32 {
 }
 
 func TestEmitSliceStructFieldLocalReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The already-working shape must keep working exactly as before: construct
 	// the slice into a local FIRST, then use that local as the field's
 	// construction value. The field value is a SymbolValue naming a slice-typed
@@ -4050,6 +4334,7 @@ fn main() int {
 }
 
 func TestEmitGenericSliceStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The generic case this gap was originally investigated for: a generic
 	// struct with a slice field instantiated as Bag[int] and constructed inline
 	// (`Bag[int].{ items = arr[:] }`). The root cause is unrelated to
@@ -4065,6 +4350,7 @@ fn main() int {
 }
 
 func TestEmitOptionalResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact repro this slice was filed for: an optional-returning helper
 	// called as the direct initializer of a matching optional-typed local.
 	// `return 5;` is an implicit injection whose return child is the bare
@@ -4076,6 +4362,7 @@ func TestEmitOptionalResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultNoneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// `return none;` from an optional-result helper: the caller-side has_value
 	// must be false, so the false path of the if is taken and 0 is returned.
 	// Both the bare tail return and the `some`-explicit form are exercised.
@@ -4084,6 +4371,7 @@ func TestEmitOptionalResultNoneCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultImplicitInjectionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The implicit-injection-in-return path specifically: `return 5;` with no
 	// `some` keyword. The checker emits the bare payload IntegerLiteral as the
 	// return child (no OptionalInject wrapper, unlike a local declaration's
@@ -4097,6 +4385,7 @@ func TestEmitOptionalResultImplicitInjectionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A SymbolValue return: the helper declares an optional-typed local (itself
 	// implicitly injected from the bare integer 5, exercising the existing
 	// OptionalInject local-declaration path) and `return o;` forwards it,
@@ -4106,6 +4395,7 @@ func TestEmitOptionalResultForwardsLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultCallsHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// One optional-returning helper calling another (`return g();`): the
 	// return child is a DirectCall carrying the optional result type, built by
 	// the same buildDirectCall machinery any call uses and forwarded as the
@@ -4115,6 +4405,7 @@ func TestEmitOptionalResultCallsHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultBoolPayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-payload optional result: the payload is built by buildBoolExpr
 	// (not hardcoded to an integer payload), and the unwrapped bool drives an
 	// if at the call site (`if o!` — the same shape the existing bool optional
@@ -4124,6 +4415,7 @@ func TestEmitOptionalResultBoolPayloadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultStructPayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A struct-payload optional result: `return some P.{ x = 1, y = 2 };` is a
 	// SomeOptional wrapping a RecordConstruct, built by the shared
 	// buildOptionalValueExpr → buildStructValueExpr dispatch (the same payload
@@ -4143,6 +4435,7 @@ func TestEmitOptionalResultStructPayloadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultTuplePayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple-payload optional result, in both spellings: the explicit
 	// `return some (1, 2);` (SomeOptional wrapping a TupleValue) and the
 	// implicit `return (1, 2);` whose aggregate payload the checker wraps in an
@@ -4157,6 +4450,7 @@ func TestEmitOptionalResultTuplePayloadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalResultWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship repro: the optional typedef (bool
 	// has_value plus the payload's int32_t value) precedes the helper, the
 	// helper's signature declares its return type as pebble_optional_23_t (the
@@ -4192,6 +4486,7 @@ func TestEmitOptionalResultWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the struct-payload fixture: the struct typedef
 	// precedes the optional typedef that names it as its value field
 	// (definition before use — the same ordering the aggregate-typedef DFS
@@ -4223,6 +4518,7 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the tuple-payload implicit-injection fixture: the
 	// tuple typedef precedes the optional typedef, and the helper's return
 	// emits the nested compound literal with the tuple construction as .value —
@@ -4254,6 +4550,7 @@ func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
 }
 
 func TestEmitOptionalParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Optional-typed PARAMETERS: a helper taking a ?int parameter, called
 	// with a scalar implicit-injection argument (`g(5)`, which arrives as an
 	// OptionalInject node at a call site — unlike a return position's bare
@@ -4264,28 +4561,33 @@ func TestEmitOptionalParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalParameterNoneArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A fresh `none` passed directly as the argument.
 	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(none); }", false, 0, false)
 }
 
 func TestEmitOptionalParameterSomeArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A fresh `some x` passed directly as the argument.
 	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(some 5); }", false, 1, false)
 }
 
 func TestEmitOptionalParameterForwardsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An already-declared optional-typed local passed as the argument — the
 	// SymbolValue-forward shape.
 	emitAndRun(t, "fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { var n ?int = none; return g(n); }", false, 0, false)
 }
 
 func TestEmitOptionalParameterForwardsCallResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The result of another optional-returning call passed directly as the
 	// argument — the DirectCall-forward shape.
 	emitAndRun(t, "fn f() ?int { return 5; } fn g(o ?int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(f()); }", false, 1, false)
 }
 
 func TestEmitOptionalParameterStructPayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple/struct-payload optional parameter, not just an integer payload
 	// — confirms the payload-type dispatch isn't hardcoded to scalars. Bool
 	// implicit injection is checker-rejected (T0505, matching the identical
@@ -4295,10 +4597,12 @@ func TestEmitOptionalParameterStructPayloadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOptionalParameterTuplePayloadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn g(o ?(int, int)) int { if o.has_value { return 1; } return 0; } fn main() int { return g(some (1, 2)); }", false, 1, false)
 }
 
 func TestEmitOptionalResultTestsStillPass(t *testing.T) {
+	t.Parallel()
 	// Regression guard: the optional-RESULT machinery (landed earlier this
 	// session) is unaffected by adding parameter support — the shared
 	// buildOptionalValue (generalized from buildOptionalReturnValue to serve
@@ -4309,6 +4613,7 @@ func TestEmitOptionalResultTestsStillPass(t *testing.T) {
 }
 
 func TestEmitNoneOptionalOfConstructedStructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Found during a real-code audit: isEnumType (the function distinguishing
 	// a Nominal type's struct-vs-enum classification) used to guess from
 	// FieldPlace/RecordConstruct usage evidence and defaulted to "enum" when
@@ -4336,6 +4641,7 @@ func TestEmitNoneOptionalOfConstructedStructCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNoneOptionalOfUnusedStructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// P is only named as the payload of an absent optional. Its fields have no
 	// FieldPlace or RecordConstruct usage evidence, so this exercises the
 	// declaration-level member type carried by TypeDecl.
@@ -4343,6 +4649,7 @@ func TestEmitNoneOptionalOfUnusedStructCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The parameter C type for a slice-taking helper: the C signature declares
 	// the parameter as the slice type's own struct typedef (the same
 	// pebble_slice_<typeID>_t 10.37's local declaration builds, no new typedef
@@ -4371,6 +4678,7 @@ func TestEmitSliceParameterWritesC(t *testing.T) {
 }
 
 func TestEmitSliceConstructionAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The leading-statement-argument slice: an inline slice construction passed
 	// directly as a call argument works when the CALL ITSELF is in a
 	// leading-statement position, because that position has a natural place for
@@ -4400,6 +4708,7 @@ fn main() int {
 }
 
 func TestEmitSliceConstructionAsCallArgumentEmitsTempStatement(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the inline-construction call statement: the slice
 	// argument is the two-statement temp-then-construction shape a slice local's
 	// declaration and the return side already use — a pebble_slice_arg_<nodeID>
@@ -4436,6 +4745,7 @@ fn main() int {
 }
 
 func TestEmitSliceConstructionAsNestedCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from spec/compiler/proposals/13's active defect:
 	// an inline slice construction passed as an argument to wrap(), whose own
 	// call is main's return value — a call in a pure expression position where
@@ -4462,6 +4772,7 @@ fn main() int {
 }
 
 func TestEmitNestedSliceConstructionArgumentEmitsStatementExpr(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a slice-construction argument in a nested (pure
 	// expression) position: the SAME two-statement text the leading-statement
 	// lowering produces (a pebble_slice_arg_<nodeID> temp declaration holding
@@ -4500,6 +4811,7 @@ fn main() i32 {
 }
 
 func TestEmitArrayElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship array element write: a[2] = 99 replaces the middle slot of
 	// [1,2,3,4,5], and the sum of all five slots read back (1 + 2 + 99 + 4 + 5
 	// = 111) confirms the write landed at exactly the indexed slot and
@@ -4508,6 +4820,7 @@ func TestEmitArrayElementWriteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship slice element write: s = a[1:3] = [2, 3], s[0] = 9 replaces
 	// the first slot of the slice's view, and s[0] + s[1] = 9 + 3 = 12 read
 	// back confirms the write through the slice actually changed the underlying
@@ -4516,6 +4829,7 @@ func TestEmitSliceElementWriteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceParameterElementWriteObservedByCaller(t *testing.T) {
+	t.Parallel()
 	// A slice-typed parameter's element written inside the helper, observed by
 	// the caller after the call returns: set writes s[0] = 9 where the caller
 	// passed s = a[1:3], so the write lands in a[1] (the slice's first slot is
@@ -4527,6 +4841,7 @@ func TestEmitSliceParameterElementWriteObservedByCaller(t *testing.T) {
 }
 
 func TestEmitArrayBoolElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-element array write: a[0] = true replaces a false slot, and the
 	// element read back drives an if condition — exit 1 proves the bool write
 	// landed and read back correctly (not just that it compiled).
@@ -4534,6 +4849,7 @@ func TestEmitArrayBoolElementWriteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSliceBoolElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-element slice write: s = a[1:3] = [false, true], s[0] = true
 	// replaces the view's first (false) slot, and reading s[0] back drives an
 	// if condition — exit 1 proves the bool write through the slice landed.
@@ -4541,6 +4857,7 @@ func TestEmitSliceBoolElementWriteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64ArrayElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width-generic path holds for writes too: an i64 entry writes an i64
 	// array element (the lvalue lowers through pebble_rt_checked_index_i64 and
 	// the RHS through buildExpr at i64), and a[1] = 21 read back is the exit
@@ -4549,6 +4866,7 @@ func TestEmitI64ArrayElementWriteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitArrayElementWriteOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	// An out-of-bounds array element WRITE: a[i] = 9 with a runtime i = 5 on a
 	// [2]i32 array must panic through the exact same pebble_rt_checked_index_i32
 	// call the read side uses — the lvalue text is identical either way, so
@@ -4558,6 +4876,7 @@ func TestEmitArrayElementWriteOutOfBoundsAborts(t *testing.T) {
 }
 
 func TestEmitSliceElementWriteOutOfBoundsAborts(t *testing.T) {
+	t.Parallel()
 	// An out-of-bounds slice element WRITE: s = a[1:3] has len 2, and s[i] = 9
 	// with a runtime i = 5 must panic through
 	// pebble_rt_checked_index_i32(i, (int32_t)s.len) at runtime.
@@ -4565,6 +4884,7 @@ func TestEmitSliceElementWriteOutOfBoundsAborts(t *testing.T) {
 }
 
 func TestEmitArrayElementWriteWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for an array element write: the Store lowers to a plain
 	// assignment expression whose lvalue is the exact bounds-checked subscript
 	// buildPlaceLValue's CheckedIndexPlace case produces for an array base —
@@ -4590,6 +4910,7 @@ func TestEmitArrayElementWriteWritesC(t *testing.T) {
 }
 
 func TestEmitSliceElementWriteWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a slice element write: the Store lowers to a plain
 	// assignment expression whose lvalue is the exact bounds-checked .data
 	// subscript buildPlaceLValue's CheckedIndexPlace case produces for a slice
@@ -4616,6 +4937,7 @@ func TestEmitSliceElementWriteWritesC(t *testing.T) {
 }
 
 func TestEmitPointerReceiverSliceIndexAddressOfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The returned pointer must alias the backing slice in the original struct:
 	// get(1) returns &self.data[1], and the caller mutates that element through
 	// the returned pointer before reading it back through the struct field.
@@ -4624,6 +4946,7 @@ func TestEmitPointerReceiverSliceIndexAddressOfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStructPointerRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	t.Skip("blocked: (*p).x on a struct pointer degrades to a tir.FieldValue node (field-of-value, not field-of-place) because the checker's place-tracking doesn't extend a DereferencePlace through a field-access base in this position — confirmed the same gap blocks even materializing the whole dereferenced struct into a local (`let v Point = *p;` also fails). Needs new struct-rvalue backend support, scoped as its own follow-up in spec/compiler/proposals/11-raw-pointers-and-unsafe-ops.md.")
 	// Takes the address of a struct local, dereferences the pointer, and reads
 	// a field through the dereferenced result.
@@ -4633,6 +4956,7 @@ func TestEmitStructPointerRoundTripCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVariadicCallSumsCollectedSliceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro: fn sum(...values []int) int { return
 	// values[0] + values[1] + values[2]; } fn main() int { return sum(10,
 	// 20, 30); } Confirms the collected variadic slice has both the right
@@ -4643,6 +4967,7 @@ func TestEmitVariadicCallSumsCollectedSliceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedLocalDoesNotRegressAllocator(t *testing.T) {
+	t.Parallel()
 	// The general indirect-call path (buildFunctionIndirectCall) must not
 	// interfere with the pre-existing allocator-specific indirect call
 	// (context.default_allocator.alloc(...) and friends), which shares the
@@ -4656,6 +4981,7 @@ func TestEmitFunctionTypedLocalDoesNotRegressAllocator(t *testing.T) {
 }
 
 func TestEmitFunctionTypedStructFieldCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro: constructing a struct with a function-typed
 	// field (Table.{ op = add }) and calling directly through the field
 	// (t.op(1, 2)), no intermediate local. The field read reaches
@@ -4666,6 +4992,7 @@ func TestEmitFunctionTypedStructFieldCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedStructFieldViaLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reading a function-typed field into a local first, then calling
 	// through the local — confirms the field-read value forwards correctly
 	// into buildFunctionLocalDeclaration (slice 1) unchanged, and exercises
@@ -4676,6 +5003,7 @@ func TestEmitFunctionTypedStructFieldViaLocalCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedStructFieldNeverReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function-typed field that is constructed but never read back by
 	// name anywhere else — confirms the typedef-collection and
 	// reachability-walk fixes (RecordConstruct.Fields isn't part of
@@ -4687,6 +5015,7 @@ func TestEmitFunctionTypedStructFieldNeverReadCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedStructFieldWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the function typedef appears BEFORE
 	// the struct typedef that names it as a field's C type (slice 2
 	// reverses slice 1's "function typedefs are self-contained, append
@@ -4709,6 +5038,7 @@ func TestEmitFunctionTypedStructFieldWritesC(t *testing.T) {
 }
 
 func TestEmitFunctionTypedStructFieldDoesNotRegressAllocator(t *testing.T) {
+	t.Parallel()
 	// The exact collision this slice was built to avoid: a function-typed
 	// struct field read (t.op) produces the same FieldValue TIR node kind a
 	// real allocator field access does. This program exercises both in the
@@ -4719,12 +5049,14 @@ func TestEmitFunctionTypedStructFieldDoesNotRegressAllocator(t *testing.T) {
 }
 
 func TestEmitFunctionTypedParameterStructFieldArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Passing a function-typed STRUCT FIELD as a call argument — combines
 	// slice 2 (struct fields) and slice 3 (parameters).
 	emitAndRun(t, "type Table = struct { op fn(int, int) int; }; fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { var t Table = Table.{ op = add }; return apply(t.op, 1, 2); }", false, 3, false)
 }
 
 func TestEmitFunctionTypedParameterResultDoesNotRegressAllocator(t *testing.T) {
+	t.Parallel()
 	// The same allocator-collision class slices 1 and 2 each guarded against,
 	// exercised for parameters and results specifically.
 	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int {\nlet allocator = context.default_allocator;\nlet p *int = allocator.alloc(allocator.ptr, sizeof int) as *int;\n*p = apply(add, 3, 4);\nreturn *p;\n}", false, 7, false)
@@ -4732,6 +5064,7 @@ func TestEmitFunctionTypedParameterResultDoesNotRegressAllocator(t *testing.T) {
 }
 
 func TestEmitU64FunctionTypeStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The motivating real-code shape, concretized without a generic struct:
 	// a function-typed STRUCT FIELD whose signature returns u64 (hmap's
 	// `hash_fn fn (K) u64`) and a separate struct field whose signature takes
@@ -4742,6 +5075,7 @@ func TestEmitU64FunctionTypeStructFieldCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerFunctionTypeStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function-valued STRUCT FIELD whose signature takes a `*int` parameter
 	// AND returns a `*int` result (`op fn(*int) *int`), constructed and called
 	// through the field. This is the pointer-bearing mirror of slice 2's

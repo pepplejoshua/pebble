@@ -193,15 +193,15 @@ func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
 // buildRuntimeAllocatorCallbackAdapter validates one Allocator callback field's
 // construction value (a member of AllocatorAlloc/AllocatorRealloc/AllocatorFree)
 // and, when it is a supported source-level function reference, registers — into
-// the package-level emitAllocatorAdapters map, deduplicated by bridge name — the
-// file-scope C bridge that adapts the user's emitted helper into the field's
-// runtime ABI type, returning the bridge's C name for the construction's
-// designated initializer to reference. Anything else is a clean rejection
-// naming what was found. The checker already requires a callback field's value
-// to be exactly the field's function type (fn(ctx *void, size uint) *void and
-// friends), so the only reachable shape is a HoistedFunctionValue; everything
-// else is defense for hand-built IR.
-func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapshot, member symbol.SymbolID, valueNode tir.Node, context string) (string, error) {
+// the current Emit's allocatorAdapters map (emitState.allocatorAdapters),
+// deduplicated by bridge name — the file-scope C bridge that adapts the user's
+// emitted helper into the field's runtime ABI type, returning the bridge's C
+// name for the construction's designated initializer to reference. Anything
+// else is a clean rejection naming what was found. The checker already requires
+// a callback field's value to be exactly the field's function type
+// (fn(ctx *void, size uint) *void and friends), so the only reachable shape is
+// a HoistedFunctionValue; everything else is defense for hand-built IR.
+func buildRuntimeAllocatorCallbackAdapter(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, member symbol.SymbolID, valueNode tir.Node, context string) (string, error) {
 	if valueNode.Kind != tir.HoistedFunctionValue {
 		return "", fmt.Errorf("%s constructs an Allocator callback field from a %s, want a reference to a top-level function (e.g. `alloc = my_alloc`)", context, valueNode.Kind)
 	}
@@ -232,10 +232,10 @@ func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapsh
 	default:
 		return "", fmt.Errorf("%s references Allocator callback field %d, which is not alloc, realloc, or free", context, member)
 	}
-	if _, exists := emitAllocatorAdapters[name]; exists {
+	if _, exists := st.allocatorAdapters[name]; exists {
 		return name, nil
 	}
-	emitAllocatorAdapters[name] = runtimeAllocatorAdapter{name: name, prototype: prototype, definition: definition}
+	st.allocatorAdapters[name] = runtimeAllocatorAdapter{name: name, prototype: prototype, definition: definition}
 	return name, nil
 }
 
@@ -258,7 +258,7 @@ func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapsh
 // type, a wrong field count, an unknown or duplicated field, a malformed field
 // value — is a clean rejection naming what was found. Like every local, the
 // declaration is followed by a (void) cast against -Wunused-variable.
-func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+func buildRuntimeAllocatorRecordDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if runtimeType(unit, snapshot, initValue.Type) != symbol.RuntimeAllocator {
 		return "", fmt.Errorf("%s declares a runtime-typed local of type %s initialized from a RecordConstruct, which is supported only for the built-in Allocator", context, runtimeTypeName(unit, snapshot, initValue.Type))
 	}
@@ -293,14 +293,14 @@ func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snap
 			if !isPointer(snapshot, valueNode.Type) {
 				return "", fmt.Errorf("%s constructs an Allocator whose ptr initializer is %s, want a pointer value", context, describeType(snapshot, valueNode.Type))
 			}
-			expr, err = buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+			expr, err = buildExpr(st, unit, snapshot, fileSet, field.Value, scope, width, width)
 		case info.AllocatorAlloc, info.AllocatorRealloc, info.AllocatorFree:
 			// alloc/realloc/free map to the runtime ABI callback fields, typed
 			// PebbleAllocFn/PebbleReallocFn/PebbleFreeFn. The construction value
 			// is bridged into the runtime ABI by a file-scope adapter, whose C
 			// name the designated initializer references directly (a plain
 			// compatible assignment, no function-pointer cast in emitted C).
-			expr, err = buildRuntimeAllocatorCallbackAdapter(unit, snapshot, field.Field, valueNode, context)
+			expr, err = buildRuntimeAllocatorCallbackAdapter(st, unit, snapshot, field.Field, valueNode, context)
 		default:
 			return "", fmt.Errorf("%s constructs an Allocator with unknown field %d", context, field.Field)
 		}
@@ -331,7 +331,7 @@ func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snap
 // built inline as a call argument (buildTupleValueExpr wraps the same brace
 // list in a compound-literal cast), so element-type validation and the
 // per-element-type build dispatch live in exactly one place.
-func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildTupleBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
 		return "", fmt.Errorf("%s contains a tuple value whose type %d is not in the type snapshot", context, node.Type)
@@ -349,20 +349,20 @@ func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		var err error
 		switch {
 		case isBool(snapshot, elementType):
-			elementExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[i], scope, width)
+			elementExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[i], scope, width)
 		case isChar(snapshot, elementType):
-			elementExpr, err = buildCharOperand(unit, snapshot, fileSet, node.Children[i], scope, width)
+			elementExpr, err = buildCharOperand(st, unit, snapshot, fileSet, node.Children[i], scope, width)
 		case isStr(snapshot, elementType):
-			elementExpr, err = buildStrOperand(unit, snapshot, fileSet, node.Children[i], scope, width)
+			elementExpr, err = buildStrOperand(st, unit, snapshot, fileSet, node.Children[i], scope, width)
 		case isFloat(snapshot, elementType):
-			elementExpr, err = buildFloatExpr(unit, snapshot, fileSet, node.Children[i], scope, resolvedFloatKind(snapshot, elementType))
+			elementExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[i], scope, resolvedFloatKind(snapshot, elementType))
 		case isTuple(snapshot, elementType), isStruct(snapshot, elementType), isOptional(snapshot, elementType):
-			elementExpr, err = buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
+			elementExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
 		case isAbstractInt(snapshot, elementType):
-			elementExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width, width)
+			elementExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[i], scope, width, width)
 		default:
 			if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
-				elementExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[i], scope, elementWidth, width)
+				elementExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[i], scope, elementWidth, width)
 			} else {
 				return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want a fixed-width integer, bool, char, str, f32, f64, or a tuple/struct type", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType))
 			}
@@ -375,11 +375,11 @@ func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	return "{ " + strings.Join(exprs, ", ") + " }", nil
 }
 
-func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, error) {
+func buildRawSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, error) {
 	if len(node.Children) != 2 {
 		return "", fmt.Errorf("%s SliceFromRaw has %d children, want two", context, len(node.Children))
 	}
-	ptr, err := buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+	ptr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width, width)
 	if err != nil {
 		return "", err
 	}
@@ -397,7 +397,7 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		litWidth, _ := resolvedBuiltin(snapshot, countNode.Type)
 		count = integerLiteralText(countNode.Literal.IntegerNum, litWidth)
 	} else {
-		count, err = buildUintExpr(unit, snapshot, fileSet, node.Children[1], scope, width)
+		count, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -431,7 +431,7 @@ func buildRawSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // validation 10.37 established: the base must be an array-typed local in
 // scope, the slice's element type must equal the base array's element type,
 // and that element type must be the entry's resolved width or bool.
-func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName, backingName string) (string, string, error) {
+func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, tempName, backingName string) (string, string, error) {
 	if initValue.Kind != tir.CheckedSlice {
 		return "", "", fmt.Errorf("%s slice construction is a %s, want a CheckedSlice", context, initValue.Kind)
 	}
@@ -523,7 +523,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if len(baseNode.Children) != int(length) {
 			return "", "", fmt.Errorf("%s base array literal has %d element expression(s), want %d", context, len(baseNode.Children), length)
 		}
-		exprs, err := buildArrayBraceElements(unit, snapshot, fileSet, baseNode, scope, context, width, arrayElementType)
+		exprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, baseNode, scope, context, width, arrayElementType)
 		if err != nil {
 			return "", "", err
 		}
@@ -562,7 +562,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if len(baseNode.Children) != 1 {
 			return "", "", fmt.Errorf("%s slice base Load has %d child(ren), want exactly one place", context, len(baseNode.Children))
 		}
-		baseLvalue, baseType, err := buildPlaceLValue(unit, snapshot, fileSet, baseNode.Children[0], scope, width)
+		baseLvalue, baseType, err := buildPlaceLValue(st, unit, snapshot, fileSet, baseNode.Children[0], scope, width)
 		if err != nil {
 			return "", "", fmt.Errorf("%s slice base read: %v", context, err)
 		}
@@ -593,7 +593,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if childIdx >= len(initValue.Children) {
 			return "", "", fmt.Errorf("%s CheckedSlice claims start present but has no start child", context)
 		}
-		startExpr = buildSliceBoundExpr(unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
+		startExpr = buildSliceBoundExpr(st, unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
 		if startExpr == "" {
 			return "", "", fmt.Errorf("%s failed to build slice start bound", context)
 		}
@@ -605,7 +605,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		if childIdx >= len(initValue.Children) {
 			return "", "", fmt.Errorf("%s CheckedSlice claims end present but has no end child", context)
 		}
-		endExpr = buildSliceBoundExpr(unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
+		endExpr = buildSliceBoundExpr(st, unit, snapshot, fileSet, initValue.Children[childIdx], scope, width, context)
 		if endExpr == "" {
 			return "", "", fmt.Errorf("%s failed to build slice end bound", context)
 		}
@@ -646,7 +646,7 @@ func buildSliceConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 
 // buildSliceBoundExpr builds the C expression for one slice bound (start or
 // end). The bound may be an integer literal or a reference to a local.
-func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, nodeID tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) string {
+func buildSliceBoundExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, nodeID tir.NodeID, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) string {
 	boundNode, ok := unit.Node(nodeID)
 	if !ok {
 		return ""
@@ -664,13 +664,13 @@ func buildSliceBoundExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		// type the checker anchored to uint): built by the dedicated uint
 		// grammar, mirroring the slice/array index dispatch — the general
 		// buildExpr path rejects non-entry-width types.
-		expr, err := buildUintExpr(unit, snapshot, fileSet, nodeID, scope, width)
+		expr, err := buildUintExpr(st, unit, snapshot, fileSet, nodeID, scope, width)
 		if err != nil {
 			return ""
 		}
 		return expr
 	}
-	expr, err := buildExpr(unit, snapshot, fileSet, nodeID, scope, width, width)
+	expr, err := buildExpr(st, unit, snapshot, fileSet, nodeID, scope, width, width)
 	if err != nil {
 		return ""
 	}
@@ -756,7 +756,7 @@ func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloa
 // SymbolValue naming an already-declared slice-typed local is the same
 // single-expression forward as before, with empty preStatements. indent indents
 // the temp declarations to match the enclosing declaration line.
-func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
 		return "", "", fmt.Errorf("%s contains a struct value whose type %d is not in the type snapshot", context, node.Type)
@@ -803,19 +803,19 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// resolved width, mirroring buildCallArgument/buildComparisonOperand
 			// and the optional-payload widening (d737242) — so an i64 field
 			// inside an i32 function builds its value at i64, not i32.
-			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, fieldWidth, width)
+			built, err := buildExpr(st, unit, snapshot, fileSet, field.Value, scope, fieldWidth, width)
 			if err != nil {
 				return "", "", err
 			}
 			expr = built
 		case isUint(snapshot, fieldType):
-			built, err := buildUintExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildUintExpr(st, unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
 			expr = built
 		case isBool(snapshot, fieldType):
-			built, err := buildBoolExpr(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildBoolExpr(st, unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -830,19 +830,19 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// comparison operand use. The C field's type is PebbleStr (see
 			// structFieldCType), so the built expression matches the field type
 			// with no cast.
-			built, err := buildStrOperand(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildStrOperand(st, unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
 			expr = built
 		case isTuple(snapshot, fieldType):
-			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			built, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
 				return "", "", err
 			}
 			expr = built
 		case isOptional(snapshot, fieldType):
-			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			built, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -857,7 +857,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// RecordConstruct). The C field's type is PebbleAllocator /
 			// PebbleContext (see structFieldCType), so the built expression matches
 			// the field type with no cast.
-			built, err := buildRuntimeValueNode(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildRuntimeValueNode(st, unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -873,13 +873,13 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// construction dispatch would mishandle it). The variant literal lowers
 			// to the variant's C enum constant, whose type matches the field's own
 			// pebble_enum_<typeID>_t C type with no cast needed.
-			built, err := buildEnumValue(unit, snapshot, fileSet, field.Value, scope, width)
+			built, err := buildEnumValue(st, unit, snapshot, fileSet, field.Value, scope, width)
 			if err != nil {
 				return "", "", err
 			}
 			expr = built
 		case isStruct(snapshot, fieldType):
-			built, err := buildNestedAggregateValue(unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			built, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -922,7 +922,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				// uses and the pebble_slice_ret_<nodeID> temps a slice return
 				// uses, so the three can never collide even when a symbol ID
 				// numerically equals a node ID.
-				tempDecl, constructionExpr, err := buildSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value), fmt.Sprintf("pebble_field_backing_%d", field.Value))
+				tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, fieldValue, scope, indent, context, width, fmt.Sprintf("pebble_field_slice_%d", field.Value), fmt.Sprintf("pebble_field_backing_%d", field.Value))
 				if err != nil {
 					return "", "", err
 				}
@@ -932,7 +932,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				if fieldValue.Type != fieldType {
 					return "", "", fmt.Errorf("%s contains a slice field %d initialized from a SliceFromRaw of type %s, not a slice-typed value of type %s", context, field.Field, describeType(snapshot, fieldValue.Type), sliceTypeName(fieldType))
 				}
-				construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, fieldValue, scope, width, context)
+				construction, err := buildRawSliceConstruction(st, unit, snapshot, fileSet, fieldValue, scope, width, context)
 				if err != nil {
 					return "", "", err
 				}
@@ -941,7 +941,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 				return "", "", fmt.Errorf("%s contains a slice field %d initialized from a %s, want a slice local or a fresh slice construction (a CheckedSlice or a slice-from-raw)", context, field.Field, fieldValue.Kind)
 			}
 		case isPointer(snapshot, fieldType):
-			built, err := buildExpr(unit, snapshot, fileSet, field.Value, scope, width, width)
+			built, err := buildExpr(st, unit, snapshot, fileSet, field.Value, scope, width, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -954,7 +954,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// (HoistedFunctionValue) or a reference to an in-scope function-typed
 			// local (SymbolValue), whose C value already matches the field's own
 			// pebble_fnptr_<typeID>_t C type with no cast needed.
-			built, err := buildFunctionValue(unit, snapshot, fileSet, valueNode, scope, context, width)
+			built, err := buildFunctionValue(st, unit, snapshot, fileSet, valueNode, scope, context, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -996,7 +996,7 @@ func buildStructBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // variants (info.variants), and a payload-carrying construction must name a
 // variant whose payload member the union's typedef declares (info.members).
 // Any other node kind is a clean rejection, never a guessed lowering.
-func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, info unionInfo, width types.BuiltinKind) (string, error) {
+func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, info unionInfo, width types.BuiltinKind) (string, error) {
 	if !containsVariant(info.variants, node.Member) {
 		return "", fmt.Errorf("%s constructs variant symbol %d, which is not one of the union %s's declared variants", context, node.Member, unionTypeName(node.Type))
 	}
@@ -1028,7 +1028,7 @@ func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		var payloadExpr string
 		var err error
 		if isBool(snapshot, payloadNode.Type) {
-			payloadExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[0], scope, width)
+			payloadExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 		} else if isStr(snapshot, payloadNode.Type) {
 			// A str-typed payload (`Result[int, str].{ Err = "bad" }`): built
 			// by the str grammar (buildStrOperand — a string literal, a
@@ -1036,9 +1036,9 @@ func buildUnionConstruction(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 			// helper), emitted as a PebbleStr value, the same C type the
 			// union's payload member is declared with (see unionMemberCType),
 			// so the designated initializer needs no cast.
-			payloadExpr, err = buildStrOperand(unit, snapshot, fileSet, node.Children[0], scope, width)
+			payloadExpr, err = buildStrOperand(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 		} else {
-			payloadExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[0], scope, width, width)
+			payloadExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width, width)
 		}
 		if err != nil {
 			return "", err

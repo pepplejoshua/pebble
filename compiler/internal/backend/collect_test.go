@@ -7,6 +7,7 @@ import (
 )
 
 func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, `fn add_one[T](x T, y T) T => x; fn main() i32 { var a i32 = add_one[i32](40, 1); let p *i32 = &a; let b *i32 = add_one[*i32](p, p); return a + *b; }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -16,6 +17,7 @@ func TestEmitGenericReachabilityUsesSpecializationIdentity(t *testing.T) {
 }
 
 func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, `fn choose[T](x T) i32 => 7; fn main() i32 { var a i32 = choose[i32](1); var b i32 = choose[bool](true); let p *i32 = &a; var c i32 = choose[*i32](p); return a + b + c; }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -34,6 +36,7 @@ func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
 // i32, want int". The program must compile under -Wall -Wextra -Werror and run,
 // returning the value identity passed through.
 func TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, false, 5, false)
 }
 
@@ -46,10 +49,12 @@ func TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T
 // emission — a direct `return clamp(...)` from an int entry hits a checker-level
 // int-vs-i32 unification conflict instead). The clamp of (5, 10, 20) is 10.
 func TestEmitGenericClampShapeSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `fn min[T](a T, b T) T { if a < b { return a; } return b; } fn max[T](a T, b T) T { if a > b { return a; } return b; } fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); } fn main() int { var x i32 = 5; var lo i32 = 10; var hi i32 = 20; var r i32 = clamp(x, lo, hi); return r; }`, false, 10, false)
 }
 
 func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape for the three-hop cycle: every reachable helper must
 	// be forward-declared (a static prototype ending in `;`) BEFORE any
 	// helper definition (a static function ending in `{`), and each definition
@@ -114,6 +119,7 @@ func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
 }
 
 func TestEmitUnreachableFunctionNotEmitted(t *testing.T) {
+	t.Parallel()
 	// A declared function the entry never calls, directly or transitively, must
 	// not be emitted at all — the generated C has no trace of it (symbol 25,
 	// the unused function), so the -Wall -Wextra -Werror build cannot warn

@@ -51,6 +51,7 @@ func TestCheckStdVecHasNoGenericPointerReceiverShapeErrors(t *testing.T) {
 }
 
 func TestEmitExternCallNoArgumentsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A minimal extern call with no arguments (`extern fn rand() int; ...
 	// rand();`) — the simplest shape that reproduces the original bug (a
 	// direct call to an extern fn declaration failed at emit with "called
@@ -76,6 +77,7 @@ func TestEmitExternCallNoArgumentsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitExternCallWithArgumentsAndReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An extern call with arguments and a return value, mirroring
 	// malloc/free's real shape (malloc takes a uint size and returns *void;
 	// free takes *void and returns void): the malloc result is cast to *int
@@ -99,6 +101,7 @@ func TestEmitExternCallWithArgumentsAndReturnCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOpaqueExternTypeFileRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An opaque extern type (`type FILE;`, no body — "this exists in C, I'm
 	// not describing its layout") previously emitted as a synthesized
 	// pebble_struct_<id>_t instead of its real C name, so every real libc
@@ -156,6 +159,7 @@ fn main() int {
 // parameter) come from the fixture's typed-IR construction, deterministic for
 // this exact source.
 func TestEmitGenericHelperConcreteWidthWritesInt32TParams(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -175,10 +179,12 @@ func TestEmitGenericHelperConcreteWidthWritesInt32TParams(t *testing.T) {
 }
 
 func TestEmitValueMethodCallReadsReceiverField(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn main() i32 { let p Point = Point.{ x = 41 }; return p.get(); }`, false, 41, false)
 }
 
 func TestEmitQualifiedStaticMethodCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A method declared inside a nominal type body with no self parameter is a
 	// static method, callable on the bare type name. Its lowering must be a
 	// plain direct call to the method's own C function — no receiver argument
@@ -187,16 +193,19 @@ func TestEmitQualifiedStaticMethodCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitQualifiedStaticMethodWithArgumentsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The static call's authored arguments must arrive at the method exactly as
 	// written: origin(2) below multiplies its argument through to the exit code.
 	emitAndRun(t, `type Point = struct { x i32; fn origin(scale i32) Point { return Point.{ x = scale }; } }; fn main() i32 { let p Point = Point.origin(42); return p.x; }`, false, 42, false)
 }
 
 func TestEmitIndirectlyReachedMethodCall(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn read(p Point) i32 { return p.get(); } fn main() i32 { let p Point = Point.{ x = 42 }; return read(p); }`, false, 42, false)
 }
 
 func TestEmitMethodCallWithExplicitArgument(t *testing.T) {
+	t.Parallel()
 	// Was blocked until the call_validation.go fix (a real checker bug
 	// compared a method call's argument count against its generic
 	// type-argument count, wrongly rejecting any non-generic method call
@@ -206,6 +215,7 @@ func TestEmitMethodCallWithExplicitArgument(t *testing.T) {
 }
 
 func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Was rejected before raw pointers landed (a pointer receiver's self
 	// parameter has no backend representation until then) — since the
 	// pointer backend-lowering slice, a pointer receiver is just an ordinary
@@ -214,14 +224,17 @@ func TestEmitPointerReceiverMethodCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitAutoReferencesValueForPointerReceiver(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type S = struct { n i32; fn set(self *S, value i32) void { self.n = value; } }; fn main() i32 { var s = S.{ n = 0 }; s.set(9); return s.n; }`, false, 9, false)
 }
 
 func TestEmitGenericPointerReceiverCallsSiblingMethod(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Vec[T] = struct { value i32; fn reserve(self *Vec[i32], amount i32) void { self.value = amount; } fn push(self *Vec[i32], value i32) void { self.reserve(value); } }; fn main() i32 { var v = Vec[i32].{ value = 0 }; v.push(7); return v.value; }`, false, 7, false)
 }
 
 func TestEmitGenericMethodCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact motivating repro: a generic struct method redeclaring the
 	// struct's own type parameter on itself (`fn get[K](self Box[K]) K`),
 	// called via ordinary method-call syntax with the type argument inferred
@@ -233,6 +246,7 @@ func TestEmitGenericMethodCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitGenericMethodTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// TWO specializations of the same generic struct calling the SAME method
 	// in one program must each get their OWN method specialization: Box[int]'s
 	// get returns 5 and Box[bool]'s get returns true. If the two method
@@ -242,6 +256,7 @@ func TestEmitGenericMethodTwoSpecializationsCompileAndRun(t *testing.T) {
 }
 
 func TestEmitGenericMethodExtraTypeParameterParametersCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// A method taking parameters beyond self that also depend on the type
 	// parameters (mirroring std/hmap.peb's insert(self, key K, value V)) must
 	// resolve those parameter types end to end: put(4, 5) writes both through
@@ -251,6 +266,7 @@ func TestEmitGenericMethodExtraTypeParameterParametersCompileAndRun(t *testing.T
 }
 
 func TestEmitGenericMethodPointerReceiverCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A pointer-receiver generic method on a generic struct: the receiver
 	// value is auto-referenced for the `self *Box[K]` parameter, and the
 	// method's own K resolves to the receiver's int.
@@ -258,6 +274,7 @@ func TestEmitGenericMethodPointerReceiverCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitGenericStructMethodTypeParameterResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The active-defect repro (proposal 13): a NON-generic method on a
 	// generic struct whose declared RETURN type is the struct's own type
 	// parameter directly (`fn get(self Box[T]) T`). The checker emits one
@@ -274,6 +291,7 @@ func TestEmitGenericStructMethodTypeParameterResultCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitGenericStructMethodTypeParameterParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The active-defect repro's other half (proposal 13): a non-generic
 	// method on a generic struct whose declared PARAMETER type is the
 	// struct's own type parameter directly (`fn set(self *Box[T], v T)`).
@@ -284,6 +302,7 @@ func TestEmitGenericStructMethodTypeParameterParameterCompilesAndRuns(t *testing
 }
 
 func TestEmitGenericStructMethodTypeParameterTwoSpecializationsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// TWO instantiations of the SAME non-generic method in one program:
 	// Box[int].get must return int and Box[bool].get must return bool, and
 	// each needs its OWN C helper (the two share one symbolic
@@ -297,6 +316,7 @@ func TestEmitGenericStructMethodTypeParameterTwoSpecializationsCompileAndRun(t *
 }
 
 func TestEmitGenericStructMethodTypeParameterResultEmitsConcreteSignature(t *testing.T) {
+	t.Parallel()
 	// The emitted C must carry the CONCRETE substituted signature: the
 	// helper returns int32_t (never a type parameter), its self parameter is
 	// the Box[int] struct typedef, and its body returns the concrete field
@@ -320,6 +340,7 @@ func TestEmitGenericStructMethodTypeParameterResultEmitsConcreteSignature(t *tes
 }
 
 func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
+	t.Parallel()
 	// The single most important correctness property: a compound assignment
 	// must NOT emit a raw C `+=` (which would compile and "work" for in-range
 	// values while silently dropping the overflow check). The emitted C for
@@ -341,6 +362,7 @@ func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
 }
 
 func TestEmitTerminalWhileTrueHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The std/hmap and std/set helpers that motivated this slice are non-void
 	// reachable helpers whose bodies end in an exhaustive `while true`, not the
 	// entry itself — so the terminal-loop tail must be accepted by the same
@@ -351,6 +373,7 @@ func TestEmitTerminalWhileTrueHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintInterpolatedBoolHelperCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-returning helper call used as an interpolated print value —
 	// `print \`big? {isBig(7)}\`;` — must still be discovered as reachable
 	// and emitted as a pebble_fn_<symbolID> helper: the value parts of an
@@ -370,6 +393,7 @@ func TestEmitPrintInterpolatedBoolHelperCallCompilesAndRuns(t *testing.T) {
 		{"bool helper expression", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { print `big? {isBig(7) && isBig(3)}`; return 0; }", "big? false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -379,6 +403,7 @@ func TestEmitPrintInterpolatedBoolHelperCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintInVoidHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A print inside a reachable void helper, emitted as that helper's own C
 	// statement: the reachability walk finds no call inside the Print's
 	// operands here (all literals), and the helper body builds its leading
@@ -391,6 +416,7 @@ func TestEmitPrintInVoidHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintHelperCallOperandCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A print operand that is a call to a helper: the operand's DirectCall is
 	// reachable through the Print's child walk (so the helper is emitted), and
 	// buildExpr/buildStrOperand build the call at the operand's own resolved
@@ -404,6 +430,7 @@ func TestEmitPrintHelperCallOperandCompilesAndRuns(t *testing.T) {
 		{"str helper", "fn helper() str { return \"hey\"; }\nfn main() i32 { print helper(); return 0; }", "hey\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -413,6 +440,7 @@ func TestEmitPrintHelperCallOperandCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredPrintAtVoidHelperExitCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function-level `defer print 7;` in a void helper fires at the helper's
 	// ImplicitReturn exit (the tail emits its DeferChain before falling off
 	// the end of the C function), so calling the helper prints "7" and the
@@ -424,6 +452,7 @@ func TestEmitDeferredPrintAtVoidHelperExitCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopHelperCallBoundCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper call as a range-loop bound: the end is a DirectCall to a
 	// helper returning the entry's width, built by buildExpr exactly as any
 	// other call expression, and emitted in the for-loop condition. five()
@@ -432,6 +461,7 @@ func TestEmitRangeLoopHelperCallBoundCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopInHelperFunctionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// buildHelperFunctions builds each reachable helper's body with the same
 	// buildBlock the entry uses, so a classic for loop works inside a helper
 	// unchanged. sumTo(4) = 0+1+2+3 = 6, returned as the exit code. Bounded
@@ -440,6 +470,7 @@ func TestEmitForLoopInHelperFunctionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopHelperCallInConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper call inside a for clause: the DirectCall is discovered by the
 	// reachability walk (which follows For.Children generically) and built by
 	// buildComparison/buildExpr like any other call. ten() returns 10, so the
@@ -448,6 +479,7 @@ func TestEmitForLoopHelperCallInConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitHelperPlusHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship 10.17 fixture: a second, callable function. main calls
 	// helper() twice and adds the results, so the process exit code is
 	// 21 + 21 = 42. The helper is emitted as its own static function before
@@ -458,6 +490,7 @@ func TestEmitHelperPlusHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitHelperPlusHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: the helper must be its own
 	// `static int32_t pebble_fn_24(PebbleContext *ctx)` block (named
 	// deterministically from symbol ID 24, the helper), defined before
@@ -487,6 +520,7 @@ func TestEmitHelperPlusHelperWritesC(t *testing.T) {
 }
 
 func TestEmitHelperWithFullGrammarBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper whose body uses the full recursive block grammar buildBlock
 	// implements — bool and integer locals, a while loop, a loop-body if, and a
 	// two-armed if/else as the tail — proving buildBlock is genuinely reused
@@ -497,6 +531,7 @@ func TestEmitHelperWithFullGrammarBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the full-grammar helper must carry the helper's own
 	// locals, loop, and tail if/else at their own 4-space top level inside the
 	// helper's braces, distinct from the entry's body — proving the helper's
@@ -525,6 +560,7 @@ func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
 }
 
 func TestEmitTwoLevelCallChainCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two levels of calls: main calls helper1, helper1 calls helper2. The
 	// reachability walk must follow calls transitively (not one level deep),
 	// and the emission order must place helper2 before helper1 before
@@ -536,6 +572,7 @@ func TestEmitTwoLevelCallChainCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTwoLevelCallChainWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the two-level chain must define helper2 (symbol 25,
 	// called first in the post-order walk) before helper1 (symbol 24) before
 	// pebble_user_main, despite the source declaring helper1 first — the
@@ -560,6 +597,7 @@ func TestEmitTwoLevelCallChainWritesC(t *testing.T) {
 }
 
 func TestEmitI64HelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width discipline extends to called functions: an i64 entry calls an
 	// i64 helper, the helper's C return type is int64_t, and the checked add
 	// uses the i64 helper family. Exit code 42.
@@ -567,6 +605,7 @@ func TestEmitI64HelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64HelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for an i64 helper must declare it int64_t and call it with
 	// the i64 checked helper, mirroring the entry-width threading.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn helper() i64 { return 21; } fn main() i64 { return helper() + helper(); }", "main", false)
@@ -589,22 +628,27 @@ func TestEmitI64HelperWritesC(t *testing.T) {
 }
 
 func TestEmitCastsI64HelperResultToI32Main(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn helper() i64 { return 21; } fn main() i32 { return helper() as i32; }", false, 21, false)
 }
 
 func TestEmitBuildsI64HelperBodyAtItsOwnWidth(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn helper() i64 { let value i64 = 20; return value + 1; } fn main() i32 { return helper() as i32; }", false, 21, false)
 }
 
 func TestEmitCastsI32HelperResultToI64Main(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn helper() i32 { return 7; } fn main() i64 { return (helper() as i64) + 1; }", false, 8, false)
 }
 
 func TestEmitCastsU32HelperResultToI32Main(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn helper() u32 { return 7; } fn main() i32 { return helper() as i32; }", false, 7, false)
 }
 
 func TestEmitF64HelperParamAndReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The required f64-helper-parameter/return test: a reachable helper takes
 	// an f64 parameter, multiplies it by an f64 literal (real float
 	// arithmetic over the parameter), and returns an f64 result, called from
@@ -627,6 +671,7 @@ fn main() i32 { let result f64 = scale(2.5, 3.0); print result; return 0; }`, fa
 }
 
 func TestEmitF32HelperParamAndReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The f32 twin of the f64 test: an f32 helper parameter and result are
 	// declared as C float (not double) and built at the f32 kind. 1.5 * 4.0
 	// = 6.0f, which prints as 6.000000 (f32 promotes to double in the
@@ -640,6 +685,7 @@ fn main() i32 { let result f32 = scale(1.5, 4.0); print result; return 0; }`, fa
 }
 
 func TestEmitMixedIntFloatHelperParamsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper mixing an integer parameter and an f64 parameter — the exact
 	// signature shape leibniz_pi_approx.peb's approximate_pi uses — so the
 	// integer argument still flows through buildExpr at the entry width while
@@ -655,6 +701,7 @@ fn main() int { let r f64 = scaled(3, 1.5); print r; return 0; }`, false, 0, fal
 }
 
 func TestEmitFloatHelperReturnForwardCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A float-returning helper whose body returns another float-returning
 	// helper's call directly (a return forward): buildReturnStatement's float
 	// dispatch builds the DirectCall via buildFloatExpr's DirectCall case,
@@ -670,6 +717,7 @@ fn main() i32 { let r f64 = outer(1.0); print r; return 0; }`, false, 0, false)
 }
 
 func TestEmitFloatNegationInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A float helper body that negates its f64 parameter (`return -x;`) and
 	// an entry that negates a float local: the checker lowers a float negate
 	// to a PrefixValue (only an integer negate becomes CheckedNegate), so
@@ -684,6 +732,7 @@ fn main() i32 { let r f64 = neg(2.5); let s f64 = -r; print s; return 0; }`, fal
 }
 
 func TestEmitSelfRecursionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Direct recursion: helper calls itself with a decrementing argument and a
 	// base case, so the recursion terminates. fact(5) = 120 is the process
 	// exit code. Before forward declarations this was a clean rejection
@@ -694,6 +743,7 @@ func TestEmitSelfRecursionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitMutualRecursionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Mutual/indirect recursion: a calls b and b calls a — a genuine
 	// two-function call cycle. isEven(10) is true, so the exit code is 1.
 	// Before forward declarations this was a clean rejection
@@ -704,6 +754,7 @@ func TestEmitMutualRecursionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitThreeHopRecursionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact shape std/hmap.peb's insert/maybe_grow/rehash cycle has: three
 	// helper functions calling each other in a cycle (insert -> maybe_grow ->
 	// rehash -> insert) with a base case that terminates the recursion. Each
@@ -716,6 +767,7 @@ func TestEmitThreeHopRecursionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidHelperStatementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship 10.33 shape: a void-returning helper called purely for its
 	// side effect as a bare discarded-expression statement (helper(); on its
 	// own line, a tir.ExpressionStatement wrapping a tir.DirectCall to a void
@@ -727,6 +779,7 @@ func TestEmitVoidHelperStatementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidHelperStatementWithParamCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A void helper with a parameter and a non-trivial self-contained body: it
 	// computes internally (sum 0..x into a local) and returns void, so the
 	// call's arguments are built by the same buildCallArguments machinery a
@@ -736,6 +789,7 @@ func TestEmitVoidHelperStatementWithParamCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidCallInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A void call as a statement inside a loop body: the ExpressionStatement
 	// is a plain child of the loop body's Block, flowing through buildLoopBody's
 	// statement switch (via the shared buildLeadingStatement) alongside the
@@ -745,6 +799,7 @@ func TestEmitVoidCallInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidHelperCallingVoidHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A void helper whose own body is a void call statement plus its
 	// ImplicitReturn tail: helper() calls inner(5) as a statement, then falls
 	// off the end of its body. The reachability walk follows the nested call
@@ -753,6 +808,7 @@ func TestEmitVoidHelperCallingVoidHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidCallInI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A void call statement reached from an i64 entry: the void helper is
 	// emitted with the C return type void regardless of the entry's width, and
 	// the call compiles and runs to the caller's own exit code.
@@ -760,6 +816,7 @@ func TestEmitVoidCallInI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVoidHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for the flagship shape: the void helper is declared
 	// with the C return type void (pebble_fn_<symbolID>, symbol 24 for this
 	// fixture), and the call statement appears as a bare
@@ -781,6 +838,7 @@ func TestEmitVoidHelperWritesC(t *testing.T) {
 }
 
 func TestEmitNonVoidDiscardedCallStatementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A call to a non-void-returning function used purely as a statement
 	// (`f();` where f returns i32, the result silently discarded) is reachable
 	// from real source — the checker's C0612 rejects only a discarded
@@ -798,6 +856,7 @@ func TestEmitNonVoidDiscardedCallStatementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCallInConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper call is an ordinary expression of the entry's width, so it can
 	// appear inside a comparison condition, not just a return value: the
 	// reachability walk follows it there and buildComparison's operand path
@@ -807,6 +866,7 @@ func TestEmitCallInConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitAddParametersCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship 10.18 fixture: a two-parameter function called from the
 	// entry with two arguments. Each parameter seeds the callee's locals scope
 	// before its body is built, so the body's a + b reads them exactly like
@@ -816,6 +876,7 @@ func TestEmitAddParametersCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitAddParametersWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: the helper's signature declares
 	// each parameter with the same pebble_local_<symbolID> naming a local uses
 	// (symbols 25 and 26, the a and b parameters from the real fixture dump),
@@ -845,6 +906,7 @@ func TestEmitAddParametersWritesC(t *testing.T) {
 }
 
 func TestEmitBoolParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The bool-parameter fixture: choose takes a bool flag and two integer
 	// values and returns one of the integers, so the flag's grammar is the
 	// bool one (buildBoolExpr) while the other two parameters are the entry's
@@ -854,6 +916,7 @@ func TestEmitBoolParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the bool-parameter fixture: the flag parameter (symbol
 	// 25) is declared `bool pebble_local_25` in the signature while x and y
 	// (symbols 26 and 27) are int32_t, and the call site passes the bool
@@ -882,6 +945,7 @@ func TestEmitBoolParameterWritesC(t *testing.T) {
 }
 
 func TestEmitParameterInLoopAndIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A parameter seeding the callee's scope must resolve for the full block
 	// grammar, not just a bare return: n is read in the while condition and in
 	// a loop-body if condition, while the loop accumulates and reassigns
@@ -891,6 +955,7 @@ func TestEmitParameterInLoopAndIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitParameterForwardedToHelperCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A parameter used as an argument to another call inside its own callee:
 	// add forwards its own a parameter to double, whose result is added to the
 	// other parameter b. This proves a parameter resolves at a nested call
@@ -900,6 +965,7 @@ func TestEmitParameterForwardedToHelperCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNestedCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A call whose argument is itself a call: add(helper(), 5) passes the
 	// result of helper() as the first argument. The checker coerces the nested
 	// call to the i32 parameter, and buildCallArguments builds it with
@@ -909,6 +975,7 @@ func TestEmitNestedCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnusedParameterCompilesClean(t *testing.T) {
+	t.Parallel()
 	// A genuinely-unused parameter (declared, never read in the callee's body)
 	// must still compile under the shared harness's strict -Wall -Wextra
 	// -Werror build. -Wunused-parameter genuinely fires for a named parameter
@@ -919,6 +986,7 @@ func TestEmitUnusedParameterCompilesClean(t *testing.T) {
 }
 
 func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width discipline extends to parameters: an i64 entry calls an i64
 	// helper whose i64 parameters seed its scope, and the checked add uses the
 	// i64 helper family. Exit code 42.
@@ -926,6 +994,7 @@ func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU8ParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from proposal 13's active defect: a helper whose
 	// only parameter is u8 — a fixed-width integer that is neither the entry's
 	// width (int) nor a C-compatible sibling — previously rejected at emission
@@ -938,6 +1007,7 @@ func TestEmitU8ParameterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU8ParameterCompilesAndRunsWithValue(t *testing.T) {
+	t.Parallel()
 	// A second u8-parameter fixture with a non-trivial value: take(200) must
 	// return 200 (the parameter's actual received value, not zero or garbage).
 	// 200 is well within u8's range and distinct from any default, so an exit
@@ -946,6 +1016,7 @@ func TestEmitU8ParameterCompilesAndRunsWithValue(t *testing.T) {
 }
 
 func TestEmitI16ParameterCompilesAndRunsWithValue(t *testing.T) {
+	t.Parallel()
 	// An i16-typed parameter, a signed non-entry-width integer: take(300)
 	// compares its parameter against 300 (a value that exceeds u8's range, so
 	// the check can only pass if the int16_t parameter genuinely received the
@@ -955,6 +1026,7 @@ func TestEmitI16ParameterCompilesAndRunsWithValue(t *testing.T) {
 }
 
 func TestEmitU32ParameterCompilesAndRunsWithValue(t *testing.T) {
+	t.Parallel()
 	// A u32-typed parameter, a wider unsigned non-entry-width integer:
 	// take(70000) — a value that exceeds u16's range, so the check can only
 	// pass if the uint32_t parameter genuinely received the full 70000 —
@@ -966,6 +1038,7 @@ func TestEmitU32ParameterCompilesAndRunsWithValue(t *testing.T) {
 }
 
 func TestEmitI32ParameterI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A concrete fixed-width integer parameter in an i64 entry: an i32-typed
 	// parameter is neither the entry's width (i64) nor a C-compatible sibling
 	// (int32_t vs int64_t), so it exercises the same widened gate for an
@@ -977,6 +1050,7 @@ func TestEmitI32ParameterI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU8ParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the exact reproduction: the helper's prototype AND
 	// definition both declare the u8 parameter at its own C type
 	// (uint8_t pebble_local_25), the body reads it at that width and casts it
@@ -1005,6 +1079,7 @@ func TestEmitU8ParameterWritesC(t *testing.T) {
 }
 
 func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for inline construction at a call site: each argument must
 	// be the C99 compound-literal expression — not a local reference and not a
 	// bare brace list — with the cast naming the aggregate's own typedef. The
@@ -1035,6 +1110,7 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 }
 
 func TestEmitStrParameterLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-typed parameter passed a string literal at the call site, the
 	// helper comparing it against a literal and returning a distinguishing
 	// integer result: f("hi") compares s == "hi" (true) and exits 1, f("ho")
@@ -1050,12 +1126,14 @@ func TestEmitStrParameterLiteralCompilesAndRuns(t *testing.T) {
 		{"not equal", "fn f(s str) i32 { if s == \"hi\" { return 1; } else { return 0; } } fn main() i32 { return f(\"ho\"); }", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitStrParameterWritesC(t *testing.T) {
+	t.Parallel()
 	// The parameter C type for a str-taking helper: the C signature declares
 	// the parameter as the runtime ABI's fixed PebbleStr (the same C type a
 	// str local is declared with, no typedef involved) with the
@@ -1080,6 +1158,7 @@ func TestEmitStrParameterWritesC(t *testing.T) {
 }
 
 func TestEmitStrReturningHelperDirectComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-returning helper whose result is directly compared without an
 	// intermediate local: g() == "hi" — confirmed checker-reachable (the
 	// comparison's left operand is a DirectCall of type str, dumped from a real
@@ -1089,6 +1168,7 @@ func TestEmitStrReturningHelperDirectComparisonCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReturningHelperChainedReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-returning helper whose result is another str-returning helper's
 	// return value (`return g();` — confirmed checker-reachable, a DirectCall
 	// as a str-returning function's Return child): h forwards g's result, the
@@ -1098,6 +1178,7 @@ func TestEmitStrReturningHelperChainedReturnCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrParameterAndResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper taking a str parameter and returning it — `fn echo(s str) str
 	// { return s; }` — combining the str-parameter and str-result support: the
 	// parameter seeds the callee's scope as a str local and the tail return
@@ -1107,6 +1188,7 @@ func TestEmitStrParameterAndResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReturningHelperAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-returning helper's result passed as a str-typed call argument
 	// (f(g())) — the argument builder shares buildStrOperand with the direct-
 	// comparison and return paths, so a str value is uniformly whatever a str
@@ -1116,6 +1198,7 @@ func TestEmitStrReturningHelperAsCallArgumentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReturningHelperWritesC(t *testing.T) {
+	t.Parallel()
 	// The parameter and return C types for a str-taking, str-returning helper
 	// (the greet flagship): the helper's C signature declares PebbleStr for
 	// both the parameter and the return type — the runtime ABI's fixed type, no
@@ -1144,6 +1227,7 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 }
 
 func TestEmitSwitchInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A switch nested inside a helper function: the helper receives a
 	// parameter and switches on it, returning different values. The entry
 	// calls the helper with different arguments, confirming the switch works
@@ -1153,6 +1237,7 @@ func TestEmitSwitchInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchWithHelperCallInSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper call as the switch subject expression: the subject is the
 	// result of calling a helper, confirming buildExpr's DirectCall path
 	// works in the subject position.
@@ -1160,6 +1245,7 @@ func TestEmitSwitchWithHelperCallInSubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchNestedInHelperWithParamsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A switch inside a helper that takes a parameter, with the subject
 	// being the parameter itself. Exercises the full path: parameter seeding
 	// into scope, switch subject resolution, case body building. Two calls:
@@ -1168,6 +1254,7 @@ func TestEmitSwitchNestedInHelperWithParamsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A defer inside a helper function. The helper has its own defer that
 	// modifies a local before returning it. The entry calls the helper and
 	// returns the result. helper(): x=0, defer x=x+5, return x -> returns 5.
@@ -1176,6 +1263,7 @@ func TestEmitDeferInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredVoidCallFiresCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A deferred void call, mirroring 10.32's defer test structure: the defer
 	// is registered in the same scope as the return, so the return's DeferChain
 	// includes it and the call fires immediately before the exit. A void call
@@ -1187,6 +1275,7 @@ func TestEmitDeferredVoidCallFiresCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredVoidCallBeforeBreakCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A deferred void call inside a loop firing before a break, mirroring
 	// 10.32's TestEmitDeferBeforeBreakCompilesAndRuns: the break's DeferChain
 	// includes the loop-registered defers, so both the deferred Store and the
@@ -1197,6 +1286,7 @@ func TestEmitDeferredVoidCallBeforeBreakCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredVoidCallOutsideLoopDoesNotFireCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A deferred void call registered inside a loop whose exit is AFTER the
 	// loop: the return's DeferChain does not include the loop-registered defer
 	// (static/lexical scoping, the same property 10.32's
@@ -1219,6 +1309,7 @@ func TestEmitDeferredVoidCallOutsideLoopDoesNotFireCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitDeferredVoidCallCOutput(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a deferred void call that fires: the call
 	// statement's text appears immediately before the return, and nothing is
 	// emitted at the defer statement's own position in program order (the
@@ -1242,6 +1333,7 @@ func TestEmitDeferredVoidCallCOutput(t *testing.T) {
 }
 
 func TestEmitU64StrIndexInHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The str-index gap this slice closes: indexing a str (s[i]) inside a
 	// u64-returning helper must lower to pebble_rt_str_char_at_u64 (not the
 	// empty-suffix name that previously failed at cc compile time), decode
@@ -1250,6 +1342,7 @@ func TestEmitU64StrIndexInHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharParameterAndResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed parameter and result, called and compared: f takes a char,
 	// forwards it as its char result, and main declares c from the call then
 	// compares it against 'a' — proving the char value survives the
@@ -1258,6 +1351,7 @@ func TestEmitCharParameterAndResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharParameterAndResultDistinctCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The false outcome of the parameter/result fixture: f('b') returns 'b',
 	// compared against 'a', so the process exits 0 — the value that survives
 	// the call round trip is the argument, not a fixed constant.
@@ -1265,6 +1359,7 @@ func TestEmitCharParameterAndResultDistinctCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharCallArgumentLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char literal passed directly as a call argument (f('a')), no
 	// intermediate local — the CharLiteral shape a char parameter accepts at
 	// the call site.
@@ -1272,6 +1367,7 @@ func TestEmitCharCallArgumentLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerReturnFromHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A helper accepts a pointer and returns it unchanged; the entry passes
 	// the address of its own local (which stays live for the whole call) and
 	// reads through the returned pointer. Proves both pointer-typed
@@ -1282,10 +1378,12 @@ func TestEmitPointerReturnFromHelperCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVariadicCallLenOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn sum(...values []int) int { return values.len as int; } fn main() int { return sum(1, 2, 3); }", false, 3, false)
 }
 
 func TestEmitVariadicCallFixedPlusVariadicCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Confirms the fixed/variadic split is correct in real emitted C: the
 	// fixed `prefix` parameter and the collected `values` slice must both
 	// carry their own, distinct values. 5*10 + values.len(3) = 53 — kept
@@ -1299,6 +1397,7 @@ func TestEmitVariadicCallFixedPlusVariadicCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVariadicCallZeroArgumentsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// No variadic arguments at all: the collected slice must be the
 	// established empty-slice shape (.data = NULL, .len = 0), not an
 	// invalid empty array compound literal (a GNU extension, not portable
@@ -1307,16 +1406,19 @@ func TestEmitVariadicCallZeroArgumentsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitVariadicCallBoolElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Confirms the variadic element dispatch isn't hardcoded to int: a
 	// []bool trailing parameter, collected via buildBoolExpr per element.
 	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, true); }", false, 1, false)
 }
 
 func TestEmitVariadicCallBoolElementFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, false); }", false, 0, false)
 }
 
 func TestEmitBoolReturningDirectCallInIfConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact repro: a plain bool-returning helper called directly in a bool
 	// position. validateHelperSignature admits a bool result, so the if
 	// condition lowers to a bool-typed DirectCall, which buildBoolExpr now
@@ -1327,6 +1429,7 @@ func TestEmitBoolReturningDirectCallInIfConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolReturningDirectCallInWhileConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same direct call used as a while-loop condition: `while id(n < 2)`
 	// calls id with a comparison argument, so the condition is a DirectCall
 	// whose argument is itself a bool value built by the same builder. The
@@ -1336,6 +1439,7 @@ func TestEmitBoolReturningDirectCallInWhileConditionCompilesAndRuns(t *testing.T
 }
 
 func TestEmitBoolReturningDirectCallWithShortCircuitCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-returning call composed with && / || / ! in the same condition:
 	// the new DirectCall case must compose with the existing operand tree.
 	// The && cases prove short-circuit composition (the false-left case skips
@@ -1348,6 +1452,7 @@ func TestEmitBoolReturningDirectCallWithShortCircuitCompilesAndRuns(t *testing.T
 }
 
 func TestEmitBoolReturningMethodCallInConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool-returning method call in a bool position lowers to a bool-typed
 	// MethodCall (the receiver becomes the self parameter through
 	// buildCallArguments), which buildBoolExpr builds through buildDirectCall
@@ -1358,18 +1463,21 @@ func TestEmitBoolReturningMethodCallInConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal parameter repro: apply(f fn(int,int)int, x int, y
 	// int) calls through the function-typed parameter.
 	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn apply(f fn(int, int) int, x int, y int) int { return f(x, y); } fn main() int { return apply(add, 1, 2); }", false, 3, false)
 }
 
 func TestEmitFunctionTypedResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal result repro: chooseOp() fn(int,int)int returns a
 	// bare function reference, forwarded into a local and called through it.
 	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn chooseOp() fn(int, int) int { return add; } fn main() int { var f fn(int, int) int = chooseOp(); return f(1, 2); }", false, 3, false)
 }
 
 func TestEmitFunctionTypedParameterMixedSignatureCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function-typed parameter combined with other parameter types and
 	// positions in the same signature — confirms the dispatch works
 	// regardless of where in the parameter list the function-typed one sits.
@@ -1377,6 +1485,7 @@ func TestEmitFunctionTypedParameterMixedSignatureCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedResultChainedCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function-returning helper's result forwarded directly as another
 	// call's argument, and a function-returning helper calling another
 	// function-returning helper — both real DirectCall-as-function-value
@@ -1386,6 +1495,7 @@ func TestEmitFunctionTypedResultChainedCallCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedGenericValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A generic function referenced as a first-class value
 	// (GenericFunctionValue, confirmed checker-reachable via identity[int]),
 	// both as a local's initializer and as a call argument.
@@ -1394,6 +1504,7 @@ func TestEmitFunctionTypedGenericValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFunctionTypedParameterResultWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the function-typed parameter's C type
 	// is the fnptr typedef, the argument is passed bare, and the indirect
 	// call through the parameter threads ctx.
@@ -1411,6 +1522,7 @@ func TestEmitFunctionTypedParameterResultWritesC(t *testing.T) {
 }
 
 func TestEmitU64FunctionTypeResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// u64 as a function type's RESULT (the exact shape std/hmap.peb's
 	// `hash_fn fn (K) u64` field uses): a function-typed local whose signature
 	// returns u64, an indirect call through it, and the u64 result consumed as
@@ -1422,6 +1534,7 @@ func TestEmitU64FunctionTypeResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU64FunctionTypeParamCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The mirror: u64 as a function type's PARAMETER, used as a function-typed
 	// local and called with a real u64 value. The param side had the identical
 	// isUint-excludes-U64 bug as the result side, so this must be fixed for
@@ -1432,12 +1545,14 @@ func TestEmitU64FunctionTypeParamCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU64FunctionTypeBothCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function type whose signature mentions u64 in BOTH the parameter and
 	// the result, called round-trip through a u64 local.
 	emitAndRun(t, "fn id(x u64) u64 { return x; } fn main() int { var f fn(u64) u64 = id; var r u64 = f(5); return r as int; }", false, 5, false)
 }
 
 func TestEmitU64FunctionTypeHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A u64 function-type PARAMETER and a u64 function-type RESULT in ordinary
 	// (non-function-typed) helper positions: a helper taking a fn(int) u64
 	// parameter calls through it and returns the u64 result, and a helper
@@ -1449,6 +1564,7 @@ func TestEmitU64FunctionTypeHelperParameterAndResultCompilesAndRuns(t *testing.T
 }
 
 func TestEmitU64FunctionTypeWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the function type whose RESULT is u64 is
 	// typedef'd with a uint64_t return type (`uint64_t (*pebble_fnptr_<id>_t)`),
 	// the function type whose PARAMETER is u64 declares that parameter as
@@ -1473,6 +1589,7 @@ func TestEmitU64FunctionTypeWritesC(t *testing.T) {
 }
 
 func TestEmitU64FunctionTypeResultConsumedAsRvalueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A u64 function-type INDIRECT CALL result consumed as a plain rvalue in a
 	// NON-local position (not just a local-declaration initializer): forwarded
 	// directly as another expression's integer operand. This is the seat the
@@ -1483,6 +1600,7 @@ func TestEmitU64FunctionTypeResultConsumedAsRvalueCompilesAndRuns(t *testing.T) 
 }
 
 func TestEmitPointerFunctionTypeResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The mirror repro for the pointer RESULT gap: a function-typed local
 	// whose signature returns a `*int` result (`fn(*int) *int`), called
 	// through an indirect call and the pointer result consumed as a pointer
@@ -1494,6 +1612,7 @@ func TestEmitPointerFunctionTypeResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerFunctionTypeNilResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A function type whose RESULT is a pointer but whose parameters are all
 	// non-pointer (`fn() *int`): a helper returning nil, referenced as a first
 	// -class value, and the pointer result consumed through an indirect call.
@@ -1503,6 +1622,7 @@ func TestEmitPointerFunctionTypeNilResultCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerFunctionTypeHelperParameterAndResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A pointer-bearing function-type PARAMETER and RESULT in ordinary (non
 	// -function-typed) helper positions: a helper taking a `fn(*int) int`
 	// parameter calls through it with a pointer argument, and a helper
@@ -1516,6 +1636,7 @@ func TestEmitPointerFunctionTypeHelperParameterAndResultCompilesAndRuns(t *testi
 }
 
 func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the fnptr typedef declares the trailing
 	// PebbleContext *ctx parameter first and the pointer parameter's C type
 	// `int32_t *` right after it — the exact pointer spelling helperSignature
@@ -1586,6 +1707,7 @@ fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V] {
 }
 
 func TestEmitEnumHelperReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from the gap analysis (proposal 13, active
 	// defect): a plain-enum-returning helper called from the entry, its result
 	// bound into an enum-typed local via a DirectCall initializer and then
@@ -1611,6 +1733,7 @@ fn main() int {
 }
 
 func TestEmitEnumHelperReturnWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the enum-returning helper: the helper's prototype and
 	// definition are declared with the enum's own pebble_enum_<typeID>_t C
 	// return type (never a struct typedef), its tail return emits the
@@ -1656,6 +1779,7 @@ fn main() int {
 }
 
 func TestEmitUnionHelperReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The "or tagged union" half of the gap: a tagged-union-returning helper
 	// constructs a payload-carrying variant, returns it, and the entry binds
 	// the result into a union-typed local and reads it back through a
@@ -1680,6 +1804,7 @@ fn main() int {
 }
 
 func TestEmitUnionHelperReturnWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the tagged-union-returning helper: the helper is
 	// declared with the union's own pebble_union_<typeID>_t C return type
 	// (never a struct typedef), the entry binds the call's result into a

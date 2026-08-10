@@ -25,6 +25,7 @@ func TestCheckStdMemImport(t *testing.T) {
 }
 
 func TestEmitEmptyEntryWritesC(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -39,6 +40,7 @@ func TestEmitEmptyEntryWritesC(t *testing.T) {
 }
 
 func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() void {}", "main", true)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -48,6 +50,7 @@ func TestEmitEmptyEntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNilArguments(t *testing.T) {
+	t.Parallel()
 	empty := &tir.Unit{}
 	snapshot := &types.Snapshot{}
 	if err := Emit(nil, snapshot, 0, nil, nil, &bytes.Buffer{}); err == nil {
@@ -62,6 +65,7 @@ func TestEmitNilArguments(t *testing.T) {
 }
 
 func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
+	t.Parallel()
 	// The real motivating case for the entire std/hmap.peb arc — roughly two
 	// dozen fixes across this session's slices: a full std/hmap.peb consumer
 	// (new + insert + get on HashMap[int, int]) that exercises every one of

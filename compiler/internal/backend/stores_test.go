@@ -7,6 +7,7 @@ import (
 )
 
 func TestEmitReassignUsingOwnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Each reassignment reads the local's own prior value: x starts at 1,
 	// x = x + 1 makes it 2, the second x = x + 1 makes it 3, and the return
 	// reads the final value — two increments, exit code 3. This exercises
@@ -16,6 +17,7 @@ func TestEmitReassignUsingOwnValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitReassignInIfArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A var declared before the if is reassigned inside the then-arm and read
 	// by that same arm's return: x starts at 1, x < 10 is true, x = x + 5
 	// makes it 6, exit code 6. The else arm reads the un-reassigned x (1).
@@ -26,6 +28,7 @@ func TestEmitReassignInIfArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitReassignOverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// 2147483647 + 1 overflows i32. The overflow must survive through a
 	// reassignment, not just a local's initializer or a return expression:
 	// x = x + 1 lowers to pebble_local_<x> = pebble_rt_checked_add_i32(
@@ -36,6 +39,7 @@ func TestEmitReassignOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitCompoundAddCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The minimal repro: a compound assignment as an ordinary leading
 	// statement. i += 1 lowers through the checked-arithmetic runtime helper
 	// (pebble_rt_checked_add_i32), never a raw C `+=`, so i goes 5 -> 6 and the
@@ -44,6 +48,7 @@ func TestEmitCompoundAddCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundAllOperatorsCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// Every compound operator in the language's set — +=, -=, *=, /=, %= — must
 	// combine exactly like the corresponding x = x <op> y, since each lowers
 	// through the same checked-arithmetic runtime helper buildExpr's
@@ -62,12 +67,14 @@ func TestEmitCompoundAllOperatorsCompileAndRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.source, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitPostfixIncrementCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// A postfix i++ lowers through the SAME CompoundStore path as += (the
 	// checker builds a postfix update as a CompoundStore with + and a
 	// literal-one value child), so it must work everywhere a += does — here as
@@ -76,6 +83,7 @@ func TestEmitPostfixIncrementCompileAndRun(t *testing.T) {
 }
 
 func TestEmitPostfixDecrementCompileAndRun(t *testing.T) {
+	t.Parallel()
 	// A postfix i-- is the -= twin: a CompoundStore with - and a literal-one
 	// value child, emitted as pebble_rt_checked_sub_i32(pebble_local_<i>, 1),
 	// making i go 6 -> 5.
@@ -83,6 +91,7 @@ func TestEmitPostfixDecrementCompileAndRun(t *testing.T) {
 }
 
 func TestEmitCompoundOverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// 2147483647 += 1 overflows i32. The overflow must survive through a
 	// compound assignment, exactly as it does through a plain reassignment:
 	// i += 1 lowers to pebble_local_<i> = pebble_rt_checked_add_i32(
@@ -95,6 +104,7 @@ func TestEmitCompoundOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitPostfixIncrementOverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// A postfix i++ overflows identically to i += 1 (it IS i += 1 at the IR
 	// level): 2147483647++ must panic through pebble_rt_checked_add_i32 in
 	// PEBBLE_RT_MODE_SAFE, not silently wrap.
@@ -102,6 +112,7 @@ func TestEmitPostfixIncrementOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitCompoundDivideByZeroStillAborts(t *testing.T) {
+	t.Parallel()
 	// i /= 0 must fault through pebble_rt_checked_div_i32 exactly like a plain
 	// i = i / 0 — divide-by-zero is a checked-semantics property a compound
 	// assignment must preserve, not a raw C `/=` which would be UB.
@@ -109,6 +120,7 @@ func TestEmitCompoundDivideByZeroStillAborts(t *testing.T) {
 }
 
 func TestEmitCompoundReleaseWrapsOverflow(t *testing.T) {
+	t.Parallel()
 	// In PEBBLE_RT_MODE_RELEASE the checked add wraps instead of panicking
 	// (same helper, different mode): 2147483647 += 1 wraps i to INT32_MIN, so
 	// the follow-on `if i < 0` is true and the process exits 77. A naive raw
@@ -124,6 +136,7 @@ func TestEmitCompoundReleaseWrapsOverflow(t *testing.T) {
 }
 
 func TestEmitCompoundIndexedPlaceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment to an array element — arr[i] += 5 — is a
 	// CompoundStore whose place is a CheckedIndexPlace, emitted through the
 	// same buildPlaceLValue machinery a plain indexed Store uses: the lvalue is
@@ -133,12 +146,14 @@ func TestEmitCompoundIndexedPlaceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundIndexedPlaceEvaluatesIndexOnce(t *testing.T) {
+	t.Parallel()
 	// The index call mutates count, so returning count proves whether the
 	// compound store evaluates its place once (1) or twice (2).
 	emitAndRun(t, "fn bump_and_get_index(p *i32) i32 { *p = *p + 1; return 0; } fn main() i32 { var count i32 = 0; var arr [1]i32 = [0]; arr[bump_and_get_index(&count)] += 1; return count; }", false, 1, false)
 }
 
 func TestEmitCompoundFieldPlaceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment to a struct field — c.count -= 2 — is a
 	// CompoundStore whose place is a FieldPlace (a struct field of exactly the
 	// entry's width), emitted through the same buildPlaceLValue machinery a
@@ -148,6 +163,7 @@ func TestEmitCompoundFieldPlaceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment and a postfix increment inside a loop body (a
 	// fall-through statement sequence) route through buildLeadingStatement
 	// exactly like a Store does: sum accumulates i via sum += i and i advances
@@ -157,6 +173,7 @@ func TestEmitCompoundInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundI64OverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// 9223372036854775807 += 1 overflows i64 and must panic through
 	// pebble_rt_checked_add_i64 in PEBBLE_RT_MODE_SAFE — the i64 checked-helper
 	// suffix really is selected for a compound assignment, not the i32 twin.
@@ -164,6 +181,7 @@ func TestEmitCompoundI64OverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitPostfixIncrementFloatCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A postfix ++ on a float local lowers through the same CompoundStore path
 	// (the checker's buildPostfixOne synthesizes a 1.0 float literal for a
 	// float place), combining with the plain C operator: x goes 1.5 -> 2.5,
@@ -172,6 +190,7 @@ func TestEmitPostfixIncrementFloatCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundDereferencePlaceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment through a pointer — *p += 3 — is a CompoundStore
 	// whose place is a DereferencePlace, emitted through the same
 	// buildPlaceLValue machinery a plain write-through-pointer Store uses (the
@@ -181,6 +200,7 @@ func TestEmitCompoundDereferencePlaceCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredCompoundStoreCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A deferred compound assignment — defer x += 1; — routes through the same
 	// buildCompoundStore a non-deferred compound assignment uses (the deferred
 	// position accepts a CompoundStore exactly as it accepts a Store), so the
@@ -189,6 +209,7 @@ func TestEmitDeferredCompoundStoreCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNoConditionCompoundUpdateCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A lone no-condition for whose only clause is a CompoundStore is the
 	// update-only shape, exactly like a lone no-condition Store: for ; ; i += 2
 	// advances i by checked-add of 2 until the in-body break at i >= 3 fires at
@@ -197,6 +218,7 @@ func TestEmitForLoopNoConditionCompoundUpdateCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCompoundInsideIfArmAndSwitchCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound assignment in an if-arm and in a switch case body — the
 	// fall-through statement-sequence positions b5be90d unified — routes through
 	// the shared buildLeadingStatement exactly like a Store does: x starts 1,
@@ -206,6 +228,7 @@ func TestEmitCompoundInsideIfArmAndSwitchCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopCompoundStoreUpdateCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A compound-assignment as the for-loop update (step += 1) is now a
 	// supported update shape: the for-header update clause accepts a
 	// CompoundStore exactly as it accepts a Store, emitting the same
@@ -215,6 +238,7 @@ func TestEmitForLoopCompoundStoreUpdateCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopIndexedCompoundUpdateEvaluatesPlacePerUpdate(t *testing.T) {
+	t.Parallel()
 	// A non-plain compound update cannot put its declaration in the C for
 	// header. The emitter declares the pointer before the loop and assigns its
 	// address in the update expression, so the changing index is evaluated once
@@ -223,6 +247,7 @@ func TestEmitForLoopIndexedCompoundUpdateEvaluatesPlacePerUpdate(t *testing.T) {
 }
 
 func TestEmitForLoopPostfixIncrementUpdateCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A postfix i++ as the for-loop update lowers through the same CompoundStore
 	// path as step += 1 (the checker builds a for-update postfix as a
 	// CompoundStore with + and a literal-one value child), so i counts 0..2 and
@@ -231,6 +256,7 @@ func TestEmitForLoopPostfixIncrementUpdateCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Reassigning a str-typed local from a new string literal, the effect
 	// observed indirectly (this backend has no way to return or print a str's
 	// contents, so the reassignment's effect must be proven through a later
@@ -243,6 +269,7 @@ func TestEmitStrReassignmentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReassignmentEscapedLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The escaping correctness must survive a reassignment, not just a
 	// declaration: reassigning from a literal whose decoded content forces C
 	// escapes (newline, tab, quote, backslash, control byte), then comparing
@@ -253,6 +280,7 @@ func TestEmitStrReassignmentEscapedLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrReassignmentWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a str local reassigned from a string literal: the
 	// reassignment is a whole-struct PebbleStr assignment whose inner
 	// construction text is byte-identical to the declaration's from the same
@@ -278,6 +306,7 @@ func TestEmitStrReassignmentWritesC(t *testing.T) {
 }
 
 func TestEmitDeferredStoreCOutput(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a fixture: the deferred statement's text
 	// appears immediately before the return, and nothing is emitted at the
 	// defer statement's own position in program order.
@@ -304,6 +333,7 @@ func TestEmitDeferredStoreCOutput(t *testing.T) {
 }
 
 func TestEmitU64CompoundAndPostfixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The compound-assignment gate (checkedSuffix(placeWidth) == "") now
 	// admits a u64 place for the +, -, * family (this slice's add/sub/mul_u64
 	// helpers): += and postfix ++ on a u64 local inside a u64-returning helper
@@ -313,6 +343,7 @@ func TestEmitU64CompoundAndPostfixCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU64CompoundOverflowStillAborts(t *testing.T) {
+	t.Parallel()
 	// u64 compound += follows the same checked-overflow contract as a plain
 	// `x = x + y`: adding 1 to UINT64_MAX must panic through
 	// pebble_rt_checked_add_u64 in SAFE mode, so the process terminates
@@ -321,6 +352,7 @@ func TestEmitU64CompoundOverflowStillAborts(t *testing.T) {
 }
 
 func TestEmitCharReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed reassignment: c is declared var 'a', reassigned to 'b',
 	// then compared against 'b' — the process exits 1 only if the reassignment
 	// actually changed the stored int32_t value.
@@ -328,6 +360,7 @@ func TestEmitCharReassignmentCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerReassignCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// var y i32 = 5; var p *i32 = &y; var z i32 = 10; p = &z; return *p;
 	// Reassigning a pointer local to point at a different variable.
 	emitAndRun(t, "fn main() i32 { var y i32 = 5; var p *i32 = &y; var z i32 = 10; p = &z; return *p; }", false, 10, false)

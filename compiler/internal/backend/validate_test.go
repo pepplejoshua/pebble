@@ -19,10 +19,12 @@ import (
 // casts back to int. Before the widening this was a clean rejection naming the
 // found type; now it compiles and runs.
 func TestEmitGenericHelperSpecializedAtNonEntryWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn identity[T](x T) T { return x; } fn main() int { var a i64 = 5; var r i64 = identity(a); return r as int; }", false, 5, false)
 }
 
 func TestEmitRejectsIfWithoutElse(t *testing.T) {
+	t.Parallel()
 	// The checker itself refuses an if-only tail (C0607: non-void function can
 	// fall through without returning), so this shape is hand-built through the
 	// IR builder to exercise Emit's own requirement that the final if has an
@@ -32,6 +34,7 @@ func TestEmitRejectsIfWithoutElse(t *testing.T) {
 }
 
 func TestEmitRejectsLocalLeakingBetweenArms(t *testing.T) {
+	t.Parallel()
 	// A local declared inside one arm must not be visible in the sibling arm.
 	// This hand-built unit makes the else-arm's return reference the
 	// then-arm's local (symbol 25); real source can't produce this shape (the
@@ -45,11 +48,13 @@ func TestEmitRejectsLocalLeakingBetweenArms(t *testing.T) {
 }
 
 func TestEmitRejectsNonEmptyBody(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() void { let x i32 = 1; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitRejectsUnsupportedArithmeticOperator(t *testing.T) {
+	t.Parallel()
 	// Division and modulo are now lowered to pebble_rt_checked_div_i32 /
 	// pebble_rt_checked_mod_i32, so no source-level CheckedArithmetic is
 	// rejected for its operator anymore. This hand-built node carries a
@@ -61,6 +66,7 @@ func TestEmitRejectsUnsupportedArithmeticOperator(t *testing.T) {
 }
 
 func TestEmitRejectsUndeclaredLocalReference(t *testing.T) {
+	t.Parallel()
 	// A local is declared in the body but the return references a name that
 	// was never declared. The checker would never build this from valid
 	// source (resolution fails first), so it is hand-built through the IR
@@ -71,6 +77,7 @@ func TestEmitRejectsUndeclaredLocalReference(t *testing.T) {
 }
 
 func TestEmitRejectsStoreToUndeclaredSymbol(t *testing.T) {
+	t.Parallel()
 	// A Store's place must name a local declared earlier in the entry body.
 	// The checker would never build a reassignment of an undeclared name from
 	// valid source (resolution fails first), so it is hand-built through the
@@ -81,6 +88,7 @@ func TestEmitRejectsStoreToUndeclaredSymbol(t *testing.T) {
 }
 
 func TestEmitRejectsNonI32StoreValue(t *testing.T) {
+	t.Parallel()
 	// A reassignment's new value must be a valid i32 expression. The checker
 	// rejects a bool assigned to an i32 var itself (T0505: the types do not
 	// unify), so this shape is hand-built through the IR builder to exercise
@@ -90,6 +98,7 @@ func TestEmitRejectsNonI32StoreValue(t *testing.T) {
 }
 
 func TestEmitRejectsStoreToNonStoragePlace(t *testing.T) {
+	t.Parallel()
 	// A Store's place must be StoragePlace, CheckedIndexPlace, or
 	// DereferencePlace. Real source never produces a TuplePlace as a Store's
 	// writable target (reassigning a whole tuple element in place is not
@@ -100,6 +109,7 @@ func TestEmitRejectsStoreToNonStoragePlace(t *testing.T) {
 }
 
 func TestEmitRejectsWhileAsTail(t *testing.T) {
+	t.Parallel()
 	// A terminal while is only accepted as the block's tail when it is
 	// exhaustive — a literal `true` condition with no break targeting the
 	// loop (see terminalWhileIsExhaustive). This unit's loop is the opposite:
@@ -116,6 +126,7 @@ func TestEmitRejectsWhileAsTail(t *testing.T) {
 }
 
 func TestEmitRejectsWhileTrueWithBreakAsTail(t *testing.T) {
+	t.Parallel()
 	// A terminal while with a constant-true condition is only exhaustive when
 	// its loop body never breaks out of the loop itself: a break targeting the
 	// loop is the one way control can leave an otherwise-infinite loop and fall
@@ -131,6 +142,7 @@ func TestEmitRejectsWhileTrueWithBreakAsTail(t *testing.T) {
 }
 
 func TestEmitRejectsLocalLeakingBetweenLoopIfArms(t *testing.T) {
+	t.Parallel()
 	// A local declared inside one arm of a loop-body if must not be visible in
 	// the sibling arm. This hand-built unit makes the else-arm's Store target
 	// the then-arm's local (symbol 25); real source can't produce this shape
@@ -144,6 +156,7 @@ func TestEmitRejectsLocalLeakingBetweenLoopIfArms(t *testing.T) {
 }
 
 func TestEmitRejectsBoolLocalInIntegerPosition(t *testing.T) {
+	t.Parallel()
 	// A bool local referenced where an integer is expected must be rejected by
 	// this backend. Real source `var flag bool = true; return flag;` never
 	// reaches Emit — the checker itself rejects it (C0601: cannot convert a
@@ -157,6 +170,7 @@ func TestEmitRejectsBoolLocalInIntegerPosition(t *testing.T) {
 }
 
 func TestEmitRejectsNonI32ReturnValue(t *testing.T) {
+	t.Parallel()
 	// A bool literal is not an i32 expression. The checker would never build
 	// this shape itself, so it is hand-built through the IR builder to
 	// exercise Emit's own non-i32 rejection.
@@ -165,11 +179,13 @@ func TestEmitRejectsNonI32ReturnValue(t *testing.T) {
 }
 
 func TestEmitRejectsI32EmptyBody(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID := buildI32EmptyBodyUnit(t)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitAcceptsArgvParameter(t *testing.T) {
+	t.Parallel()
 	// The single-parameter main(argv []str) entry form is now a supported
 	// shape. This test used to be TestEmitRejectsParameters and pinned the old
 	// behavior that ANY entry parameter was rejected; the checker has accepted
@@ -186,16 +202,19 @@ func TestEmitAcceptsArgvParameter(t *testing.T) {
 }
 
 func TestEmitRejectsUnsupportedResultType(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() u32 { return 0; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 
 func TestEmitRejectsUnknownEntrySymbol(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, _, _ := buildFixture(t, "fn main() void {}", "main", true)
 	assertEmitRejects(t, unit, snapshot, symbol.SymbolID(0x7FFFFFFF))
 }
 
 func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
+	t.Parallel()
 	// A Break reaching the entry body outside any loop body is unreachable from
 	// real source — the checker's C0611 requires a jump to have a valid
 	// enclosing loop target, so a break at the function's top level never
@@ -209,6 +228,7 @@ func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
 }
 
 func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
+	t.Parallel()
 	// The unbound form (`loop start..end { ... }`, no `: name`) builds a
 	// RangeLoop whose Symbol field is zero (confirmed against a real fixture
 	// dump — nothing attaches an iterator), and there is no way to observe
@@ -220,6 +240,7 @@ func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 }
 
 func TestEmitForLoopRejectsStoreInitializer(t *testing.T) {
+	t.Parallel()
 	// An assignment as the for-loop initializer (for step = 0; ...) is
 	// reachable from real source but out of scope: the initializer must be a
 	// single local declaration, matching the backend's rule that only an
@@ -229,6 +250,7 @@ func TestEmitForLoopRejectsStoreInitializer(t *testing.T) {
 }
 
 func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
+	t.Parallel()
 	// A compound-assignment as the for-loop initializer (for x += 1; ...) is
 	// reachable from real source but out of scope: the initializer must be a
 	// single local declaration.
@@ -237,6 +259,7 @@ func TestEmitForLoopRejectsCompoundStoreInitializer(t *testing.T) {
 }
 
 func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
+	t.Parallel()
 	// A discarded-expression clause (for x + 1; ... or for ; ; x + 1 ...) is
 	// reachable from real source but out of scope: a no-condition for whose
 	// only clause is an ExpressionStatement is ambiguous (expression
@@ -249,6 +272,7 @@ func TestEmitForLoopRejectsExpressionStatementClause(t *testing.T) {
 }
 
 func TestEmitRejectsI64MainCallsI32Helper(t *testing.T) {
+	t.Parallel()
 	// A called function must resolve to the entry's own integer width — there
 	// is no cast/coercion lowering, the same reasoning 10.13 established for
 	// locals. An i64 entry calling an i32 helper is a legal, checker-accepted
@@ -259,6 +283,7 @@ func TestEmitRejectsI64MainCallsI32Helper(t *testing.T) {
 }
 
 func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
+	t.Parallel()
 	// The reverse direction: an i32 entry calling an i64 helper is likewise a
 	// clean width-mismatch rejection.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
@@ -266,6 +291,7 @@ func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
 }
 
 func TestEmitRejectsBareI64LocalReferenceInI32Context(t *testing.T) {
+	t.Parallel()
 	// Regression: a bare (uncast) reference to a mismatched-width local used
 	// where the width matters must still be a clean rejection, never a silent
 	// coercion. The checker accepts `return y;` (an i64 local from an
@@ -289,6 +315,7 @@ func TestEmitRejectsMixedWidthFloatArithmeticAndComparison(t *testing.T) {
 }
 
 func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
+	t.Parallel()
 	// The one cycle shape still rejected: a helper calling the entry function
 	// (main) back closes a cycle through the entry, which is emitted under the
 	// fixed C name pebble_user_main — not as a pebble_fn_<symbolID> helper the
@@ -300,6 +327,7 @@ func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
 }
 
 func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
+	t.Parallel()
 	// The i64 PARAMETER of this fixture is now accepted — the fixed-width-
 	// integer widening admits an i64 parameter in an i32 entry (declared
 	// int64_t in the C signature) — but the PROGRAM is still genuinely
@@ -314,6 +342,7 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
+	t.Parallel()
 	// A call site passing fewer (or more) arguments than the callee declares
 	// parameters is unreachable from real source — the checker rejects a wrong
 	// argument count itself — so it is hand-built through the IR builder to
@@ -324,6 +353,7 @@ func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
 }
 
 func TestEmitTupleWithStrElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A tuple whose element type is a scalar builtin beyond the original
 	// entry-width/bool pair — here a str element — is reachable from real
 	// source (the checker builds the declaration fine), and since composite
@@ -338,11 +368,13 @@ func TestEmitTupleWithStrElementCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported")
 }
 
 func TestEmitRejectsWholeTupleStore(t *testing.T) {
+	t.Parallel()
 	// Reassigning a whole tuple-typed local (t = (3, 4)) is reachable from
 	// real source (the checker builds the Store fine) but is out of scope this
 	// slice: only element reads of a tuple local are supported, never
@@ -354,6 +386,7 @@ func TestEmitRejectsWholeTupleStore(t *testing.T) {
 }
 
 func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
+	t.Parallel()
 	// The one shape in the inline-construction space that is still genuinely
 	// rejected (10.25): an aggregate constructed inline but wrapped in an extra
 	// set of parens — f(((1, 2))) or f((Point.{ x = 1, y = 2 })) — arrives at
@@ -377,6 +410,7 @@ func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
 }
 
 func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
+	t.Parallel()
 	// Indexing a tuple literal directly — (1, 2).1 — is out of scope: the
 	// checker lowers it to a TupleElementValue whose child is the TupleValue
 	// being indexed (not a tuple-typed local) and whose element type comes out
@@ -389,6 +423,7 @@ func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
 }
 
 func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
+	t.Parallel()
 	// An optional whose payload type is neither the entry's width nor bool —
 	// here a str payload — is reachable from real source (the checker builds
 	// the declaration fine), so this is a genuine backend-scope rejection. The
@@ -399,6 +434,7 @@ func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
 }
 
 func TestEmitRejectsOptionalUnwrapOfU8Payload(t *testing.T) {
+	t.Parallel()
 	// The narrower fixed-width integers pass the typedef and some-value gates
 	// (the generic resolvedBuiltin/cType mechanism), but their force-unwrap is
 	// a clean rejection: there is no pebble_rt_checked_unwrap_i8/u8-style
@@ -409,6 +445,7 @@ func TestEmitRejectsOptionalUnwrapOfU8Payload(t *testing.T) {
 }
 
 func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
+	t.Parallel()
 	// A struct whose field type is neither a fixed-width integer nor a
 	// supported compound type — here a char field — is reachable from real
 	// source (the checker builds the declaration and construction fine), so
@@ -421,6 +458,7 @@ func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {
 }
 
 func TestEmitRejectsStrLoadOfNonStrField(t *testing.T) {
+	t.Parallel()
 	// Defense for hand-built IR: a Load whose place is a FieldPlace but whose
 	// loaded type is NOT str must be a clean rejection naming the loaded type
 	// (buildStrOperand is the str grammar; a real-source integer field read
@@ -434,6 +472,7 @@ func TestEmitRejectsStrLoadOfNonStrField(t *testing.T) {
 }
 
 func TestEmitRejectsStrLoadOfNonFieldPlace(t *testing.T) {
+	t.Parallel()
 	// Defense for hand-built IR: a str-typed Load whose place is NOT a
 	// FieldPlace (here a bare StoragePlace) must be a clean rejection naming
 	// the found place kind, never a guessed lowering. This preserves the
@@ -445,12 +484,14 @@ func TestEmitRejectsStrLoadOfNonFieldPlace(t *testing.T) {
 }
 
 func TestEmitRejectsStructFieldAssignment(t *testing.T) {
+	t.Parallel()
 	// FieldPlace stores lower through the same lvalue machinery as pointer and
 	// indexed writes, preserving the mutation for the following read.
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", false, 5, false)
 }
 
 func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
+	t.Parallel()
 	// Reading a field directly off a struct literal (Point.{ x = 1, y = 2 }.x)
 	// is reachable from real source but lowers to a FieldValue whose base is
 	// the RecordConstruct itself, not a StoragePlace naming a struct local — a
@@ -462,6 +503,7 @@ func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
 }
 
 func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
+	t.Parallel()
 	// Nested field access (o.inner.x, where inner is itself a struct-typed
 	// field) is reachable from real source but out of scope twice over: the
 	// struct-of-struct field type is itself rejected by the typedef pass first
@@ -472,6 +514,7 @@ func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
 }
 
 func TestEmitRejectsStrReassignmentFromLocal(t *testing.T) {
+	t.Parallel()
 	// Reassigning a str local from another str local (s = t) is reachable from
 	// real source (confirmed against a real fixture dump: the Store's value
 	// child is a SymbolValue) but out of scope — this slice is deliberately
@@ -482,6 +525,7 @@ func TestEmitRejectsStrReassignmentFromLocal(t *testing.T) {
 }
 
 func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
+	t.Parallel()
 	// Reassigning a str local from a str-returning call (s = g()) is reachable
 	// from real source (confirmed against a real fixture dump: the Store's
 	// value child is a DirectCall) but out of scope — literal-to-literal only —
@@ -491,6 +535,7 @@ func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
 }
 
 func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
+	t.Parallel()
 	// Reassigning a str local from concatenation (s = "h" + "i") lowers to a
 	// Store whose value child is a BinaryValue of type str — concatenation
 	// lowers to a str-typed BinaryValue, and interpolation is the separate
@@ -504,6 +549,7 @@ func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
 }
 
 func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {
+	t.Parallel()
 	// Indexing an array literal directly (['h', 'i'][0]) is reachable from
 	// real source and lowers to a bare CheckedIndex too — an array literal
 	// has no addressable place, so it cannot form a Load(CheckedIndexPlace).
@@ -519,6 +565,7 @@ func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {
 }
 
 func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
+	t.Parallel()
 	// Calling a tuple-returning helper outside the one supported position — as
 	// an argument to another function (f(makeT())) — is reachable from real
 	// source: the outer DirectCall's argument is the inner DirectCall. The
@@ -529,6 +576,7 @@ func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
 }
 
 func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
+	t.Parallel()
 	// The struct side of the argument-position rejection: f(makeP()) passes a
 	// struct-returning call as an argument, which the aggregate-argument
 	// builder rejects naming what was found.
@@ -537,6 +585,7 @@ func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
 }
 
 func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
+	t.Parallel()
 	// Calling a tuple-returning helper as an operand of an element read —
 	// return makeT().0; — is reachable from real source: the read lowers to a
 	// TupleElementValue whose child is the DirectCall, not a SymbolValue naming
@@ -547,6 +596,7 @@ func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
 }
 
 func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
+	t.Parallel()
 	// Calling a tuple-returning helper as another tuple-returning helper's
 	// return value — `return makeT();` from makeT2 — is reachable from real
 	// source but deliberately out of scope (a call is only supported as a
@@ -559,6 +609,7 @@ func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
 }
 
 func TestEmitRejectsEntryReturningTuple(t *testing.T) {
+	t.Parallel()
 	// The entry itself cannot declare a tuple/struct result type: its C return
 	// type stays the scalar entryReturnType (integer, or a float since Float
 	// Stage A) regardless of what the language
@@ -596,6 +647,7 @@ func TestEmitRejectsOptionalIntegerToEnumReturnPosition(t *testing.T) {
 }
 
 func TestEmitRejectsOptionalIntegerToEnumCallArgumentPosition(t *testing.T) {
+	t.Parallel()
 	// A cast used as a call argument (`helper(5 as ?Color)` where helper
 	// takes a ?Color parameter) reaches the backend and is cleanly rejected
 	// naming the parameter's optional type — the pre-existing optional-typed
@@ -605,6 +657,7 @@ func TestEmitRejectsOptionalIntegerToEnumCallArgumentPosition(t *testing.T) {
 }
 
 func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
+	t.Parallel()
 	// A tagged-union payload that is not exactly the entry's resolved width,
 	// bool, or str — a tuple, struct, array, optional, or nested enum — is
 	// reachable from real source (the checker accepts such a variant
@@ -616,6 +669,7 @@ func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
 }
 
 func TestEmitRejectsU64CheckedDivision(t *testing.T) {
+	t.Parallel()
 	// A u64 / or % has no checked runtime helper (div/mod is out of this
 	// slice's scope — only +, -, * got u64 twins), so the backend must reject
 	// it CLEANLY at Emit time, not emit a call to a nonexistent
@@ -629,6 +683,7 @@ func TestEmitRejectsU64CheckedDivision(t *testing.T) {
 }
 
 func TestEmitRejectsWrappingU64BuiltinNonU64Argument(t *testing.T) {
+	t.Parallel()
 	// A non-u64 argument to a wrapping builtin is a CLEAN rejection, never a
 	// crash and never silently-wrong C: an i32-typed argument cannot satisfy
 	// the builtin's u64 parameter, and Emit rejects the call with an error that
@@ -671,6 +726,7 @@ func TestEmitRejectsMismatchedNonEntryWidthComparison(t *testing.T) {
 }
 
 func TestEmitSliceEnumElementRejects(t *testing.T) {
+	t.Parallel()
 	// A slice of enum elements is deliberately unsupported, mirroring the
 	// pre-existing enum-typed ARRAY element restriction: an enum element is a
 	// Nominal type exactly like a struct element, but sliceElementCType /
@@ -683,6 +739,7 @@ func TestEmitSliceEnumElementRejects(t *testing.T) {
 }
 
 func TestEmitRejectsMethodCallSliceIndexOutOfBoundsAbnormalExit(t *testing.T) {
+	t.Parallel()
 	// Regression guard: bounds checking must not be silently dropped for the
 	// new call-result base shape. An out-of-range index against a
 	// freshly-computed slice base must still abort at runtime, exactly like
@@ -706,6 +763,7 @@ fn main() int {
 }
 
 func TestEmitSliceStructFieldInlineConstructionAsCallArgumentRejects(t *testing.T) {
+	t.Parallel()
 	// An inline slice construction in a pure expression position — a struct
 	// value with such a field used as a call argument — is a clean rejection,
 	// the same discipline buildSliceArgument applies to a bare CheckedSlice
@@ -721,6 +779,7 @@ fn main() int {
 }
 
 func TestEmitSliceConstructionAsCallArgumentInReturnPositionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An inline slice construction used directly as a call argument (f(a[1:3]))
 	// in a PURE EXPRESSION position — here a return value, `return f(a[1:3]);`
 	// — is checker-reachable and, since the GNU statement-expression change,
@@ -738,6 +797,7 @@ func TestEmitSliceConstructionAsCallArgumentInReturnPositionCompilesAndRuns(t *t
 }
 
 func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {
+	t.Parallel()
 	// A slice-typed parameter whose element type is not the entry's width or
 	// bool is a clean rejection from validateHelperSignature. A []str parameter
 	// is checker-reachable but not constructible from real source (a str array

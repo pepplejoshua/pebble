@@ -69,11 +69,11 @@ func indirectCalleePlace(unit *tir.Unit, node tir.Node) (placeNode tir.Node, isA
 // buildBoolExpr path) or the entry's width (the buildExpr path) — matching how
 // the Load's own Type was already gated by the caller's builder. The emitted C
 // is pebble_local_<symbol>._<ordinal>.
-func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+func buildTuplePlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 1 {
 		return "", fmt.Errorf("tuple place wants one base")
 	}
-	expr, typ, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+	expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -105,11 +105,11 @@ func buildTuplePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // resolved width — the caller (buildExpr/buildBoolExpr/buildCharOperand) has
 // already gated the Load's type against its consuming grammar, so this element
 // check is defense for hand-built IR rather than a re-gate on the entry width.
-func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+func buildArrayPlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
 	if len(place.Children) != 2 {
 		return "", fmt.Errorf("CheckedIndexPlace wants two children")
 	}
-	baseExpr, arrayType, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+	baseExpr, arrayType, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +148,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				}
 				index = indexNode.Literal.IntegerNum
 			} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-				if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+				if name, ok := localOrGlobalName(st, indexNode.Symbol, locals); ok {
 					index = name
 				} else {
 					return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
@@ -159,12 +159,12 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 				// anchored to uint, or a uint-typed local used as an index):
 				// built by the dedicated uint grammar, not the general
 				// buildExpr path which rejects non-entry-width types.
-				index, err = buildUintExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+				index, err = buildUintExpr(st, unit, snapshot, fileSet, place.Children[1], locals, width)
 				if err != nil {
 					return "", fmt.Errorf("slice index: %v", err)
 				}
 			} else {
-				index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
+				index, err = buildExpr(st, unit, snapshot, fileSet, place.Children[1], locals, width, width)
 				if err != nil {
 					return "", fmt.Errorf("slice index: %v", err)
 				}
@@ -208,7 +208,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		// buildComparisonOperand handles), and the iterator is always declared
 		// in C at the entry's width, so its name is the correct C lvalue for
 		// the subscript.
-		if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, indexNode.Symbol, locals); ok {
 			index = name
 		} else {
 			return "", fmt.Errorf("array index references symbol %d, which is not a local in scope", indexNode.Symbol)
@@ -217,13 +217,13 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		// A uint-typed array index (a uint-typed local or loop iterator):
 		// built by the dedicated uint grammar, not the general buildExpr
 		// path which rejects non-entry-width types.
-		index, err = buildUintExpr(unit, snapshot, fileSet, place.Children[1], locals, width)
+		index, err = buildUintExpr(st, unit, snapshot, fileSet, place.Children[1], locals, width)
 		if err != nil {
 			return "", fmt.Errorf("array index: %v", err)
 		}
 	} else {
 		var err error
-		index, err = buildExpr(unit, snapshot, fileSet, place.Children[1], locals, width, width)
+		index, err = buildExpr(st, unit, snapshot, fileSet, place.Children[1], locals, width, width)
 		if err != nil {
 			return "", fmt.Errorf("array index: %v", err)
 		}
@@ -289,7 +289,7 @@ func buildArrayPlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 // other temp this backend emits. width is the entry's resolved integer width,
 // used for the checked-index helper's suffix, the .len width cast, and the
 // index's own width.
-func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, string, error) {
+func buildSliceIndexValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, string, error) {
 	if len(node.Children) != 2 {
 		return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex with %d child(ren), want exactly two (the slice value being indexed and the index)", len(node.Children))
 	}
@@ -329,7 +329,7 @@ func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if len(baseNode.Children) != 1 {
 			return "", "", fmt.Errorf("entry function body expression contains a CheckedIndex whose base Load has %d child(ren), want exactly one place", len(baseNode.Children))
 		}
-		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, baseNode.Children[0], locals, width)
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, baseNode.Children[0], locals, width)
 		if err != nil {
 			return "", "", fmt.Errorf("entry function body expression slice-index base read: %v", err)
 		}
@@ -351,7 +351,7 @@ func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			return "", "", fmt.Errorf("entry function body expression indexes a %s whose result type is %s, want a slice-typed call result", baseNode.Kind, describeType(snapshot, baseNode.Type))
 		}
 		sliceType = baseNode.Type
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, baseNode, locals, width)
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, baseNode, locals, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -386,7 +386,7 @@ func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			return "", "", fmt.Errorf("entry function body expression indexes a slice-typed struct field of a %s receiver, want a call result (a non-addressable struct value only arises from a call; a struct local's field indexes as a place)", receiver.Kind)
 		}
 		sliceType = baseNode.Type
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, receiver, locals, width)
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, receiver, locals, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -414,7 +414,7 @@ func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	} else if !isSupportedSliceElementType(unit, snapshot, element) {
 		return "", "", fmt.Errorf("entry function body expression indexes a slice whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, or struct", describeType(snapshot, element))
 	}
-	index, err := buildSliceIndexOperand(unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
+	index, err := buildSliceIndexOperand(st, unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
 	if err != nil {
 		return "", "", err
 	}
@@ -431,7 +431,7 @@ func buildSliceIndexValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // the entry's width) as its pebble_local_<symbol> C name, a uint-typed index
 // via the dedicated buildUintExpr grammar (the general buildExpr path rejects
 // a uint-typed value), and anything else via buildExpr.
-func buildSliceIndexOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, indexID tir.NodeID, indexNode tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildSliceIndexOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, indexID tir.NodeID, indexNode tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
 		if !isNonNegativeDecimal(indexNode.Literal.IntegerNum) {
 			return "", fmt.Errorf("slice index contains an integer literal with malformed text %q", indexNode.Literal.IntegerNum)
@@ -439,19 +439,19 @@ func buildSliceIndexOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 		return indexNode.Literal.IntegerNum, nil
 	}
 	if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-		if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+		if name, ok := localOrGlobalName(st, indexNode.Symbol, locals); ok {
 			return name, nil
 		}
 		return "", fmt.Errorf("slice index references symbol %d, which is not a local in scope", indexNode.Symbol)
 	}
 	if isUint(snapshot, indexNode.Type) {
-		index, err := buildUintExpr(unit, snapshot, fileSet, indexID, locals, width)
+		index, err := buildUintExpr(st, unit, snapshot, fileSet, indexID, locals, width)
 		if err != nil {
 			return "", fmt.Errorf("slice index: %v", err)
 		}
 		return index, nil
 	}
-	index, err := buildExpr(unit, snapshot, fileSet, indexID, locals, width, width)
+	index, err := buildExpr(st, unit, snapshot, fileSet, indexID, locals, width, width)
 	if err != nil {
 		return "", fmt.Errorf("slice index: %v", err)
 	}
@@ -474,8 +474,8 @@ func buildSliceIndexOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // .Ok:`) is lowered instead to
 // pebble_local_<symbol>.payload.pebble_field_<member> — the exact projection
 // the union's construction side fills (see buildUnionConstruction).
-func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
-	baseExpr, structType, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+func buildStructFieldRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool bool) (string, error) {
+	baseExpr, structType, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
 		return "", err
 	}
@@ -598,11 +598,11 @@ func buildStructFieldRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 // runtime primitive, and the dereference produces the pointee value. wantBool
 // controls whether the caller expects a bool-typed result (for an `if *b` where
 // b is *bool) — the C dereference of a bool pointer yields a C bool directly.
-func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, loadSpan source.Span, wantBool bool) (string, error) {
+func buildDereferencePlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, loadSpan source.Span, wantBool bool) (string, error) {
 	if len(place.Children) != 1 {
 		return "", fmt.Errorf("dereference place wants one child")
 	}
-	ptrExpr, err := buildExpr(unit, snapshot, fileSet, place.Children[0], locals, width, width)
+	ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], locals, width, width)
 	if err != nil {
 		return "", fmt.Errorf("dereference pointer expression: %v", err)
 	}
@@ -613,7 +613,7 @@ func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	// dereferenced value), the same reason it passes buildExpr's width gate
 	// unmodified for a width-typed pointee.
 	pointeeTypeID := place.Type
-	pointeeCType := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
+	pointeeCType := pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID)
 	if pointeeCType == "" {
 		return "", fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 	}
@@ -626,7 +626,7 @@ func buildDereferencePlaceRead(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	return castExpr, nil
 }
 
-func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, types.TypeID, error) {
+func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, types.TypeID, error) {
 	n, ok := unit.Node(id)
 	if !ok {
 		return "", 0, fmt.Errorf("place %d is invalid", id)
@@ -668,7 +668,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("tuple place wants one base")
 		}
-		base, typ, err := buildPlaceLValue(unit, snapshot, fileSet, n.Children[0], locals, width)
+		base, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, n.Children[0], locals, width)
 		if err != nil {
 			return "", 0, err
 		}
@@ -685,7 +685,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("field place wants one base")
 		}
-		base, typ, err := buildPlaceLValue(unit, snapshot, fileSet, n.Children[0], locals, width)
+		base, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, n.Children[0], locals, width)
 		if err != nil {
 			return "", 0, err
 		}
@@ -760,7 +760,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(n.Children) != 2 {
 			return "", 0, fmt.Errorf("index place wants two children")
 		}
-		base, typ, err := buildPlaceLValue(unit, snapshot, fileSet, n.Children[0], locals, width)
+		base, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, n.Children[0], locals, width)
 		if err != nil {
 			return "", 0, err
 		}
@@ -772,7 +772,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if indexNode.Kind == tir.IntegerLiteral && indexNode.Type == snapshot.Builtins().Int {
 			idx = indexNode.Literal.IntegerNum
 		} else if indexNode.Kind == tir.SymbolValue && indexNode.Type == snapshot.Builtins().Int {
-			if name, ok := localOrGlobalName(indexNode.Symbol, locals); ok {
+			if name, ok := localOrGlobalName(st, indexNode.Symbol, locals); ok {
 				idx = name
 			} else {
 				return "", 0, fmt.Errorf("symbol %d is not a local in scope", indexNode.Symbol)
@@ -785,12 +785,12 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 			// grammar, exactly as every other uint value position routes —
 			// the general buildExpr path's entry-width gate would reject a
 			// uint-typed value with "of type uint, want <entry width>".
-			idx, err = buildUintExpr(unit, snapshot, fileSet, n.Children[1], locals, width)
+			idx, err = buildUintExpr(st, unit, snapshot, fileSet, n.Children[1], locals, width)
 			if err != nil {
 				return "", 0, err
 			}
 		} else {
-			idx, err = buildExpr(unit, snapshot, fileSet, n.Children[1], locals, width, width)
+			idx, err = buildExpr(st, unit, snapshot, fileSet, n.Children[1], locals, width, width)
 			if err != nil {
 				return "", 0, err
 			}
@@ -825,7 +825,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("dereference place wants one child")
 		}
-		ptrExpr, err := buildExpr(unit, snapshot, fileSet, n.Children[0], locals, width, width)
+		ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, n.Children[0], locals, width, width)
 		if err != nil {
 			return "", 0, fmt.Errorf("dereference pointer expression: %v", err)
 		}
@@ -833,7 +833,7 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 		// n.Type is already the pointee type, not the pointer type (see the
 		// matching comment in buildDereferencePlaceRead).
 		pointeeTypeID := n.Type
-		pointeeCType := pointerTypeNameForUnit(unit, snapshot, pointeeTypeID)
+		pointeeCType := pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID)
 		if pointeeCType == "" {
 			return "", 0, fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 		}
@@ -847,11 +847,11 @@ func buildPlaceLValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.
 // a direct write to a tagged-union variant payload. The ordinary place builder
 // must remain tag-free because it is also used for reads; Store emission uses
 // this companion result to update the discriminant in the same C expression.
-func unionVariantPayloadStoreTarget(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, bool, error) {
+func unionVariantPayloadStoreTarget(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, bool, error) {
 	if place.Kind != tir.FieldPlace || len(place.Children) != 1 {
 		return "", "", false, nil
 	}
-	base, typ, err := buildPlaceLValue(unit, snapshot, fileSet, place.Children[0], locals, width)
+	base, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
 		return "", "", false, err
 	}

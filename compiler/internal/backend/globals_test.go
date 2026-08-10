@@ -13,6 +13,7 @@ import (
 // pebble_global_<id> = 5;`), and `return counter;` must read that storage
 // back — this is the exact read reproduction from the parity-gap tracker.
 func TestEmitGlobalReadInitialValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "var counter int = 5;\n\nfn main() int {\n    return counter;\n}", false, 5, false)
 }
 
@@ -20,6 +21,7 @@ func TestEmitGlobalReadInitialValueCompilesAndRuns(t *testing.T) {
 // global's file-scope declaration must carry the initializer value (not a
 // zero placeholder) and the read must resolve to that storage's C name.
 func TestEmitGlobalReadInitialValueWritesCStorage(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "var counter int = 5;\n\nfn main() int {\n    return counter;\n}", "main", false)
 	var globalID uint32
 	for _, g := range unit.GlobalDeclarations() {
@@ -48,6 +50,7 @@ func TestEmitGlobalReadInitialValueWritesCStorage(t *testing.T) {
 // mutable state, not just that each operation individually compiles. bump
 // increments the global twice; read() returns it; main returns read().
 func TestEmitGlobalWriteAcrossFunctionsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var counter int = 0;
 
 fn bump() void {
@@ -69,6 +72,7 @@ fn main() int {
 // exact write reproduction: bump() reads, increments, and re-stores the global
 // three times, and main returns the third call's result (0 -> 1 -> 2 -> 3).
 func TestEmitGlobalBumpAcrossFunctionBoundariesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var counter int = 0;
 
 fn bump() int {
@@ -88,6 +92,7 @@ fn main() int {
 // would reset the counter each pass, but the loop must accumulate the global
 // to 5. Bounded harness so a miscompiled non-terminating loop fails loudly.
 func TestEmitGlobalReadWriteInLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRunBounded(t, `var counter int = 0;
 
 fn main() int {
@@ -104,6 +109,7 @@ fn main() int {
 // path for a global place (`counter += 1;`), which resolves through
 // buildCompoundStore's global branch.
 func TestEmitGlobalCompoundAssignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var counter int = 10;
 
 fn main() int {
@@ -115,6 +121,7 @@ fn main() int {
 // TestEmitBoolGlobalCompilesAndRuns covers a bool-typed global (read path via
 // buildBoolExpr).
 func TestEmitBoolGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var flag bool = true;
 
 fn main() int {
@@ -128,6 +135,7 @@ fn main() int {
 // TestEmitCharGlobalCompilesAndRuns covers a char-typed global (read path via
 // buildCharOperand).
 func TestEmitCharGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var c char = 'a';
 
 fn main() int {
@@ -141,6 +149,7 @@ fn main() int {
 // TestEmitUintGlobalCompilesAndRuns covers a uint-typed global (read path via
 // buildUintExpr).
 func TestEmitUintGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var n uint = 3;
 
 fn main() int {
@@ -155,6 +164,7 @@ fn main() int {
 // buildEnumValue; the enum typedef must precede the global's storage
 // declaration in the emitted C).
 func TestEmitEnumGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Color = enum { red, green, blue };
 
 var c Color = Color.green;
@@ -171,6 +181,7 @@ fn main() int {
 // PebbleStr static initializer and it can be read (comparison) and reassigned
 // from a string literal.
 func TestEmitStrGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `var s str = "hi";
 
 fn main() int {
@@ -189,6 +200,7 @@ fn main() int {
 // static declaration would trip -Wunused-variable under the mandated
 // -Wall -Wextra -Werror build, so the program must still compile and run.
 func TestEmitGlobalUnusedDoesNotEmitStorage(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "var x int = 5;\n\nfn main() int {\n    return 0;\n}", false, 0, false)
 }
 
@@ -197,6 +209,7 @@ func TestEmitGlobalUnusedDoesNotEmitStorage(t *testing.T) {
 // = 1 + 2;`) folds to a plain literal C constant and the program returns the
 // folded value, exactly the reproduction from the parity-gap tracker.
 func TestEmitGlobalConstantArithmeticFoldsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "var x int = 1 + 2;\n\nfn main() int {\n    return x;\n}", false, 3, false)
 }
 
@@ -205,6 +218,7 @@ func TestEmitGlobalConstantArithmeticFoldsCompilesAndRuns(t *testing.T) {
 // remainder semantics the folder reproduces with big.Int's Quo/Rem: 10 / 3 =
 // 3, 10 % 3 = 1, so the second global folds to 4.
 func TestEmitGlobalConstantArithmeticFoldsOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "var x int = 6 * 7;\n\nfn main() int {\n    return x;\n}", false, 42, false)
 	emitAndRun(t, "var y int = 10 / 3 + 10 % 3;\n\nfn main() int {\n    return y;\n}", false, 4, false)
 }
@@ -213,6 +227,7 @@ func TestEmitGlobalConstantArithmeticFoldsOperatorsCompilesAndRuns(t *testing.T)
 // the folded value must land in the storage declaration as a plain literal
 // (`static int32_t pebble_global_<id> = 42;`), not a runtime call.
 func TestEmitGlobalConstantArithmeticFoldsToLiteralText(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "var x int = 6 * 7;\n\nfn main() int {\n    return x;\n}", "main", false)
 	var globalID uint32
 	for _, g := range unit.GlobalDeclarations() {
@@ -242,6 +257,7 @@ func TestEmitGlobalConstantArithmeticFoldsToLiteralText(t *testing.T) {
 // generic "not a literal constant" message. 250 + 10 folds to 260, outside
 // u8's 0..255 range.
 func TestEmitGlobalConstantArithmeticOverflowRejected(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "var x u8 = 250 + 10;\n\nfn main() int {\n    if x == 255 {\n        return 1;\n    }\n    return 0;\n}", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
@@ -264,6 +280,7 @@ func TestEmitGlobalConstantArithmeticOverflowRejected(t *testing.T) {
 // folder correctly declines; a CheckedArithmetic tree with any such
 // non-literal operand (`1 + -5`) falls back to the same rejection.
 func TestEmitGlobalNonLiteralInitializerRejected(t *testing.T) {
+	t.Parallel()
 	for _, fixture := range []string{
 		"var x int = -5;\n\nfn main() int {\n    return x;\n}",
 		"var x int = 1 + -5;\n\nfn main() int {\n    return x;\n}",

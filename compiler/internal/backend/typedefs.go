@@ -201,7 +201,7 @@ func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 	return strings.Join(texts, "\n"), nil
 }
 
-func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo, tagged map[types.TypeID]bool) (string, error) {
+func buildAggregateTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo, tagged map[types.TypeID]bool) (string, error) {
 	structs := make(map[types.TypeID]structInfo, len(infos))
 	for _, info := range infos {
 		structs[info.typ] = info
@@ -214,9 +214,9 @@ func buildAggregateTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width type
 		case isTuple(snapshot, id):
 			text, err = buildTupleTypedef(unit, snapshot, width, id, tagged)
 		case isOptional(snapshot, id):
-			text, err = buildOptionalTypedef(unit, snapshot, width, id, tagged)
+			text, err = buildOptionalTypedef(st, unit, snapshot, width, id, tagged)
 		case isStruct(snapshot, id):
-			text, err = buildStructTypedef(unit, snapshot, width, structs[id], tagged)
+			text, err = buildStructTypedef(st, unit, snapshot, width, structs[id], tagged)
 		}
 		if err != nil {
 			return "", err
@@ -272,10 +272,10 @@ func buildTupleTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // ids in first-encountered order from the optional-type collection pass, so
 // every optional type the emitted program references has exactly one typedef
 // here, written before any function definition in the final output.
-func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+func buildOptionalTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildOptionalTypedef(unit, snapshot, width, id, nil)
+		text, err := buildOptionalTypedef(st, unit, snapshot, width, id, nil)
 		if err != nil {
 			return "", err
 		}
@@ -295,7 +295,7 @@ func buildOptionalTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types
 // entry's width, bool for a bool payload, or the payload's enum typedef for an
 // enum payload). A TypeID that is not an optional type in the snapshot is a
 // clean rejection, not a guessed layout.
-func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID, tagged map[types.TypeID]bool) (string, error) {
+func buildOptionalTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return "", fmt.Errorf("optional type %d is not in the type snapshot", id)
@@ -307,7 +307,7 @@ func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.
 	if !ok {
 		return "", fmt.Errorf("optional type %s has no payload type", optionalTypeName(id))
 	}
-	valueCType, err := optionalPayloadCType(unit, snapshot, width, payloadType)
+	valueCType, err := optionalPayloadCType(st, unit, snapshot, width, payloadType)
 	if err != nil {
 		return "", fmt.Errorf("optional type %s: %v", optionalTypeName(id), err)
 	}
@@ -323,10 +323,10 @@ func buildOptionalTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.
 // infos in first-encountered order from the struct-type collection pass, so
 // every struct type the emitted program references has exactly one typedef
 // here, written before any function definition in the final output.
-func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
+func buildStructTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []structInfo) (string, error) {
 	texts := make([]string, 0, len(infos))
 	for _, info := range infos {
-		text, err := buildStructTypedef(unit, snapshot, width, info, nil)
+		text, err := buildStructTypedef(st, unit, snapshot, width, info, nil)
 		if err != nil {
 			return "", err
 		}
@@ -355,7 +355,7 @@ func buildStructTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.B
 // A structInfo whose TypeID is not a Nominal type in the snapshot is a clean
 // rejection, not a guessed layout (defense for hand-built IR; collectStructTypes
 // has already resolved every collected TypeID through resolveStructInfo).
-func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info structInfo, tagged map[types.TypeID]bool) (string, error) {
+func buildStructTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info structInfo, tagged map[types.TypeID]bool) (string, error) {
 	key, ok := snapshot.Key(info.typ)
 	if !ok {
 		return "", fmt.Errorf("struct type %d is not in the type snapshot", info.typ)
@@ -365,7 +365,7 @@ func buildStructTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 	}
 	fields := make([]string, len(info.fields))
 	for i, field := range info.fields {
-		ctype, err := structFieldCType(unit, snapshot, width, field.typ)
+		ctype, err := structFieldCType(st, unit, snapshot, width, field.typ)
 		if err != nil {
 			return "", fmt.Errorf("struct type %s: %v", structTypeName(info.typ), err)
 		}
@@ -612,10 +612,10 @@ func buildSliceTypedef(unit *tir.Unit, snapshot *types.Snapshot, info sliceInfo,
 // pass, so every function type the emitted program references as a first-class
 // value has exactly one typedef here, written before any function definition
 // in the final output.
-func buildFunctionTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+func buildFunctionTypedefs(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildFunctionTypedef(snapshot, width, id)
+		text, err := buildFunctionTypedef(st, snapshot, width, id)
 		if err != nil {
 			return "", err
 		}
@@ -643,7 +643,7 @@ func buildFunctionTypedefs(snapshot *types.Snapshot, width types.BuiltinKind, id
 // PebbleStr, a pointer's own `<pointee> *` spelling via pointerTypeName, or
 // void), so the typedef never references an aggregate typedef
 // that might be emitted after it.
-func buildFunctionTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+func buildFunctionTypedef(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
 		return "", err
 	}
@@ -655,13 +655,13 @@ func buildFunctionTypedef(snapshot *types.Snapshot, width types.BuiltinKind, id 
 	if !ok {
 		return "", fmt.Errorf("type %s is not a function type", describeType(snapshot, id))
 	}
-	resultCType, err := functionTypeResultCType(snapshot, width, result)
+	resultCType, err := functionTypeResultCType(st, snapshot, width, result)
 	if err != nil {
 		return "", err
 	}
 	paramCTypes := make([]string, len(parameters))
 	for i, parameter := range parameters {
-		paramCType, err := functionTypeParamCType(snapshot, width, parameter)
+		paramCType, err := functionTypeParamCType(st, snapshot, width, parameter)
 		if err != nil {
 			return "", err
 		}

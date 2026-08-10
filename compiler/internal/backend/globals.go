@@ -17,32 +17,19 @@ import (
 // checker only ever records an initializer (and therefore reaches this
 // backend) for a `var` global — an immutable `let` global's value is inlined
 // at each reference site and never resolves to storage — so a symbol present
-// in emitGlobals is always a mutable global that real file-scope storage
-// backs.
+// in an Emit's globals map (emitState.globals) is always a mutable global
+// that real file-scope storage backs.
 type globalInfo struct {
 	typ  types.TypeID
 	info localInfo
 }
 
-// emitGlobals is the set of mutable module-level globals the current Emit
-// invocation resolves reads and writes against, scoped to one Emit exactly
-// like emitSymbols (set at the top of Emit, cleared by the same deferred
-// call, guarded by the same reentrancy panic). It holds only globals actually
-// referenced by the reachable program — those are the only ones real storage
-// is emitted for (a storage declaration for an unreferenced global would trip
-// -Wunused-variable under the mandated -Wall -Wextra -Werror build) — and the
-// only ones a read/write reference can resolve to. The map is package-level
-// shared mutable state by the same deliberate tradeoff as emitSymbols: this
-// package assumes Emit is single-threaded and non-reentrant, and every builder
-// in the ~24-site read/write path reads it without threading a new parameter.
-var emitGlobals map[symbol.SymbolID]globalInfo
-
 // globalCName returns the C file-scope storage name of a mutable global
 // (pebble_global_<symbolID>) when the symbol is one of the current Emit's
 // referenced globals. It is the single name source for every global read and
 // write resolution site, exactly as pebble_local_<symbolID> is for locals.
-func globalCName(symbolID symbol.SymbolID) (string, bool) {
-	if _, ok := emitGlobals[symbolID]; !ok {
+func globalCName(st *emitState, symbolID symbol.SymbolID) (string, bool) {
+	if _, ok := st.globals[symbolID]; !ok {
 		return "", false
 	}
 	return fmt.Sprintf("pebble_global_%d", symbolID), true
@@ -54,14 +41,14 @@ func globalCName(symbolID symbol.SymbolID) (string, bool) {
 // global to its pebble_global_<symbolID> C name, and an extern variable to its
 // real C name (errno). ok is false when the symbol is none of these — the
 // caller then reports its own "not a local" error.
-func localOrGlobalName(symbolID symbol.SymbolID, locals map[symbol.SymbolID]localInfo) (string, bool) {
+func localOrGlobalName(st *emitState, symbolID symbol.SymbolID, locals map[symbol.SymbolID]localInfo) (string, bool) {
 	if _, declared := locals[symbolID]; declared {
 		return fmt.Sprintf("pebble_local_%d", symbolID), true
 	}
-	if name, ok := globalCName(symbolID); ok {
+	if name, ok := globalCName(st, symbolID); ok {
 		return name, true
 	}
-	return externDataCName(symbolID)
+	return externDataCName(st, symbolID)
 }
 
 // globalDeclBySymbol returns the unit's GlobalDecl container for one symbol.
@@ -185,19 +172,19 @@ func collectReferencedGlobals(unit *tir.Unit, entryBlock tir.NodeID, helpers []h
 // (deterministic regardless of map iteration order). The initializer is the
 // global's compile-time-constant initializer recorded by the checker; see
 // buildGlobalInitializerText.
-func buildGlobalStorage(unit *tir.Unit, snapshot *types.Snapshot) (string, error) {
-	ids := make([]symbol.SymbolID, 0, len(emitGlobals))
-	for id := range emitGlobals {
+func buildGlobalStorage(st *emitState, unit *tir.Unit, snapshot *types.Snapshot) (string, error) {
+	ids := make([]symbol.SymbolID, 0, len(st.globals))
+	for id := range st.globals {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	lines := make([]string, 0, len(ids))
 	for _, id := range ids {
-		ctype, err := globalStorageCType(unit, snapshot, emitGlobals[id].info, "global")
+		ctype, err := globalStorageCType(unit, snapshot, st.globals[id].info, "global")
 		if err != nil {
 			return "", fmt.Errorf("global symbol %d: %v", id, err)
 		}
-		initializer, err := buildGlobalInitializerText(unit, snapshot, emitGlobals[id].typ, id)
+		initializer, err := buildGlobalInitializerText(st, unit, snapshot, st.globals[id].typ, id)
 		if err != nil {
 			return "", err
 		}
@@ -281,7 +268,7 @@ func globalStorageCType(unit *tir.Unit, snapshot *types.Snapshot, info localInfo
 // lower to a runtime call or compound literal that is not a valid C static
 // initializer — is a clean rejection naming what was found, never a guessed
 // emission.
-func buildGlobalInitializerText(unit *tir.Unit, snapshot *types.Snapshot, typ types.TypeID, symbolID symbol.SymbolID) (string, error) {
+func buildGlobalInitializerText(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, typ types.TypeID, symbolID symbol.SymbolID) (string, error) {
 	g, ok := globalDeclBySymbol(unit, symbolID)
 	if !ok || g.Initializer == 0 {
 		return "", fmt.Errorf("global symbol %d has no recorded initializer", symbolID)
@@ -290,7 +277,7 @@ func buildGlobalInitializerText(unit *tir.Unit, snapshot *types.Snapshot, typ ty
 	if !ok {
 		return "", fmt.Errorf("global symbol %d has an invalid initializer node %d", symbolID, g.Initializer)
 	}
-	text, err := buildConstantInitializer(unit, snapshot, node, emitGlobals[symbolID].info)
+	text, err := buildConstantInitializer(unit, snapshot, node, st.globals[symbolID].info)
 	if err != nil {
 		return "", fmt.Errorf("global symbol %d initializer: %v", symbolID, err)
 	}

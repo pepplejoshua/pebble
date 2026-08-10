@@ -7,6 +7,7 @@ import (
 )
 
 func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check: each specialization's typedef field C types
 	// must match its concrete instantiation — int32_t for the int-typed fields
 	// of Pair[int, int] AND of Pair[int, bool]'s key, bool for Pair[int,
@@ -42,6 +43,7 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 }
 
 func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for the pointer two-specialization case: each
 	// specialization's typedef must declare the CORRECT pointee C type — int32_t
 	// for Ref[int], bool for Ref[bool] — with no shared/wrong pointee and no
@@ -71,6 +73,7 @@ func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *tes
 }
 
 func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for the optional two-specialization case: each
 	// specialization's typedef must name its OWN payload optional type —
 	// pebble_optional_30_t (Optional(int)) for Box[int], pebble_optional_31_t
@@ -100,6 +103,7 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 }
 
 func TestEmitGenericStructNestedFieldWritesInnerTypedefFirst(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape and ORDER check for the nested-generic case: the
 	// inner struct's typedef must be emitted BEFORE the outer struct's, since
 	// C requires a type to be fully defined before it is used as a by-value
@@ -151,6 +155,7 @@ func TestEmitGenericStructNestedFieldWritesInnerTypedefFirst(t *testing.T) {
 }
 
 func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for the nested-generic two-specialization case:
 	// each outer specialization's inner field must name ITS OWN nested
 	// specialization's typedef — pebble_struct_26_t (Inner[int]) inside
@@ -228,6 +233,7 @@ func TestEmitTupleParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 }
 
 func TestEmitOptionalUintTypedefWritesUint64T(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for the uint payload: the optional typedef
 	// declares the .value field as uint64_t (the C type uint resolves to),
 	// never int32_t or a rejection, and the some construction assigns the
@@ -254,6 +260,7 @@ func TestEmitOptionalUintTypedefWritesUint64T(t *testing.T) {
 }
 
 func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
+	t.Parallel()
 	// The emitted-C shape check for the pointer payload: the optional typedef
 	// declares the .value field as the pointee's pointer C type (int32_t * for
 	// ?*int, via pointerTypeName), never a rejection or a scalar, and the some
@@ -281,6 +288,7 @@ func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
 }
 
 func TestEmitNestedTypedefOrderWritesAndCompiles(t *testing.T) {
+	t.Parallel()
 	src := "type Point = struct { x i32; y i32; }; fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; let t (Point, i32) = (p, 1); return t.0.x + t.0.y; }"
 	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
 	var buf bytes.Buffer
@@ -329,7 +337,7 @@ func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 		t.Fatalf("f body: %v", err)
 	}
 	helpers := []helperInfo{{decl: fDecl, block: fBody}}
-	infos, err := collectStructTypes(unit, snapshot, entryBlock, helpers, nil)
+	infos, err := collectStructTypes(&emitState{}, unit, snapshot, entryBlock, helpers, nil)
 	if err != nil {
 		t.Fatalf("collectStructTypes failed: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 )
 
 func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -30,6 +31,7 @@ func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
 }
 
 func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { return 42; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -39,6 +41,7 @@ func TestEmitIntegerReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
 }
 
 func TestEmitIfElseEntryWritesC(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { if 1 < 2 { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -60,6 +63,7 @@ func TestEmitIfElseEntryWritesC(t *testing.T) {
 }
 
 func TestEmitIfElseComparisonOperators(t *testing.T) {
+	t.Parallel()
 	// All six comparison operators, each taking the branch matching its value;
 	// both true and false outcomes are covered across the set so the emitter is
 	// not silently only ever emitting one branch. The required shapes `1 < 2`
@@ -79,12 +83,14 @@ func TestEmitIfElseComparisonOperators(t *testing.T) {
 		{"notEqual false", "fn main() i32 { if 1 != 1 { return 70; } else { return 80; } }", 80},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitLogicalIfElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// && and || as an if condition are now supported: both lower to a
 	// tir.ShortCircuitValue node (a different kind than the BinaryValue
 	// comparison 10.7 handled), whose operands are themselves built through
@@ -102,12 +108,14 @@ func TestEmitLogicalIfElseCompilesAndRuns(t *testing.T) {
 		{"or false", "fn main() i32 { if 5 < 4 || 1 > 2 { return 1; } else { return 2; } }", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitNestedIfDiamondCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A nested if inside an arm (a "diamond"): the then-arm's block is itself
 	// a two-armed if/else under the same recursive grammar, so buildBlock
 	// recurses a second level. Three variants cover the inner-true (exit 1),
@@ -123,12 +131,14 @@ func TestEmitNestedIfDiamondCompilesAndRuns(t *testing.T) {
 		{"outer false", "fn main() i32 { if 2 < 1 { if 3 < 4 { return 1; } else { return 2; } } else { return 3; } }", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitNestedIfEntryWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a nested if must indent each level correctly so the
 	// output is well-formed, readable C: the outer if is at the top level
 	// (4 spaces), the nested if inside the then-arm one level deeper (8
@@ -158,6 +168,7 @@ func TestEmitNestedIfEntryWritesC(t *testing.T) {
 }
 
 func TestEmitWhileAccumulationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture: a real accumulation loop. i counts 0..4 and
 	// sum accumulates i each pass, so sum = 0+1+2+3+4 = 10, returned as the
 	// process exit code. This is the first program in the rewrite where a
@@ -168,6 +179,7 @@ func TestEmitWhileAccumulationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitWhileNeverRunsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A loop whose condition is false before the first iteration: i = 10 is
 	// not < 5, so the body never runs and x keeps its initial value 1. This
 	// proves the emitted while does not run its body even once when the
@@ -177,6 +189,7 @@ func TestEmitWhileNeverRunsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitWhileCounterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A simple counter with no accumulator, to isolate the loop mechanism
 	// from the accumulation pattern: i goes 0 -> 1 -> 2 -> 3, then i < 3 is
 	// false and the loop exits, returning 3. Bounded execution.
@@ -184,6 +197,7 @@ func TestEmitWhileCounterCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitWhileOverflowInBodyAborts(t *testing.T) {
+	t.Parallel()
 	// Overflow must still be checked inside a loop body, not just in straight-
 	// line code: x starts at 2147483640 and is incremented each of the ten
 	// iterations, overflowing on the eighth (2147483647 + 1). The emitted
@@ -197,6 +211,7 @@ func TestEmitWhileOverflowInBodyAborts(t *testing.T) {
 }
 
 func TestEmitTerminalWhileTrueEntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A non-void entry whose body ends directly in an exhaustive `while true`
 	// is now a supported tail shape: the checker accepts a constant-true loop
 	// with no break (control can never fall through past it), and the IR
@@ -209,6 +224,7 @@ func TestEmitTerminalWhileTrueEntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTerminalWhileTrueConditionalReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact std/hmap get_by_ref / remove shape: a `while true` whose body
 	// is a conditional if whose arm returns, with no break anywhere. The loop
 	// never falls through (every iteration either returns from the if arm or
@@ -218,6 +234,7 @@ func TestEmitTerminalWhileTrueConditionalReturnCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitIfElseInsideLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The fixture 10.10 used to prove an if inside a while body was rejected
 	// is now a supported shape (10.11 widens the loop-body grammar to include
 	// if/else, following the same 10.8 precedent of a now-supported shape
@@ -229,6 +246,7 @@ func TestEmitIfElseInsideLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintInsideWhileBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A print statement inside a loop body (legal source) is now a supported
 	// statement kind: the loop body's statement switch routes it through the
 	// shared buildPrint, so the body prints "hi" once per iteration (three
@@ -241,6 +259,7 @@ func TestEmitPrintInsideWhileBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNoElseIfInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture: an if with no else inside a loop body. i counts
 	// 0..9 but sum accumulates only while i < 5, so sum = 0+1+2+3+4 = 10,
 	// returned as the process exit code. The no-else If is exactly the
@@ -251,6 +270,7 @@ func TestEmitNoElseIfInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a no-else if inside a loop body must mirror buildIf's
 	// indentation style: the while at the top level (4 spaces), the if one
 	// level deeper (8 spaces), its store two levels deep (12 spaces), and the
@@ -278,6 +298,7 @@ func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
 }
 
 func TestEmitIfElseInLoopBodyEvenOddCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A loop-body if with an else, both arms accumulating into distinct
 	// enclosing locals: i counts 0..5, the then-arm counts evens (0, 2, 4) and
 	// the else-arm counts odds (1, 3, 5), so even = 3 returned as the exit
@@ -288,6 +309,7 @@ func TestEmitIfElseInLoopBodyEvenOddCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNestedWhileInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The nested double-loop confirmation fixture: i and j each count 0..2, so
 	// the inner body runs 3 x 3 = 9 times and total = 9, returned as the exit
 	// code. The inner While is a plain statement inside the outer loop's body
@@ -298,6 +320,7 @@ func TestEmitNestedWhileInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitOverflowInsideNestedLoopIfAborts(t *testing.T) {
+	t.Parallel()
 	// Overflow must still be checked deep inside nested control flow, not just
 	// in straight-line loop bodies: x starts at 2147483640 and is incremented
 	// inside a loop-body if nested inside the inner of two loops. Each of the
@@ -313,6 +336,7 @@ func TestEmitOverflowInsideNestedLoopIfAborts(t *testing.T) {
 }
 
 func TestEmitLogicalAndWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// && as a while condition, the shape 10.11 rejected: i counts 1..4 while
 	// both sides hold (i < 5 && i > 0), then at i = 5 the left side fails and
 	// the loop exits with i = 5 as the exit code. Bounded execution in case of
@@ -321,6 +345,7 @@ func TestEmitLogicalAndWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLogicalOrWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// || as a while condition: i counts 0..4 through the left side (i < 5),
 	// then at i = 5 both sides are false (i < 5 || i == 10) and the loop
 	// exits with i = 5. Bounded execution in case of a miscompiled loop.
@@ -328,6 +353,7 @@ func TestEmitLogicalOrWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolWhileNegationLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture: a bool accumulator flag driving a while loop.
 	// done starts false, so while !done runs; each pass sums i and increments
 	// it, and when i == 5 the if sets done = true, exiting the loop with sum =
@@ -339,6 +365,7 @@ func TestEmitBoolWhileNegationLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the !done loop must declare the bool flag, negate it
 	// with plain C ! in the while condition, and reassign it with a plain bool
 	// literal inside the loop-body if. Symbols 25 (done), 26 (i), and 27 (sum)
@@ -365,6 +392,7 @@ func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
 }
 
 func TestEmitNegatedComparisonWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The negation-of-a-comparison fixture 10.14 rejected: its PrefixValue(Bang)
 	// wraps a SourceAlias around the comparison, and buildBoolExpr now unwraps
 	// SourceAlias and lowers the comparison through buildComparison, so
@@ -376,6 +404,7 @@ func TestEmitNegatedComparisonWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the negated-comparison loop must carry the negation
 	// and the comparison in the while condition, with the SourceAlias unwrapped
 	// into a plain C comparison: while (!(pebble_local_25 >= 5)). Symbol 25 is
@@ -397,6 +426,7 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 }
 
 func TestEmitReturnsGlobalLetConstantCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A reference to a top-level `let` global constant is no longer a bare
 	// SymbolValue naming storage the backend has no mechanism to lower (see
 	// globalLetInitializers in ir_builder.go) — it's inlined to a fresh copy
@@ -409,6 +439,7 @@ func TestEmitReturnsGlobalLetConstantCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintBeforeReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A print statement before the final Return is a supported leading
 	// statement in the entry body block: the print emits its single printf
 	// line ("hi" plus the statement's trailing newline), then the block's
@@ -421,6 +452,7 @@ func TestEmitPrintBeforeReturnCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBreakInsideLoopIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The break-inside-a-loop-body-if fixture: i counts 0..9 but the loop
 	// breaks when i == 5, so sum accumulates 0+1+2+3+4 = 10, returned as the
 	// process exit code. The Break is a leaf node (no children, confirmed
@@ -431,6 +463,7 @@ func TestEmitBreakInsideLoopIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitContinueInsideLoopIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The continue-inside-a-loop-body-if fixture: i counts 1..5, skipping the
 	// accumulation when i == 3, so sum = 1+2+4+5 = 12, returned as the process
 	// exit code. The Continue is a leaf node in the then-arm of a no-else
@@ -440,6 +473,7 @@ func TestEmitContinueInsideLoopIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitNestedLoopBreakTargetsInnerLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The nested-loop break fixture: the inner loop breaks when j == 1, so each
 	// of the 3 outer iterations runs the inner body once (for j == 0) and
 	// total = 3, returned as the exit code. Confirmed against a real fixture
@@ -451,6 +485,7 @@ func TestEmitNestedLoopBreakTargetsInnerLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBreakDirectInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare break directly in the loop body (not inside an if), the simplest
 	// loop-body jump: i advances to 1 then the break exits the loop, so the
 	// return reads 1. Shares the same leaf-node dispatch as the inside-if
@@ -459,6 +494,7 @@ func TestEmitBreakDirectInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitContinueDirectInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare continue directly in the loop body (not inside an if): i advances
 	// each iteration before the continue, which skips the accumulation that
 	// follows, so total stays 0 and the loop still terminates. This proves the
@@ -469,6 +505,7 @@ func TestEmitContinueDirectInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the break-inside-if fixture must carry literal
 	// `break;` statements at the arm's indentation: the while at the top level
 	// (4 spaces), the if one level deeper (8), the break inside the arm two
@@ -494,6 +531,7 @@ func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
 }
 
 func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the continue-inside-if fixture must carry a literal
 	// `continue;` at the arm's indentation (12 spaces), mirroring the break
 	// fixture's indentation.
@@ -514,6 +552,7 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 }
 
 func TestEmitDeferredPrintBeforeBreakCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A real-source break inside a loop body that also contains a `defer
 	// print 5;` produces a Break whose DeferChain references a Print node. The
 	// backend emits the deferred print through the shared buildPrint before
@@ -527,6 +566,7 @@ func TestEmitDeferredPrintBeforeBreakCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferredPrintBeforeContinueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same deferred-print path for Continue: each continue fires the deferred
 	// `print 5` at the loop's next pass. The body increments i and continues
 	// every pass (i becomes 1, 2, then 3), so the deferred print fires three
@@ -539,6 +579,7 @@ func TestEmitDeferredPrintBeforeContinueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintIntegerLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The simplest print: a bare integer literal operand. A bare literal in a
 	// print operand resolves to the unanchored int builtin (int32_t), so the
 	// format specifier comes from PRId32; the captured output is exactly the
@@ -550,6 +591,7 @@ func TestEmitPrintIntegerLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Every integer builtin width, each through a local of that declared
 	// width: the print dispatches on the operand's own resolved kind, so each
 	// width gets its own PRId*/PRIu* specifier matching its fixed-width C
@@ -562,6 +604,7 @@ func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
 		{"i8"}, {"i16"}, {"i32"}, {"i64"}, {"u8"}, {"u16"}, {"u32"}, {"u64"},
 	} {
 		t.Run(tc.width, func(t *testing.T) {
+			t.Parallel()
 			src := "fn main() i32 { let x " + tc.width + " = 7; print x; return 0; }"
 			out := emitAndRunCapture(t, src, false, 0, false)
 			if want := "7\n"; out != want {
@@ -572,6 +615,7 @@ func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool operand prints as the word true or false (v1's approach: the
 	// bool expression wrapped in a C ternary selecting the const char *
 	// literal), not as 1/0. Covers both literal operands and a bool-typed
@@ -587,6 +631,7 @@ func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
 		{"false local", "fn main() i32 { let b bool = false; print b; return 0; }", "false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -596,6 +641,7 @@ func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char operand prints as the UTF-8 encoding of the single Unicode
 	// scalar its int32_t value encodes: the scalar is routed through the
 	// runtime helper pebble_rt_char_to_utf8 into a per-operand uint8_t[5]
@@ -620,6 +666,7 @@ func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
 		{"mixed with str", "fn main() i32 { print \"pre\", 'é', \"post\"; return 0; }", "preépost\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -629,6 +676,7 @@ func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str operand prints its bytes (specifier %s on the PebbleStr's .data
 	// field), covering a string literal, a str-typed local, and the
 	// parenthesized literal form `print ("hi")`, whose operand arrives wrapped
@@ -643,6 +691,7 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 		{"parenthesized literal", "fn main() i32 { print (\"hi\"); return 0; }", "hi\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -652,6 +701,7 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An interpolated-string print operand — `print \`ok? {true}\`;` — prints
 	// its literal text runs and its interpolated bool values as the word
 	// true/false, all folded into the print's one combined printf. The text is
@@ -672,6 +722,7 @@ func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
 		{"mixed with plain operand", "fn main() i32 { print `pre {true}`, 1; return 0; }", "pre true1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -681,6 +732,7 @@ func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A float operand prints with %f (f32/f64 promote to double in a variadic
 	// call either way, so %f covers both, matching v1). A bare literal resolves
 	// to f64; an f32-typed local prints through the float grammar at its own
@@ -695,6 +747,7 @@ func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
 		{"f32 local", "fn main() i32 { let x f32 = 3.5; print x; return 0; }", "3.500000\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -704,6 +757,7 @@ func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// `print a, b, c;` — multiple comma-separated operands print on ONE line
 	// with no separator between them (matching v1): all operands share one
 	// printf call, one format string, one argument list, one trailing newline.
@@ -719,6 +773,7 @@ func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
 		{"mixed", "fn main() i32 { print 1, \" \", 2, \" \", 3.25; return 0; }", "1 2 3.250000\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -728,6 +783,7 @@ func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a mixed-type print must be exactly ONE printf call per
 	// print statement whose format string concatenates one specifier per
 	// operand in order (integer via the out-of-quotes "%"PRId32 macro
@@ -774,6 +830,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 }
 
 func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Composite print slice 1: a struct whose fields are all scalar types
 	// prints as `<TypeName>{ <field>: <value>, ... }` in the struct's DECLARED
 	// field order, followed by the statement's single trailing newline. Each
@@ -798,6 +855,7 @@ func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
 		{"two struct operands", "type Point = struct { x int; y int; };\nfn main() i32 { let a = Point.{ x = 1, y = 2 }; let b = Point.{ x = 3, y = 4 }; print a, b; return 0; }", "Point{ x: 1, y: 2 }Point{ x: 3, y: 4 }\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
@@ -807,6 +865,7 @@ func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintStructWritesSequentialFprintfs(t *testing.T) {
+	t.Parallel()
 	// A struct operand's print is emitted as DIRECT SEQUENTIAL fprintf(stdout,
 	// ...) calls — proposal 17's storage policy (no intermediate dynamic
 	// string, so no dependency on the unfinished Allocator/Context redesign) —
@@ -849,6 +908,7 @@ func TestEmitPrintStructWritesSequentialFprintfs(t *testing.T) {
 }
 
 func TestEmitPrintStructFieldNamesAreSourceNames(t *testing.T) {
+	t.Parallel()
 	// The printed field labels are the struct's own SOURCE field names in
 	// declared order — the fields are declared `y` before `x` here, so the
 	// label order must be y, x regardless of the construction-site order
@@ -861,6 +921,7 @@ func TestEmitPrintStructFieldNamesAreSourceNames(t *testing.T) {
 }
 
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A deferred char print routes through the same shared buildPrint, so a
 	// multi-byte char operand's UTF-8 buffer and pebble_rt_char_to_utf8
 	// pre-statements must land in the deferred statement sequence at the
@@ -873,6 +934,7 @@ func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPrintInsideLoopIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A print inside a loop-body if's arm routes through buildLoopBody -> the
 	// Print case -> buildPrint, so it composes with the if-in-loop-body shape.
 	// The arm fires once (when i == 1), printing "mark", and the loop returns
@@ -884,6 +946,7 @@ func TestEmitPrintInsideLoopIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopAccumulationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The confirmation fixture: a range loop lowers to a C for loop over the
 	// bound iterator, and the iterator is an ordinary C loop counter the body
 	// can read. i counts 0..3 (exclusive), sum accumulates i each pass, so
@@ -895,6 +958,7 @@ func TestEmitRangeLoopAccumulationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopExclusiveVsInclusiveCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The inclusive form (`..=`) differs from the exclusive form (`..`) by one
 	// iteration: 0..3 sums 0+1+2 = 3, while 0..=3 sums 0+1+2+3 = 6 — the
 	// emitted C condition is `<` for the exclusive form and `<=` for the
@@ -909,12 +973,14 @@ func TestEmitRangeLoopExclusiveVsInclusiveCompilesAndRuns(t *testing.T) {
 		{"inclusive", "fn main() i32 { var sum i32 = 0; loop 0..=3 : i { sum = sum + i; } return sum; }", 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRunBounded(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitRangeLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// break/continue inside a range loop body work through the same
 	// buildLoopJump machinery a while body uses: a Break's/Continue's Target
 	// names the RangeLoop's own Region (confirmed against a real fixture dump),
@@ -926,6 +992,7 @@ func TestEmitRangeLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A range loop nested inside another range loop: the inner RangeLoop is a
 	// plain statement in the outer loop's body Block, dispatched by
 	// buildLoopBody exactly like a nested While. i and j each count 0..2, so
@@ -935,6 +1002,7 @@ func TestEmitRangeLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopInsideWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A range loop nested inside a while loop's body: the RangeLoop is a
 	// statement in the while's body Block, dispatched by buildLoopBody. Each
 	// of the 2 while iterations runs the range loop's 3 inner iterations, so
@@ -943,6 +1011,7 @@ func TestEmitRangeLoopInsideWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopNonLiteralBoundsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The start/end are ordinary integer expressions built by buildExpr at
 	// the entry's width — a local reference for the end, and checked
 	// arithmetic for the start. With the iterator anchored by the i32
@@ -957,12 +1026,14 @@ func TestEmitRangeLoopNonLiteralBoundsCompilesAndRuns(t *testing.T) {
 		{"arithmetic bound", "fn main() i32 { var sum i32 = 0; loop 1+2..=5 : i { sum = sum + i; } return sum; }", 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRunBounded(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitRangeLoopIteratorComparisonOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The iterator referenced only in a comparison (`if i == 2`) — never in a
 	// width-anchoring position — stays the checker's unanchored int builtin
 	// (confirmed against a real fixture dump), so the comparison operand
@@ -974,6 +1045,7 @@ func TestEmitRangeLoopIteratorComparisonOnlyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopUnusedIteratorCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bound range loop whose iterator is never read in the body: the loop
 	// still iterates over its C counter (the condition and increment read it),
 	// so the body runs 3 times and sum = 3. The bounds are int-typed literals
@@ -983,6 +1055,7 @@ func TestEmitRangeLoopUnusedIteratorCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopNestedIteratorAsInnerBoundCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A nested range loop whose bound reads the outer loop's iterator
 	// (`loop 0..i : j`): the outer iterator is an int-typed SymbolValue in the
 	// inner loop's end position, lowered as its pebble_local_<symbol> name by
@@ -992,6 +1065,7 @@ func TestEmitRangeLoopNestedIteratorAsInnerBoundCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A range loop inside an i64 entry: the iterator's C type follows the
 	// entry's width (int64_t), and the bounds/iterator are anchored to i64 by
 	// the i64 accumulation. sum = 0+1+2 = 3, returned as the exit code.
@@ -1000,6 +1074,7 @@ func TestEmitRangeLoopI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitRangeLoopWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture must be a C for loop whose
 	// init/condition/increment all use the iterator's own
 	// pebble_local_<symbol> name as an ordinary C loop counter at the entry's
@@ -1034,6 +1109,7 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 }
 
 func TestEmitForLoopAccumulationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship fixture: a classic for loop lowers to a C for loop with
 	// the same three clauses. step counts 0..3 (the initializer declares it as
 	// an ordinary local of the entry's width, seeded into the loop's scope),
@@ -1044,6 +1120,7 @@ func TestEmitForLoopAccumulationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopAllClausesOmittedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for ;; { ... } — all three clauses absent: an infinite loop from the
 	// header's perspective, so termination comes only from the explicit break
 	// in the body. The body advances its own counter (declared outside) and
@@ -1053,6 +1130,7 @@ func TestEmitForLoopAllClausesOmittedCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNoConditionNeedsBreakCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for var i i32 = 0;; i = i + 1 { ... } — no condition clause (the
 	// initializer and update are both present), so termination comes only from
 	// the explicit break in the body — the omitted-condition combination the
@@ -1062,12 +1140,14 @@ func TestEmitForLoopNoConditionNeedsBreakCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNoUpdateCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for var step i32 = 0; step < 3; { ... } — no update clause; the body
 	// advances step itself. total accumulates 0+1+2 = 3. Bounded execution.
 	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; for var step i32 = 0; step < 3; { total = total + step; step = step + 1; } return total; }", false, 3, false)
 }
 
 func TestEmitForLoopInitializerOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for var i i32 = 0;; { ... } — initializer only (no condition, no
 	// update), so the body advances i and breaks when it reaches 3. total
 	// accumulates 0+1+2 = 3. Bounded execution.
@@ -1075,6 +1155,7 @@ func TestEmitForLoopInitializerOnlyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopUpdateOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for ; ; i = i + 1 { ... } — update only (no initializer, no condition):
 	// i is declared outside, the header's update advances it, and the body
 	// breaks when it reaches 3, so i = 3 is returned. Bounded execution.
@@ -1082,6 +1163,7 @@ func TestEmitForLoopUpdateOnlyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopConditionOnlyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for ; i < 3; { ... } — condition only (no initializer, no update): i is
 	// declared outside, the header's condition alone controls the loop, and
 	// the body both accumulates and advances i. This shape was blocked by a
@@ -1094,6 +1176,7 @@ func TestEmitForLoopConditionOnlyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopConditionAndUpdateCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// for ; i < 3; i = i + 1 { ... } — condition and update, no initializer:
 	// i is declared outside, the header's condition controls the loop and
 	// its update advances i, so the body only needs to accumulate. Also
@@ -1105,6 +1188,7 @@ func TestEmitForLoopConditionAndUpdateCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// break/continue inside a for-loop body work through the same
 	// buildLoopJump machinery a while/range body uses: a Break's/Continue's
 	// Target names the For's own Region, and plain C break/continue already
@@ -1116,6 +1200,7 @@ func TestEmitForLoopBreakAndContinueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNestedInWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A classic for loop nested inside a while loop's body: the For is a
 	// statement in the while's body Block, dispatched by buildLoopBody. Each
 	// of the 2 while iterations runs the for loop's 3 inner iterations, so
@@ -1124,6 +1209,7 @@ func TestEmitForLoopNestedInWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A classic for loop nested inside a range loop's body: the For is a
 	// statement in the range loop's body Block, dispatched by buildLoopBody.
 	// Each of the 3 range iterations runs the for loop's 2 inner iterations,
@@ -1132,6 +1218,7 @@ func TestEmitForLoopNestedInRangeLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopNestedInForLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A classic for loop nested inside another classic for loop: the inner For
 	// is a statement in the outer for's body Block, dispatched by
 	// buildLoopBody exactly like a nested While or RangeLoop. i and j each
@@ -1141,6 +1228,7 @@ func TestEmitForLoopNestedInForLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A classic for loop inside an i64 entry: the initializer's C type follows
 	// the entry's width (int64_t). total accumulates 0+1+2 = 3, returned as
 	// the exit code. Bounded execution.
@@ -1148,6 +1236,7 @@ func TestEmitForLoopI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopBoolInitializerAndConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The bool grammar works in every for-loop clause: the initializer
 	// declares a bool local (built by buildScalarInitializeCore's bool case),
 	// the condition is a bare bool value (buildCondition -> buildBoolExpr), and
@@ -1158,6 +1247,7 @@ func TestEmitForLoopBoolInitializerAndConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopLogicalConditionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A && condition in a for header goes through buildCondition ->
 	// buildBoolExpr -> buildComparison exactly as an if/while condition does.
 	// i counts 0..3 under the && condition, so total = 0+1+2 = 3. Bounded
@@ -1166,6 +1256,7 @@ func TestEmitForLoopLogicalConditionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitForLoopWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture must be a C for loop whose
 	// init/condition/update clauses match the source exactly: the initializer
 	// declares the loop local as `<entry ctype> pebble_local_<symbol>` in the
@@ -1194,6 +1285,7 @@ func TestEmitForLoopWritesC(t *testing.T) {
 }
 
 func TestEmitI64ReturnEntryWritesC(t *testing.T) {
+	t.Parallel()
 	// Mirror of TestEmitIntegerReturnEntryWritesC at the wider width: the
 	// pebble_user_main adapter must be declared with the 64-bit return type so
 	// a wide return value is not truncated, not the i32 entry's "int".
@@ -1214,10 +1306,12 @@ func TestEmitI64ReturnEntryWritesC(t *testing.T) {
 }
 
 func TestEmitI64ReturnEntryCompilesAndRunsExitCode42(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() i64 { return 42; }", false, 42, false)
 }
 
 func TestEmitI64WhileAccumulationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The full control-flow story at i64: locals, mutation, a while loop, and
 	// checked arithmetic all at the wider width. i counts 0..4 and sum
 	// accumulates i each pass, so sum = 0+1+2+3+4 = 10, returned as the
@@ -1226,6 +1320,7 @@ func TestEmitI64WhileAccumulationCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitI64WhileWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the i64 accumulation loop must declare its locals at
 	// int64_t and use the i64 checked helpers, proving the width threads
 	// through declarations, loop conditions, and arithmetic together. The
@@ -1253,6 +1348,7 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 }
 
 func TestEmitFloatArithmeticInFloatReturnPosition(t *testing.T) {
+	t.Parallel()
 	// Regression: Stage A rejected this BinaryValue because float arithmetic
 	// was not yet in buildFloatExpr. Stage B now lowers it as plain C float
 	// arithmetic, with no checked runtime helper needed.
@@ -1268,6 +1364,7 @@ func TestEmitFloatArithmeticInFloatReturnPosition(t *testing.T) {
 }
 
 func TestEmitFloatToIntegerReleaseReturnsSentinel(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let x f64 = 2147483648.0; return (x as i32) + 1; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -1278,6 +1375,7 @@ func TestEmitFloatToIntegerReleaseReturnsSentinel(t *testing.T) {
 }
 
 func TestEmitStrEqualityInWhileCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str == comparison as a bare while loop condition: the loop runs while
 	// the sentinel string is "go" (it never changes — str locals are not
 	// reassignable this slice), accumulating a counter until an in-loop
@@ -1289,6 +1387,7 @@ func TestEmitStrEqualityInWhileCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrOrderingPrefixTieBreakCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two strings that share a prefix but differ in length: "hi" vs "hi!".
 	// The shorter string must sort first (matching strcmp's convention for a
 	// prefix — the shorter one is "less"), so "hi" < "hi!" is true and the
@@ -1298,6 +1397,7 @@ func TestEmitStrOrderingPrefixTieBreakCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexRangeLoopIteratorCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A range loop's iterator used directly as a str index arrives as an
 	// int-typed SymbolValue (the unanchored-int case, the same shortcut
 	// buildArrayPlaceRead handles), confirmed against a real fixture dump.
@@ -1307,6 +1407,7 @@ func TestEmitStrIndexRangeLoopIteratorCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The flagship fixture: a switch with a multi-value case (1, 2 share the
 	// same body returning 10), a single-value case (3 returning 30), and an
 	// else (default returning 0). Subject value 1 hits the multi-value case
@@ -1315,6 +1416,7 @@ func TestEmitSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchMultiValueCaseSecondValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch as above but subject value 2 — still hits the multi-value
 	// case and returns 10, confirming both SwitchCase nodes sharing the same
 	// body produce the same result.
@@ -1322,16 +1424,19 @@ func TestEmitSwitchMultiValueCaseSecondValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchSingleValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Subject value 3 hits the single-value case and returns 30.
 	emitAndRun(t, "fn main() i32 { switch 3 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 30, false)
 }
 
 func TestEmitSwitchElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Subject value 99 hits the else/default arm and returns 0.
 	emitAndRun(t, "fn main() i32 { switch 99 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", false, 0, false)
 }
 
 func TestEmitSwitchBlockCaseBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A block-wrapped (braced, multi-statement) case body: the case declares
 	// a local and returns an expression using it. This exercises the
 	// Block-bodied path in buildSwitchCaseBody.
@@ -1339,12 +1444,14 @@ func TestEmitSwitchBlockCaseBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchBareReturnCaseBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare single-statement case body (no braces): `case 1: return 10;`.
 	// This exercises the bare-statement path in buildSwitchCaseBody.
 	emitAndRun(t, "fn main() i32 { switch 1 { case 1: return 10; else: return 0; } }", false, 10, false)
 }
 
 func TestEmitSwitchBoolSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bool subject with bool case values: `switch true { case true: return
 	// 1; else: return 0; }`. Bool case values are emitted as `case 1:` (true)
 	// and `case 0:` (false) in C, since C switch requires integral constants.
@@ -1352,11 +1459,13 @@ func TestEmitSwitchBoolSubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchBoolSubjectFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Bool subject `false` hits the else/default arm.
 	emitAndRun(t, "fn main() i32 { switch false { case true: return 1; else: return 0; } }", false, 0, false)
 }
 
 func TestEmitSwitchCharSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed switch subject with char case labels and an else/default
 	// arm, the checker/backend parity gap from proposal 13: the checker
 	// accepts a char switch (char subject, char case values) but the backend
@@ -1367,17 +1476,20 @@ func TestEmitSwitchCharSubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchCharSubjectFirstCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, subject 'a' hits the first case and returns 1.
 	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('a'); }", false, 1, false)
 }
 
 func TestEmitSwitchCharSubjectElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same switch, subject 'z' (not among the case labels) falls to the
 	// else/default arm and returns 0.
 	emitAndRun(t, "fn classify(c char) int { switch c { case 'a': return 1; case 'b': return 2; else: return 0; } } fn main() int { return classify('z'); }", false, 0, false)
 }
 
 func TestEmitSwitchCharSubjectNonAsciiCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char switch over a non-ASCII Unicode scalar value: 'é' (U+00E9, 233)
 	// is matched as the full int32_t scalar, proving the char case label
 	// compares the same full scalar the subject carries, not a truncated byte.
@@ -1385,6 +1497,7 @@ func TestEmitSwitchCharSubjectNonAsciiCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchCharSubjectLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char literal used directly as the switch subject — the CharLiteral
 	// path in the subject builder, distinct from the char-parameter SymbolValue
 	// path the fixtures above exercise. Subject 'a' (97) hits the 'a' case.
@@ -1392,6 +1505,7 @@ func TestEmitSwitchCharSubjectLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchU8SubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from proposal 13's active defect: a u8-typed
 	// switch subject with an integer case label and an else/default arm. The
 	// checker accepts a u8 switch and proves exhaustiveness correctly, but the
@@ -1402,6 +1516,7 @@ func TestEmitSwitchU8SubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchU8SubjectElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same u8 switch, subject x = 9 (not among the case labels) falls to the
 	// else/default arm and returns 0, confirming the else arm is reachable for
 	// a non-entry-width integer subject.
@@ -1409,6 +1524,7 @@ func TestEmitSwitchU8SubjectElseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchI16SubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A second non-entry-width integer subject: an i16-typed local. Signed, so
 	// its case labels are emitted without the unsigned suffix; subject x = 5
 	// hits the case and returns 1.
@@ -1416,12 +1532,14 @@ func TestEmitSwitchI16SubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchU32SubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A wider unsigned non-entry-width subject: u32. Subject x = 5 hits the
 	// case and returns 1.
 	emitAndRun(t, "fn main() int { let x u32 = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
 }
 
 func TestEmitSwitchUintSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from proposal 13's active defect: a uint-typed
 	// switch subject with an integer case label and an else/default arm. The
 	// checker accepts a uint switch and proves exhaustiveness correctly, but
@@ -1433,6 +1551,7 @@ func TestEmitSwitchUintSubjectCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchUintSubjectElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same uint switch, subject x = 9 (not among the case labels) falls to
 	// the else/default arm and returns 0, confirming the else arm is
 	// reachable for a uint subject.
@@ -1440,6 +1559,7 @@ func TestEmitSwitchUintSubjectElseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchUintSubjectWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a uint switch: the subject is the uint local
 	// declared at its own uint64_t width (uint's C type, cType(types.Uint)),
 	// and the integer case label is emitted at uint's OWN width — `case 5u:`,
@@ -1468,6 +1588,7 @@ func TestEmitSwitchUintSubjectWritesC(t *testing.T) {
 }
 
 func TestEmitSwitchU8ExhaustiveNoElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An exhaustive u8 switch covering all 256 values (0..255) with no else
 	// arm: the checker proves exhaustiveness for a u8 subject (the 4817dae
 	// fix), and the backend must now accept the u8 subject and emit every case
@@ -1490,6 +1611,7 @@ func TestEmitSwitchU8ExhaustiveNoElseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchU8SubjectWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a u8 switch: the subject is the u8 local
 	// declared at its own uint8_t width, and the integer case label is emitted
 	// at the subject's OWN width — `case 5u:`, the same unsigned suffix
@@ -1518,6 +1640,7 @@ func TestEmitSwitchU8SubjectWritesC(t *testing.T) {
 }
 
 func TestEmitSwitchCharSubjectWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a char switch: the subject is the char
 	// parameter's int32_t local, and each char case label is emitted as
 	// `case (int32_t)<scalar>:` — the same int32_t spelling buildCharOperand
@@ -1545,6 +1668,7 @@ func TestEmitSwitchCharSubjectWritesC(t *testing.T) {
 }
 
 func TestEmitSwitchWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a switch fixture contains the expected
 	// stacked case labels and body structure.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
@@ -1570,6 +1694,7 @@ func TestEmitSwitchWritesC(t *testing.T) {
 }
 
 func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a switch must compile under -Wall -Wextra -Werror
 	// with no warnings. This exercises the full cc compilation path.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { switch 1 { case 1, 2: return 10; case 3: return 30; else: return 0; } }", "main", false)
@@ -1581,6 +1706,7 @@ func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
 }
 
 func TestEmitSwitchNegativeCaseLabelI16CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reproduction from proposal 13's active defect: a negative
 	// integer literal case label on a signed non-entry-width subject. The
 	// checker stores the label as the canonical big.Int text "-5", which
@@ -1591,6 +1717,7 @@ func TestEmitSwitchNegativeCaseLabelI16CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchNegativeCaseLabelI16NonMatchCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same i16 negative-label switch, subject x = -7 (not among the case
 	// labels): the negative case label still compiles and runs, and the
 	// non-matching subject falls to the else/default arm and returns 0.
@@ -1598,6 +1725,7 @@ func TestEmitSwitchNegativeCaseLabelI16NonMatchCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchNegativeCaseLabelEntryWidthIntCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A negative case label on an entry-width int subject: the int-typed
 	// parameter `v` is built directly as its C local and the label is emitted
 	// at the unanchored int width (`case -5:`). classify(-5) hits the case and
@@ -1606,6 +1734,7 @@ func TestEmitSwitchNegativeCaseLabelEntryWidthIntCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchNegativeCaseLabelEntryWidthIntNonMatchCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same entry-width int negative-label switch, subject 7 (not among the
 	// case labels): the non-matching subject falls to the else/default arm and
 	// returns 0.
@@ -1613,6 +1742,7 @@ func TestEmitSwitchNegativeCaseLabelEntryWidthIntNonMatchCompilesAndRuns(t *test
 }
 
 func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C for a negative i16 case label: the subject's `-5`
 	// initializer folds to the negative constant at its own int16_t width, and
 	// the case label is spelled `case -5:` — the same negative decimal text a
@@ -1640,6 +1770,7 @@ func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 }
 
 func TestEmitCheckedNegateLiteralNarrowWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A negative literal at a width with no pebble_rt_checked_neg_* runtime
 	// helper (the runtime implements only the i32/i64/u64 family) folds at
 	// emission to its negated decimal text instead of calling a nonexistent
@@ -1725,6 +1856,7 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 }
 
 func TestEmitTopLevelGuardIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The minimal non-tail-if repro: a guard-clause if with no else, as a
 	// leading statement in a top-level function body, followed by more code.
 	// x = 5 takes the guard (x + 1 = 6); x = 0 falls through the guard to
@@ -1734,6 +1866,7 @@ func TestEmitTopLevelGuardIfCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTopLevelGuardIfWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the minimal repro must be a plain no-else if whose
 	// arm ends in return, followed by the enclosing return — the shape
 	// buildLeadingIf produces, byte-identical in style to buildLoopIf's.
@@ -1759,6 +1892,7 @@ func TestEmitTopLevelGuardIfWritesC(t *testing.T) {
 }
 
 func TestEmitTopLevelIfElseLeadingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A top-level if/else (both arms present) as a leading statement,
 	// followed by more code that runs after either arm: pick(1) takes the
 	// then-arm (result = 10, then 11) and pick(0) takes the else-arm
@@ -1768,6 +1902,7 @@ func TestEmitTopLevelIfElseLeadingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTopLevelSwitchLeadingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A switch as an ordinary top-level leading statement, followed by more
 	// code: classify(1) hits the single-value case (11), classify(2) hits the
 	// multi-value case (21), and classify(9) hits the else arm (31). Every
@@ -1778,6 +1913,7 @@ func TestEmitTopLevelSwitchLeadingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTopLevelSwitchLeadingWithReturningCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A top-level switch whose case bodies may return OR fall through:
 	// f(1) returns 99 from inside a case body, f(2) falls through case 2 to
 	// the code after the switch (1 + 10 = 11), and f(9) falls through the
@@ -1788,6 +1924,7 @@ func TestEmitTopLevelSwitchLeadingWithReturningCaseCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitSwitchInsideLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The switch-in-loop repro: a switch as a statement inside a while loop
 	// body, followed by more loop-body code. i counts 0, 1, 2; each switch
 	// adds 1/2/3 by case, then the code after the switch adds 1, so total =
@@ -1798,6 +1935,7 @@ func TestEmitSwitchInsideLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitIfInsideSwitchCaseBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Nested control flow inside a fall-through switch case body: the case 2
 	// body is itself an if/else whose arms reassign the enclosing local. x=2
 	// hits the case 2 body's then-arm (total = 5), then the code after the
@@ -1806,6 +1944,7 @@ func TestEmitIfInsideSwitchCaseBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchInsideIfArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Nested control flow inside a top-level if arm: the then-arm is itself
 	// a switch whose case bodies fall through, and the code after the if runs
 	// after either arm. x=1 takes the then-arm's case 1 (total = 10), then
@@ -1814,6 +1953,7 @@ func TestEmitSwitchInsideIfArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitIfAndSwitchInsideTopLevelIfArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Both a nested if and a nested switch inside a single top-level if arm,
 	// plus more code after the outer if: x=1 takes the then-arm, whose own if
 	// adds 1 and whose switch adds 10, then the outer fall-through code adds
@@ -1822,6 +1962,7 @@ func TestEmitIfAndSwitchInsideTopLevelIfArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBreakAndContinueInsideLoopIfArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Regression: break and continue inside an if arm inside a while loop
 	// body still work after the loop-body dispatch was reorganized into the
 	// shared fall-through builder. i counts 1..9; even i continues past the
@@ -1831,6 +1972,7 @@ func TestEmitBreakAndContinueInsideLoopIfArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitBreakInsideSwitchCaseBodyTargetsSwitchCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A break inside a switch case body targets the switch — Pebble's break
 	// resolves to the nearest enclosing loop-or-switch, so the emitted C
 	// break (which C also resolves to the nearest switch/loop) is the direct,
@@ -1843,6 +1985,7 @@ func TestEmitBreakInsideSwitchCaseBodyTargetsSwitchCompilesAndRuns(t *testing.T)
 }
 
 func TestEmitReturnInsideLoopIfArmCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A return inside an if arm inside a loop body exits the function early —
 	// reachable now that the enclosing function's result grammar threads
 	// through the fall-through builder into loop bodies. f(3) returns 3 from
@@ -1852,11 +1995,13 @@ func TestEmitReturnInsideLoopIfArmCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSwitchI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A switch with an i64 entry: the subject and case values are i64.
 	emitAndRun(t, "fn main() i64 { switch 2 { case 1: return 100; case 2: return 200; else: return 0; } }", false, 200, false)
 }
 
 func TestEmitStrSwitchCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str-typed switch subject: the exact reproduction from proposal 13. A
 	// str subject cannot use a native C switch (C switch labels must be
 	// integer constants), so it is lowered as an if/else chain using
@@ -1872,6 +2017,7 @@ func TestEmitStrSwitchCompilesAndRuns(t *testing.T) {
 		{"else", `"c"`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			src := `fn classify(s str) int { switch s { case "a": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify(` + tc.arg + `); }`
 			emitAndRun(t, src, false, tc.want, false)
 		})
@@ -1879,6 +2025,7 @@ func TestEmitStrSwitchCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrSwitchMultiLabelPerCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str switch with multiple case labels sharing one arm: `case "a",
 	// "c": return 1;` — the two equality checks are ORed into a single if
 	// condition. classify("a") and classify("c") both return 1; classify("b")
@@ -1894,6 +2041,7 @@ func TestEmitStrSwitchMultiLabelPerCaseCompilesAndRuns(t *testing.T) {
 		{"d else", `"d"`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			src := `fn classify(s str) int { switch s { case "a", "c": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify(` + tc.arg + `); }`
 			emitAndRun(t, src, false, tc.want, false)
 		})
@@ -1901,6 +2049,7 @@ func TestEmitStrSwitchMultiLabelPerCaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrSwitchWriteC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a str switch must contain the pebble_rt_str_eq calls
 	// and the if/else chain structure, not a native C switch.
 	src := `fn classify(s str) int { switch s { case "a": return 1; case "b": return 2; else: return 0; } } fn main() int { return classify("b"); }`
@@ -1928,6 +2077,7 @@ func TestEmitStrSwitchWriteC(t *testing.T) {
 }
 
 func TestEmitDeferBeforeReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A single defer running before a return, observably changing the returned
 	// value. var x i32 = 0; defer x = x + 1; return x; should return 1, not 0,
 	// proving the deferred Store executes before the return value is read.
@@ -1935,6 +2085,7 @@ func TestEmitDeferBeforeReturnCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitTwoDefersLIFOOrderCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two defers in the same scope, proving LIFO (last-registered-first)
 	// order. The second-registered defer (x = x + 10) must run before the
 	// first (x = x * 2). Starting from x=1: first defer registers x*2, then
@@ -1943,6 +2094,7 @@ func TestEmitTwoDefersLIFOOrderCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferInsideIfArmFiresCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A defer inside an if-arm whose exit (return) is inside that same arm.
 	// The defer fires because the return's DeferChain includes it. Both arms
 	// return, so the if is the block's tail. Condition true: defer x=x+1
@@ -1951,6 +2103,7 @@ func TestEmitDeferInsideIfArmFiresCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferOutsideIfDoesNotFireCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A defer registered inside a while-loop body, where the return is AFTER
 	// the loop (outside the loop's region). The return's DeferChain does not
 	// include the loop's defer because the return is outside the region the
@@ -1962,6 +2115,7 @@ func TestEmitDeferOutsideIfDoesNotFireCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferBeforeBreakCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A defer before a break inside a loop. The break's DeferChain includes
 	// the deferred Store, so it fires before the break. Loop: i counts 0..5,
 	// defer x=x+1 fires on break when i==3, break exits. x starts at 10,
@@ -1970,6 +2124,7 @@ func TestEmitDeferBeforeBreakCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDeferBeforeContinueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A defer before a continue inside a loop. The continue's DeferChain
 	// includes the deferred Store. Loop: i counts 0..5, when i==2, defer
 	// x=x+1 fires on continue (skipping i=i+1), then i is incremented by
@@ -1984,6 +2139,7 @@ func TestEmitDeferBeforeContinueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharInLoopBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared and compared inside a while-loop body: the
 	// loop runs three passes, each declaring c='a' and summing 1 when c == 'a',
 	// exiting with 3 — proving char locals work through the loop-body
@@ -1992,6 +2148,7 @@ func TestEmitCharInLoopBodyCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDescendingRangeLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A descending range loop (start > end): loop 5..0 counts down, running
 	// 5 iterations (i=5,4,3,2,1) and accumulating count = 5. This is the
 	// reproduction of the zero-iteration bug: the old emitter unconditionally
@@ -2001,6 +2158,7 @@ func TestEmitDescendingRangeLoopCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitDescendingRangeLoopInclusiveCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A descending inclusive range loop (start >= end): loop 5..=0 counts
 	// down including the end bound, running 6 iterations (i=5,4,3,2,1,0)
 	// and accumulating count = 6. The inclusive form must emit `>=` and `--`.
@@ -2013,12 +2171,14 @@ func TestEmitDescendingRangeLoopInclusiveCompilesAndRuns(t *testing.T) {
 		{"inclusive descending", "fn main() i32 { var count i32 = 0; loop 5..=0 : i { count = count + 1; } return count; }", 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRunBounded(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A non-literal end bound (a side-effecting helper call) must be evaluated
 	// exactly once, not once per loop condition check. This is the tracker's
 	// reproduction: bound() prints on every call, so the number of printed
@@ -2038,6 +2198,7 @@ func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceCompilesAndRuns(t *testing.
 }
 
 func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C must cache a non-literal end bound in a pebble_temp_<id>
 	// local declared before the loop, and the for-loop condition must compare
 	// against that local rather than re-splicing the raw end expression — the
@@ -2080,6 +2241,7 @@ func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceWritesC(t *testing.T) {
 }
 
 func TestEmitRangeLoopNonLiteralDescendingBoundStaysAscendingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A non-literal descending scenario (start > runtime end value): the
 	// checker allows it (it cannot know the end value at compile time), and
 	// the descending-range fix is deliberately scoped to literal bounds only,
@@ -2096,6 +2258,7 @@ func TestEmitRangeLoopNonLiteralDescendingBoundStaysAscendingCompilesAndRuns(t *
 }
 
 func TestEmitZeroLengthRangeLoopCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A zero-length range (start == end) must still correctly run zero times
 	// — this is not a regression from the descending fix. Both exclusive and
 	// inclusive forms of start == end must produce zero iterations (the
@@ -2110,12 +2273,14 @@ func TestEmitZeroLengthRangeLoopCompilesAndRuns(t *testing.T) {
 		{"zero-length inclusive", "fn main() i32 { var count i32 = 0; loop 3..=3 : i { count = count + 1; } return count; }", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRunBounded(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a descending range loop must use `>` (or `>=` for
 	// inclusive) as the condition and `--` as the step, confirming the
 	// direction fix is reflected in the generated code.

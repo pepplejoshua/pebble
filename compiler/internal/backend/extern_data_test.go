@@ -65,6 +65,7 @@ func compileAndRunWithShim(t *testing.T, emitted []byte, shimSource string, want
 // program must exit 5 — the exact read shape of the parity-gap reproduction,
 // with a self-contained C shim standing in for libc's errno.
 func TestEmitExternDataReadInitialValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, "extern {\n    var shim_seed int;\n}\n\nfn main() int {\n    return shim_seed;\n}")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -81,6 +82,7 @@ func TestEmitExternDataReadInitialValueCompilesAndRuns(t *testing.T) {
 // platform (it is a macro, not a symbol), so the shape is pinned as text and
 // the runnable interop is proven by the shim tests.
 func TestEmitExternDataReadWritesCDeclaration(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, "extern {\n    var errno int;\n}\n\nfn main() int {\n    return errno;\n}")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -106,6 +108,7 @@ func TestEmitExternDataReadWritesCDeclaration(t *testing.T) {
 // the shim-backed counter twice, main returns the counter, and the linked
 // program must exit 2.
 func TestEmitExternDataWriteAcrossFunctionsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern {
     var shim_counter int;
 }
@@ -130,6 +133,7 @@ fn main() int {
 // path for an extern variable place (`shim_count += 5;`), which resolves through
 // buildCompoundStore's extern-variable branch and writes the real C name.
 func TestEmitExternDataCompoundAssignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern {
     var shim_count int;
 }
@@ -151,6 +155,7 @@ fn main() int {
 // with the emitted declaration, which uses the fixed-width uint spelling
 // (uint64_t), not uint.
 func TestEmitExternDataUintReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, "extern {\n    var shim_u uint;\n}\n\nfn main() int {\n    if shim_u == 3 {\n        return 9;\n    }\n    return 0;\n}")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -162,6 +167,7 @@ func TestEmitExternDataUintReadCompilesAndRuns(t *testing.T) {
 // TestEmitExternDataBoolReadCompilesAndRuns covers a bool-typed extern variable
 // read (buildBoolExpr's resolution path).
 func TestEmitExternDataBoolReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, "extern {\n    var shim_flag bool;\n}\n\nfn main() int {\n    if shim_flag {\n        return 7;\n    }\n    return 0;\n}")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -175,6 +181,7 @@ func TestEmitExternDataBoolReadCompilesAndRuns(t *testing.T) {
 // scope region without interfering: a program that both reads an extern variable
 // and reads/writes a var global compiles and runs, observing both.
 func TestEmitExternDataCoexistsWithGlobalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern {
     var shim_base int;
 }
@@ -198,6 +205,7 @@ fn main() int {
 // exist in the linked libraries), so the program must still compile and run
 // with the identifier absent from the emitted C.
 func TestEmitExternDataUnusedDoesNotEmitDeclaration(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, "extern {\n    var shim_unused int;\n}\n\nfn main() int {\n    return 0;\n}")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -216,6 +224,7 @@ func TestEmitExternDataUnusedDoesNotEmitDeclaration(t *testing.T) {
 // extern-variable-specific error rather than emit an undeclared identifier or
 // guess a name.
 func TestEmitExternDataMissingSymbolTableRejected(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, sources, _ := buildFixtureWithSymbols(t, "extern {\n    var shim_seed int;\n}\n\nfn main() int {\n    return shim_seed;\n}")
 	var buf bytes.Buffer
 	err := Emit(unit, snapshot, entryID, sources, nil, &buf)

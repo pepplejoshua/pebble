@@ -37,7 +37,7 @@ import (
 // (localInfo{kind: kind} for an integer or float, localInfo{kind: types.Bool} for a
 // bool, or localInfo{isChar: true} for a char) so a later reference or
 // reassignment resolves against the same type.
-func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
+func buildScalarInitializeCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
 	// Check for a CheckedOptionalUnwrap whose child is a DirectCall or
 	// MethodCall — a force-unwrap of a call result (`let v = m.get(5)!;`).
 	// The call result must be materialized into a temp C variable so the
@@ -51,7 +51,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 			if !ok || cType(kind) == "" {
 				return "", "", fmt.Errorf("%s declares a local of type %s, want an integer type, bool, char, or float", context, describeType(snapshot, initValue.Type))
 			}
-			callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, child, scope, width)
+			callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, child, scope, width)
 			if err != nil {
 				return "", "", err
 			}
@@ -78,7 +78,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 	case types.Bool:
 		// A bool local: emitted as a C bool, its value built by buildBoolExpr
 		// (the bool grammar is genuinely different from the integer one).
-		initExpr, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[0], scope, width)
+		initExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -91,7 +91,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// literal, a reference to an in-scope char-typed local, or a call to a
 		// char-returning helper). The scope entry records isChar so a later
 		// reference or reassignment is validated and emitted as a char.
-		initExpr, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[0], scope, width)
+		initExpr, err := buildCharOperand(st, unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -105,7 +105,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// records the local's own float kind (localInfo{kind: kind}, exactly
 		// as an integer local records its own width) so a later reference or
 		// reassignment is validated and emitted as that kind's float.
-		initExpr, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind)
+		initExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, kind)
 		if err != nil {
 			return "", "", err
 		}
@@ -126,7 +126,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// (localInfo{kind: types.Uint}, exactly as helperSignature seeds a
 		// uint parameter) so a later reference or reassignment is validated
 		// and emitted as a uint.
-		initExpr, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[0], scope, width)
+		initExpr, err := buildUintExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -157,14 +157,14 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		// local's own kind, so the declaration is valid without buildExpr's
 		// width re-check (buildExpr's DirectCall case emits the identical
 		// call text for a non-slice call).
-		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, initValue, scope, width)
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", "", err
 		}
 		scope[statement.Symbol] = localInfo{kind: kind}
 		return callPre, fmt.Sprintf("%s pebble_local_%d = %s", cType(kind), statement.Symbol, callExpr), nil
 	}
-	initExpr, err := buildExpr(unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
+	initExpr, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
 	if err != nil {
 		return "", "", err
 	}
@@ -196,7 +196,7 @@ func buildScalarInitializeCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // value position dispatches), mirroring buildLeadingStatement's Store case
 // exactly, including its rejections of a Store targeting a
 // tuple/array/optional/struct local.
-func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(statement.Children) != 2 {
 		return "", fmt.Errorf("%s reassignment has %d child(ren), want exactly two: the place being reassigned and the new value", context, len(statement.Children))
 	}
@@ -215,12 +215,12 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// checked pointer dereference). The new value is built against the
 		// resolved target type: buildExpr for the entry's width, buildBoolExpr
 		// for bool.
-		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, statement.Children[0], scope, width)
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, statement.Children[0], scope, width)
 		if err != nil {
 			return "", err
 		}
 		tagLvalue := ""
-		if payloadLvalue, unionTagLvalue, ok, err := unionVariantPayloadStoreTarget(unit, snapshot, fileSet, place, scope, width); err != nil {
+		if payloadLvalue, unionTagLvalue, ok, err := unionVariantPayloadStoreTarget(st, unit, snapshot, fileSet, place, scope, width); err != nil {
 			return "", err
 		} else if ok {
 			lvalue, tagLvalue = payloadLvalue, unionTagLvalue
@@ -232,7 +232,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			return fmt.Sprintf("%s = (%s = %s, %s)", lvalue, tagLvalue, enumVariantName(place.Member), value)
 		}
 		if isBool(snapshot, elementType) {
-			storeValue, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildBoolExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -244,28 +244,28 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// width (a u8 slice element inside an i32 function builds its new
 			// value at u8), mirroring how a scalar local's reassignment builds
 			// at the local's own declared width.
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, elementWidth, width)
+			storeValue, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, elementWidth, width)
 			if err != nil {
 				return "", err
 			}
 			return store(storeValue), nil
 		}
 		if isChar(snapshot, elementType) {
-			storeValue, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildCharOperand(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
 			return store(storeValue), nil
 		}
 		if isPointer(snapshot, elementType) {
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width, width)
+			storeValue, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width, width)
 			if err != nil {
 				return "", err
 			}
 			return store(storeValue), nil
 		}
 		if isStr(snapshot, elementType) {
-			storeValue, err := buildStrOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildStrOperand(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -278,7 +278,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// new value is a variant literal built by the same buildEnumValue an
 			// enum-typed local's reassignment uses, so `lvalue = pebble_variant_<m>;`
 			// is the direct, uncoerced C store.
-			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildEnumValue(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -312,7 +312,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				if valueNode.Type != elementType {
 					return "", fmt.Errorf("%s reassigns a slice-typed place of type %s from a SliceFromRaw of type %s", context, sliceTypeName(elementType), describeType(snapshot, valueNode.Type))
 				}
-				construction, err := buildRawSliceConstruction(unit, snapshot, fileSet, valueNode, scope, width, context)
+				construction, err := buildRawSliceConstruction(st, unit, snapshot, fileSet, valueNode, scope, width, context)
 				if err != nil {
 					return "", err
 				}
@@ -340,7 +340,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// pointers/slices needing special handling, the same by-value copy
 			// convention struct call arguments and returns already use (see
 			// buildAggregateArgument).
-			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
+			storeValue, err := buildStructStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -360,11 +360,11 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// pebble_local_ name. The checker guarantees the target is mutable
 		// (writing an extern `let` binding fails at check, C0606), so every
 		// reachable store to an extern variable is legal.
-		ginfo, isGlobal := emitGlobals[place.Symbol]
+		ginfo, isGlobal := st.globals[place.Symbol]
 		if isGlobal {
 			targetInfo = ginfo.info
 			lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
-		} else if einfo, isExtern := emitExternData[place.Symbol]; isExtern {
+		} else if einfo, isExtern := st.externData[place.Symbol]; isExtern {
 			targetInfo = einfo.info
 			lvalue = einfo.name
 		} else {
@@ -383,7 +383,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 	// the appropriate builder.
 	switch targetInfo.kind {
 	case types.Int, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
-		storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind, width)
+		storeValue, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind, width)
 		if err != nil {
 			return "", err
 		}
@@ -399,7 +399,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// arithmetic. std/hmap.peb's insert reassigns its uint local index
 		// (`index = (index + 1) % self.cap;`), the exact shape that
 		// motivates this case.
-		storeValue, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+		storeValue, err := buildUintExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -411,13 +411,13 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// to an in-scope float-typed local of that same kind), so `x = 2.5;`
 		// emits `pebble_local_<sym> = 2.5;` at the local's own C type. A value
 		// of any other shape or type is a clean rejection by buildFloatExpr.
-		storeValue, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
+		storeValue, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 	case types.Bool:
-		storeValue, err := buildBoolExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+		storeValue, err := buildBoolExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -431,7 +431,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 				// buildUnionConstruction (a C99 compound literal of the
 				// union's struct typedef), emitted as
 				// `pebble_local_<sym> = (pebble_union_<id>_t){ .tag = ... };`.
-				storeValue, err := buildUnionConstruction(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, unions[targetInfo.enumType], width)
+				storeValue, err := buildUnionConstruction(st, unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, unions[targetInfo.enumType], width)
 				if err != nil {
 					return "", err
 				}
@@ -442,7 +442,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// value is a variant literal (an EnumVariantValue, or a
 			// zero-payload VariantConstruct) built by the enum value builder,
 			// emitted as `pebble_local_<sym> = pebble_variant_<member>;`.
-			storeValue, err := buildEnumValue(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildEnumValue(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -490,7 +490,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// fixtures) reassign the fixed-width int32_t local correctly. A
 			// value of any other shape or type is a clean rejection naming
 			// what was found.
-			storeValue, err := buildCharOperand(unit, snapshot, fileSet, statement.Children[1], scope, width)
+			storeValue, err := buildCharOperand(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
@@ -506,7 +506,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// coerced the new value to the local's own declared function
 			// type (the two signatures match), so the assigned C function
 			// pointer is always the local's own pebble_fnptr_<typeID>_t.
-			storeValue, err := buildFunctionValue(unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, width)
+			storeValue, err := buildFunctionValue(st, unit, snapshot, fileSet, mustNode(unit, statement.Children[1]), scope, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -533,7 +533,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// `pebble_local_<sym> = <optional value>;` where the value is the
 			// optional's own C type (pebble_optional_<typeID>_t), so the whole
 			// reassignment is a plain C struct assignment.
-			storeValue, err := buildOptionalValue(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.optional, context, width)
+			storeValue, err := buildOptionalValue(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.optional, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -550,7 +550,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// assignment, valid for value types with no pointers/slices
 			// needing special handling, the same by-value copy convention
 			// struct call arguments and returns already use.
-			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.structType, context, width)
+			storeValue, err := buildStructStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.structType, context, width)
 			if err != nil {
 				return "", err
 			}
@@ -561,7 +561,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// reassignment — `p = q;` or `p = nil;`. The new value is a
 			// pointer expression built by buildExpr which now handles
 			// pointer-typed nodes (AddressOf, SymbolValue, NilPointer).
-			storeValue, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, width, width)
+			storeValue, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width, width)
 			if err != nil {
 				return "", err
 			}
@@ -593,7 +593,7 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // buildAggregateArgument's own discipline. width is the entry's resolved
 // integer width, threaded through to the inline construction builder so each
 // field is built at the width the struct's own typedef uses.
-func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+func buildStructStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	valueNode, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("%s reassignment references invalid value node %d", context, id)
@@ -602,7 +602,7 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		if valueNode.Type != wantType {
 			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a RecordConstruct of type %s", context, structTypeName(wantType), describeType(snapshot, valueNode.Type))
 		}
-		return buildStructValueExpr(unit, snapshot, fileSet, valueNode, scope, context, width)
+		return buildStructValueExpr(st, unit, snapshot, fileSet, valueNode, scope, context, width)
 	}
 	if valueNode.Kind == tir.DirectCall {
 		// A reassignment from a call to a struct-returning helper —
@@ -631,7 +631,7 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		if calleeDecl.ResultType != wantType {
 			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call to symbol %d whose declared result type %s does not match", context, structTypeName(wantType), valueNode.Symbol, describeType(snapshot, calleeDecl.ResultType))
 		}
-		callExpr, err := buildDirectCallNested(unit, snapshot, fileSet, valueNode, scope, width)
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, valueNode, scope, width)
 		if err != nil {
 			return "", err
 		}
@@ -691,7 +691,7 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 // (+= -> +, -= -> -, *= -> *, /= -> /, %= -> %, and a postfix ++/-- -> + or
 // -). A CompoundStore carrying any other operator is hand-built IR and a clean
 // rejection.
-func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
+func buildCompoundStore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, statement tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, string, error) {
 	if len(statement.Children) != 2 {
 		return "", "", fmt.Errorf("%s compound assignment has %d child(ren), want exactly two: the place being combined into and the value to combine into it", context, len(statement.Children))
 	}
@@ -723,11 +723,11 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 			// target's own resolved type and the write lands on the target's C
 			// name. The checker guarantees the target is mutable (C0606), so
 			// every reachable compound store to an extern variable is legal.
-			ginfo, isGlobal := emitGlobals[place.Symbol]
+			ginfo, isGlobal := st.globals[place.Symbol]
 			if isGlobal {
 				targetInfo = ginfo.info
 				lvalue = fmt.Sprintf("pebble_global_%d", place.Symbol)
-			} else if einfo, isExtern := emitExternData[place.Symbol]; isExtern {
+			} else if einfo, isExtern := st.externData[place.Symbol]; isExtern {
 				targetInfo = einfo.info
 				lvalue = einfo.name
 			} else {
@@ -743,13 +743,13 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// is a clean rejection naming the local's type.
 		switch targetInfo.kind {
 		case types.Int, types.I8, types.I16, types.I32, types.I64, types.U8, types.U16, types.U32, types.U64:
-			core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)
+			core, err := buildCompoundIntegerCore(st, unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)
 			return "", core, err
 		case types.Uint:
-			core, err := buildCompoundUintCore(unit, snapshot, fileSet, statement, lvalue, scope, context, width)
+			core, err := buildCompoundUintCore(st, unit, snapshot, fileSet, statement, lvalue, scope, context, width)
 			return "", core, err
 		case types.F32, types.F64:
-			core, err := buildCompoundFloatCore(unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			core, err := buildCompoundFloatCore(st, unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
 			return "", core, err
 		default:
 			return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, a %s local; compound assignment is supported only for integer and float locals", context, place.Symbol, describeType(snapshot, place.Type))
@@ -762,7 +762,7 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 	// non-plain element can take — so the checked helper is chosen at that
 	// width; anything else (a bool, a pointer, or a non-entry-width integer
 	// element) is a clean rejection.
-	lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, statement.Children[0], scope, width)
+	lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, statement.Children[0], scope, width)
 	if err != nil {
 		return "", "", err
 	}
@@ -771,14 +771,14 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		// `self.len += 1;`, the std/hmap.peb insert shape: the value is built
 		// by buildUintExpr and combined with the plain C operator, exactly as
 		// a uint-typed local's compound assignment does (buildCompoundUintCore).
-		core, err := buildCompoundUintCore(unit, snapshot, fileSet, statement, lvalue, scope, context, width)
+		core, err := buildCompoundUintCore(st, unit, snapshot, fileSet, statement, lvalue, scope, context, width)
 		return "", core, err
 	}
 	if !isWidth(snapshot, width, elementType) {
 		return "", "", fmt.Errorf("%s compound assignment combines into an element of type %s, want %s", context, describeType(snapshot, elementType), wantName(width))
 	}
 	tempName := fmt.Sprintf("pebble_compound_ptr_%d", id)
-	core, err := buildCompoundIntegerCore(unit, snapshot, fileSet, statement, "(*"+tempName+")", width, scope, context, width)
+	core, err := buildCompoundIntegerCore(st, unit, snapshot, fileSet, statement, "(*"+tempName+")", width, scope, context, width)
 	if err != nil {
 		return "", "", err
 	}
@@ -801,7 +801,7 @@ func buildCompoundStore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 // sub/mul_u64), but a u64 /= or %= is cleanly rejected: there is no
 // checked_div_u64/mod_u64, so emitting one would be a call to a nonexistent
 // helper.
-func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildCompoundIntegerCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if checkedSuffix(placeWidth) == "" {
 		return "", fmt.Errorf("%s compound assignment combines at %s, which has no checked-arithmetic runtime helper; compound assignment is supported only at int, i32, or i64", context, wantName(placeWidth))
 	}
@@ -809,7 +809,7 @@ func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		return "", fmt.Errorf("%s compound assignment %ss at u64, which has no checked division/modulo runtime helper; u64 compound assignment is supported only for +, -, or *", context, statement.Operator)
 	}
 	helper, _ := checkedArithmeticHelper(statement.Operator, placeWidth)
-	value, err := buildExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
+	value, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
 	if err != nil {
 		return "", err
 	}
@@ -825,12 +825,12 @@ func buildCompoundIntegerCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // fault and no checked float runtime primitives exist. %= on a float is
 // rejected (the checker's operatorIntegralSame family never admits a float to
 // %=, so a real fixture cannot produce it).
-func buildCompoundFloatCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string) (string, error) {
+func buildCompoundFloatCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string) (string, error) {
 	if statement.Operator == syntax.Percent {
 		return "", fmt.Errorf("%s compound assignment uses %%%% on a float local, want +, -, *, or / (%% is integral-only)", context)
 	}
 	op, _ := arithmeticOperator(statement.Operator)
-	value, err := buildFloatExpr(unit, snapshot, fileSet, statement.Children[1], scope, placeWidth)
+	value, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, placeWidth)
 	if err != nil {
 		return "", err
 	}
@@ -849,12 +849,12 @@ func buildCompoundFloatCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 // resolved element type is uint) and a uint-typed local (`sum += 1`). A uint
 // place has no checked runtime helper (checkedSuffix maps no width to uint), so
 // the plain C operator is the whole lowering, never a malformed helper name.
-func buildCompoundUintCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+func buildCompoundUintCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if statement.Operator == syntax.Percent {
 		return "", fmt.Errorf("%s compound assignment uses %%%% on a uint place, want +, -, *, or / (%% is integral-only)", context)
 	}
 	op, _ := arithmeticOperator(statement.Operator)
-	value, err := buildUintExpr(unit, snapshot, fileSet, statement.Children[1], scope, width)
+	value, err := buildUintExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 	if err != nil {
 		return "", err
 	}

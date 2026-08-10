@@ -17,10 +17,12 @@ import (
 )
 
 func TestEmitIntEntryExpressionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, "fn main() int => 0;", true, 0, false)
 }
 
 func TestEmitLogicalBoolLiteralAndCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The bool-literal combination shape: && of two plain bool literals, no
 	// comparison involved. This is exactly the fixture 10.14 rejected as a
 	// ShortCircuitValue (if true && false), now accepted — true && false is
@@ -29,12 +31,14 @@ func TestEmitLogicalBoolLiteralAndCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLogicalBoolLiteralOrCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Same bool-literal combination for ||: true || false is true, so the
 	// then-arm runs and the process exits 1.
 	emitAndRun(t, "fn main() i32 { if true || false { return 1; } else { return 0; } }", false, 1, false)
 }
 
 func TestEmitLogicalNestedPrecedenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A three-way nested combination. Precedence is already resolved in the
 	// typed IR tree (confirmed against a real fixture dump: the && node is a
 	// child of the || node for `false && false || true`), and Pebble's grammar
@@ -54,12 +58,14 @@ func TestEmitLogicalNestedPrecedenceCompilesAndRuns(t *testing.T) {
 		{"or then and", "fn main() i32 { if true || false && false { return 1; } else { return 0; } }", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitLogicalAndWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a && condition combining a local-typed comparison and
 	// an unanchored literal comparison: x < 10 && 1 < 2 must lower to the
 	// parenthesized (pebble_local_25 < 10 && 1 < 2), the local reference
@@ -82,6 +88,7 @@ func TestEmitLogicalAndWritesC(t *testing.T) {
 }
 
 func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
+	t.Parallel()
 	// A parenthesized comparison operand (flag && (1 < 2)) arrives wrapped in a
 	// SourceAlias (confirmed against a real fixture dump), which buildBoolExpr
 	// must unwrap before lowering the comparison. The emitted C must therefore
@@ -100,6 +107,7 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 }
 
 func TestEmitBoolEqualityComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// ==/!= between two bool values: (1 < 2) == (3 < 4) is the genuine gap
 	// 10.15 left as a confirmed remaining rejection — the outer BinaryValue's
 	// two operands are bool-typed SourceAlias-wrapped comparisons (confirmed
@@ -120,12 +128,14 @@ func TestEmitBoolEqualityComparisonCompilesAndRuns(t *testing.T) {
 		{"notEqual true", "fn main() i32 { if (1 < 2) != (2 < 1) { return 1; } else { return 2; } }", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitBoolEqualityWithShortCircuitCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Bool equality composes with 10.15's && / ||: (a == b) && (1 < 2) is a
 	// ShortCircuitValue whose left operand is the bool-equality BinaryValue,
 	// built through buildBoolExpr's BinaryValue case into buildComparison's
@@ -141,12 +151,14 @@ func TestEmitBoolEqualityWithShortCircuitCompilesAndRuns(t *testing.T) {
 		{"and false", "fn main() i32 { var a bool = true; var b bool = false; if (a == b) && (1 < 2) { return 1; } else { return 2; } }", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitBoolEqualityWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the flagship fixture: (1 < 2) == (3 < 4) must lower to
 	// the parenthesized bool equality ((1 < 2) == (3 < 4)) in the if condition
 	// — each bool operand parenthesized so a comparison operand cannot chain
@@ -180,6 +192,7 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 }
 
 func TestEmitUnsuffixedU64MaxLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact reported bug: a decimal literal that does not fit in any
 	// signed C integer type (UINT64_MAX's decimal form) assigned to a u64
 	// local. Before the fix the emitted C was `uint64_t pebble_local_N =
@@ -202,6 +215,7 @@ func TestEmitUnsuffixedU64MaxLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitUnsuffixedU32MaxLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same large-literal-at-unsigned-width shape at u32: UINT32_MAX's
 	// decimal form in a u32 local. Unsuffixed it exceeds a signed 32-bit
 	// literal's range and cc would warn under -Wall -Wextra -Werror; with the
@@ -225,6 +239,7 @@ func TestEmitUnsuffixedU32MaxLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitSmallUnsignedLiteralRegressionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The already-working small-literal case must keep working: a value well
 	// inside signed range at u64 width still compiles clean (now with a
 	// harmless "u" suffix) and prints the correct value.
@@ -239,6 +254,7 @@ func TestEmitSmallUnsignedLiteralRegressionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLargeSignedLiteralNoUnsignedSuffix(t *testing.T) {
+	t.Parallel()
 	// A large SIGNED literal (INT64_MAX) must not gain an unsigned suffix:
 	// the emitted C must keep the plain decimal text so the value is the
 	// signed maximum, not an unsigned constant of the same digits. The
@@ -263,6 +279,7 @@ func TestEmitLargeSignedLiteralNoUnsignedSuffix(t *testing.T) {
 }
 
 func TestEmitI64OverflowAborts(t *testing.T) {
+	t.Parallel()
 	// 9223372036854775807 + 1 overflows i64. Compiled in PEBBLE_RT_MODE_SAFE
 	// (the same mode every end-to-end test here uses), the emitted
 	// pebble_rt_checked_add_i64 call must panic through pebble_rt_panic, so the
@@ -272,6 +289,7 @@ func TestEmitI64OverflowAborts(t *testing.T) {
 }
 
 func TestEmitI64DivideByZeroAborts(t *testing.T) {
+	t.Parallel()
 	// 1 / 0 at i64 width: the emitted pebble_rt_checked_div_i64 call must
 	// panic through pebble_rt_panic (divide-by-zero is a fault in every
 	// configuration), so the process terminates abnormally.
@@ -279,6 +297,7 @@ func TestEmitI64DivideByZeroAborts(t *testing.T) {
 }
 
 func TestEmitI64ForInitClauseInsideI32FunctionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The for-header initializer reuses buildScalarInitializeCore, so the
 	// mismatched-width local fix covers it automatically: a classic for loop
 	// whose init clause declares an i64 local inside an i32 function. The i64
@@ -290,6 +309,7 @@ func TestEmitI64ForInitClauseInsideI32FunctionCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitLeibnizPiApproximationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The leibniz_pi_approx.peb shape end-to-end, with the file's staleness
 	// fixed (float -> f64, `n as f64` for the mixed-int/float term): an f64
 	// helper taking an int and an f64 parameter accumulates the Leibniz
@@ -344,6 +364,7 @@ fn main() int {
 }
 
 func TestEmitParenthesizedFloatExpressions(t *testing.T) {
+	t.Parallel()
 	// SourceAlias unwrapping, the parenthesized-expression distinction: a
 	// grouped float literal `(3.5)` as a local's initializer and a grouped
 	// float reference `(x)` as the main's return value both arrive as
@@ -354,6 +375,7 @@ func TestEmitParenthesizedFloatExpressions(t *testing.T) {
 }
 
 func TestEmitF64LiteralTruncatesToExitCode(t *testing.T) {
+	t.Parallel()
 	// The float value round-trips through the real emitted C and the harness's
 	// process-exit observation, not just "it compiles": a fractional f64
 	// whose C float-to-int truncation would land on a different code than a
@@ -364,6 +386,7 @@ func TestEmitF64LiteralTruncatesToExitCode(t *testing.T) {
 }
 
 func TestEmitIntegerToFloatCastCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An integer local cast to a float and used in float arithmetic: 3 as f64
 	// plus 0.5 must yield the real float 3.5, which the hosted main truncates
 	// to exit code 3 — had the cast produced an integer (or an implicit
@@ -385,6 +408,7 @@ func TestEmitIntegerToFloatCastCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFloatCastNarrowingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An f64 local narrowed to f32. 16777217.5 (2^24 + 1.5) is not
 	// representable in f32: round-to-nearest-even gives 16777218.0f, which
 	// truncates to exit code 2 (verified empirically against cc). Had the cast
@@ -404,6 +428,7 @@ func TestEmitFloatCastNarrowingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFloatCastWideningCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An f32 local widened to f64. f32->f64 widening is exact, so no exit-code
 	// truncation can distinguish the widened value from the unwidened one;
 	// the emitted-C assertion pins the (double) cast on the f32 local, and the
@@ -422,6 +447,7 @@ func TestEmitFloatCastWideningCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitChainedIntegerToFloatAndFloatCastCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Both new casts in one expression: an integer local cast to f32 (an
 	// IntegerToFloat), used in f32 arithmetic, then the result widened to f64
 	// by a FloatCast for the final f64 return. 33 as f32 / 1.5 as f32 = 22.0f,
@@ -444,6 +470,7 @@ func TestEmitChainedIntegerToFloatAndFloatCastCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFloatToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		src  string
@@ -455,6 +482,7 @@ func TestEmitFloatToIntegerCompilesAndRuns(t *testing.T) {
 		{"f64 to i64", "fn main() i64 { let x f64 = 42.75; return x as i64; }", 42},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			unit, snapshot, entryID, sources := buildFixture(t, tc.src, "main", false)
 			var buf bytes.Buffer
 			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -470,6 +498,7 @@ func TestEmitFloatToIntegerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitFloatToIntegerBoundaryPanics(t *testing.T) {
+	t.Parallel()
 	// f32 cannot represent INT32_MAX; 2147483647.0f rounds to 2^31 and must
 	// be rejected rather than reaching C's undefined float-to-int conversion.
 	emitAndRun(t, "fn main() i32 { let x f32 = 2147483647.0; return x as i32; }", false, 0, true)
@@ -477,10 +506,12 @@ func TestEmitFloatToIntegerBoundaryPanics(t *testing.T) {
 }
 
 func TestEmitIndexedStrElementAssignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitRuntimeAndRun(t, `type Entry = struct { key str; }; fn main() i32 { var first Entry = Entry.{ key = "old" }; let values []Entry = slice &first, 1; var replacement str = "new"; values[0].key = replacement; if values[0].key == "new" { return 0; } return 1; }`, 0)
 }
 
 func TestEmitStrEqualLiteralsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two identical string literals compared equal, driving an if: the
 	// comparison is between two StringLiteral operands (no local involved),
 	// each embedded as a PebbleStr compound literal, so the then-arm runs and
@@ -489,6 +520,7 @@ func TestEmitStrEqualLiteralsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrDifferentLiteralsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Two different string literals compared equal (false): the lengths are
 	// equal but the bytes differ, so pebble_rt_str_eq returns false and the
 	// else-arm runs, exiting 20.
@@ -496,6 +528,7 @@ func TestEmitStrDifferentLiteralsCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrNotEqualCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// != between two str locals, both directions: different strings are not
 	// equal (then-arm, exit 10) and identical strings are not-not-equal
 	// (else-arm, exit 20), so the negation of pebble_rt_str_eq is exercised
@@ -509,12 +542,14 @@ func TestEmitStrNotEqualCompilesAndRuns(t *testing.T) {
 		{"identical not equal false", "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s != t { return 10; } else { return 20; } }", 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitStrEqualityAsBoolValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str comparison used as a plain bool value (not just as an if/while
 	// condition): the equality result is stored in a bool local and that local
 	// drives the if. The comparison lowers to pebble_rt_str_eq, whose bool
@@ -523,6 +558,7 @@ func TestEmitStrEqualityAsBoolValueCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrEqualityAsLogicalOperandCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A str comparison combined with && — the equality as a logical operand of
 	// a larger bool expression. Both comparisons hold, so the conjunction is
 	// true and the then-arm runs, exiting 10.
@@ -530,6 +566,7 @@ func TestEmitStrEqualityAsLogicalOperandCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrEscapeRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The escaping-correctness fixture: a decoded literal containing a control
 	// byte immediately followed by a digit character, plus an escaped quote
 	// and backslash, compared against a differently-spelled literal that
@@ -554,12 +591,14 @@ func TestEmitStrEscapeRoundTripCompilesAndRuns(t *testing.T) {
 		{"local vs literal", "fn main() i32 { let s str = \"a\\n1\\tb\\\"c\\\\d\"; if s == \"a\\x0a1\\x09b\\x22c\\x5cd\" { return 7; } else { return 3; } }"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, 7, false)
 		})
 	}
 }
 
 func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
+	t.Parallel()
 	// The literal escaped C text the round-trip fixture produces: the tab and
 	// newline bytes must be emitted as fixed-width octal escapes, never as C
 	// \\x hex escapes (which would absorb the following '1'/'b'), the quote as
@@ -585,6 +624,7 @@ func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
 }
 
 func TestEmitStrWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for a str local compared against a string literal: the
 	// local is declared directly as the runtime's PebbleStr (no typedef) with
 	// the escaped bytes and compile-time length, and the equality lowers to
@@ -610,6 +650,7 @@ func TestEmitStrWritesC(t *testing.T) {
 }
 
 func TestEmitStrNotEqualWritesC(t *testing.T) {
+	t.Parallel()
 	// The != lowering must negate the runtime helper: s != t emits
 	// !pebble_rt_str_eq(pebble_local_25, pebble_local_26), not a comparison of
 	// the two strings some other way. Symbols 25/26 are the s and t locals,
@@ -632,54 +673,63 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 }
 
 func TestEmitStrOrderingLessCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s < t where "hi" < "ho" is true (lexicographic byte comparison: 'i' <
 	// 'o'), so the then-arm runs and the process exits 10.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
 }
 
 func TestEmitStrOrderingLessFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s < t where "ho" < "hi" is false ('o' > 'i'), so the else-arm runs
 	// and the process exits 20.
 	emitAndRun(t, "fn main() i32 { let s str = \"ho\"; let t str = \"hi\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
 }
 
 func TestEmitStrOrderingLessEqualCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s <= t where "hi" <= "hi" is true (equal counts), so the then-arm
 	// runs and the process exits 10.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s <= t { return 10; } else { return 20; } }", false, 10, false)
 }
 
 func TestEmitStrOrderingLessEqualFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s <= t where "hi" <= "ha" is false ('i' > 'a'), so the else-arm runs
 	// and the process exits 20.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ha\"; if s <= t { return 10; } else { return 20; } }", false, 20, false)
 }
 
 func TestEmitStrOrderingGreaterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s > t where "ho" > "hi" is true ('o' > 'i'), so the then-arm runs
 	// and the process exits 10.
 	emitAndRun(t, "fn main() i32 { let s str = \"ho\"; let t str = \"hi\"; if s > t { return 10; } else { return 20; } }", false, 10, false)
 }
 
 func TestEmitStrOrderingGreaterFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s > t where "hi" > "ho" is false ('i' < 'o'), so the else-arm runs
 	// and the process exits 20.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"ho\"; if s > t { return 10; } else { return 20; } }", false, 20, false)
 }
 
 func TestEmitStrOrderingGreaterEqualCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s >= t where "hi" >= "hi" is true (equal counts), so the then-arm
 	// runs and the process exits 10.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi\"; if s >= t { return 10; } else { return 20; } }", false, 10, false)
 }
 
 func TestEmitStrOrderingGreaterEqualFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s >= t where "ha" >= "hi" is false ('a' < 'i'), so the else-arm runs
 	// and the process exits 20.
 	emitAndRun(t, "fn main() i32 { let s str = \"ha\"; let t str = \"hi\"; if s >= t { return 10; } else { return 20; } }", false, 20, false)
 }
 
 func TestEmitStrOrderingLiteralOperandCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An ordering comparison where one operand is a string literal directly
 	// (not a local), confirming buildStrOperand's existing literal path works
 	// unchanged in this new position. "hi" < "ho" is true, so the
@@ -688,6 +738,7 @@ func TestEmitStrOrderingLiteralOperandCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrOrderingWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for an ordering comparison between two str locals: the
 	// comparison must use pebble_rt_str_cmp with the source operator
 	// translated to its C spelling, compared against 0. The ==/!= path is
@@ -711,6 +762,7 @@ func TestEmitStrOrderingWritesC(t *testing.T) {
 }
 
 func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
+	t.Parallel()
 	// Regression check: the ==/!= path must still use pebble_rt_str_eq,
 	// not pebble_rt_str_cmp. This confirms this slice didn't disturb the
 	// existing equality lowering.
@@ -729,6 +781,7 @@ func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
 }
 
 func TestEmitStrIndexCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// String indexing (s[0]) is reachable from real source and lowers to a
 	// bare tir.CheckedIndex whose result type is char (confirmed against a
 	// real fixture dump: Children = [SymbolValue s, IntegerLiteral 0]); this
@@ -741,6 +794,7 @@ func TestEmitStrIndexCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexWritesC(t *testing.T) {
+	t.Parallel()
 	// The exact emitted call for a str-typed local base: s[0] emits
 	// pebble_rt_str_char_at_i32(pebble_local_<s>, 0) — the base is the
 	// PebbleStr local's own C name (built by buildStrOperand's SymbolValue
@@ -762,6 +816,7 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 }
 
 func TestEmitStrIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
+	t.Parallel()
 	// Out-of-range str indexing (s = "hi" has 2 codepoints; s[5] is out of
 	// bounds) still aborts via pebble_rt_str_char_at_i32, and since 10.44 the
 	// call carries a real, resolved Pebble source location instead of the
@@ -782,6 +837,7 @@ func TestEmitStrIndexOutOfBoundsEmitsRealSourceLoc(t *testing.T) {
 }
 
 func TestEmitStrIndexLiteralBaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A bare string literal base ("hi"[0]) is checker-reachable (confirmed
 	// against a real fixture dump — the CheckedIndex base is a StringLiteral
 	// node) and buildStrOperand already builds it unchanged as a PebbleStr
@@ -791,6 +847,7 @@ func TestEmitStrIndexLiteralBaseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted call for the literal-base shape: the base argument is the
 	// inline PebbleStr compound literal, not a local reference.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let c char = \"hi\"[0]; return 0; }", "main", false)
@@ -809,6 +866,7 @@ func TestEmitStrIndexLiteralBaseWritesC(t *testing.T) {
 }
 
 func TestEmitStrIndexMultiByteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// s[i] is a Unicode-scalar-value index, not a byte offset: "aéb" is a (1
 	// byte) + é (U+00E9, 2 bytes) + b (1 byte), so codepoint 1 is é and
 	// codepoint 2 is b — byte offset 2 would land in the middle of é's
@@ -818,6 +876,7 @@ func TestEmitStrIndexMultiByteCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexEmojiCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The strongest multi-byte proof: "a😀b" is a (1 byte) + 😀 (U+1F600, 4
 	// bytes) + b (1 byte), so codepoint 1 is the full 21-bit scalar value
 	// 128512 — a 4-byte sequence — compared against the emoji char literal,
@@ -827,6 +886,7 @@ func TestEmitStrIndexEmojiCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexOutOfRangePanics(t *testing.T) {
+	t.Parallel()
 	// s = "hi" has 2 codepoints; s[2] is past the last codepoint, so the
 	// runtime's UTF-8 decoder panics (abort) instead of reading past the end.
 	// The process must terminate abnormally, not exit cleanly.
@@ -834,6 +894,7 @@ func TestEmitStrIndexOutOfRangePanics(t *testing.T) {
 }
 
 func TestEmitStrIndexNegativePanics(t *testing.T) {
+	t.Parallel()
 	// A negative index — i = 0 - 1 = -1 computed by checked arithmetic (which
 	// itself does not overflow) — panics the decoder. The process must
 	// terminate abnormally.
@@ -841,6 +902,7 @@ func TestEmitStrIndexNegativePanics(t *testing.T) {
 }
 
 func TestEmitStrIndexI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The width-generic path: an i64 entry's str index emits
 	// pebble_rt_str_char_at_i64 — only the index parameter's width varies by
 	// the entry's; the result type is still the fixed int32_t char either
@@ -850,6 +912,7 @@ func TestEmitStrIndexI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted call for an i64 entry: the helper is the _i64 variant (the
 	// index parameter is int64_t), and the base local is still the PebbleStr
 	// local's own C name. Symbols 25 (s) and 26 (c) come from the real
@@ -870,6 +933,7 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 }
 
 func TestEmitCharToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro from the brief: `let c char = 'A'; let n u32 =
 	// c as u32; return n as i32;` — a char read out as its codepoint. The
 	// checker lowers the cast to a tir.CharToInteger whose single child is the
@@ -881,6 +945,7 @@ func TestEmitCharToIntegerCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharToIntegerFromLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The CharToInteger child can be a bare char literal (not just a local
 	// reference): 'A' as u32 is built by buildCharOperand's CharLiteral path
 	// and cast to uint32_t, then read back out as i32. Codepoint 65.
@@ -888,6 +953,7 @@ func TestEmitCharToIntegerFromLiteralCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharToIntegerHashCharCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The real motivating case from std/hash.peb:85-87 — `fn hash_char(val
 	// char) u64 { return hash_u64(val as u64); }` — as a standalone fixture
 	// (std/hash.peb itself is untouched). The `val as u64` is a CharToInteger
@@ -898,12 +964,14 @@ func TestEmitCharToIntegerHashCharCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharToIntegerU64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The same char-to-integer cast at the other motivating width (u64),
 	// matching hash_char's destination directly in a u64 entry.
 	emitAndRun(t, "fn main() i64 { let c char = 'A'; let n u64 = c as u64; return n as i64; }", false, 65, false)
 }
 
 func TestEmitCharToIntegerWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the CharToInteger lowers to a plain C
 	// cast of the char value's expression to the destination C type,
 	// (uint32_t)(...), with no runtime helper.
@@ -919,6 +987,7 @@ func TestEmitCharToIntegerWritesC(t *testing.T) {
 }
 
 func TestEmitPointerToIntegerU64CompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro of the pointer-to-integer shape: `let n u64 = p
 	// as u64;` reads out a pointer's address as a u64. The address itself is
 	// non-deterministic (it depends on the stack), so the deterministic
@@ -930,6 +999,7 @@ func TestEmitPointerToIntegerU64CompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerToIntegerUintCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The uint twin: `let n uint = p as uint;`. uint is the platform-native
 	// pointer-width builtin the backend routes through buildUintExpr, so this
 	// exercises the buildUintExpr PointerToInteger lowering (a plain C cast to
@@ -938,6 +1008,7 @@ func TestEmitPointerToIntegerUintCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerToIntegerHashPtrCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The real motivating case from std/hash.peb:80-82 — `fn hash_ptr[T](ptr
 	// *T) u64 { return hash_u64(ptr as u64); }` — as a standalone fixture
 	// (std/hash.peb itself is untouched). The `ptr as u64` is a
@@ -949,6 +1020,7 @@ func TestEmitPointerToIntegerHashPtrCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitPointerToIntegerWritesC(t *testing.T) {
+	t.Parallel()
 	// Confirm the emitted C directly: the PointerToInteger lowers to a plain C
 	// cast of the pointer expression to the destination C type,
 	// (uint64_t)(...), with no runtime helper.
@@ -964,6 +1036,7 @@ func TestEmitPointerToIntegerWritesC(t *testing.T) {
 }
 
 func TestEmitU64EqualityComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The exact minimal repro for the non-entry-width comparison bug: a u64
 	// local (a non-entry width in an int-entry main) compared with == against
 	// a literal, the result stored in a bool local and used in an if.
@@ -976,6 +1049,7 @@ func TestEmitU64EqualityComparisonCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU64OrderingComparisonsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// All four ordering operators on a non-entry-width integer (u64 in an
 	// int-entry main), each taking the branch matching its value so both true
 	// and false outcomes are exercised — proving the fix is not specific to
@@ -997,12 +1071,14 @@ func TestEmitU64OrderingComparisonsCompilesAndRuns(t *testing.T) {
 		{"greaterEqual false", "fn main() int { let h u64 = 5; if h >= 6 { return 1; } else { return 2; } }", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }
 
 func TestEmitU64HashBytesFnv1aCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The motivating case: a helper mirroring std/hash.peb's hash_bytes
 	// FNV-1a body verbatim (`hash = hash ^ (x as u64); hash = hash *
 	// fnv_prime;` inside a loop over a real []u8 slice), called from an
@@ -1044,6 +1120,7 @@ func TestEmitU64HashBytesFnv1aCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A different non-entry-width integer (u8 in an int-entry main) confirms
 	// the fix generalizes rather than being u64-specific: both == and the
 	// ordering operators build the u8 operands at their own resolved width.
@@ -1052,6 +1129,7 @@ func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitGlobalLetConstantAsFixedWidthArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A top-level `let` global constant with an untyped literal initializer
 	// stays at the abstract `int` builtin (not i32) until a use site pins it
 	// to a concrete width — the std/io.peb `let SeekEnd = 2;` shape, passed
@@ -1077,12 +1155,14 @@ fn main() i32 {
 }
 
 func TestEmitCharNotEqualCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The != comparison between two char values: c='a' and d='b' differ, so
 	// c != d is true and the process exits 1.
 	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c != d { return 1; } else { return 0; } }", false, 1, false)
 }
 
 func TestEmitCharNonAsciiEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared from a non-ASCII literal — the accented
 	// letter 'é' (U+00E9, 233) — compared for equality against the same
 	// literal, proving the full Unicode scalar value round-trips through the
@@ -1091,6 +1171,7 @@ func TestEmitCharNonAsciiEqualityCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharEmojiEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local declared from an emoji — '😀' (U+1F600, 128512), a
 	// value that needs more than a byte to represent — compared for equality.
 	// This proves the full 21-bit Unicode scalar value round-trips, not just a
@@ -1099,6 +1180,7 @@ func TestEmitCharEmojiEqualityCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharOrderingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// An ordering comparison between two char values: c holds 'a' (97) and d
 	// holds 'b' (98), so c < d is true and the process exits 1. Comparing
 	// Unicode scalar values numerically is well-defined, and the checker
@@ -1108,6 +1190,7 @@ func TestEmitCharOrderingCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharOrderingFalseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The false outcome of the char ordering fixture: 'b' < 'a' is false, so
 	// the process exits 0 — proving the ordering distinguishes the two scalar
 	// values in the correct direction.
@@ -1115,6 +1198,7 @@ func TestEmitCharOrderingFalseCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// A char-typed local inside an i64 entry: the entry's integer width picks
 	// i64 arithmetic, but a char is still the fixed int32_t (the two are
 	// unrelated concepts), so this confirms the char grammar is independent of
@@ -1123,6 +1207,7 @@ func TestEmitCharI64EntryCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitCharWritesC(t *testing.T) {
+	t.Parallel()
 	// The emitted C for the char fixture: the char local is declared with the
 	// fixed int32_t type and its literal emitted as an int32_t constant
 	// ((int32_t)97 for 'a', (int32_t)98 for 'b'), the helper's parameter and
@@ -1151,6 +1236,7 @@ func TestEmitCharWritesC(t *testing.T) {
 }
 
 func TestEmitExplicitPointerCastRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// var y i32 = 42; let p *i32 = &y; let q *void = p as *void; let r *i32 = q as *i32; return *r;
 	// An explicit pointer-to-pointer cast (*i32 -> *void -> *i32) round-trips
 	// correctly. Also exercises *void's own C representation (void *), which
@@ -1161,6 +1247,7 @@ func TestEmitExplicitPointerCastRoundTripCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitIntegerCastRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// The intermediate i64 cast has a different width from the i32 entry, but
 	// the outer cast returns to the entry width.
 	// The test runner observes the process exit code, so reduce the result to
@@ -1169,11 +1256,13 @@ func TestEmitIntegerCastRoundTripCompilesAndRuns(t *testing.T) {
 }
 
 func TestEmitIntegerCastTruncatesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// 4294967297 narrowed to i32 wraps to 1, matching the fixed-width C cast.
 	emitAndRunBounded(t, "fn main() i32 { var n i32 = 0; var done i32 = 0; while done == 0 { n = (4294967297 as i64) as i32; done = 1; } return n; }", false, 1, false)
 }
 
 func TestEmitIntegerCastUnsignedRoundTripCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	// Exercise a differently-signed intermediate type rather than only i32/i64.
 	emitAndRunBounded(t, "fn main() i32 { var n i32 = 0; var done i32 = 0; while done == 0 { var x i32 = 300; n = (x as u32) as i32; done = 1; } return n % 256; }", false, 44, false)
 }
@@ -1235,6 +1324,7 @@ func TestCheckStdHmapU64HashFnTypes(t *testing.T) {
 // where the checker previously rejected fn (a, b str) bool => a == b as a
 // "non-void function can fall through without returning".
 func TestEmitClosureLiteralArrowShorthand(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `
 fn call_it(f fn (str, str) bool) bool {
     return f("a", "a");
@@ -1250,6 +1340,7 @@ fn main() int {
 // TestEmitClosureLiteralArrowShorthandFalse compares two strings and returns
 // false, verifying the closure's expression body evaluates correctly.
 func TestEmitClosureLiteralArrowShorthandFalse(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `
 fn call_it(f fn (str, str) bool) bool {
     return f("a", "b");
@@ -1272,6 +1363,7 @@ fn main() int {
 // `switch (pebble_fn_<callee>(ctx)) { ... }`. pick() returns Color.green, so
 // the green case fires and the process exits 1.
 func TestEmitEnumReturningCallAsSwitchSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Color = enum { red, green, blue };
 
 fn pick() Color {
@@ -1291,6 +1383,7 @@ fn main() int {
 // switch-subject shape: the entry's switch subject must be the helper call
 // pebble_fn_<callee>(ctx) directly, never a temp local or a struct typedef.
 func TestEmitEnumReturningCallAsSwitchSubjectWritesC(t *testing.T) {
+	t.Parallel()
 	unit, snapshot, entryID, enumType, variants, sources := enumFixture(t, `type Color = enum { red, green, blue };
 
 fn pick() Color {
@@ -1331,6 +1424,7 @@ fn main() int {
 // (`pick() == Color.green`). pick() returns Color.green, so the comparison is
 // true and the process exits 1.
 func TestEmitEnumReturningCallAsComparisonOperandCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Color = enum { red, green, blue };
 
 fn pick() Color {
@@ -1351,6 +1445,7 @@ fn main() int {
 // runtime behavior is asserted end to end: pick() constructs Choice.value(5),
 // so the value case fires and the process exits 1.
 func TestEmitUnionReturningCallAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
 	emitAndRun(t, `type Choice = union enum { empty void; value int; };
 
 fn pick() Choice {
