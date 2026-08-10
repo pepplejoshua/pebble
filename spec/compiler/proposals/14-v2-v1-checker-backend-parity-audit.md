@@ -473,7 +473,16 @@ copy their full reproduction or plan.
    parameter-position, two-instantiation) end-to-end; existing
    already-concrete generic-struct methods unaffected; causation-
    checked.
-9. A whole dereferenced struct cannot become a value.
+9. ~~A whole dereferenced struct cannot become a value.~~ **RESOLVED
+   (`a242181`).** Read-side twin of the earlier struct-reassignment
+   write-side fix (`*self = other;`). `buildStructLocalDeclaration`'s
+   struct-typed Load initializer and `buildAggregateArgument`'s struct
+   branch both widened to accept a `Load(DereferencePlace)` — a whole
+   struct read through a pointer deref (`let q = *ptr;`,
+   `use_point(*ptr)`) — reusing the existing `buildPlaceLValue` and
+   `buildDereferencePlaceRead` machinery with no new lowering. Verified
+   both a local initializer and a direct call argument end-to-end;
+   existing struct-value shapes unaffected; causation-checked.
 10. ~~`emit.go` and `emit_test.go` need a behavior-preserving file split.~~
     **RESOLVED (`bf16ffe`).** Split into 12 production files + 13 test files
     along natural function-name seams (types, typedefs, collect, values,
