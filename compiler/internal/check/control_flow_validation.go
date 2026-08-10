@@ -108,17 +108,61 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		return ok && result == handoff.Semantics.Types().Builtins().Void
 	}
 
-	valuePrintable := func(value valueID) bool {
-		resolved, ok := records.Root(value)
-		if !ok || resolved.State != infer.TypeFinal {
-			return false
-		}
-		key, ok := handoff.Semantics.Types().Key(resolved.Type)
+	scalarPrintable := func(typeID types.TypeID) bool {
+		key, ok := handoff.Semantics.Types().Key(typeID)
 		if !ok {
 			return false
 		}
 		builtin, ok := key.Builtin()
 		return ok && (builtin == types.Bool || builtin == types.Char || builtin == types.Str || isIntegerBuiltin(builtin) || isFloatBuiltin(builtin))
+	}
+	structFieldPrintable := func(memberType infer.TemplateID) bool {
+		template, ok := handoff.Semantics.Template(memberType)
+		if !ok || template.Kind != infer.TemplateKnown {
+			return false
+		}
+		return scalarPrintable(template.Known)
+	}
+	// valuePrintable is the print operand gate: a scalar builtin (bool, char,
+	// str, any integer width, any float width), or — composite print slice 1 —
+	// a struct value whose fields are ALL such scalars. A struct with any
+	// non-scalar field (a nested struct, an array, a slice, an enum, ...) stays
+	// rejected: composite recursion into non-scalar fields is a separate, later
+	// slice, and accepting it here would promise output the backend does not
+	// yet emit. Plain enums and tagged unions are also still rejected; they are
+	// their own later slices. A member whose type is not a concrete known scalar
+	// (a generic struct's parameter-typed field, which resolves only against a
+	// specific instantiation's type arguments) is not provably printable at the
+	// declaration level, so such a struct rejects too.
+	valuePrintable := func(value valueID) bool {
+		resolved, ok := records.Root(value)
+		if !ok || resolved.State != infer.TypeFinal {
+			return false
+		}
+		if scalarPrintable(resolved.Type) {
+			return true
+		}
+		key, ok := handoff.Semantics.Types().Key(resolved.Type)
+		if !ok {
+			return false
+		}
+		if key.Kind() != types.Nominal {
+			return false
+		}
+		decl, _, ok := key.Nominal()
+		if !ok {
+			return false
+		}
+		declaration, ok := handoff.Semantics.TypeDeclaration(decl)
+		if !ok || declaration.Nominal != infer.NominalStruct {
+			return false
+		}
+		for _, member := range declaration.Members {
+			if !structFieldPrintable(member.Type) {
+				return false
+			}
+		}
+		return true
 	}
 
 	evalRecord = func(ctrl *controlRecord, reachable bool) []controlExit {

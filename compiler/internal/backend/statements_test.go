@@ -773,6 +773,93 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	}
 }
 
+func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
+	// Composite print slice 1: a struct whose fields are all scalar types
+	// prints as `<TypeName>{ <field>: <value>, ... }` in the struct's DECLARED
+	// field order, followed by the statement's single trailing newline. Each
+	// field value uses the exact scalar formatting a bare print operand uses
+	// (the exact-width PRI* integer macros, "true"/"false", the str .data
+	// projection), and the labels are the struct's own declared type name and
+	// SOURCE field names — never the generated pebble_field_<member> C names.
+	// Mixed operands prove a struct composes with scalar operands on one line,
+	// and the helper-call operand proves a struct-returning call is
+	// materialized once (evaluated a single time).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"two ints", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", "Point{ x: 1, y: 2 }\n"},
+		{"int bool str", "type Person = struct { name str; active bool; age i32; };\nfn main() i32 { let p = Person.{ name = \"ann\", active = true, age = 30 }; print p; return 0; }", "Person{ name: ann, active: true, age: 30 }\n"},
+		{"signed and unsigned widths", "type Counts = struct { id i64; n u64; big uint; };\nfn main() i32 { let c = Counts.{ id = -5, n = 7, big = 9 }; print c; return 0; }", "Counts{ id: -5, n: 7, big: 9 }\n"},
+		{"inline literal", "type Point = struct { x int; y int; };\nfn main() i32 { print Point.{ x = 3, y = 4 }; return 0; }", "Point{ x: 3, y: 4 }\n"},
+		{"mixed with scalar operands", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p, \" and \", 42; return 0; }", "Point{ x: 1, y: 2 } and 42\n"},
+		{"helper call operand", "type Point = struct { x int; y int; };\nfn make_point(x int) Point { return Point.{ x = x, y = x + 1 }; }\nfn main() i32 { print make_point(10); return 0; }", "Point{ x: 10, y: 11 }\n"},
+		{"two struct operands", "type Point = struct { x int; y int; };\nfn main() i32 { let a = Point.{ x = 1, y = 2 }; let b = Point.{ x = 3, y = 4 }; print a, b; return 0; }", "Point{ x: 1, y: 2 }Point{ x: 3, y: 4 }\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintStructWritesSequentialFprintfs(t *testing.T) {
+	// A struct operand's print is emitted as DIRECT SEQUENTIAL fprintf(stdout,
+	// ...) calls — proposal 17's storage policy (no intermediate dynamic
+	// string, so no dependency on the unfinished Allocator/Context redesign) —
+	// one label call and one value call per field, with the operand's value
+	// materialized once into a per-operand temp and every field read off that
+	// temp. Asserting the literal C text proves the direct sequential shape
+	// and that a struct print never folds into the single combined printf the
+	// scalar-only path uses. The field projections are matched by regex (their
+	// member symbol IDs depend on the fixture's symbol numbering); the labels
+	// and punctuation are asserted verbatim.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tempRE := regexp.MustCompile(`pebble_struct_\d+_t (pebble_print_struct_\d+) = pebble_local_\d+;`)
+	match := tempRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the struct operand's materialized temp:\n%s", out)
+	}
+	temp := match[1]
+	combinedRE := regexp.MustCompile(`(?m)^\s*printf\(`)
+	if combinedRE.MatchString(out) {
+		t.Errorf("emitted C still contains a combined printf call for the struct print:\n%s", out)
+	}
+	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId32, ` + regexp.QuoteMeta(temp) + `\.pebble_field_\d+\);`)
+	if values := valueRE.FindAllString(out, -1); len(values) != 2 {
+		t.Errorf("emitted C has %d struct field value fprintf calls, want 2:\n%s", len(values), out)
+	}
+	for _, want := range []string{
+		`fprintf(stdout, "Point{ x: ");`,
+		`fprintf(stdout, ", y: ");`,
+		`fprintf(stdout, " }""\n");`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitPrintStructFieldNamesAreSourceNames(t *testing.T) {
+	// The printed field labels are the struct's own SOURCE field names in
+	// declared order — the fields are declared `y` before `x` here, so the
+	// label order must be y, x regardless of the construction-site order
+	// (`Point.{ x = 1, y = 2 }` lists x first). The generated C names
+	// (pebble_field_<member>) must never appear in the output.
+	out := emitAndRunCapture(t, "type Point = struct { y int; x int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", false, 0, false)
+	if want := "Point{ y: 2, x: 1 }\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	// A deferred char print routes through the same shared buildPrint, so a
 	// multi-byte char operand's UTF-8 buffer and pebble_rt_char_to_utf8

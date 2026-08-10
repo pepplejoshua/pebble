@@ -2511,14 +2511,25 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // buildPrint builds the C text for one print statement — a tir.Print whose
 // Children are the printed operands in source order, one node per operand
 // (built by the checker's controlPrint case from `print a, b, c;`, each
-// operand independently type-checked). The emission matches v1's print
-// codegen shape exactly: ONE combined printf call per print statement, not
-// one per operand — every operand's format specifier is concatenated into a
-// single format string (ending in the literal `\n`, so every print statement
-// produces exactly one line of output) and every operand's value is a single
-// argument, in the same order. The checker already restricts print operands to
-// exactly bool, char, str, any integer builtin, or any float builtin (C0612 —
-// a nominal enum operand like `print Color.red;` is rejected upstream), so
+// operand independently type-checked). For an all-scalar print the emission
+// matches v1's print codegen shape exactly: ONE combined printf call per
+// print statement, not one per operand — every operand's format specifier is
+// concatenated into a single format string (ending in the literal `\n`, so
+// every print statement produces exactly one line of output) and every
+// operand's value is a single argument, in the same order. A struct operand
+// (composite print slice 1 — a struct whose fields are all scalar types) does
+// not fold into that single call: it is emitted as DIRECT SEQUENTIAL
+// `fprintf(stdout, ...)` calls, one per punctuation/label and one per field
+// value, with the struct's declared type name and declared field names as the
+// labels — proposal 17's storage policy (no intermediate dynamic string, so
+// no dependency on the unfinished Allocator/Context redesign). When ANY
+// operand of a print is a struct, the WHOLE statement is emitted that way, so
+// a mixed `print p, 42;` stays one line of output; an all-scalar print keeps
+// the combined-printf shape unchanged. The checker already restricts print operands to
+// exactly bool, char, str, any integer builtin, any float builtin (C0612 — a
+// nominal enum operand like `print Color.red;` is rejected upstream), or —
+// composite print slice 1 — a struct value whose fields are all such scalars,
+// so
 // this dispatch is exactly the set of values this backend already knows how
 // to build, each through its OWN existing builder, never a new value-building
 // path:
@@ -2575,34 +2586,26 @@ func buildExpressionStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // buildDeferredStatements' deferred-statement case, so the emission logic
 // lives in exactly one place.
 func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+	operands, hasStruct, err := unwrapPrintOperands(unit, snapshot, statement, context)
+	if err != nil {
+		return "", "", err
+	}
+	// A struct operand cannot fold into the single combined printf the way a
+	// scalar operand does — its fields print as direct sequential fprintf
+	// calls with field-name labels — so when any operand is a struct, the whole
+	// print statement is emitted that way (see buildSequentialPrint). An
+	// all-scalar print keeps the pre-existing single-combined-printf shape,
+	// exactly as the tests that assert that shape expect.
+	if hasStruct {
+		return buildSequentialPrint(unit, snapshot, fileSet, statement, operands, scope, indent, context, width)
+	}
 	var formatParts []string
 	var args []string
 	var preParts []string
-	for _, childID := range statement.Children {
-		child, ok := unit.Node(childID)
+	for _, operandID := range operands {
+		child, ok := unit.Node(operandID)
 		if !ok {
-			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, childID)
-		}
-		// A parenthesized operand — `print ("hi")` — arrives wrapped in
-		// tir.SourceAlias nodes (one per grouping level, confirmed against a
-		// real fixture dump), which record grouped-expression parens and
-		// nothing else, so the operand is unwrapped to its innermost node
-		// before its type is dispatched on. Unwrapping here keeps the
-		// per-type value builders untouched (buildExpr/buildBoolExpr/
-		// buildFloatExpr unwrap a SourceAlias themselves, but buildCharOperand
-		// and buildStrOperand have no SourceAlias case); the unwrapped node
-		// carries the same Type the SourceAlias did, so the dispatch below is
-		// exactly what the checker validated.
-		operandID := childID
-		for child.Kind == tir.SourceAlias {
-			if len(child.Children) != 1 {
-				return "", "", fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
-			}
-			operandID = child.Children[0]
-			child, ok = unit.Node(operandID)
-			if !ok {
-				return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
-			}
+			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
 		}
 		if child.Kind == tir.InterpolatedString {
 			for _, part := range child.Parts {
@@ -2631,135 +2634,14 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 			}
 			continue
 		}
-		kind, ok := resolvedBuiltin(snapshot, child.Type)
-		if !ok {
-			return "", "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
-		}
-		// A bare CheckedIndex whose base is a SLICE-typed value (not a str) —
-		// `print view()[0];`, indexing a call's slice result directly, the
-		// confirmed real-world gap this slice closes. The indexed element read
-		// needs the base materialized into a temp local (see
-		// buildSliceIndexValue), whose temp-declaration statement this print
-		// position — a statement sequence — hosts as a leading pre-statement,
-		// exactly as buildReturnStatement threads a pre-return temp. A
-		// str-index base (char result) stays on buildCharOperand's own
-		// CheckedIndex case below.
-		isSliceIndex := false
-		if child.Kind == tir.CheckedIndex {
-			strBase, err := checkedIndexBaseIsStr(unit, snapshot, child)
-			if err != nil {
-				return "", "", err
-			}
-			isSliceIndex = !strBase
-		}
-		var arg string
-		var err error
-		var sliceIndexPre string
-		var charPreParts []string
-		switch {
-		case cType(kind) != "":
-			// An integer operand of any builtin width, not just the entry's
-			// own: its value is built by buildExpr at its own resolved kind
-			// (re-checking every node in the expression carries that width,
-			// exactly as a scalar local declaration does), and its specifier
-			// comes from the <inttypes.h> PRI* macros whose expansion matches
-			// the operand's fixed-width C type. The macro name is emitted
-			// OUTSIDE the string quotes (`"%"PRId32`), so the preprocessor
-			// expands it to the specifier text and the adjacent literals
-			// concatenate into the format string — never spelled
-			// `"%PRId32"`, which would put a literal invalid `%P` specifier
-			// in the format. A slice-index operand's read (element C type)
-			// carries the same width as its element, so the same specifier
-			// applies.
-			formatParts = append(formatParts, `"%"`+printfSpecifier(kind))
-			if isSliceIndex {
-				sliceIndexPre, arg, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
-			} else {
-				arg, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
-			}
-		case kind == types.Bool:
-			// A bool operand prints as the words true/false: build the bool
-			// expression under the bool grammar, then wrap it in the C ternary
-			// that selects the const char * literal, so the %s specifier's
-			// argument is already the pointer the format string wants — v1's
-			// own approach for bool in print. A slice-index operand's read is
-			// a C bool, so the same ternary wraps it.
-			formatParts = append(formatParts, `"%s"`)
-			if isSliceIndex {
-				var read string
-				sliceIndexPre, read, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, true)
-				if err == nil {
-					arg = "(" + read + " ? \"true\" : \"false\")"
-				}
-			} else {
-				arg, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
-				if err == nil {
-					arg = "(" + arg + " ? \"true\" : \"false\")"
-				}
-			}
-		case kind == types.Char:
-			// A char operand prints as the UTF-8 encoding of the single
-			// character its int32_t scalar value encodes. The scalar is built
-			// under the char grammar (buildCharOperand, or the slice-index
-			// read for a slice-element operand — both yield the same int32_t
-			// char value), then the runtime helper pebble_rt_char_to_utf8
-			// encodes it — 1-4 UTF-8 bytes plus the trailing NUL — into a
-			// fresh per-operand uint8_t[5] buffer declared in this print's
-			// pre-statements, and the combined printf's %s consumes that
-			// buffer. The scalar is never passed to printf directly: a %c
-			// writes only a single byte, so any char beyond U+007F would print
-			// corrupt bytes instead of its full UTF-8 sequence (the exact bug
-			// this encoding closes); routing every char operand — ASCII
-			// included — through the helper keeps the emitted C uniform. The
-			// buffer name derives from the operand's own unwrapped node ID —
-			// the stable identity of this operand, unique across the unit — so
-			// a print with several char operands gets one distinct buffer each
-			// with no collision, the same pebble_slice_index_<nodeID>
-			// convention buildSliceIndexValue uses for its temp.
-			formatParts = append(formatParts, `"%s"`)
-			var scalar string
-			if isSliceIndex {
-				sliceIndexPre, scalar, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
-			} else {
-				scalar, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
-			}
-			if err == nil {
-				bufferName := fmt.Sprintf("pebble_char_utf8_%d", operandID)
-				charPreParts = append(charPreParts,
-					fmt.Sprintf("uint8_t %s[5];", bufferName),
-					fmt.Sprintf("pebble_rt_char_to_utf8(%s, %s);", scalar, bufferName))
-				arg = "(const char *)" + bufferName
-			}
-		case kind == types.Str:
-			// A str operand prints its bytes: the value is built under the
-			// str grammar, and the %s argument is the value's .data field cast
-			// to const char * (the reachable str values this backend builds
-			// all originate from NUL-terminated C string literals, so %s
-			// reads exactly the intended bytes).
-			formatParts = append(formatParts, `"%s"`)
-			arg, err = buildStrOperand(unit, snapshot, fileSet, operandID, scope, width)
-			if err == nil {
-				arg = "(const char *)" + arg + ".data"
-			}
-		case kind == types.F32 || kind == types.F64:
-			// A float operand prints with %f; f32/f64 promote to double in a
-			// variadic call either way, so the one specifier covers both,
-			// matching v1. The value is built under the float grammar at its
-			// own float kind.
-			formatParts = append(formatParts, `"%f"`)
-			arg, err = buildFloatExpr(unit, snapshot, fileSet, operandID, scope, kind)
-		default:
-			return "", "", fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
-		}
+		format, arg, pres, err := buildScalarPrintOperand(unit, snapshot, fileSet, operandID, child, scope, width, context)
 		if err != nil {
 			return "", "", err
 		}
-		if sliceIndexPre != "" {
-			preParts = append(preParts, indent+sliceIndexPre)
-		}
-		for _, pre := range charPreParts {
+		for _, pre := range pres {
 			preParts = append(preParts, indent+pre)
 		}
+		formatParts = append(formatParts, format)
 		args = append(args, arg)
 	}
 	line := indent + "printf(" + strings.Join(formatParts, "") + `"\n"`
@@ -2767,4 +2649,431 @@ func buildPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSe
 		line += ", " + strings.Join(args, ", ")
 	}
 	return strings.Join(preParts, "\n"), line + ");", nil
+}
+
+// unwrapPrintOperands returns each print operand's innermost node ID after
+// peeling off the SourceAlias grouping wrappers a parenthesized operand —
+// `print ("hi")` — arrives in (one SourceAlias per grouping level, confirmed
+// against a real fixture dump; a SourceAlias records grouped-expression parens
+// and nothing else). Unwrapping here keeps the per-type value builders
+// untouched (buildExpr/buildBoolExpr/buildFloatExpr unwrap a SourceAlias
+// themselves, but buildCharOperand and buildStrOperand have no SourceAlias
+// case); the unwrapped node carries the same Type the SourceAlias did, so the
+// dispatch that follows is exactly what the checker validated. The bool
+// reports whether any operand is a struct value (composite print slice 1),
+// which switches the whole print statement to the direct-sequential-fprintf
+// emission (buildSequentialPrint).
+func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir.Node, context string) ([]tir.NodeID, bool, error) {
+	operands := make([]tir.NodeID, 0, len(statement.Children))
+	hasStruct := false
+	for _, childID := range statement.Children {
+		child, ok := unit.Node(childID)
+		if !ok {
+			return nil, false, fmt.Errorf("%s print statement references invalid operand node %d", context, childID)
+		}
+		operandID := childID
+		for child.Kind == tir.SourceAlias {
+			if len(child.Children) != 1 {
+				return nil, false, fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
+			}
+			operandID = child.Children[0]
+			child, ok = unit.Node(operandID)
+			if !ok {
+				return nil, false, fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
+			}
+		}
+		operands = append(operands, operandID)
+		if isStruct(snapshot, child.Type) && !isEnumType(unit, snapshot, child.Type) {
+			hasStruct = true
+		}
+	}
+	return operands, hasStruct, nil
+}
+
+// buildScalarPrintOperand builds the printf pieces for one scalar print
+// operand — the format-specifier piece, the printf/fprintf argument, and any
+// pre-statements (a char operand's UTF-8 buffer) — by building the value's C
+// expression under the grammar its own resolved type selects, exactly as the
+// all-scalar combined-printf path does, and then formatting it. A slice-index
+// operand (`print view()[0];`) routes its element read through
+// buildSliceIndexValue exactly as before, with the base materialization temp
+// returned as a leading pre-statement. The pieces are type-agnostic enough for
+// both emission shapes to consume: the combined-printf path concatenates
+// formats/args, the direct-sequential-fprintf path wraps each in its own
+// fprintf call. Scalar formatting is NEVER reimplemented here — it lives in
+// buildScalarPrintParts, the single formatting site a struct field's scalar
+// value shares with a bare scalar operand.
+func buildScalarPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, context string) (string, string, []string, error) {
+	kind, ok := resolvedBuiltin(snapshot, child.Type)
+	if !ok {
+		return "", "", nil, fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+	}
+	// A bare CheckedIndex whose base is a SLICE-typed value (not a str) —
+	// `print view()[0];`, indexing a call's slice result directly. The indexed
+	// element read needs the base materialized into a temp local (see
+	// buildSliceIndexValue), whose temp-declaration statement this print
+	// position — a statement sequence — hosts as a leading pre-statement,
+	// exactly as buildReturnStatement threads a pre-return temp. A str-index
+	// base (char result) stays on buildCharOperand's own CheckedIndex case
+	// below.
+	isSliceIndex := false
+	if child.Kind == tir.CheckedIndex {
+		strBase, err := checkedIndexBaseIsStr(unit, snapshot, child)
+		if err != nil {
+			return "", "", nil, err
+		}
+		isSliceIndex = !strBase
+	}
+	var expr string
+	var sliceIndexPre string
+	var err error
+	switch {
+	case cType(kind) != "":
+		// An integer operand of any builtin width, not just the entry's own:
+		// its value is built by buildExpr at its own resolved kind (re-checking
+		// every node in the expression carries that width, exactly as a scalar
+		// local declaration does). A slice-index operand's read (element C
+		// type) carries the same width as its element.
+		if isSliceIndex {
+			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+		} else {
+			expr, err = buildExpr(unit, snapshot, fileSet, operandID, scope, kind, width)
+		}
+	case kind == types.Bool:
+		if isSliceIndex {
+			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, true)
+		} else {
+			expr, err = buildBoolExpr(unit, snapshot, fileSet, operandID, scope, width)
+		}
+	case kind == types.Char:
+		if isSliceIndex {
+			sliceIndexPre, expr, err = buildSliceIndexValue(unit, snapshot, fileSet, operandID, child, scope, width, false)
+		} else {
+			expr, err = buildCharOperand(unit, snapshot, fileSet, operandID, scope, width)
+		}
+	case kind == types.Str:
+		expr, err = buildStrOperand(unit, snapshot, fileSet, operandID, scope, width)
+	case kind == types.F32 || kind == types.F64:
+		expr, err = buildFloatExpr(unit, snapshot, fileSet, operandID, scope, kind)
+	default:
+		return "", "", nil, fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	format, arg, parts, err := buildScalarPrintParts(kind, expr, operandID, -1)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if sliceIndexPre != "" {
+		return format, arg, append([]string{sliceIndexPre}, parts...), nil
+	}
+	return format, arg, parts, nil
+}
+
+// buildScalarPrintParts formats ONE scalar value whose C expression is already
+// built (a bare print operand, or one scalar struct field read off a printed
+// struct's temp) into the printf pieces: the format-specifier piece (with the
+// exact-width <inttypes.h> PRI* macro spelled OUTSIDE the string quotes as
+// `"%"PRId32`, so the preprocessor expands the macro and the adjacent literals
+// concatenate — never `"%PRId32"`, a literal invalid `%P` specifier), the
+// printf argument, and any pre-statements the value needs (a char value's
+// pebble_rt_char_to_utf8 encoding into a fresh per-value uint8_t[5] buffer).
+// This is the SINGLE scalar-formatting site: the combined-printf path, the
+// direct-sequential-fprintf path, and a struct's scalar fields all route
+// through it, so the exact formatting every existing scalar print already
+// uses — integer PRI* macros, "true"/"false", the UTF-8 char conversion, the
+// str .data projection, %f floats — is never duplicated. bufferIndex
+// disambiguates a char field's buffer name from a bare operand's: a bare
+// operand (bufferIndex -1) names its buffer from the operand's node ID alone,
+// a struct field appends its field index so two char fields of one struct get
+// distinct buffers.
+func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.NodeID, bufferIndex int) (string, string, []string, error) {
+	switch {
+	case cType(kind) != "":
+		// The format specifier comes from the <inttypes.h> PRI* macros whose
+		// expansion matches the value's fixed-width C type — matching the
+		// mandated -Wall -Wextra -Werror build's -Wformat-clean requirement.
+		return `"%"` + printfSpecifier(kind), expr, nil, nil
+	case kind == types.Bool:
+		// A bool value prints as the words true/false: the value expression
+		// wrapped in the C ternary that selects the const char * literal, so
+		// the %s specifier's argument is already the pointer the format string
+		// wants — v1's own approach for bool in print.
+		return `"%s"`, "(" + expr + ` ? "true" : "false")`, nil, nil
+	case kind == types.Char:
+		// A char value prints as the UTF-8 encoding of the single character
+		// its int32_t scalar value encodes. The scalar is never passed to
+		// printf directly: a %c writes only a single byte, so any char beyond
+		// U+007F would print corrupt bytes instead of its full UTF-8 sequence;
+		// the runtime helper pebble_rt_char_to_utf8 encodes it — 1-4 UTF-8
+		// bytes plus the trailing NUL — into a fresh per-value uint8_t[5]
+		// buffer, and the %s specifier consumes that buffer. Routing every
+		// char value — ASCII included — through the helper keeps the emitted C
+		// uniform.
+		bufferName := fmt.Sprintf("pebble_char_utf8_%d", operandID)
+		if bufferIndex >= 0 {
+			bufferName = fmt.Sprintf("pebble_char_utf8_%d_%d", operandID, bufferIndex)
+		}
+		return `"%s"`, "(const char *)" + bufferName, []string{
+			fmt.Sprintf("uint8_t %s[5];", bufferName),
+			fmt.Sprintf("pebble_rt_char_to_utf8(%s, %s);", expr, bufferName),
+		}, nil
+	case kind == types.Str:
+		// A str value prints its bytes: the %s argument is the value's .data
+		// field cast to const char * (the reachable str values this backend
+		// builds all originate from NUL-terminated C string literals, so %s
+		// reads exactly the intended bytes).
+		return `"%s"`, "(const char *)" + expr + ".data", nil, nil
+	case kind == types.F32 || kind == types.F64:
+		// A float value prints with %f; f32/f64 promote to double in a
+		// variadic call either way, so the one specifier covers both, matching
+		// v1.
+		return `"%f"`, expr, nil, nil
+	}
+	if name, ok := builtinName(kind); ok {
+		return "", "", nil, fmt.Errorf("print value of builtin kind %s is not a printable scalar", name)
+	}
+	return "", "", nil, fmt.Errorf("print value of builtin kind %d is not a printable scalar", kind)
+}
+
+// printFprintfCall is one emitted `fprintf(stdout, ...)` call: a static
+// format-string piece and the argument list that feeds it. A label call has no
+// argument (`fprintf(stdout, "Point{ x: ");`); a value call carries the value
+// expression built for the field or scalar operand.
+type printFprintfCall struct {
+	format string
+	args   []string
+}
+
+// text renders the call as one indented C statement, `fprintf(stdout,
+// <format>, <args>);` (or `fprintf(stdout, <format>);` for a label call with
+// no argument).
+func (c printFprintfCall) text(indent string) string {
+	if len(c.args) == 0 {
+		return indent + "fprintf(stdout, " + c.format + ");"
+	}
+	return indent + "fprintf(stdout, " + c.format + ", " + strings.Join(c.args, ", ") + ");"
+}
+
+// buildSequentialPrint emits a print statement that contains at least one
+// struct operand as DIRECT SEQUENTIAL fprintf(stdout, ...) calls (proposal
+// 17's storage policy for composite output: no intermediate dynamic string,
+// so no dependency on the unfinished Allocator/Context redesign). Each operand
+// contributes its calls in source order — a scalar operand exactly one call,
+// a struct operand one label/value call per field plus the surrounding
+// punctuation — and the very last call's format string carries the print's one
+// trailing `\n`, so the whole statement still produces exactly one line of
+// output. Every scalar value and every scalar struct field is formatted by the
+// SAME buildScalarPrintParts the all-scalar combined-printf path uses; nothing
+// is reimplemented. A struct operand's value is materialized once into a
+// per-operand temp local (pebble_print_struct_<nodeID>) so a struct-returning
+// call operand is evaluated exactly once, and every field is then read off the
+// temp as <temp>.pebble_field_<member>.
+func buildSequentialPrint(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, operands []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
+	var preParts []string
+	var calls []printFprintfCall
+	for _, operandID := range operands {
+		child, ok := unit.Node(operandID)
+		if !ok {
+			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
+		}
+		if child.Kind == tir.InterpolatedString {
+			for _, part := range child.Parts {
+				switch part.Kind {
+				case tir.InterpolationTextPart:
+					calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{`(const char *)"` + escapeCString(part.Text) + `"`}})
+				case tir.InterpolationValuePart:
+					valueNode, ok := unit.Node(part.Value)
+					if !ok {
+						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
+					}
+					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
+					if !ok || valueKind != types.Bool {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					}
+					boolExpr, err := buildBoolExpr(unit, snapshot, fileSet, part.Value, scope, width)
+					if err != nil {
+						return "", "", err
+					}
+					calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{"(" + boolExpr + ` ? "true" : "false")`}})
+				default:
+					return "", "", fmt.Errorf("%s interpolated-string print operand has an unknown part kind %d", context, part.Kind)
+				}
+			}
+			continue
+		}
+		if _, ok := resolvedBuiltin(snapshot, child.Type); ok {
+			format, arg, pres, err := buildScalarPrintOperand(unit, snapshot, fileSet, operandID, child, scope, width, context)
+			if err != nil {
+				return "", "", err
+			}
+			for _, pre := range pres {
+				preParts = append(preParts, indent+pre)
+			}
+			calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
+			continue
+		}
+		structCalls, pres, err := buildStructPrintOperand(unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		if err != nil {
+			return "", "", err
+		}
+		preParts = append(preParts, pres...)
+		calls = append(calls, structCalls...)
+	}
+	// Every print statement produces exactly one line of output: the trailing
+	// newline rides on the last fprintf call's format string as an adjacent
+	// `"\n"` literal.
+	if len(calls) != 0 {
+		calls[len(calls)-1].format += `"\n"`
+	}
+	lines := make([]string, 0, len(calls))
+	for _, call := range calls {
+		lines = append(lines, call.text(indent))
+	}
+	return strings.Join(preParts, "\n"), strings.Join(lines, "\n"), nil
+}
+
+// buildStructPrintOperand emits one struct operand of a print statement as its
+// sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then per field a label call and a value
+// call — `<declared type name>{ <field>: <value>, <field>: <value> }` in the
+// struct's DECLARED field order, using the struct's own SOURCE field names
+// (resolved from the unit's FieldDeclaration nodes, never the generated C
+// pebble_field_<member> names) — with the value of every scalar field
+// formatted by the same buildScalarPrintParts a bare scalar print operand
+// uses. The label is static C text, so a zero-field struct emits the single
+// call `fprintf(stdout, "<name>{ }")`. The struct's declared type name and
+// field names are recovered from the unit + file set rather than the symbol
+// table so the emission works whether or not Emit was given a symbol result.
+func buildStructPrintOperand(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	info, err := resolveStructInfo(unit, snapshot, child.Type, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s print operand is a struct of type %s: %v", context, structTypeName(child.Type), err)
+	}
+	typeName, err := structSourceName(unit, fileSet, info.decl)
+	if err != nil {
+		return nil, nil, err
+	}
+	valueExpr, err := buildStructPrintValueExpr(unit, snapshot, fileSet, operandID, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Materialize the operand once into a per-operand temp so a
+	// struct-returning call operand is evaluated exactly once, then read every
+	// field off the temp. The temp name derives from the operand's own
+	// unwrapped node ID — the stable identity of this operand, unique across
+	// the unit — so a print with several struct operands gets distinct temps.
+	tempName := fmt.Sprintf("pebble_print_struct_%d", operandID)
+	var pres []string
+	pres = append(pres, indent+fmt.Sprintf("%s %s = %s;", structTypeName(child.Type), tempName, valueExpr))
+	var calls []printFprintfCall
+	for i, field := range info.fields {
+		fieldName, err := fieldSourceName(unit, fileSet, field.member)
+		if err != nil {
+			return nil, nil, err
+		}
+		label := ", " + fieldName + ": "
+		if i == 0 {
+			label = typeName + "{ " + fieldName + ": "
+		}
+		calls = append(calls, printFprintfCall{format: `"` + label + `"`})
+		fieldKind, ok := resolvedBuiltin(snapshot, field.typ)
+		if !ok {
+			return nil, nil, fmt.Errorf("%s print operand is a struct of type %s whose field %s has type %s, which is not a printable scalar at this slice", context, typeName, fieldName, describeType(snapshot, field.typ))
+		}
+		format, arg, fieldPres, err := buildScalarPrintParts(fieldKind, tempName+fmt.Sprintf(".pebble_field_%d", field.member), operandID, i)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, pre := range fieldPres {
+			pres = append(pres, indent+pre)
+		}
+		calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
+	}
+	if len(info.fields) == 0 {
+		calls = append(calls, printFprintfCall{format: `"` + typeName + `{ }"`})
+	} else {
+		calls = append(calls, printFprintfCall{format: `" }"`})
+	}
+	return calls, pres, nil
+}
+
+// buildStructPrintValueExpr builds the C expression naming one struct-typed
+// print operand's value, of the four shapes real source produces (all built by
+// the same machinery a struct-typed call argument uses): a reference to a
+// struct-typed local/global (a SymbolValue, emitted as its pebble_local_<id> /
+// pebble_global_<id> C name), a whole-struct read (a Load of a struct-typed
+// place, emitted as the place's lvalue), a freshly-constructed struct literal
+// (a RecordConstruct, emitted as its C99 compound literal), or a call to a
+// struct-returning helper (a DirectCall, emitted as the call expression). Any
+// other shape is a clean rejection, never a guessed lowering.
+func buildStructPrintValueExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	switch child.Kind {
+	case tir.SymbolValue:
+		if name, ok := localOrGlobalName(child.Symbol, scope); ok {
+			return name, nil
+		}
+		return "", fmt.Errorf("%s print operand references symbol %d, which is not a struct-typed local or global in scope", context, child.Symbol)
+	case tir.Load:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(unit, snapshot, fileSet, child.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isStruct(snapshot, placeType) || isEnumType(unit, snapshot, placeType) {
+			return "", fmt.Errorf("%s print operand is a Load of a place of type %s, want a struct-typed place", context, describeType(snapshot, placeType))
+		}
+		return lvalue, nil
+	case tir.RecordConstruct:
+		return buildStructValueExpr(unit, snapshot, fileSet, child, scope, context, width)
+	case tir.DirectCall:
+		return buildDirectCall(unit, snapshot, fileSet, child, scope, width)
+	}
+	return "", fmt.Errorf("%s print operand is a %s of struct type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
+}
+
+// sourceNameAt slices the identifier text covering one node's span out of its
+// source file. It is how the print path recovers the DECLARED names (the
+// struct type name and its field names) that must appear in the output, and it
+// is deliberately independent of the symbol table: Emit may be given a nil
+// symbol result (the common test-harness shape), so the names come from the
+// unit's own declaration-node spans instead.
+func sourceNameAt(fileSet *source.FileSet, span source.Span) (string, error) {
+	if fileSet == nil {
+		return "", fmt.Errorf("no source file set is available to recover a declared name from its span")
+	}
+	file, ok := fileSet.File(span.Source)
+	if !ok {
+		return "", fmt.Errorf("declared-name span names a source file that is not in the file set")
+	}
+	name := string(file.Slice(span))
+	if name == "" {
+		return "", fmt.Errorf("declared-name span covers no source text")
+	}
+	return name, nil
+}
+
+// structSourceName resolves one struct type's declared source name (Point) by
+// slicing the type's own TypeDeclaration node span out of its source file.
+func structSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("struct declaration symbol %d has no TypeDeclaration node in the unit", decl)
+}
+
+// fieldSourceName resolves one struct field's declared source name (x) by
+// slicing the field's own FieldDeclaration node span out of its source file.
+func fieldSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FieldDeclaration && node.Symbol == member {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("struct field symbol %d has no FieldDeclaration node in the unit", member)
 }

@@ -1,0 +1,12 @@
+type Inner = struct {
+    v int;
+};
+
+type Outer = struct {
+    inner Inner;
+};
+
+fn f() void {
+    let o = Outer.{ inner = Inner.{ v = 1 } };
+    print o;
+}
