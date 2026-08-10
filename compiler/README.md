@@ -52,8 +52,18 @@ implementation so syntax migrations and parser regressions fail ordinary tests.
 Run the compiler tests from this directory:
 
 ```sh
-go test ./...
+go test ./... -parallel 16
 ```
+
+The backend package's tests are dominated by end-to-end cases that shell
+out to `cc` and run the resulting binary, so most of the wall time is
+spent waiting on subprocesses rather than burning CPU — `-parallel 16`
+(double the default 8-core `GOMAXPROCS`) cuts the backend suite from
+~227s to ~169s on an 8-core machine. Going higher (e.g. 24) compiles
+faster in aggregate but causes enough CPU contention that the
+bounded-loop tests' 5s execution timeout (`loopExecutionTimeout` in
+`internal/backend/emit_test.go`) starts false-failing — 16 is the
+highest value confirmed stable.
 
 ## Implementation rules
 
