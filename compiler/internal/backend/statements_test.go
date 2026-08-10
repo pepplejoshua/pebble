@@ -1300,6 +1300,86 @@ func TestEmitSwitchCharSubjectLiteralCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { switch 'a' { case 'a': return 1; case 'b': return 2; else: return 0; } }", false, 1, false)
 }
 
+func TestEmitSwitchU8SubjectCompilesAndRuns(t *testing.T) {
+	// The exact reproduction from proposal 13's active defect: a u8-typed
+	// switch subject with an integer case label and an else/default arm. The
+	// checker accepts a u8 switch and proves exhaustiveness correctly, but the
+	// backend previously rejected it at emission because the switch-subject
+	// type gate only accepted the entry's width. Subject x = 5 hits the case
+	// and returns 1.
+	emitAndRun(t, "fn main() int { let x u8 = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchU8SubjectElseCompilesAndRuns(t *testing.T) {
+	// Same u8 switch, subject x = 9 (not among the case labels) falls to the
+	// else/default arm and returns 0, confirming the else arm is reachable for
+	// a non-entry-width integer subject.
+	emitAndRun(t, "fn main() int { let x u8 = 9; switch x { case 5: return 1; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchI16SubjectCompilesAndRuns(t *testing.T) {
+	// A second non-entry-width integer subject: an i16-typed local. Signed, so
+	// its case labels are emitted without the unsigned suffix; subject x = 5
+	// hits the case and returns 1.
+	emitAndRun(t, "fn main() int { let x i16 = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchU32SubjectCompilesAndRuns(t *testing.T) {
+	// A wider unsigned non-entry-width subject: u32. Subject x = 5 hits the
+	// case and returns 1.
+	emitAndRun(t, "fn main() int { let x u32 = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchU8ExhaustiveNoElseCompilesAndRuns(t *testing.T) {
+	// An exhaustive u8 switch covering all 256 values (0..255) with no else
+	// arm: the checker proves exhaustiveness for a u8 subject (the 4817dae
+	// fix), and the backend must now accept the u8 subject and emit every case
+	// label at the subject's own uint8_t width. Subject x = 200 hits case 200
+	// and returns 200, proving the case matching is correct across the whole
+	// domain. The trailing `return 999;` is an unreachable fallback the checker
+	// flags as C0618 (tolerated by buildFixture, which only requires the check
+	// to succeed): C cannot prove a uint8_t switch is exhaustive the way it can
+	// a C enum's (clang reasons about enum domains), so without it the emitted
+	// C would fail -Werror=return-type — a separate, pre-existing backend
+	// limitation for exhaustive INTEGER switches (a no-else enum switch emits
+	// identically and compiles), out of scope for this item.
+	var b strings.Builder
+	b.WriteString("fn main() int {\n    let x u8 = 200;\n    switch x {\n")
+	for i := 0; i <= 255; i++ {
+		fmt.Fprintf(&b, "        case %d: return %d;\n", i, i)
+	}
+	b.WriteString("    }\n    return 999;\n}\n")
+	emitAndRun(t, b.String(), false, 200, false)
+}
+
+func TestEmitSwitchU8SubjectWritesC(t *testing.T) {
+	// Confirm the emitted C for a u8 switch: the subject is the u8 local
+	// declared at its own uint8_t width, and the integer case label is emitted
+	// at the subject's OWN width — `case 5u:`, the same unsigned suffix
+	// integerLiteralText gives a u8 value everywhere — so the label's C type
+	// matches the uint8_t subject rather than a silently narrower/signed
+	// constant. The else arm is the default label.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x u8 = 5; switch x { case 5: return 1; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"uint8_t pebble_local_27 = 5u;",
+		"switch (pebble_local_27)",
+		"case 5u:",
+		"default:",
+		"return 1;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
 func TestEmitSwitchCharSubjectWritesC(t *testing.T) {
 	// Confirm the emitted C for a char switch: the subject is the char
 	// parameter's int32_t local, and each char case label is emitted as

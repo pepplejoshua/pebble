@@ -559,9 +559,11 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		return "", fmt.Errorf("switch statement has %d child(ren), want at least 2 (the subject and one case)", len(switchNode.Children))
 	}
 	// Build the subject expression. The subject's resolved type decides the
-	// grammar: an integer subject (the entry's width) is built by buildExpr,
-	// a bool subject by buildBoolExpr, a char subject by buildCharOperand, a
-	// tagged-union subject by
+	// grammar: an integer subject of any fixed-width integer builtin (the
+	// entry's width, the abstract int, or a narrower/wider fixed-width
+	// integer like u8 or i16) is built by buildExpr at the subject's own
+	// width, a bool subject by buildBoolExpr, a char subject by
+	// buildCharOperand, a tagged-union subject by
 	// buildUnionConstruction (reading its .tag field), a plain enum subject
 	// by buildEnumValue.
 	// The subject type is on the subject node itself (Children[0]).
@@ -584,6 +586,15 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	}
 	var subjectExpr string
 	var err error
+	// subjectIntWidth is the subject's own resolved fixed-width integer
+	// builtin (i8/i16/i32/i64 or u8/u16/u32/u64 — the entry's width being
+	// just one of them), or zero when the subject is not a concrete
+	// fixed-width integer (an abstract-int, bool, char, str, or enum/tagged-
+	// union subject). buildCaseLabel spells integer case labels at THIS
+	// width rather than the ambient entry width, so the C switch compares the
+	// subject's own C type against matching-width constants (a u8 subject
+	// gets `case 5u:`, never a silent truncation or a sign mismatch).
+	var subjectIntWidth types.BuiltinKind
 	if enumSubject != 0 {
 		if _, isUnion := unions[enumSubject]; isUnion {
 			// A tagged-union-typed subject: its value is the union's tagged
@@ -635,8 +646,25 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 			// zero-payload VariantConstruct) — buildEnumValue handles all three.
 			subjectExpr, err = buildEnumValue(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 		}
-	} else if isWidth(snapshot, width, subjectNode.Type) {
-		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width, width)
+	} else if integerSubjectWidth, integerSubject := resolvedBuiltin(snapshot, subjectNode.Type); integerSubject && cType(integerSubjectWidth) != "" && !isUint(snapshot, subjectNode.Type) && !isAbstractInt(snapshot, subjectNode.Type) {
+		// Any concrete fixed-width integer subject, not just the entry's own
+		// width: a u8, i16, u32, ... subject is built by buildExpr at the
+		// subject's OWN resolved width (buildExpr's width gate admits a node
+		// of any compatible fixed-width integer type at that width), so the C
+		// switch compares the subject's own C type — a uint8_t local, for
+		// example — against case labels that buildCaseLabel emits at the same
+		// width. This is the same per-operand width resolution
+		// buildComparisonOperand performs for comparison operands, and the
+		// generic resolvedBuiltin/cType widening already applied to
+		// struct-field reads (places.go), optional payloads, slice elements,
+		// and the struct-field typedef itself. The ambient entry width is
+		// threaded through as buildExpr's entryWidth parameter so any
+		// width-requiring child (a checked runtime call) still knows the true
+		// entry width. The abstract `int` builtin is deliberately excluded:
+		// an unanchored-int subject is either an integer literal or a
+		// SymbolValue, both handled directly by the two branches below.
+		subjectIntWidth = integerSubjectWidth
+		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, integerSubjectWidth, width)
 	} else if isBool(snapshot, subjectNode.Type) {
 		subjectExpr, err = buildBoolExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isChar(snapshot, subjectNode.Type) {
@@ -731,7 +759,7 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// Emit stacked case labels for each SwitchCase in the group.
 		for _, caseID := range g.caseIDs {
 			caseNode, _ := unit.Node(caseID)
-			label, err := buildCaseLabel(snapshot, caseNode, width)
+			label, err := buildCaseLabel(snapshot, caseNode, subjectIntWidth)
 			if err != nil {
 				return "", err
 			}
@@ -939,10 +967,17 @@ func buildStrCaseLiteral(snapshot *types.Snapshot, caseNode tir.Node) (string, e
 // `case pebble_variant_<caseValue>:`, the variant's C enum constant, whose
 // value (the variant's ordinal in the enum's declared order) matches the
 // subject's own typedef by construction. An integer literal is emitted as its
-// decimal text; a bool literal is emitted as `0` (false) or `1` (true), since
-// C treats bool as an integer type and switch cases require integral constant
-// expressions; a char literal is emitted as `case (int32_t)<scalar>:`, the
-// same int32_t spelling buildCharOperand gives a char value everywhere, so
+// decimal text at the SUBJECT's own resolved integer width — the width
+// parameter is the subject's fixed-width integer builtin (the entry's width
+// for an entry-width subject, or the subject's own u8/i16/... width for a
+// non-entry-width one), so an unsigned subject's labels get the same `u`
+// suffix integerLiteralText gives every other unsigned value in the emitted
+// C, keeping the case constant's C type aligned with the subject's C type
+// (uint8_t gets `case 255u:`, never a silently unsigned/negative
+// interpretation). A bool literal is emitted as `0` (false) or `1` (true),
+// since C treats bool as an integer type and switch cases require integral
+// constant expressions; a char literal is emitted as `case (int32_t)<scalar>:`,
+// the same int32_t spelling buildCharOperand gives a char value everywhere, so
 // the label matches a char-typed subject's integral C representation. Any
 // other case shape is a clean rejection.
 func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
@@ -969,8 +1004,7 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 		if !isNonNegativeDecimal(text) {
 			return "", fmt.Errorf("switch case contains an integer literal with malformed text %q", text)
 		}
-		litWidth, _ := resolvedBuiltin(snapshot, caseNode.Type)
-		return "case " + integerLiteralText(text, litWidth) + ":", nil
+		return "case " + integerLiteralText(text, width) + ":", nil
 	case tir.LiteralBool:
 		if caseNode.Literal.Bool {
 			return "case 1:", nil
