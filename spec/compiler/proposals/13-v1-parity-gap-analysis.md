@@ -44,5 +44,55 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: fixed-width integers other than the entry width are not accepted as a helper function parameter type.**
+
+Batch item 3 of the current batch of 5.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn take(x u8) int {
+    return x as int;
+}
+
+fn main() int {
+    let x u8 = 5;
+    return take(x);
+}
+```
+
+Current failure:
+
+```
+pebc: emission failed: called function symbol 24 parameter 0 (symbol 25)
+has type u8, want int, bool, char, str, f32, f64, a tuple/struct type, a
+slice type, a pointer type, an optional type, a function type, or an
+enum/union type (a parameter may be the entry's integer width, uint,
+u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a
+pointer type, an optional type, a function type, or an enum/union type)
+```
+
+**Known cause:** `helperSignature`'s parameter-type acceptance gate
+allows the entry width, `uint`, `u64`, and various non-integer types, but
+not the narrower fixed-width integers (`u8`, `i8`, `u16`, `i16`, and,
+unless already covered, `i32`/`u32` when not the entry width). Same class
+of gap as the switch-subject widening just fixed in `2b3d684` — the
+narrower widths were simply never added to this particular acceptance
+gate.
+
+**Scope for this item:**
+1. Widen `helperSignature`'s parameter-type gate (and the matching return
+   path / call-argument path if the same gate is shared) to accept any
+   fixed-width integer builtin, mirroring the pattern just used for the
+   switch-subject fix and the existing struct-field-type widening
+   convention.
+2. Verify the reproduction above compiles and runs, returning `take(x)`'s
+   result (5).
+3. Confirm existing entry-width/`uint`/`u64` parameters are unaffected.
+4. Write compile-run tests covering at least `u8` and one other
+   non-entry width parameter, plus a call passing a matching-width
+   argument.
+5. If `uint` is separately still broken elsewhere (per the note left in
+   proposal 14 from the switch-subject fix), do NOT try to fix that here
+   unless it falls out naturally — it's a distinct, already-logged item.
 
