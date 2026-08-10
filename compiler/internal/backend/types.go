@@ -171,6 +171,99 @@ func structTypeParameters(unit *tir.Unit, snapshot *types.Snapshot, decl symbol.
 	return fallback
 }
 
+// genericStructMethodSubstitutions computes the per-instantiation substitution
+// map for one method call to a generic struct method whose own parameter/result
+// types may reference the containing struct's type parameter directly (a
+// non-generic method like `fn get(self Box[T]) T`). The checker emits such a
+// method as ONE symbolic FunctionDeclaration shared by every instantiation, so
+// the concrete instantiation is recoverable only from the call site: the
+// method call's receiver node carries the instantiation's concrete type (for a
+// pointer receiver the auto-referenced AddressOf carries the pointer type, so
+// the pointee is unwrapped first). The receiver's Nominal arguments zip onto
+// the struct's own type parameters exactly as the field substitution
+// (structSubstitutions) zips them, so the SAME map the field machinery uses
+// substitutes the method's signature — no parallel mechanism. A call that is
+// not a receiver-bound method call, a generic call (TypeArgs non-empty, which
+// the checker's specialization machinery already resolves to a concrete
+// FunctionDeclaration), a non-generic receiver, or a generic-struct method
+// whose signature is already concrete (nothing in the callee's parameter/result
+// types references a substituted parameter) yields nil — the caller then treats
+// the callee exactly as before.
+func genericStructMethodSubstitutions(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node, callee tir.Node) map[symbol.SymbolID]types.TypeID {
+	if call.Kind != tir.MethodCall || len(call.TypeArgs) != 0 || len(call.Children) == 0 {
+		return nil
+	}
+	receiver, ok := unit.Node(call.Children[0])
+	if !ok {
+		return nil
+	}
+	structType := receiver.Type
+	if key, ok := snapshot.Key(structType); ok && key.Kind() == types.Pointer {
+		pointee, ok := key.Child()
+		if !ok {
+			return nil
+		}
+		structType = pointee
+	}
+	key, ok := snapshot.Key(structType)
+	if !ok || key.Kind() != types.Nominal {
+		return nil
+	}
+	decl, arguments, ok := key.Nominal()
+	if !ok || len(arguments) == 0 {
+		return nil
+	}
+	substitutions := structSubstitutions(unit, snapshot, decl, arguments)
+	if substitutions == nil || !declarationReferencesSubstitution(snapshot, callee, substitutions) {
+		return nil
+	}
+	return substitutions
+}
+
+// declarationReferencesSubstitution reports whether any of a callable
+// declaration's own parameter types or result type actually reference one of
+// the substitution's parameter symbols. A generic-struct method whose
+// signature is already concrete (`fn reserve(self *Vec[i32], amount i32)`) must
+// NOT be treated as needing substitution — its C helper keeps its plain
+// pebble_fn_<symbol> name — while `fn get(self Box[T]) T` must. A substitution
+// the signature never uses would otherwise stamp every generic-struct method
+// with a per-instantiation C name for no reason.
+func declarationReferencesSubstitution(snapshot *types.Snapshot, decl tir.Node, substitutions map[symbol.SymbolID]types.TypeID) bool {
+	for _, param := range decl.Parameters {
+		if substituted, err := snapshot.Substitute(param.Type, substitutions); err == nil && substituted != param.Type {
+			return true
+		}
+	}
+	if substituted, err := snapshot.Substitute(decl.ResultType, substitutions); err == nil && substituted != decl.ResultType {
+		return true
+	}
+	return false
+}
+
+// substituteDeclarationSignature returns a defensive copy of decl whose
+// parameter and result types have had every occurrence of the substitution's
+// parameter symbols replaced by the concrete types — the monomorphized
+// signature a specialized generic struct method's C helper is built from. The
+// copy keeps the original Symbol, Function (FunctionID), Convention, Variadic,
+// and body linkage, so findFunctionBody and every FunctionID-keyed mechanism
+// keep working on the substituted declaration. The body it points at is
+// unchanged: the method's body nodes still carry the symbolic type-parameter
+// types, which the body builders resolve through the scope helperSignature
+// seeds from these substituted parameter types (a self parameter of Box[int]
+// makes every `self.value` field read resolve to int via declaredFieldType).
+func substituteDeclarationSignature(snapshot *types.Snapshot, decl tir.Node, substitutions map[symbol.SymbolID]types.TypeID) tir.Node {
+	decl.Parameters = append([]tir.Parameter(nil), decl.Parameters...)
+	for i := range decl.Parameters {
+		if substituted, err := snapshot.Substitute(decl.Parameters[i].Type, substitutions); err == nil {
+			decl.Parameters[i].Type = substituted
+		}
+	}
+	if substituted, err := snapshot.Substitute(decl.ResultType, substitutions); err == nil {
+		decl.ResultType = substituted
+	}
+	return decl
+}
+
 // isEnumType reports whether id resolves to a plain enum type in the snapshot,
 // as opposed to a struct — the two are indistinguishable in the type snapshot
 // itself (both are Nominal keys carrying only the declaration symbol), so the
@@ -619,6 +712,26 @@ func isWidth(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID)
 // exact-match so every other call site keeps its existing meaning.
 func isAbstractInt(snapshot *types.Snapshot, id types.TypeID) bool {
 	return snapshot != nil && id == snapshot.Builtins().Int
+}
+
+// isTypeParameterType reports whether id is a type-parameter TypeID — the
+// shape a generic struct method's own parameter/return types and body-node
+// types carry when the method references the containing struct's type
+// parameter directly (`fn get(self Box[T]) T`). Such a node's type is a
+// placeholder the backend resolves structurally: a Load(FieldPlace) resolves
+// its field's concrete type through the substituted self parameter's scope
+// entry (declaredFieldType), and a SymbolValue names a local or parameter that
+// helperSignature seeded with the substituted concrete type, so the emitted C
+// is always concrete even though the TIR node type is symbolic. This predicate
+// lets the value grammars admit such nodes at their width gates; a
+// type-parameter node whose structural dispatch cannot resolve a concrete type
+// is still a clean rejection at the dispatch site.
+func isTypeParameterType(snapshot *types.Snapshot, id types.TypeID) bool {
+	if snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	return ok && key.Kind() == types.TypeParameter
 }
 
 func isUint(snapshot *types.Snapshot, id types.TypeID) bool {

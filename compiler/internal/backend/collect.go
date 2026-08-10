@@ -56,15 +56,30 @@ func findCalledFunctionByResult(unit *tir.Unit, symbolID symbol.SymbolID, result
 	return tir.Node{}, fmt.Errorf("called function symbol %d concrete specialization not found", symbolID)
 }
 
-func findCallDeclaration(unit *tir.Unit, call tir.Node) (tir.Node, error) {
+func findCallDeclaration(unit *tir.Unit, snapshot *types.Snapshot, call tir.Node) (tir.Node, error) {
 	if len(call.TypeArgs) != 0 {
 		return findCalledFunctionDeclaration(unit, call.Symbol, call.TypeArgs)
 	}
 	decl, err := findFunctionDeclaration(unit, call.Symbol, "called function")
-	if err == nil {
-		return decl, nil
+	if err != nil {
+		decl, err = findCalledFunctionByResult(unit, call.Symbol, call.Type)
 	}
-	return findCalledFunctionByResult(unit, call.Symbol, call.Type)
+	if err != nil {
+		return tir.Node{}, err
+	}
+	// A generic struct method whose own parameter/result types reference the
+	// containing struct's type parameter directly is a single symbolic
+	// declaration shared by every instantiation; every call site that reads
+	// the callee's declared signature (the aggregate-result-match checks in
+	// the call initializers, the store-value shape dispatch, buildExpr's call
+	// handling) must see the SAME substituted signature the reachability walk
+	// discovered the method's helper under — so the concrete instantiation is
+	// applied here, from the call site's own receiver, exactly as
+	// buildDirectCallArgs applies it to the argument grammar and C name.
+	if substitutions := genericStructMethodSubstitutions(unit, snapshot, call, decl); substitutions != nil {
+		return substituteDeclarationSignature(snapshot, decl, substitutions), nil
+	}
+	return decl, nil
 }
 
 // findEntryBody follows the entry declaration's FunctionID to its FunctionDecl
@@ -211,9 +226,9 @@ func discoverReachableHelpers(unit *tir.Unit, snapshot *types.Snapshot, entryDec
 		snapshot: snapshot,
 		width:    width,
 		entry:    entryDecl.Symbol,
-		done:     make(map[tir.FunctionID]bool),
+		done:     make(map[helperKey]bool),
 	}
-	if err := walk.visit(entryDecl, entryBlockID); err != nil {
+	if err := walk.visit(entryDecl, entryBlockID, nil); err != nil {
 		return nil, err
 	}
 	return walk.order, nil
@@ -1305,10 +1320,10 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 	return nil
 }
 
-// indexOfFunction returns the position of id in ids, or -1 if absent.
-func indexOfFunction(ids []tir.FunctionID, id tir.FunctionID) int {
-	for i, candidate := range ids {
-		if candidate == id {
+// indexOfFunction returns the position of key in keys, or -1 if absent.
+func indexOfFunction(keys []helperKey, key helperKey) int {
+	for i, candidate := range keys {
+		if candidate == key {
 			return i
 		}
 	}

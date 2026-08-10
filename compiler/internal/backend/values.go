@@ -280,7 +280,7 @@ func buildUintExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 		// and more), so an inline slice-construction argument folds its temp
 		// declaration into a GNU statement-expression argument rather than
 		// returning a pre the caller cannot place.
-		calleeDecl, err := findCallDeclaration(unit, node)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
 		if err != nil {
 			return "", err
 		}
@@ -478,7 +478,7 @@ func buildEnumValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		// returns), so an inline slice-construction argument folds its temp
 		// declaration into a GNU statement-expression argument rather than
 		// returning a pre the caller cannot place.
-		calleeDecl, err := findCallDeclaration(unit, node)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
 		if err != nil {
 			return "", err
 		}
@@ -1655,7 +1655,7 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	// `int` context — the shape a generic specialization produces), for the same
 	// reason: the two share a C type, so the value is emitted as-is with no
 	// cast.
-	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) && !(isAbstractInt(snapshot, node.Type) && cType(width) != "") && !isCompatibleIntegerWidth(snapshot, width, node.Type) {
+	if node.Kind != tir.CheckedIntegerToEnum && node.Kind != tir.OptionalIntegerToEnum && !isWidth(snapshot, width, node.Type) && !(isAbstractInt(snapshot, node.Type) && cType(width) != "") && !isCompatibleIntegerWidth(snapshot, width, node.Type) && !isTypeParameterType(snapshot, node.Type) {
 		wantName, _ := builtinName(width)
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want %s", node.Kind, describeType(snapshot, node.Type), wantName)
 	}
@@ -2212,7 +2212,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if err != nil {
 			return "", err
 		}
-		return helperCName(decl), nil
+		return helperCName(decl, nil), nil
 	case tir.GenericFunctionValue:
 		// A generic function referenced as a first-class value
 		// (`var f fn(int) int = identity[int];`, function-types slice 3):
@@ -2230,7 +2230,7 @@ func buildFunctionValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sourc
 		if err != nil {
 			return "", err
 		}
-		return helperCName(decl), nil
+		return helperCName(decl, nil), nil
 	case tir.DirectCall:
 		// A call to a function-returning helper used as a function-typed value
 		// (`var f fn(int, int) int = chooseOp();`, `return chooseOp();`,
@@ -2541,7 +2541,7 @@ func buildBoolExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fil
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
 	}
-	if !isBool(snapshot, node.Type) {
+	if !isBool(snapshot, node.Type) && !isTypeParameterType(snapshot, node.Type) {
 		return "", fmt.Errorf("entry function body expression contains a %s of type %s, want bool", node.Kind, describeType(snapshot, node.Type))
 	}
 	switch node.Kind {

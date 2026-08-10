@@ -624,7 +624,7 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		if valueNode.Type != wantType {
 			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call of result type %s", context, structTypeName(wantType), describeType(snapshot, valueNode.Type))
 		}
-		calleeDecl, err := findCallDeclaration(unit, valueNode)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, valueNode)
 		if err != nil {
 			return "", err
 		}

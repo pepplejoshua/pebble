@@ -66,7 +66,7 @@ func buildHelperFunctions(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		if len(casts) > 0 {
 			castText = strings.Join(casts, "\n") + "\n"
 		}
-		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helperCName(helper.decl), paramList, castText, statements))
+		texts = append(texts, fmt.Sprintf(helperFunction, returnType, helperCName(helper.decl, helper.substitutions), paramList, castText, statements))
 	}
 	return strings.Join(texts, "\n"), nil
 }
@@ -542,7 +542,7 @@ func buildHelperPrototypes(unit *tir.Unit, snapshot *types.Snapshot, helpers []h
 		if len(params) > 0 {
 			paramList = ", " + strings.Join(params, ", ")
 		}
-		prototypes = append(prototypes, fmt.Sprintf(helperPrototype, returnType, helperCName(helper.decl), paramList))
+		prototypes = append(prototypes, fmt.Sprintf(helperPrototype, returnType, helperCName(helper.decl, helper.substitutions), paramList))
 	}
 	return strings.Join(prototypes, "\n"), nil
 }
@@ -565,7 +565,7 @@ func buildHelperPrototypes(unit *tir.Unit, snapshot *types.Snapshot, helpers []h
 // (pebble_struct_<typeID>_t and localInfo{structType}). Like every local, the
 // declaration is followed by a (void) cast against -Wunused-variable.
 func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, wantTuple bool) (string, error) {
-	calleeDecl, err := findCallDeclaration(unit, initValue)
+	calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -589,7 +589,7 @@ func buildAggregateCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fil
 }
 
 func buildArrayCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	calleeDecl, err := findCallDeclaration(unit, initValue)
+	calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -622,7 +622,7 @@ func buildArrayCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // Like every local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
 func buildOptionalCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	calleeDecl, err := findCallDeclaration(unit, initValue)
+	calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -659,7 +659,7 @@ func buildOptionalCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, file
 // Like every local, the declaration is followed by a (void) cast against
 // -Wunused-variable.
 func buildEnumCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	calleeDecl, err := findCallDeclaration(unit, initValue)
+	calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -696,7 +696,7 @@ func buildEnumCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // reference, or comparison resolves the union type being used. Like every
 // local, the declaration is followed by a (void) cast against -Wunused-variable.
 func buildUnionCallInitializer(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	calleeDecl, err := findCallDeclaration(unit, initValue)
+	calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 	if err != nil {
 		return "", err
 	}
@@ -1030,11 +1030,22 @@ func buildDirectCallArgs(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 		}
 		return "", "", err
 	}
+	// A generic struct method whose own parameter/return types reference the
+	// containing struct's type parameter directly resolves (from the receiver,
+	// exactly as the reachability walk resolved it) to a per-instantiation
+	// substitution; the call's argument grammar and the callee's C name must be
+	// built from the SAME substituted signature the helper was discovered and
+	// emitted under, or the call would dispatch on symbolic type-parameter
+	// types and name a different C function than the definition.
+	calleeSubstitutions := genericStructMethodSubstitutions(unit, snapshot, node, calleeDecl)
+	if calleeSubstitutions != nil {
+		calleeDecl = substituteDeclarationSignature(snapshot, calleeDecl, calleeSubstitutions)
+	}
 	callPre, callArgs, err := buildCallArguments(unit, snapshot, fileSet, node, calleeDecl, locals, width, nested)
 	if err != nil {
 		return "", "", err
 	}
-	calleeName := helperCName(calleeDecl)
+	calleeName := helperCName(calleeDecl, calleeSubstitutions)
 	if callArgs == "" {
 		return callPre, fmt.Sprintf("%s(ctx)", calleeName), nil
 	}
@@ -1710,7 +1721,7 @@ func buildAggregateReturnValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		return "", expr, err
 	}
 	if node.Kind == tir.DirectCall {
-		calleeDecl, err := findCallDeclaration(unit, node)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
 		if err != nil {
 			return "", "", err
 		}

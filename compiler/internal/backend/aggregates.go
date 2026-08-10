@@ -220,15 +220,15 @@ func buildRuntimeAllocatorCallbackAdapter(unit *tir.Unit, snapshot *types.Snapsh
 	case info.AllocatorAlloc:
 		name = fmt.Sprintf("pebble_rt_alloc_adapter_%d", decl.Symbol)
 		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size);", name)
-		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size) {\n    return %s(ctx, (void *)ctx, size);\n}", name, helperCName(decl))
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, size_t size) {\n    return %s(ctx, (void *)ctx, size);\n}", name, helperCName(decl, nil))
 	case info.AllocatorRealloc:
 		name = fmt.Sprintf("pebble_rt_realloc_adapter_%d", decl.Symbol)
 		prototype = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size);", name)
-		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size) {\n    return %s(ctx, (void *)ctx, ptr, new_size);\n}", name, helperCName(decl))
+		definition = fmt.Sprintf("static void *%s(PebbleContext *ctx, void *ptr, size_t new_size) {\n    return %s(ctx, (void *)ctx, ptr, new_size);\n}", name, helperCName(decl, nil))
 	case info.AllocatorFree:
 		name = fmt.Sprintf("pebble_rt_free_adapter_%d", decl.Symbol)
 		prototype = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr);", name)
-		definition = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr) {\n    %s(ctx, (void *)ctx, ptr);\n}", name, helperCName(decl))
+		definition = fmt.Sprintf("static void %s(PebbleContext *ctx, void *ptr) {\n    %s(ctx, (void *)ctx, ptr);\n}", name, helperCName(decl, nil))
 	default:
 		return "", fmt.Errorf("%s references Allocator callback field %d, which is not alloc, realloc, or free", context, member)
 	}

@@ -383,6 +383,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
+	"hash/fnv"
 	"io"
 	"sort"
 	"strings"
@@ -838,11 +839,39 @@ func hasCExterns(unit *tir.Unit) bool {
 	return false
 }
 
-func helperCName(decl tir.Node) string {
+func helperCName(decl tir.Node, substitutions map[symbol.SymbolID]types.TypeID) string {
 	if len(decl.TypeArgs) != 0 {
 		return fmt.Sprintf("pebble_fn_%d_%d", decl.Symbol, decl.Function)
 	}
-	return fmt.Sprintf("pebble_fn_%d", decl.Symbol)
+	if len(substitutions) == 0 {
+		return fmt.Sprintf("pebble_fn_%d", decl.Symbol)
+	}
+	return fmt.Sprintf("pebble_fn_%d_%d_%s", decl.Symbol, decl.Function, substitutionSuffix(substitutions))
+}
+
+// substitutionSuffix is a short deterministic discriminator for one
+// generic-struct-method instantiation's substitution map, appended to the C
+// helper name so two instantiations of the SAME non-generic method (Box[int]
+// and Box[bool] calling one `get` in the same program) each get their own C
+// function. It is the hex FNV-1a 64-bit hash of the canonical sorted
+// "parameterSymbol:concreteType" list, so two maps built from the same
+// instantiation at different sites (the call site and the reachability walk)
+// hash identically and the call and its callee agree on the name.
+func substitutionSuffix(substitutions map[symbol.SymbolID]types.TypeID) string {
+	if len(substitutions) == 0 {
+		return ""
+	}
+	pairs := make([]string, 0, len(substitutions))
+	for parameter, concrete := range substitutions {
+		pairs = append(pairs, fmt.Sprintf("%d:%d", parameter, concrete))
+	}
+	sort.Strings(pairs)
+	hash := fnv.New64a()
+	for _, pair := range pairs {
+		_, _ = io.WriteString(hash, pair)
+		_, _ = io.WriteString(hash, "\x00")
+	}
+	return fmt.Sprintf("%016x", hash.Sum64())
 }
 
 // externCName returns the real C name an extern function must be called by
@@ -901,9 +930,32 @@ func builtinFunctionCName(symbolID symbol.SymbolID) (string, bool) {
 // file (the one place that still matters: a non-recursive chain has no
 // forward dependency anyway, and recursive calls are covered by the
 // prototypes buildHelperPrototypes emits before every definition).
+//
+// For a generic struct method whose own parameter/return types reference the
+// containing struct's type parameter directly, decl is the SUBSTITUTED
+// declaration copy (its Parameters/ResultType already carry the concrete
+// instantiation's types), so every downstream consumer — validateHelperSignature,
+// helperSignature, the typedef collectors, and the call-site argument builder —
+// reads the concrete signature without knowing a substitution ever existed.
+// substitutions stays on the helper only so helperCName can give each
+// instantiation of the same method its own C name. A helper that needs no
+// substitution carries nil substitutions and decl unchanged.
 type helperInfo struct {
-	decl  tir.Node
-	block tir.NodeID
+	decl          tir.Node
+	block         tir.NodeID
+	substitutions map[symbol.SymbolID]types.TypeID
+}
+
+// helperKey is the reachability walk's deduplication identity for one helper:
+// the function's FunctionID plus the generic-struct-method instantiation the
+// call site resolved it at. A generic struct method with a type-parameter
+// signature is emitted once PER instantiation (Box[int] and Box[bool] each
+// call the same non-generic method and must get their own C function), so the
+// substitution's canonical key distinguishes the two; an ordinary helper's
+// key is (FunctionID, "").
+type helperKey struct {
+	function tir.FunctionID
+	subst    string
 }
 
 // reachabilityWalk carries the mutable state of the recursive reachability
@@ -915,8 +967,8 @@ type reachabilityWalk struct {
 	snapshot *types.Snapshot
 	width    types.BuiltinKind
 	entry    symbol.SymbolID
-	done     map[tir.FunctionID]bool
-	stack    []tir.FunctionID
+	done     map[helperKey]bool
+	stack    []helperKey
 	order    []helperInfo
 }
 
@@ -939,11 +991,12 @@ type reachabilityWalk struct {
 // itself): the entry is emitted under the fixed C name pebble_user_main, not
 // as a pebble_fn_<symbolID> helper the forward-declaration pass covers, so a
 // call to it has no valid C name and that cycle shape is rejected cleanly.
-func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
-	if w.done[decl.Function] {
+func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID, substitutions map[symbol.SymbolID]types.TypeID) error {
+	key := helperKey{function: decl.Function, subst: substitutionSuffix(substitutions)}
+	if w.done[key] {
 		return nil
 	}
-	if inStack := indexOfFunction(w.stack, decl.Function); inStack >= 0 {
+	if inStack := indexOfFunction(w.stack, key); inStack >= 0 {
 		if decl.Symbol == w.entry {
 			// The call edge just followed closes a cycle THROUGH THE ENTRY
 			// FUNCTION (the DFS root, always on the stack): a helper calling
@@ -952,10 +1005,10 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 			// name pebble_user_main (after the helpers, with no prototype), so
 			// a call to it cannot be lowered to a valid C name — it is not a
 			// pebble_fn_<symbolID> helper the forward-declaration pass covers.
-			cycle := append(append([]tir.FunctionID(nil), w.stack[inStack:]...), decl.Function)
+			cycle := append(append([]helperKey(nil), w.stack[inStack:]...), key)
 			parts := make([]string, len(cycle))
-			for i, id := range cycle {
-				parts[i] = fmt.Sprintf("function %d", id)
+			for i, k := range cycle {
+				parts[i] = fmt.Sprintf("function %d", k.function)
 			}
 			return fmt.Errorf("recursive call through the entry function is not supported: the call chain %s is a cycle passing through the entry, which is emitted under the fixed C name pebble_user_main (not as a pebble_fn_<symbolID> helper the forward-declaration pass covers), so this backend cannot lower a call to it; recursion among helper functions (direct or mutual) is supported via forward declarations", strings.Join(parts, " -> "))
 		}
@@ -973,7 +1026,7 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 		// error.
 		return nil
 	}
-	w.stack = append(w.stack, decl.Function)
+	w.stack = append(w.stack, key)
 	var calls []tir.Node
 	if err := collectDirectCalls(w.unit, blockID, &calls); err != nil {
 		return err
@@ -1018,6 +1071,22 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 			}
 			continue
 		}
+		// A generic struct method whose own parameter/result types reference
+		// the containing struct's type parameter directly (a non-generic
+		// method like `fn get(self Box[T]) T`) is discovered as a single
+		// symbolic FunctionDeclaration shared by every instantiation. The
+		// concrete instantiation is recoverable only from the call site: the
+		// receiver's resolved type carries the instantiation's nominal
+		// arguments. That substitution makes the callee's signature concrete,
+		// and the walk validates and emits the method once PER instantiation
+		// (Box[int] and Box[bool] each need their own C function). Every other
+		// callee — a non-generic function, a generic call with TypeArgs, or a
+		// generic struct method whose signature is already concrete — resolves
+		// to nil substitutions and is handled exactly as before.
+		calleeSubstitutions := genericStructMethodSubstitutions(w.unit, w.snapshot, call, calleeDecl)
+		if calleeSubstitutions != nil {
+			calleeDecl = substituteDeclarationSignature(w.snapshot, calleeDecl, calleeSubstitutions)
+		}
 		if err := validateHelperSignature(w.unit, calleeDecl, w.snapshot, w.width); err != nil {
 			return err
 		}
@@ -1025,14 +1094,14 @@ func (w *reachabilityWalk) visit(decl tir.Node, blockID tir.NodeID) error {
 		if err != nil {
 			return err
 		}
-		if err := w.visit(calleeDecl, calleeBlock); err != nil {
+		if err := w.visit(calleeDecl, calleeBlock, calleeSubstitutions); err != nil {
 			return err
 		}
 	}
 	w.stack = w.stack[:len(w.stack)-1]
-	w.done[decl.Function] = true
+	w.done[key] = true
 	if decl.Symbol != w.entry {
-		w.order = append(w.order, helperInfo{decl: decl, block: blockID})
+		w.order = append(w.order, helperInfo{decl: decl, block: blockID, substitutions: substitutions})
 	}
 	return nil
 }

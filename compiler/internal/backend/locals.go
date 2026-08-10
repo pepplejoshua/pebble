@@ -290,7 +290,7 @@ func buildSliceLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 		// buildDirectCall, the same call-building machinery buildExpr's
 		// DirectCall case uses. Like every local, the declaration is followed
 		// by a (void) cast against -Wunused-variable.
-		calleeDecl, err := findCallDeclaration(unit, initValue)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 		if err != nil {
 			return "", err
 		}
@@ -808,7 +808,7 @@ func buildStrLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		// are identical to a scalar call — only the result type differs. Like
 		// every local, the declaration is followed by a (void) cast against
 		// -Wunused-variable.
-		calleeDecl, err := findCallDeclaration(unit, initValue)
+		calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
 		if err != nil {
 			return "", err
 		}

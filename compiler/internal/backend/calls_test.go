@@ -256,6 +256,68 @@ func TestEmitGenericMethodPointerReceiverCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, `type Box[K] = struct { value K; fn get[K](self *Box[K]) K { return self.value; } }; fn main() int { var b Box[int] = Box[int].{ value = 7 }; return b.get(); }`, false, 7, false)
 }
 
+func TestEmitGenericStructMethodTypeParameterResultCompilesAndRuns(t *testing.T) {
+	// The active-defect repro (proposal 13): a NON-generic method on a
+	// generic struct whose declared RETURN type is the struct's own type
+	// parameter directly (`fn get(self Box[T]) T`). The checker emits one
+	// symbolic FunctionDeclaration (result type = type-parameter TypeID)
+	// shared by every instantiation, so the backend must substitute the
+	// receiver's concrete type argument into the method's C signature AND
+	// build its body against that concrete instantiation — the exact
+	// mechanism that had substituted only FIELD types, never a method's own
+	// parameter/return types. Before the fix Emit failed with "called
+	// function symbol ... has result type type-parameter(...)"; now the
+	// emitted helper returns int32_t and reads the Box[int] value field
+	// through the substituted self type.
+	emitAndRun(t, `type Box[T] = struct { value T; fn get(self Box[T]) T { return self.value; } }; fn main() int { let b = Box[int].{ value = 42 }; return b.get(); }`, false, 42, false)
+}
+
+func TestEmitGenericStructMethodTypeParameterParameterCompilesAndRuns(t *testing.T) {
+	// The active-defect repro's other half (proposal 13): a non-generic
+	// method on a generic struct whose declared PARAMETER type is the
+	// struct's own type parameter directly (`fn set(self *Box[T], v T)`).
+	// The v parameter's T must be substituted to int in the C signature (so
+	// the call site's literal passes at the right width) and the body's
+	// `self.value = v` write must store it into the Box[int] field.
+	emitAndRun(t, `type Box[T] = struct { value T; fn set(self *Box[T], v T) void { self.value = v; } }; fn main() int { var b = Box[int].{ value = 1 }; b.set(42); return b.value; }`, false, 42, false)
+}
+
+func TestEmitGenericStructMethodTypeParameterTwoSpecializationsCompileAndRun(t *testing.T) {
+	// TWO instantiations of the SAME non-generic method in one program:
+	// Box[int].get must return int and Box[bool].get must return bool, and
+	// each needs its OWN C helper (the two share one symbolic
+	// FunctionDeclaration, so the backend's per-instantiation substitution
+	// must emit a separate pebble_fn_<symbol>_<function>_<hash> for each).
+	// Before the fix Emit rejected the shared declaration's symbolic
+	// signature outright; a per-helper substitution keyed only by FunctionID
+	// would have silently let the first instantiation's signature win for
+	// both call sites.
+	emitAndRun(t, `type Box[T] = struct { value T; fn get(self Box[T]) T { return self.value; } }; fn main() int { let b = Box[int].{ value = 5 }; let c = Box[bool].{ value = true }; if c.get() { return b.get(); } return 0; }`, false, 5, false)
+}
+
+func TestEmitGenericStructMethodTypeParameterResultEmitsConcreteSignature(t *testing.T) {
+	// The emitted C must carry the CONCRETE substituted signature: the
+	// helper returns int32_t (never a type parameter), its self parameter is
+	// the Box[int] struct typedef, and its body returns the concrete field
+	// read — the shape that failed with an unsubstituted
+	// "type-parameter(symbol ...)" result type before the fix.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Box[T] = struct { value T; fn get(self Box[T]) T { return self.value; } }; fn main() int { let b = Box[int].{ value = 42 }; return b.get(); }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "static int32_t pebble_fn_") {
+		t.Fatalf("emitted C has no int32_t-returning helper:\n%s", out)
+	}
+	if strings.Contains(out, "type-parameter") {
+		t.Errorf("emitted C still carries an unsubstituted type parameter:\n%s", out)
+	}
+	if !strings.Contains(out, "pebble_local_28.pebble_field_26") {
+		t.Errorf("emitted C missing the concrete Box[int] field read:\n%s", out)
+	}
+}
+
 func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
 	// The single most important correctness property: a compound assignment
 	// must NOT emit a raw C `+=` (which would compile and "work" for in-range
