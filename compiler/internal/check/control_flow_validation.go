@@ -116,37 +116,37 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		builtin, ok := key.Builtin()
 		return ok && (builtin == types.Bool || builtin == types.Char || builtin == types.Str || isIntegerBuiltin(builtin) || isFloatBuiltin(builtin))
 	}
-	structFieldPrintable := func(memberType infer.TemplateID) bool {
+	// printableType is the RECURSIVE print gate for one resolved concrete type:
+	// a scalar builtin (bool, char, str, any integer width, any float width), or
+	// — composite print slice 1 — a struct value, or — slice 2 — a tuple or
+	// fixed array, provided every field/element is itself printable by this same
+	// rule (slice 3: nested aggregates). The recursion terminates because a
+	// field/element type is a strictly nested by-value aggregate; Pebble rejects
+	// a genuinely infinite-size composite at declaration/binding time, so no
+	// by-value cycle can reach here (verified against a self-referential struct
+	// fixture). A struct with any non-struct/non-scalar field (an enum, a tagged
+	// union, a slice, a pointer, an optional) still rejects — those are later
+	// slices. A field/element of a type that is not a concrete known type (a
+	// generic struct's parameter-typed field, which resolves only against a
+	// specific instantiation's type arguments) is not provably printable at the
+	// declaration level, so it rejects too.
+	var printableType func(typeID types.TypeID) bool
+	// memberPrintable resolves one struct member's declared template to its
+	// concrete known type and recurses; a member whose type is not a concrete
+	// known type (a type parameter, an unresolved template) is not provably
+	// printable.
+	memberPrintable := func(memberType infer.TemplateID) bool {
 		template, ok := handoff.Semantics.Template(memberType)
 		if !ok || template.Kind != infer.TemplateKnown {
 			return false
 		}
-		return scalarPrintable(template.Known)
+		return printableType(template.Known)
 	}
-	// valuePrintable is the print operand gate: a scalar builtin (bool, char,
-	// str, any integer width, any float width), or — composite print slice 1 —
-	// a struct value whose fields are ALL such scalars, or — composite print
-	// slice 2 — a tuple or fixed array whose elements are ALL such scalars. A
-	// struct with any non-scalar field (a nested struct, an array, a slice, an
-	// enum, ...) stays rejected: composite recursion into non-scalar fields is a
-	// separate, later slice, and accepting it here would promise output the
-	// backend does not yet emit. A tuple/array with any non-scalar element (a
-	// struct, a nested tuple, a nested array, ...) stays rejected for the same
-	// reason — nested aggregates are slice 3. Plain enums and tagged unions are
-	// also still rejected; they are their own later slices. A member whose type
-	// is not a concrete known scalar (a generic struct's parameter-typed field,
-	// which resolves only against a specific instantiation's type arguments) is
-	// not provably printable at the declaration level, so such a struct rejects
-	// too.
-	valuePrintable := func(value valueID) bool {
-		resolved, ok := records.Root(value)
-		if !ok || resolved.State != infer.TypeFinal {
-			return false
-		}
-		if scalarPrintable(resolved.Type) {
+	printableType = func(typeID types.TypeID) bool {
+		if scalarPrintable(typeID) {
 			return true
 		}
-		key, ok := handoff.Semantics.Types().Key(resolved.Type)
+		key, ok := handoff.Semantics.Types().Key(typeID)
 		if !ok {
 			return false
 		}
@@ -157,14 +157,14 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 				return false
 			}
 			for _, element := range elements {
-				if !scalarPrintable(element) {
+				if !printableType(element) {
 					return false
 				}
 			}
 			return true
 		case types.Array:
 			_, element, ok := key.Array()
-			return ok && scalarPrintable(element)
+			return ok && printableType(element)
 		case types.Nominal:
 		default:
 			return false
@@ -178,11 +178,18 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			return false
 		}
 		for _, member := range declaration.Members {
-			if !structFieldPrintable(member.Type) {
+			if !memberPrintable(member.Type) {
 				return false
 			}
 		}
 		return true
+	}
+	valuePrintable := func(value valueID) bool {
+		resolved, ok := records.Root(value)
+		if !ok || resolved.State != infer.TypeFinal {
+			return false
+		}
+		return printableType(resolved.Type)
 	}
 
 	evalRecord = func(ctrl *controlRecord, reachable bool) []controlExit {

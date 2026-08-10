@@ -2766,7 +2766,7 @@ func buildScalarPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	if err != nil {
 		return "", "", nil, err
 	}
-	format, arg, parts, err := buildScalarPrintParts(kind, expr, operandID, -1)
+	format, arg, parts, err := buildScalarPrintParts(kind, expr, operandID, "")
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -2788,12 +2788,13 @@ func buildScalarPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 // direct-sequential-fprintf path, and a struct's scalar fields all route
 // through it, so the exact formatting every existing scalar print already
 // uses — integer PRI* macros, "true"/"false", the UTF-8 char conversion, the
-// str .data projection, %f floats — is never duplicated. bufferIndex
+// str .data projection, %f floats — is never duplicated. bufferPath
 // disambiguates a char field's buffer name from a bare operand's: a bare
-// operand (bufferIndex -1) names its buffer from the operand's node ID alone,
-// a struct field appends its field index so two char fields of one struct get
-// distinct buffers.
-func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.NodeID, bufferIndex int) (string, string, []string, error) {
+// operand (bufferPath "") names its buffer from the operand's node ID alone,
+// a composite field/element appends its position path (e.g. "0_2" for field 0
+// then element 2 of a nested aggregate) so every char field of a print
+// operand — across any nesting depth — gets a distinct buffer.
+func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.NodeID, bufferPath string) (string, string, []string, error) {
 	switch {
 	case cType(kind) != "":
 		// The format specifier comes from the <inttypes.h> PRI* macros whose
@@ -2817,8 +2818,8 @@ func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.No
 		// char value — ASCII included — through the helper keeps the emitted C
 		// uniform.
 		bufferName := fmt.Sprintf("pebble_char_utf8_%d", operandID)
-		if bufferIndex >= 0 {
-			bufferName = fmt.Sprintf("pebble_char_utf8_%d_%d", operandID, bufferIndex)
+		if bufferPath != "" {
+			bufferName = fmt.Sprintf("pebble_char_utf8_%d_%s", operandID, bufferPath)
 		}
 		return `"%s"`, "(const char *)" + bufferName, []string{
 			fmt.Sprintf("uint8_t %s[5];", bufferName),
@@ -2965,14 +2966,6 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 // field names are recovered from the unit + file set rather than the symbol
 // table so the emission works whether or not Emit was given a symbol result.
 func buildStructPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
-	info, err := resolveStructInfo(unit, snapshot, child.Type, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s print operand is a struct of type %s: %v", context, structTypeName(child.Type), err)
-	}
-	typeName, err := structSourceName(unit, fileSet, info.decl)
-	if err != nil {
-		return nil, nil, err
-	}
 	valueExpr, err := buildStructPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
@@ -2983,38 +2976,12 @@ func buildStructPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	// unwrapped node ID — the stable identity of this operand, unique across
 	// the unit — so a print with several struct operands gets distinct temps.
 	tempName := fmt.Sprintf("pebble_print_struct_%d", operandID)
-	var pres []string
-	pres = append(pres, indent+fmt.Sprintf("%s %s = %s;", structTypeName(child.Type), tempName, valueExpr))
-	var calls []printFprintfCall
-	for i, field := range info.fields {
-		fieldName, err := fieldSourceName(unit, fileSet, field.member)
-		if err != nil {
-			return nil, nil, err
-		}
-		label := ", " + fieldName + ": "
-		if i == 0 {
-			label = typeName + "{ " + fieldName + ": "
-		}
-		calls = append(calls, printFprintfCall{format: `"` + label + `"`})
-		fieldKind, ok := resolvedBuiltin(snapshot, field.typ)
-		if !ok {
-			return nil, nil, fmt.Errorf("%s print operand is a struct of type %s whose field %s has type %s, which is not a printable scalar at this slice", context, typeName, fieldName, describeType(snapshot, field.typ))
-		}
-		format, arg, fieldPres, err := buildScalarPrintParts(fieldKind, tempName+fmt.Sprintf(".pebble_field_%d", field.member), operandID, i)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, pre := range fieldPres {
-			pres = append(pres, indent+pre)
-		}
-		calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", structTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(info.fields) == 0 {
-		calls = append(calls, printFprintfCall{format: `"` + typeName + `{ }"`})
-	} else {
-		calls = append(calls, printFprintfCall{format: `" }"`})
-	}
-	return calls, pres, nil
+	return calls, append(pres, valuePres...), nil
 }
 
 // buildTuplePrintOperand emits one tuple operand of a print statement as its
@@ -3029,14 +2996,6 @@ func buildStructPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 // the printed order is the declared type's element order regardless of how the
 // operand was written.
 func buildTuplePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
-	key, ok := snapshot.Key(child.Type)
-	if !ok {
-		return nil, nil, fmt.Errorf("%s print operand is a tuple of type %s, which is not in the type snapshot", context, tupleTypeName(child.Type))
-	}
-	elements, ok := key.Elements()
-	if !ok {
-		return nil, nil, fmt.Errorf("%s print operand is a tuple of type %s, which has no element list", context, tupleTypeName(child.Type))
-	}
 	valueExpr, err := buildTuplePrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
@@ -3045,35 +3004,12 @@ func buildTuplePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	// call operand is evaluated exactly once, then read every element off the
 	// temp as <temp>._<ordinal> (the tuple typedef's positional field names).
 	tempName := fmt.Sprintf("pebble_print_tuple_%d", operandID)
-	var pres []string
-	pres = append(pres, indent+fmt.Sprintf("%s %s = %s;", tupleTypeName(child.Type), tempName, valueExpr))
-	var calls []printFprintfCall
-	for i, element := range elements {
-		label := ", "
-		if i == 0 {
-			label = "("
-		}
-		calls = append(calls, printFprintfCall{format: `"` + label + `"`})
-		elementKind, ok := resolvedBuiltin(snapshot, element)
-		if !ok {
-			return nil, nil, fmt.Errorf("%s print operand is a tuple of type %s whose element %d has type %s, which is not a printable scalar at this slice", context, tupleTypeName(child.Type), i, describeType(snapshot, element))
-		}
-		format, arg, elementPres, err := buildScalarPrintParts(elementKind, tempName+fmt.Sprintf("._%d", i), operandID, i)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, pre := range elementPres {
-			pres = append(pres, indent+pre)
-		}
-		calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", tupleTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(elements) == 1 {
-		// `(5,)` — the one-element tuple's trailing comma, so the output is
-		// unambiguous with a parenthesized expression.
-		calls = append(calls, printFprintfCall{format: `","`})
-	}
-	calls = append(calls, printFprintfCall{format: `")"`})
-	return calls, pres, nil
+	return calls, append(pres, valuePres...), nil
 }
 
 // buildArrayPrintOperand emits one fixed-array operand of a print statement as
@@ -3085,14 +3021,6 @@ func buildTuplePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // buildScalarPrintParts a bare scalar print operand uses. Elements are read
 // off the temp as <temp>.data[<i>] (the array typedef wraps a data[N] field).
 func buildArrayPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
-	key, ok := snapshot.Key(child.Type)
-	if !ok {
-		return nil, nil, fmt.Errorf("%s print operand is an array of type %s, which is not in the type snapshot", context, describeType(snapshot, child.Type))
-	}
-	length, element, ok := key.Array()
-	if !ok {
-		return nil, nil, fmt.Errorf("%s print operand is an array of type %s, which has no length and element type", context, describeType(snapshot, child.Type))
-	}
 	valueExpr, err := buildArrayPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
 	if err != nil {
 		return nil, nil, err
@@ -3101,26 +3029,199 @@ func buildArrayPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	// array-returning call operand is evaluated exactly once, then read every
 	// element off the temp as <temp>.data[<i>].
 	tempName := fmt.Sprintf("pebble_print_array_%d", operandID)
-	var pres []string
-	pres = append(pres, indent+fmt.Sprintf("%s %s = %s;", arrayTypeName(child.Type), tempName, valueExpr))
-	var calls []printFprintfCall
-	calls = append(calls, printFprintfCall{format: `"["`})
-	elementKind, ok := resolvedBuiltin(snapshot, element)
-	if !ok {
-		return nil, nil, fmt.Errorf("%s print operand is an array of type %s whose element type %s is not a printable scalar at this slice", context, describeType(snapshot, child.Type), describeType(snapshot, element))
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", arrayTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
 	}
+	return calls, append(pres, valuePres...), nil
+}
+
+// buildPrintValueCalls is the recursive core of composite printing: it emits
+// the fprintf-call sequence that prints ONE value of resolved type valueType
+// whose C expression is expr, reading the value directly from expr — a
+// materialized operand temp (the common case, from the build*PrintOperand
+// wrappers) or a field/element projection off an enclosing value's temp (the
+// recursion case, `temp.pebble_field_<member>` / `temp._<ordinal>` /
+// `temp.data[<i>]`). A scalar value produces its one buildScalarPrintParts
+// call; a struct/tuple/fixed-array value produces its own punctuation + label
+// + value sequence with EVERY field/element recursively routed back through
+// this same function (composite print slice 3: recursion into already-
+// printable nested aggregates), so a nested aggregate field/element emits its
+// nested sequence INLINE within the same print statement, never a separate
+// print statement. The operand is materialized exactly once by the caller, so
+// a side-effecting outer operand (a struct-returning call) is never re-
+// evaluated per nesting level; nested reads are plain projections. bufferPath
+// tracks the field/element index path from the operand root ("" for the
+// operand itself, "0_2" for field 0's element 2) so every char field — at any
+// nesting depth — gets a distinct UTF-8 buffer name. The pres slice returned
+// is not indented; each caller prefixes indent (mirroring how the slice-1/2
+// scalar field builders returned unindented pre-statements).
+func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath string, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	if kind, ok := resolvedBuiltin(snapshot, valueType); ok {
+		format, arg, parts, err := buildScalarPrintParts(kind, expr, operandID, bufferPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		pres := make([]string, 0, len(parts))
+		for _, pre := range parts {
+			pres = append(pres, indent+pre)
+		}
+		return []printFprintfCall{{format: format, args: []string{arg}}}, pres, nil
+	}
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s is not in the type snapshot", context, describeType(snapshot, valueType))
+	}
+	switch key.Kind() {
+	case types.Tuple:
+		return buildTuplePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	case types.Array:
+		return buildArrayPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	default:
+		return buildStructPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	}
+}
+
+// buildStructPrintValueCalls emits one struct VALUE (a whole operand temp, or
+// a nested struct field off an enclosing temp) as its sequence of fprintf
+// calls — `<declared type name>{ <field>: <value>, ... }` in the struct's
+// DECLARED field order with the struct's own SOURCE field names, then the
+// struct's own ` }` closing punctuation. Every field's value is routed through
+// the shared buildPrintValueCalls, so a scalar field produces its one
+// buildScalarPrintParts call and a nested struct/tuple/array field produces
+// its own inline nested sequence. The label is static C text, so a zero-field
+// struct emits the single call `fprintf(stdout, "<name>{ }")`. The struct's
+// declared type name and field names are recovered from the unit + file set
+// rather than the symbol table so the emission works whether or not Emit was
+// given a symbol result.
+func buildStructPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	info, err := resolveStructInfo(unit, snapshot, valueType, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s print value of type %s: %v", context, structTypeName(valueType), err)
+	}
+	typeName, err := structSourceName(unit, fileSet, info.decl)
+	if err != nil {
+		return nil, nil, err
+	}
+	var calls []printFprintfCall
+	var pres []string
+	for i, field := range info.fields {
+		fieldName, err := fieldSourceName(unit, fileSet, field.member)
+		if err != nil {
+			return nil, nil, err
+		}
+		label := ", " + fieldName + ": "
+		if i == 0 {
+			label = typeName + "{ " + fieldName + ": "
+		}
+		calls = append(calls, printFprintfCall{format: `"` + label + `"`})
+		childPath := bufferPath
+		if childPath != "" {
+			childPath += "_"
+		}
+		childPath += strconv.Itoa(i)
+		fieldCalls, fieldPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, field.typ, expr+fmt.Sprintf(".pebble_field_%d", field.member), operandID, childPath, indent, context, width)
+		if err != nil {
+			return nil, nil, err
+		}
+		pres = append(pres, fieldPres...)
+		calls = append(calls, fieldCalls...)
+	}
+	if len(info.fields) == 0 {
+		calls = append(calls, printFprintfCall{format: `"` + typeName + `{ }"`})
+	} else {
+		calls = append(calls, printFprintfCall{format: `" }"`})
+	}
+	return calls, pres, nil
+}
+
+// buildTuplePrintValueCalls emits one tuple VALUE (a whole operand temp, or a
+// nested tuple field/element off an enclosing temp) as its sequence of fprintf
+// calls — `(<e0>, <e1>, <e2>)` in tuple element order, plus the `")"`
+// closing punctuation. A ONE-ELEMENT tuple prints with a trailing comma,
+// `(5,)`, so it is never ambiguous with a parenthesized expression (proposal
+// 17 is explicit about this). Every element's value is routed through the
+// shared buildPrintValueCalls, so a scalar element produces its one
+// buildScalarPrintParts call and a nested struct/tuple/array element produces
+// its own inline nested sequence. The tuple element order and element types
+// come from the tuple type's own Elements() key, never from the construction
+// site.
+func buildTuplePrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not in the type snapshot", context, tupleTypeName(valueType))
+	}
+	elements, ok := key.Elements()
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which has no element list", context, tupleTypeName(valueType))
+	}
+	var calls []printFprintfCall
+	var pres []string
+	for i, element := range elements {
+		label := ", "
+		if i == 0 {
+			label = "("
+		}
+		calls = append(calls, printFprintfCall{format: `"` + label + `"`})
+		childPath := bufferPath
+		if childPath != "" {
+			childPath += "_"
+		}
+		childPath += strconv.Itoa(i)
+		elementCalls, elementPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, element, expr+fmt.Sprintf("._%d", i), operandID, childPath, indent, context, width)
+		if err != nil {
+			return nil, nil, err
+		}
+		pres = append(pres, elementPres...)
+		calls = append(calls, elementCalls...)
+	}
+	if len(elements) == 1 {
+		// `(5,)` — the one-element tuple's trailing comma, so the output is
+		// unambiguous with a parenthesized expression.
+		calls = append(calls, printFprintfCall{format: `","`})
+	}
+	calls = append(calls, printFprintfCall{format: `")"`})
+	return calls, pres, nil
+}
+
+// buildArrayPrintValueCalls emits one fixed-array VALUE (a whole operand temp,
+// or a nested array field/element off an enclosing temp) as its sequence of
+// fprintf calls — `[<e0>, <e1>, <e2>]` in array order, plus the `"]"`
+// closing punctuation. The array length is part of the type, so the sequence
+// is compile-time unrolled exactly like the struct field unrolling. Every
+// element's value is routed through the shared buildPrintValueCalls, so a
+// scalar element produces its one buildScalarPrintParts call and a nested
+// struct/tuple/array element produces its own inline nested sequence.
+// Elements are read off the value expression as <expr>.data[<i>] (the array
+// typedef wraps a data[N] field).
+func buildArrayPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not in the type snapshot", context, describeType(snapshot, valueType))
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which has no length and element type", context, describeType(snapshot, valueType))
+	}
+	var calls []printFprintfCall
+	var pres []string
+	calls = append(calls, printFprintfCall{format: `"["`})
 	for i := uint64(0); i < length; i++ {
 		if i != 0 {
 			calls = append(calls, printFprintfCall{format: `", "`})
 		}
-		format, arg, elementPres, err := buildScalarPrintParts(elementKind, tempName+fmt.Sprintf(".data[%d]", i), operandID, int(i))
+		childPath := bufferPath
+		if childPath != "" {
+			childPath += "_"
+		}
+		childPath += strconv.FormatUint(i, 10)
+		elementCalls, elementPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, element, expr+fmt.Sprintf(".data[%d]", i), operandID, childPath, indent, context, width)
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, pre := range elementPres {
-			pres = append(pres, indent+pre)
-		}
-		calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
+		pres = append(pres, elementPres...)
+		calls = append(calls, elementCalls...)
 	}
 	calls = append(calls, printFprintfCall{format: `"]"`})
 	return calls, pres, nil
