@@ -1396,6 +1396,31 @@ func TestEmitStructPointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x int; y int; };\nfn reset(self *Point, other Point) void { *self = other; }\nfn main() int { var p = Point.{ x = 1, y = 2 }; let q = Point.{ x = 9, y = 9 }; reset(&p, q); return p.x; }", false, 9, false)
 }
 
+func TestEmitStructWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	// Reassigning a whole struct-typed local from a call to a struct-returning
+	// helper (`p = make_point();`), the reproduction's plain-local shape: the
+	// Store's place names a struct-typed local and the new value is a DirectCall
+	// whose result type matches the local's struct type, emitted as the call
+	// expression itself — `pebble_local_<p> = make_point(ctx);` — a plain C
+	// struct assignment since the helper's C return type is the place's own
+	// pebble_struct_<typeID>_t. The reassigned local's fields must reflect the
+	// value make_point returns (9), not the original p's (1).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn make_point() Point { return Point.{ x = 9, y = 9 }; }\nfn main() int { var p = Point.{ x = 1, y = 2 }; p = make_point(); return p.x; }", false, 9, false)
+}
+
+func TestEmitStructPointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	// Reassigning a whole struct through a pointer deref from a call to a
+	// struct-returning helper (`*self = make_point();`), the reproduction's
+	// reset shape: the Store's place is a DereferencePlace whose resolved
+	// element type is the struct type, and the new value is a DirectCall whose
+	// result type matches, emitted as the call expression through the
+	// null-checked deref lvalue — the same plain C struct assignment as the
+	// plain-local shape, just reaching the store through the pointer. The
+	// reassigned local's fields must reflect the value make_point returns (9),
+	// not the original (1).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn make_point() Point { return Point.{ x = 9, y = 9 }; }\nfn reset(self *Point) void { *self = make_point(); }\nfn main() int { var p = Point.{ x = 1, y = 2 }; reset(&p); return p.x; }", false, 9, false)
+}
+
 func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
 	// The emitted C for the plain-local whole-struct reassignment: the store
 	// lowers to a plain C struct assignment `pebble_local_<p> = pebble_local_<q>;`

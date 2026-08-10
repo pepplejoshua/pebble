@@ -333,12 +333,13 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 			// `*self = other;`, the reproduction's reset shape: the target
 			// lvalue is the struct's own pebble_struct_<typeID>_t, and the new
 			// value is a whole-struct C value (a reference to an in-scope
-			// struct-typed local of the matching type, or a fresh RecordConstruct
-			// compound literal), so `lvalue = <value>;` is the direct,
-			// uncoerced C store — a plain C struct assignment, valid for value
-			// types with no pointers/slices needing special handling, the same
-			// by-value copy convention struct call arguments and returns already
-			// use (see buildAggregateArgument).
+			// struct-typed local of the matching type, a fresh RecordConstruct
+			// compound literal, or a call to a struct-returning helper), so
+			// `lvalue = <value>;` is the direct, uncoerced C store — a plain
+			// C struct assignment, valid for value types with no
+			// pointers/slices needing special handling, the same by-value copy
+			// convention struct call arguments and returns already use (see
+			// buildAggregateArgument).
 			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
 			if err != nil {
 				return "", err
@@ -540,14 +541,15 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 		}
 		if targetInfo.structType != 0 {
 			// A Store whose place names a struct-typed local is a whole-struct
-			// reassignment — `p = q;` or `p = Point.{ x = 9, y = 9 };` — whose
-			// new value is a whole-struct C value built by buildStructStoreValue
-			// (a reference to an in-scope struct-typed local of the matching
-			// type, or a fresh RecordConstruct compound literal), emitted as
-			// `pebble_local_<sym> = <value>;` — a plain C struct assignment,
-			// valid for value types with no pointers/slices needing special
-			// handling, the same by-value copy convention struct call arguments
-			// and returns already use.
+			// reassignment — `p = q;`, `p = Point.{ x = 9, y = 9 };`, or
+			// `p = make_point();` — whose new value is a whole-struct C value
+			// built by buildStructStoreValue (a reference to an in-scope
+			// struct-typed local of the matching type, a fresh RecordConstruct
+			// compound literal, or a call to a struct-returning helper),
+			// emitted as `pebble_local_<sym> = <value>;` — a plain C struct
+			// assignment, valid for value types with no pointers/slices
+			// needing special handling, the same by-value copy convention
+			// struct call arguments and returns already use.
 			storeValue, err := buildStructStoreValue(unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.structType, context, width)
 			if err != nil {
 				return "", err
@@ -572,20 +574,25 @@ func buildStoreCore(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.Fi
 // buildStructStoreValue builds the C value text for a whole-struct
 // reassignment whose place resolves to the struct type wantType, shared by
 // buildStoreCore's two struct-reassignment paths (the plain-local path and the
-// pointer-deref/field/indexed-element path). Two value shapes are supported,
-// mirroring buildAggregateArgument's struct argument shapes: a plain
-// SymbolValue naming an already-declared struct-typed local in scope whose
-// declared type is exactly wantType, emitted as the local's own
+// pointer-deref/field/indexed-element path). Three value shapes are supported:
+// a plain SymbolValue naming an already-declared struct-typed local in scope
+// whose declared type is exactly wantType, emitted as the local's own
 // pebble_local_<symbol> C name — the struct's own typedef makes the by-value C
 // copy trivially valid, so `lvalue = pebble_local_<symbol>;` is the whole
-// store; or a freshly-constructed RecordConstruct of exactly wantType, emitted
-// as the same C99 designated-initializer compound literal buildStructValueExpr
+// store; a freshly-constructed RecordConstruct of exactly wantType, emitted as
+// the same C99 designated-initializer compound literal buildStructValueExpr
 // builds (a construction site's field order still need not match the declared
-// order). Any other value shape — a local that is not struct-typed of that
-// type, or any other node kind — is a clean rejection naming what was found,
-// matching buildAggregateArgument's own discipline. width is the entry's
-// resolved integer width, threaded through to the inline construction builder
-// so each field is built at the width the struct's own typedef uses.
+// order); or a DirectCall to a struct-returning helper whose declared result
+// type is exactly wantType (`lvalue = make_point();`), the call expression
+// built by buildDirectCallWithPre — the same call-building machinery a
+// struct-returning call's local-initializer and return-forwarding shapes use —
+// and emitted as the whole new value, trivially valid C since the helper's C
+// return type is the place's own pebble_struct_<typeID>_t. Any other value
+// shape — a local that is not struct-typed of that type, or any other node
+// kind — is a clean rejection naming what was found, matching
+// buildAggregateArgument's own discipline. width is the entry's resolved
+// integer width, threaded through to the inline construction builder so each
+// field is built at the width the struct's own typedef uses.
 func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	valueNode, ok := unit.Node(id)
 	if !ok {
@@ -597,8 +604,48 @@ func buildStructStoreValue(unit *tir.Unit, snapshot *types.Snapshot, fileSet *so
 		}
 		return buildStructValueExpr(unit, snapshot, fileSet, valueNode, scope, context, width)
 	}
+	if valueNode.Kind == tir.DirectCall {
+		// A reassignment from a call to a struct-returning helper —
+		// `p = make_point();`, the reproduction's shape. The call's result
+		// type is the DirectCall node's own Type, which is the callee's
+		// resolved result type, and it must be exactly the place's struct
+		// type — double-checked against the callee's declared ResultType
+		// (defense for hand-built IR), exactly as buildAggregateCallInitializer
+		// and buildAggregateReturnValue's struct DirectCall shape do, so the
+		// emitted C never assigns a value of one struct type into a place of
+		// another. The call itself is built by buildDirectCallWithPre, the
+		// same call-building machinery a struct-returning call's local-
+		// initializer and return-forwarding shapes use, and the call
+		// expression is the whole new value — a `lvalue = f(ctx, ...);`
+		// assignment, trivially valid C since the helper's C return type is
+		// the place's own pebble_struct_<typeID>_t. A non-empty pre (an
+		// inline slice-construction argument, whose temp declaration a pure
+		// value-expression position cannot place) is a clean rejection, never
+		// silently dropped: buildStoreCore returns a single value string with
+		// no pre-threading, so the pre-bearing shape is deliberately out of
+		// scope, mirroring how the scalar store path's buildExpr DirectCall
+		// case rejects a pre through buildDirectCall.
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call of result type %s", context, structTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		calleeDecl, err := findCallDeclaration(unit, valueNode)
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != wantType {
+			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call to symbol %d whose declared result type %s does not match", context, structTypeName(wantType), valueNode.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(unit, snapshot, fileSet, valueNode, scope, width)
+		if err != nil {
+			return "", err
+		}
+		if callPre != "" {
+			return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a call to symbol %d whose argument is an inline slice construction (a CheckedSlice), which is not supported in this reassignment position: the store's value expression has nowhere to place the temp-declaration statement the slice construction needs; bind the slice into a local first", context, structTypeName(wantType), valueNode.Symbol)
+		}
+		return callExpr, nil
+	}
 	if valueNode.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct)", context, structTypeName(wantType), valueNode.Kind)
+		return "", fmt.Errorf("%s reassigns a struct-typed place of type %s from a %s, want a reference to a struct-typed local in scope, a struct literal (a RecordConstruct), or a call to a struct-returning helper (a DirectCall)", context, structTypeName(wantType), valueNode.Kind)
 	}
 	valueInfo, declared := scope[valueNode.Symbol]
 	if !declared || valueInfo.structType != wantType {
