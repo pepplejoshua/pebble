@@ -44,50 +44,5 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: a negative integer literal in a switch case label (`case -5:`) is rejected outright for a signed subject type.**
-
-Batch item 1 of a new batch of 7.
-
-**Reproduction** (confirmed against current HEAD):
-
-```
-fn main() int {
-    let x i16 = -5;
-    switch x {
-        case -5: return 1;
-        else: return 0;
-    }
-}
-```
-
-Current failure:
-
-```
-pebc: emission failed: switch case contains an integer literal with
-malformed text "-5"
-```
-
-**Known cause:** `buildCaseLabel`'s `isNonNegativeDecimal` guard has no
-negative-literal path at all — it assumes every integer case-label
-literal's text is a plain non-negative decimal string, but a negative
-case label's literal text apparently includes the leading `-`
-(or the CaseValue node is built differently for a negative literal —
-needs isolating whether the checker even produces a well-formed negative
-`CaseValue` before the backend sees it).
-
-**Scope for this item:**
-1. First isolate whether this is purely a backend text-parsing gap
-   (`isNonNegativeDecimal` rejecting a leading `-`) or whether the
-   checker/TIR builder does something different for a negative case-label
-   literal that also needs fixing.
-2. Fix `buildCaseLabel` (and `isNonNegativeDecimal` or its caller) to
-   accept a negative integer literal for a SIGNED subject type, emitting
-   the correct negative C case label matching the subject's width.
-3. Confirm a negative case label on an UNSIGNED subject type still
-   cleanly rejects (that should remain a real error, not silently
-   accepted).
-4. Verify the reproduction above compiles and runs, returning 1.
-5. Write tests covering: a negative case label matching, a negative case
-   label on the entry-width `int` type, and continued rejection for an
-   unsigned subject.
+_(empty — pick the next item from proposal 14 to begin)_
 
