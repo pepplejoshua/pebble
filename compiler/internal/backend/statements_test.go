@@ -6,6 +6,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/pepplejoshua/pebble/compiler/internal/source"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func TestEmitIntegerReturnEntryWritesC(t *testing.T) {
@@ -1441,6 +1445,147 @@ func TestEmitSwitchCompilesCleanUnderStrictFlags(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	compileAndRun(t, buf.Bytes(), 10, false)
+}
+
+func TestEmitSwitchNegativeCaseLabelI16CompilesAndRuns(t *testing.T) {
+	// The exact reproduction from proposal 13's active defect: a negative
+	// integer literal case label on a signed non-entry-width subject. The
+	// checker stores the label as the canonical big.Int text "-5", which
+	// buildCaseLabel now emits as `case -5:` at the i16 subject's own width;
+	// the subject's `-5` initializer folds to the same negative constant. x =
+	// -5 hits the case and returns 1.
+	emitAndRun(t, "fn main() int { let x i16 = -5; switch x { case -5: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchNegativeCaseLabelI16NonMatchCompilesAndRuns(t *testing.T) {
+	// Same i16 negative-label switch, subject x = -7 (not among the case
+	// labels): the negative case label still compiles and runs, and the
+	// non-matching subject falls to the else/default arm and returns 0.
+	emitAndRun(t, "fn main() int { let x i16 = -7; switch x { case -5: return 1; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchNegativeCaseLabelEntryWidthIntCompilesAndRuns(t *testing.T) {
+	// A negative case label on an entry-width int subject: the int-typed
+	// parameter `v` is built directly as its C local and the label is emitted
+	// at the unanchored int width (`case -5:`). classify(-5) hits the case and
+	// returns 1.
+	emitAndRun(t, "fn classify(v int) int { switch v { case -5: return 1; else: return 0; } } fn main() int { return classify(-5); }", false, 1, false)
+}
+
+func TestEmitSwitchNegativeCaseLabelEntryWidthIntNonMatchCompilesAndRuns(t *testing.T) {
+	// Same entry-width int negative-label switch, subject 7 (not among the
+	// case labels): the non-matching subject falls to the else/default arm and
+	// returns 0.
+	emitAndRun(t, "fn classify(v int) int { switch v { case -5: return 1; else: return 0; } } fn main() int { return classify(7); }", false, 0, false)
+}
+
+func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
+	// Confirm the emitted C for a negative i16 case label: the subject's `-5`
+	// initializer folds to the negative constant at its own int16_t width, and
+	// the case label is spelled `case -5:` — the same negative decimal text a
+	// negative literal emits in any other position — so it matches the
+	// int16_t subject rather than a silently unsigned reinterpretation.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x i16 = -5; switch x { case -5: return 1; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int16_t pebble_local_27 = -5;",
+		"switch (pebble_local_27)",
+		"case -5:",
+		"default:",
+		"return 1;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitCheckedNegateLiteralNarrowWidthCompilesAndRuns(t *testing.T) {
+	// A negative literal at a width with no pebble_rt_checked_neg_* runtime
+	// helper (the runtime implements only the i32/i64/u64 family) folds at
+	// emission to its negated decimal text instead of calling a nonexistent
+	// helper: `let x i8 = -5;` emits `int8_t pebble_local_27 = -5;`. x = -5
+	// cast to the entry int returns -5, whose OS-visible low byte is 251.
+	emitAndRun(t, "fn main() int { let x i8 = -5; return x as int; }", false, 251, false)
+}
+
+func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
+	// buildCaseLabel is the single place a negative integer case-label text
+	// (the checker's canonical big.Int spelling, a leading `-` followed by
+	// digits) is turned into a C case label. On every SIGNED subject width the
+	// label is the literal's own negative decimal text at that width; on every
+	// UNSIGNED width it is a clean rejection naming the negative literal,
+	// never a silent reinterpretation as a huge unsigned constant.
+	_, snapshot, _, _ := buildFixture(t, "fn main() int { return 0; }", "main", false)
+	caseNode := tir.Node{
+		Kind:    tir.SwitchCase,
+		Span:    source.NewSpan(0, 0, 1),
+		Literal: tir.Literal{Kind: tir.LiteralInteger, IntegerNum: "-5"},
+	}
+	for _, tc := range []struct {
+		name  string
+		width types.BuiltinKind
+	}{
+		{"i8", types.I8},
+		{"i16", types.I16},
+		{"i32", types.I32},
+		{"i64", types.I64},
+		{"int", types.Int},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildCaseLabel(snapshot, caseNode, tc.width)
+			if err != nil {
+				t.Fatalf("buildCaseLabel rejected a negative label on signed %s: %v", tc.name, err)
+			}
+			if want := "case -5:"; got != want {
+				t.Errorf("buildCaseLabel = %q, want %q", got, want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		width types.BuiltinKind
+	}{
+		{"u8", types.U8},
+		{"u16", types.U16},
+		{"u32", types.U32},
+		{"u64", types.U64},
+		{"uint", types.Uint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildCaseLabel(snapshot, caseNode, tc.width)
+			if err == nil {
+				t.Fatalf("buildCaseLabel accepted a negative label on unsigned %s, want rejection", tc.name)
+			}
+			if !strings.Contains(err.Error(), "negative integer literal") {
+				t.Errorf("buildCaseLabel unsigned rejection %q does not name the negative literal", err)
+			}
+		})
+	}
+	// Malformed literal text is still rejected on a signed subject, and a
+	// non-negative label is emitted unchanged.
+	for _, text := range []string{"", "-", "--5", "-5x", "1-"} {
+		bad := caseNode
+		bad.Literal.IntegerNum = text
+		if _, err := buildCaseLabel(snapshot, bad, types.I16); err == nil {
+			t.Errorf("buildCaseLabel accepted malformed literal text %q on a signed subject", text)
+		}
+	}
+	good := caseNode
+	good.Literal.IntegerNum = "5"
+	got, err := buildCaseLabel(snapshot, good, types.I16)
+	if err != nil {
+		t.Fatalf("buildCaseLabel rejected a non-negative label: %v", err)
+	}
+	if want := "case 5:"; got != want {
+		t.Errorf("buildCaseLabel = %q, want %q", got, want)
+	}
 }
 
 func TestEmitTopLevelGuardIfCompilesAndRuns(t *testing.T) {

@@ -156,6 +156,42 @@ fn classify(x i32) void {
 	}
 }
 
+func TestCheckNegativeSwitchCaseLabelUnsignedSubjectRejects(t *testing.T) {
+	// A negative integer literal case label on an UNSIGNED subject must stay a
+	// real error: an unsigned type has no representation for a negative value,
+	// so the checker rejects the literal as out of the subject type's range
+	// (T0508) before the backend ever sees it. The backend's buildCaseLabel
+	// unsigned guard is defense-in-depth on top of this.
+	for _, tc := range []struct {
+		name  string
+		width string
+	}{
+		{"u8", "u8"},
+		{"u16", "u16"},
+		{"u32", "u32"},
+		{"u64", "u64"},
+		{"uint", "uint"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn classify(x ` + tc.width + `) void {
+    switch x {
+    case -5: print 1;
+    else: print 0;
+    }
+}
+`)})
+			result := Check(inputs, diagnostics, Config{})
+			if result.Successful() {
+				t.Fatalf("negative case label on unsigned %s was accepted: %+v", tc.width, diagnostics.Items())
+			}
+			if !hasValidationDiagnostic(diagnostics, diagnostic.Code("T0508")) {
+				t.Fatalf("negative case label on unsigned %s was not rejected with T0508: %+v", tc.width, diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestValidateSwitchesInvalidCategory(t *testing.T) {
 	tests := []struct {
 		name   string

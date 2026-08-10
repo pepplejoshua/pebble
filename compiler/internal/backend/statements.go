@@ -974,12 +974,17 @@ func buildStrCaseLiteral(snapshot *types.Snapshot, caseNode tir.Node) (string, e
 // suffix integerLiteralText gives every other unsigned value in the emitted
 // C, keeping the case constant's C type aligned with the subject's C type
 // (uint8_t gets `case 255u:`, never a silently unsigned/negative
-// interpretation). A bool literal is emitted as `0` (false) or `1` (true),
-// since C treats bool as an integer type and switch cases require integral
-// constant expressions; a char literal is emitted as `case (int32_t)<scalar>:`,
-// the same int32_t spelling buildCharOperand gives a char value everywhere, so
-// the label matches a char-typed subject's integral C representation. Any
-// other case shape is a clean rejection.
+// interpretation). A NEGATIVE integer literal (the checker's canonical
+// big.Int text, a leading `-` followed by digits) is emitted as its negative
+// decimal text on a SIGNED subject (`case -5:` at i16), and cleanly rejected
+// on an unsigned subject, which has no representation for a negative value
+// (accepting one would silently reinterpret it as a huge unsigned constant).
+// A bool literal is emitted as `0` (false) or `1` (true), since C treats bool
+// as an integer type and switch cases require integral constant expressions;
+// a char literal is emitted as `case (int32_t)<scalar>:`, the same int32_t
+// spelling buildCharOperand gives a char value everywhere, so the label
+// matches a char-typed subject's integral C representation. Any other case
+// shape is a clean rejection.
 func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
 	if caseNode.CaseValue != 0 {
 		// An enum-variant case label, emitted as the variant's C enum constant
@@ -1001,6 +1006,18 @@ func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.Bui
 		return "case " + valueText + ":", nil
 	case tir.LiteralInteger:
 		text := caseNode.Literal.IntegerNum
+		if isNegativeDecimal(text) {
+			// A negative case label is legal only on a signed subject: an
+			// unsigned subject has no representation for a negative value, so
+			// a `u`-suffixed negative C constant (`case -5u:`) would silently
+			// reinterpret the literal as a huge unsigned value instead of
+			// rejecting it. Reject cleanly at the subject's own width.
+			if isUnsignedWidth(width) {
+				name, _ := builtinName(width)
+				return "", fmt.Errorf("switch case contains a negative integer literal %q on an unsigned subject type %s", text, name)
+			}
+			return "case " + integerLiteralText(text, width) + ":", nil
+		}
 		if !isNonNegativeDecimal(text) {
 			return "", fmt.Errorf("switch case contains an integer literal with malformed text %q", text)
 		}

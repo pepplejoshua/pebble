@@ -1480,6 +1480,39 @@ func isNonNegativeDecimal(s string) bool {
 	return true
 }
 
+// isNegativeDecimal reports whether s is a negative decimal integer literal
+// text: a single leading '-' followed by one or more ASCII decimal digits. A
+// switch-case negative literal reaches this backend as the checker's
+// canonical big.Int text, which spells a negative value with the leading '-'
+// (a negative literal in a non-switch position is instead a CheckedNegate
+// node wrapping a non-negative IntegerLiteral, so no other backend path sees
+// this text shape).
+func isNegativeDecimal(s string) bool {
+	if len(s) < 2 || s[0] != '-' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isUnsignedWidth reports whether width is one of the unsigned integer
+// builtins (uint, u8, u16, u32, u64) — the widths whose emitted C constants
+// carry a "u" suffix. It is the builtin-width twin of integerLiteralText's
+// unsigned switch, kept separate so a negative case-label literal can be
+// rejected at its subject's own width rather than silently spelled as a
+// "u"-suffixed negative C constant.
+func isUnsignedWidth(width types.BuiltinKind) bool {
+	switch width {
+	case types.Uint, types.U8, types.U16, types.U32, types.U64:
+		return true
+	}
+	return false
+}
+
 // isValidFloatLiteralText reports whether s is a well-formed non-negative
 // decimal floating-literal text of the shapes Pebble's lexer can produce:
 // an integer part of one or more digits, optionally followed by a fractional

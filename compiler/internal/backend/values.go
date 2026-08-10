@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"math/big"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -1880,6 +1881,22 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 		if err != nil {
 			return "", err
 		}
+		if checkedSuffix(width) == "" {
+			// No pebble_rt_checked_neg_* runtime helper exists for this
+			// width (the runtime implements only the i32/i64/u64 family).
+			// A literal operand that fits the width's own signed range is
+			// folded to its negated decimal text — the same negative C
+			// constant spelling a negative switch case label uses — so a
+			// narrow-width negative literal initializer (e.g. `let x i16
+			// = -5;`) emits valid C instead of a call to a nonexistent
+			// helper. A non-constant operand is a clean rejection rather
+			// than a malformed call.
+			if folded, ok := checkedNegateLiteral(unit, node.Children[0], width); ok {
+				return folded, nil
+			}
+			name, _ := builtinName(width)
+			return "", fmt.Errorf("entry function body expression contains a CheckedNegate at %s, a width with no checked-neg runtime helper and a non-constant operand", name)
+		}
 		return "pebble_rt_checked_neg_" + checkedSuffix(width) + "(" + child + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.CheckedArithmetic:
 		if len(node.Children) != 2 {
@@ -2139,6 +2156,37 @@ func buildExpr(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want an integer literal, a reference to a local declared earlier in the body, checked +, -, *, /, %% arithmetic, bitwise &, |, ^, ~, or a call to another function", node.Kind)
 	}
+}
+
+// checkedNegateLiteral folds a CheckedNegate whose single operand is a
+// non-negative IntegerLiteral into its negated decimal C text at the given
+// width, reporting ok=false when the operand is not a foldable literal or the
+// negated value does not fit the width's range. It is the literal-only
+// narrowing buildExpr's CheckedNegate case uses for widths with no
+// pebble_rt_checked_neg_* runtime helper (the runtime implements only the
+// i32/i64/u64 family): a literal `-5` at i16 emits the C constant `-5` — the
+// same negative spelling integerLiteralText gives a negative switch case label
+// — and a non-constant operand is left for the caller to reject cleanly
+// rather than be emitted as a call to a nonexistent helper.
+func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.BuiltinKind) (string, bool) {
+	operand, ok := unit.Node(operandID)
+	if !ok || operand.Kind != tir.IntegerLiteral {
+		return "", false
+	}
+	text := operand.Literal.IntegerNum
+	if !isNonNegativeDecimal(text) {
+		return "", false
+	}
+	value, parseOK := new(big.Int).SetString(text, 10)
+	if !parseOK {
+		return "", false
+	}
+	value.Neg(value)
+	min, max, rangeOK := integerKindRange(width)
+	if !rangeOK || value.Cmp(min) < 0 || value.Cmp(max) > 0 {
+		return "", false
+	}
+	return integerLiteralText(value.String(), width), true
 }
 
 // buildFunctionValue builds the C expression text for one function-typed VALUE:
