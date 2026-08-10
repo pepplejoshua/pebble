@@ -2691,13 +2691,15 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isTuple(snapshot, child.Type) || isArray(snapshot, child.Type) || isSlice(snapshot, child.Type) {
 			hasComposite = true
 		}
-		// A plain enum operand is also composite for routing purposes
-		// (composite print slice 5): it cannot fold into the combined printf
-		// the way a scalar does, because its output requires a runtime tag
-		// comparison to pick the variant name, not a static format
-		// specifier — even though it has no nested fields to recurse into.
-		// The isEnumType guard above already excludes an enum from the struct
-		// branch, so this line is what routes it to buildSequentialPrint.
+		// A plain enum or tagged-union operand is also composite for routing
+		// purposes (composite print slices 5 and 6): it cannot fold into the
+		// combined printf the way a scalar does, because its output requires a
+		// runtime tag comparison to pick the variant name, not a static format
+		// specifier — even though a plain enum has no nested fields to recurse
+		// into (a union recurses into its variant payloads). The isEnumType
+		// guard above already excludes an enum/union from the struct branch
+		// (a union enum also passes isEnumType), so this line is what routes
+		// it to buildSequentialPrint.
 		if isEnumType(unit, snapshot, child.Type) {
 			hasComposite = true
 		}
@@ -2958,6 +2960,12 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildArrayPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isSlice(snapshot, child.Type):
 			compositeCalls, pres, err = buildSlicePrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isTaggedUnionType(unit, snapshot, child.Type):
+			// A tagged-union operand is checked BEFORE the plain-enum case
+			// below, because a union enum also passes isEnumType: its output
+			// needs the union's payload recursion, not the plain-enum leaf
+			// switch (composite print slice 6).
+			compositeCalls, pres, err = buildUnionPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isEnumType(unit, snapshot, child.Type):
 			compositeCalls, pres, err = buildEnumPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
@@ -3139,6 +3147,34 @@ func buildEnumPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 	return calls, append(pres, valuePres...), nil
 }
 
+// buildUnionPrintOperand emits one tagged-union operand of a print statement as
+// its sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's ONE raw C switch over
+// the union's .tag discriminant (composite print slice 6). The operand is
+// materialized once into a per-operand temp (pebble_print_union_<nodeID>,
+// declared with the union's own pebble_union_<typeID>_t C type) so a
+// union-returning call operand is evaluated exactly once, and the switch
+// compares the temp's stored tag against the variant constants (see
+// buildUnionPrintValueCalls).
+func buildUnionPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	valueExpr, err := buildUnionPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Materialize the operand once into a per-operand temp so a
+	// union-returning call operand is evaluated exactly once, then switch on
+	// the temp's stored tag. The temp name derives from the operand's own
+	// unwrapped node ID — the stable identity of this operand, unique across
+	// the unit — so a print with several union operands gets distinct temps.
+	tempName := fmt.Sprintf("pebble_print_union_%d", operandID)
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", unionTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
 // materialized operand temp (the common case, from the build*PrintOperand
@@ -3188,6 +3224,13 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	case types.Slice:
 		return buildSlicePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	default:
+		if isTaggedUnionType(unit, snapshot, valueType) {
+			// A tagged union is checked BEFORE the plain-enum branch below,
+			// because a union enum also passes isEnumType: its output needs
+			// the union's payload recursion inside the raw switch, not the
+			// plain-enum leaf switch (composite print slice 6).
+			return buildUnionPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+		}
 		if isEnumType(unit, snapshot, valueType) {
 			return buildEnumPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 		}
@@ -3492,6 +3535,114 @@ func buildEnumPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sna
 	}, nil, nil
 }
 
+// buildUnionPrintValueCalls emits one tagged-union VALUE (a whole operand temp,
+// or a nested union field/element off an enclosing temp) as its ONE raw
+// pre-rendered C switch over the union's .tag discriminant (composite print
+// slice 6). A variant's STATIC prefix — the declared type name, a literal `.`,
+// and the matching variant's declared SOURCE name — is selected by a RUNTIME
+// tag comparison, and a payload-carrying variant ALSO recurses into its payload
+// (read as <expr>.payload.pebble_field_<member>), so the output can never fold
+// into the combined printf the way a scalar can; instead the whole switch is
+// one printFprintfCall whose raw field is set:
+//
+//	switch (<expr>.tag) {
+//	    case pebble_variant_<m1>:
+//	        fprintf(stdout, "Result.ok(");
+//	        fprintf(stdout, "%" PRId32, <expr>.payload.pebble_field_<m1>);
+//	        fprintf(stdout, ")");
+//	        break;
+//	    case pebble_variant_<m2>:
+//	        fprintf(stdout, "Result.done");
+//	        break;
+//	    default:
+//	        fprintf(stdout, "Result<invalid-tag: %d>", <expr>.tag);
+//	        break;
+//	}
+//
+// The case labels are the variant constants of the union's own C tag-enum
+// typedef (pebble_variant_<member>, the exact constants every union switch
+// subject uses — buildUnionConstruction sets the .tag field to them, and the
+// tagged-union switch subject reads them), so the stored tag and the case
+// labels agree by construction. The switch's subject is the union value's C
+// expression (a materialized temp, or a nested field/element projection like
+// <temp>.pebble_field_<member>) with `.tag` appended — the union typedef's own
+// field naming (see buildUnionTypedef). A payload-carrying variant is one whose
+// payload member the union's C typedef actually declares — exactly
+// unionVariantPayloadMember, the same read-side test the narrowed union-variant
+// payload access uses (a variant declared void, or declared with a payload but
+// never constructed anywhere, has no union member and prints bare). Its payload
+// value is routed through the shared buildPrintValueCalls against the payload
+// projection, so the payload can itself be any currently-printable type — a
+// scalar, a struct, a tuple, an array, a slice, an enum, or another union — and
+// the payload's pre-statements (a char payload's UTF-8 buffer) land INSIDE the
+// case body at the case's own indent, declared and filled only when that case
+// runs. The payload projection is read off the SAME value expression the switch
+// tests (never a re-evaluated operand), so a union-returning call operand
+// materialized once by buildUnionPrintOperand is not re-evaluated per variant.
+// The default case is the proposal-17 defensive invalid-tag output
+// `Type<invalid-tag: <tag>>`, genuinely unreachable for a well-formed program
+// but present so a memory-corruption scenario never reads a garbage tag as a
+// valid variant name. A trailing empty-string label call follows the raw
+// switch: it is a no-op (`fprintf(stdout, "");`) in the middle of a multi-
+// operand statement, and buildSequentialPrint's trailing-newline append turns
+// it into `fprintf(stdout, "\n");` when the union is the statement's last
+// operand — the raw switch block itself cannot receive that append, so the
+// no-op carrier is how the one-newline-per-print rule stays uniform. The
+// variant-name and type-name strings come from the unit's own declaration-node
+// spans (variantSourceName/unionSourceName), never the generated C names. No
+// pres are returned — the payload formatter's pres are consumed into the case
+// body text rather than hoisted (they must run only when that case executes).
+func buildUnionPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	info, err := resolveUnionInfoForValue(unit, snapshot, valueType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s print value of type %s: %v", context, unionTypeName(valueType), err)
+	}
+	typeName, err := unionSourceName(unit, fileSet, info.decl)
+	if err != nil {
+		return nil, nil, err
+	}
+	caseIndent := indent + "    "
+	bodyIndent := indent + "        "
+	var block strings.Builder
+	block.WriteString(indent + "switch (" + expr + ".tag) {\n")
+	for _, variant := range info.variants {
+		variantName, err := variantSourceName(unit, fileSet, variant)
+		if err != nil {
+			return nil, nil, err
+		}
+		block.WriteString(caseIndent + "case " + enumVariantName(variant) + ":\n")
+		if unionVariantPayloadMember(unit, snapshot, valueType, variant) {
+			payloadType, ok := unionMemberType(info.members, variant)
+			if !ok {
+				return nil, nil, fmt.Errorf("%s print value of type %s: variant symbol %d has a payload union member but no resolved payload type", context, unionTypeName(valueType), variant)
+			}
+			block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"."+variantName+"(") + ");\n")
+			payloadCalls, payloadPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, payloadType, expr+fmt.Sprintf(".payload.pebble_field_%d", variant), operandID, bufferPath, bodyIndent, context, width)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, pre := range payloadPres {
+				block.WriteString(pre + "\n")
+			}
+			for _, call := range payloadCalls {
+				block.WriteString(call.text(bodyIndent) + "\n")
+			}
+			block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(")") + ");\n")
+		} else {
+			block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"."+variantName) + ");\n")
+		}
+		block.WriteString(bodyIndent + "break;\n")
+	}
+	block.WriteString(caseIndent + "default:\n")
+	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"<invalid-tag: %d>") + ", " + expr + ".tag);\n")
+	block.WriteString(bodyIndent + "break;\n")
+	block.WriteString(indent + "}")
+	return []printFprintfCall{
+		{raw: block.String()},
+		{format: `""`},
+	}, nil, nil
+}
+
 // buildTuplePrintValueExpr builds the C expression naming one tuple-typed print
 // operand's value, of the shapes real source produces (all built by the same
 // machinery a tuple-typed call argument uses): a reference to a tuple-typed
@@ -3653,6 +3804,23 @@ func buildEnumPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	return buildEnumValue(st, unit, snapshot, fileSet, operandID, scope, width)
 }
 
+// buildUnionPrintValueExpr builds the C expression naming one tagged-union
+// print operand's value, of the shapes real source produces (all built by the
+// same machinery a union value uses anywhere in this backend — buildUnionValueExpr
+// is the one shared builder for a union value in every position): a variant
+// construction (Result.ok(42), emitted as its union compound literal), a
+// reference to a union-typed local/global/extern (a SymbolValue, emitted as its
+// pebble_local_<id> / pebble_global_<id> / extern C name), a call to a
+// union-returning helper (a DirectCall, emitted as the call expression), a
+// SourceAlias (transparent grouped-expression parens), a Load of a union-typed
+// struct field (emitted as the field projection), or a union-payload optional
+// force-unwrap. Any other shape is a clean rejection, never a guessed
+// lowering. This is a NEW consumer of the existing buildUnionValueExpr machinery
+// (composite print slice 6), not new union representation knowledge.
+func buildUnionPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	return buildUnionValueExpr(st, unit, snapshot, fileSet, operandID, scope, context, child.Type, width)
+}
+
 // buildStructPrintValueExpr builds the C expression naming one struct-typed
 // print operand's value, of the four shapes real source produces (all built by
 // the same machinery a struct-typed call argument uses): a reference to a
@@ -3744,6 +3912,20 @@ func enumSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolI
 		}
 	}
 	return "", fmt.Errorf("enum declaration symbol %d has no TypeDeclaration node in the unit", decl)
+}
+
+// unionSourceName resolves one tagged-union type's declared source name
+// (Result) by slicing the type's own TypeDeclaration node span out of its
+// source file — the same span mechanism enumSourceName/structSourceName use
+// for an enum's/struct's declared name, shared because a TypeDeclaration node
+// carries the declared identifier for every nominal kind.
+func unionSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("union declaration symbol %d has no TypeDeclaration node in the unit", decl)
 }
 
 // variantSourceName resolves one enum variant's declared source name (red) by

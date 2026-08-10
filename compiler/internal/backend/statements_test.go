@@ -1124,6 +1124,93 @@ func TestEmitPrintEnumWritesRuntimeSwitch(t *testing.T) {
 	}
 }
 
+func TestEmitPrintTaggedUnionOfVariantsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 6: a tagged union operand prints as
+	// `<TypeName>.<variant>(<payload>)` for a payload-carrying variant — the
+	// declared type name, a dot, the matching variant's declared source name,
+	// then the payload's own value recursively formatted in parens — or as
+	// bare `<TypeName>.<variant>` (no parens) for a void-payload variant.
+	// Each case asserts its exact output, proving the tag-to-variant mapping
+	// and the payload-vs-no-payload formatting are both correct, not just
+	// coincidentally right for the first variant.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); print r; return 0; }", "Result.ok(42)\n"},
+		{"second payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.error(\"failed\"); print r; return 0; }", "Result.error(failed)\n"},
+		{"payload-less variant", "type Status = union enum { done void; error str; };\nfn main() i32 { let s = Status.done; print s; return 0; }", "Status.done\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintTaggedUnionWritesRuntimeSwitch(t *testing.T) {
+	t.Parallel()
+	// A tagged union operand's print is emitted as direct sequential
+	// fprintf(stdout, ...) calls with the operand materialized once into a
+	// per-operand temp, followed by ONE runtime C switch over the temp's
+	// `.tag` discriminant — one case per declared variant, recursing into
+	// the payload projection for a payload-carrying variant, plus a
+	// defensive default case for an out-of-range discriminant, mirroring
+	// the plain-enum switch shape from slice 5. Both payload-carrying
+	// variants must actually be CONSTRUCTED somewhere in the unit: the C
+	// union typedef only allocates a payload member for a constructed
+	// variant (the same existing convention narrowed union-variant payload
+	// access relies on, see unionVariantPayloadMember), so a variant never
+	// constructed anywhere would fall back to the bare no-parens form here
+	// for an unrelated reason and make this assertion meaningless.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); let e = Result.error(\"x\"); print r; print e; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if count := len(regexp.MustCompile(`(?m)^\s*switch \(.*\.tag\) \{`).FindAllString(out, -1)); count != 2 {
+		t.Errorf("emitted C has %d switch(...tag) statements, want exactly 2 (one per print statement):\n%s", count, out)
+	}
+	for _, want := range []string{
+		`fprintf(stdout, "Result.ok(");`,
+		`fprintf(stdout, "Result.error(");`,
+		`fprintf(stdout, ")");`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if !regexp.MustCompile(`Result<invalid-tag: %d>|Result<invalid: %d>`).MatchString(out) {
+		t.Errorf("emitted C missing the defensive invalid-tag default case:\n%s", out)
+	}
+	combinedRE := regexp.MustCompile(`(?m)^\s*printf\(`)
+	if combinedRE.MatchString(out) {
+		t.Errorf("emitted C still contains a combined printf call for the union print:\n%s", out)
+	}
+}
+
+func TestEmitPrintTaggedUnionRejectsNonPrintablePayload(t *testing.T) {
+	t.Parallel()
+	// A union with a not-yet-printable payload type in ANY declared variant
+	// (a pointer, here) must be rejected by the checker, mirroring slice 1's
+	// conservative struct-field rule: the checker cannot know at compile
+	// time which variant will be active at runtime, so it must reject the
+	// whole type if any variant's payload isn't printable.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "type Box = union enum { p *i32; n i32; };\nfn main() i32 { let b = Box.n(1); print b; return 0; }", "main", false)
+	if err == nil {
+		t.Fatalf("expected a checker error rejecting a union with a pointer-payload variant, got none")
+	}
+	if !strings.Contains(err.Error(), "C0612") {
+		t.Fatalf("expected a C0612 (not printable) error, got: %v", err)
+	}
+}
+
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A deferred char print routes through the same shared buildPrint, so a

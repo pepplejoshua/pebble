@@ -120,19 +120,19 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	// a scalar builtin (bool, char, str, any integer width, any float width), or
 	// — composite print slice 1 — a struct value, or — slice 2 — a tuple or
 	// fixed array, or — slice 4 — a slice, or — slice 5 — a plain enum value,
-	// provided every field/element is itself printable by this same rule
-	// (slice 3: nested aggregates). The recursion terminates because a
-	// field/element type is a strictly nested by-value aggregate; Pebble rejects
-	// a genuinely infinite-size composite at declaration/binding time, so no
-	// by-value cycle can reach here (verified against a self-referential struct
-	// fixture). A plain enum is a LEAF case — it has no fields to recurse into —
-	// but it is still routed through this shared function (slice 5). A struct
-	// with any non-struct/non-scalar field (a tagged union, a pointer, an
-	// optional) still rejects — those are later slices. A field/element of a
-	// type that is not a concrete known type (a generic struct's parameter-typed
-	// field, which resolves only against a specific instantiation's type
-	// arguments) is not provably printable at the declaration level, so it
-	// rejects too.
+	// or — slice 6 — a tagged union value, provided every field/element/
+	// variant-payload is itself printable by this same rule (slice 3: nested
+	// aggregates). The recursion terminates because a field/element type is a
+	// strictly nested by-value aggregate; Pebble rejects a genuinely
+	// infinite-size composite at declaration/binding time, so no by-value cycle
+	// can reach here (verified against a self-referential struct fixture). A
+	// plain enum is a LEAF case — it has no fields to recurse into — but it is
+	// still routed through this shared function (slice 5). A struct with any
+	// non-struct/non-scalar field (a pointer, an optional) still rejects —
+	// those are later slices. A field/element of a type that is not a concrete
+	// known type (a generic struct's parameter-typed field, which resolves only
+	// against a specific instantiation's type arguments) is not provably
+	// printable at the declaration level, so it rejects too.
 	var printableType func(typeID types.TypeID) bool
 	// memberPrintable resolves one struct member's declared template to its
 	// concrete known type and recurses; a member whose type is not a concrete
@@ -142,6 +142,23 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		template, ok := handoff.Semantics.Template(memberType)
 		if !ok || template.Kind != infer.TemplateKnown {
 			return false
+		}
+		return printableType(template.Known)
+	}
+	// unionMemberPayloadPrintable resolves one tagged-union variant's payload
+	// template to its concrete known type and recurses (composite print slice
+	// 6). A payload-less variant — a variant declared with a void payload — is
+	// trivially printable, since there is no payload value to format; a
+	// payload-carrying variant is printable exactly when its payload type is,
+	// by the same recursive rule. A member whose type is not a concrete known
+	// type is not provably printable.
+	unionMemberPayloadPrintable := func(memberType infer.TemplateID) bool {
+		template, ok := handoff.Semantics.Template(memberType)
+		if !ok || template.Kind != infer.TemplateKnown {
+			return false
+		}
+		if template.Known == handoff.Semantics.Types().Builtins().Void {
+			return true
 		}
 		return printableType(template.Known)
 	}
@@ -191,7 +208,25 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			// same one this package's switch validation uses — a plain enum
 			// is NominalEnum while a tagged union is NominalTaggedUnion, even
 			// though both share the types.Nominal key kind — so a tagged union
-			// (composite print slice 6, a later slice) is NOT accepted here.
+			// is NOT admitted by this leaf case.
+			return true
+		case infer.NominalTaggedUnion:
+			// A tagged union is printable exactly when every declared
+			// variant's payload type is itself printable (composite print slice
+			// 6). The checker cannot know at compile time which variant will
+			// be active at runtime, so it is conservative — the same
+			// reasoning slice 1 used for struct fields. A payload-less variant
+			// (a void payload) is trivially printable (unionMemberPayload
+			// Printable returns true for it); a payload-carrying variant's
+			// payload type is checked recursively by the same printableType
+			// rule, so a union any of whose variants carries a not-yet-
+			// printable payload (a pointer, an optional — later slices) is
+			// rejected outright.
+			for _, member := range declaration.Members {
+				if !unionMemberPayloadPrintable(member.Type) {
+					return false
+				}
+			}
 			return true
 		case infer.NominalStruct:
 			for _, member := range declaration.Members {
@@ -201,9 +236,9 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			}
 			return true
 		default:
-			// A tagged union (NominalTaggedUnion), a legacy untagged union
-			// (NominalUnion), an extern type, or any other nominal is not a
-			// plain enum, so it stays unprintable.
+			// A legacy untagged union (NominalUnion), an extern type, or any
+			// other nominal is not a plain enum, a tagged union, or a struct,
+			// so it stays unprintable.
 			return false
 		}
 	}
