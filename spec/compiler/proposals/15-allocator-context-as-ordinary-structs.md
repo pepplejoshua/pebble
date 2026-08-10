@@ -126,13 +126,18 @@ compiled program) is untouched by this redesign.
 **Q4 — implementation plan (synthesized from the above, since the
 investigation's own session ran out of budget before writing this part):**
 
-1. **Slice 1 — prelude-injection mechanism, proven in isolation.** Add the
-   smallest addition to `compiler/internal/module` that lets a module be
-   parsed and resolved before user modules, with its top-level
-   declarations visible everywhere without an explicit `import`. Prove it
-   with a trivial throwaway test type (NOT `Allocator`/`Context` yet) —
-   isolates the novel infrastructure risk from the special-case removal
-   risk. Lowest confidence, do this first and re-estimate afterward.
+1. ~~**Slice 1 — prelude-injection mechanism, proven in isolation.**~~
+   **RESOLVED (`b54d79d`).** Opt-in `BuildConfig.PreludePath` (empty by
+   default, zero behavior change otherwise); a prelude module is parsed
+   and resolved first, tagged `RolePrelude`; every ordinary module's
+   scope is reparented under the prelude module's scope instead of
+   directly under the builtin prelude, reusing the existing scope-chain
+   lookup — no new resolution machinery. Proven end-to-end (not just at
+   the checker level): a new `-prelude` CLI flag plus a real compile-
+   and-run test — a prelude module declares a struct, a main module
+   references it with zero imports, compiles and runs, returns 42.
+   Backward compatibility and an existing `std:` import both confirmed
+   unaffected. Causation-checked.
 2. **Slice 2 — real `.peb` prelude source, shadow-verified.** Write
    `Allocator`/`Context` as real Pebble struct declarations (matching
    `installPrelude`'s current field shape: `ptr`, `alloc`, `realloc`,
