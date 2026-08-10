@@ -1503,16 +1503,23 @@ func buildVariadicSliceArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 //     they have as a local's declaration initializer — emitted as a C99
 //     compound-literal expression by buildTupleValueExpr / buildStructValueExpr,
 //     which share their brace-list construction with the local-declaration
-//     builders. An inline construct whose own Type is not exactly the
-//     parameter's type (defense for hand-built IR — the checker coerces every
-//     argument to its parameter's type and rejects a mismatch itself) is a clean
-//     rejection, so the emitted C never passes a value of the wrong aggregate
-//     type to a parameter. Any other argument shape is a clean rejection naming
-//     what was found: a SourceAlias-wrapped argument (extra parens, e.g.
-//     f(((1, 2)))), a nested aggregate whose element/field types are outside the
-//     two supported grammars, or any other node kind. width is the entry's
-//     resolved integer width, threaded through to the inline builders so each
-//     element/field is built at the width the parameter's own typedef uses.
+//     builders;
+//   - (struct branch only) a whole struct read through a pointer deref used
+//     directly as the argument — f(*ptr) — a Load whose place is a
+//     DereferencePlace, emitted as the null-checked dereference value
+//     buildDereferencePlaceRead produces, a plain by-value struct copy through
+//     the pointer.
+//
+// An inline construct whose own Type is not exactly the
+// parameter's type (defense for hand-built IR — the checker coerces every
+// argument to its parameter's type and rejects a mismatch itself) is a clean
+// rejection, so the emitted C never passes a value of the wrong aggregate
+// type to a parameter. Any other argument shape is a clean rejection naming
+// what was found: a SourceAlias-wrapped argument (extra parens, e.g.
+// f(((1, 2)))), a nested aggregate whose element/field types are outside the
+// two supported grammars, or any other node kind. width is the entry's
+// resolved integer width, threaded through to the inline builders so each
+// element/field is built at the width the parameter's own typedef uses.
 func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, wantType types.TypeID, wantTuple bool, calleeSymbol symbol.SymbolID, position int, width types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
@@ -1534,6 +1541,34 @@ func buildAggregateArgument(unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 				return "", fmt.Errorf("%s is a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
 			}
 			return buildStructValueExpr(unit, snapshot, fileSet, node, locals, context, width)
+		}
+		if node.Kind == tir.Load {
+			// A whole struct read through a pointer deref used directly as the
+			// call argument — `use_point(*ptr);`, the read-side twin of the
+			// `*self = other;` write — lowered by the checker to a Load of a
+			// DereferencePlace whose single child is the pointer expression.
+			// The Load's Type must be exactly the parameter's struct type
+			// (defense for hand-built IR — the checker coerces every argument
+			// to its parameter's type), and the emitted C is the null-checked
+			// dereference value buildDereferencePlaceRead produces,
+			// `*(pebble_struct_<typeID>_t)(pebble_rt_checked_deref_ptr(...))` —
+			// the struct's own typedef makes passing the whole dereferenced
+			// struct by value trivially valid C, the same by-value copy the
+			// symbol-reference and compound-literal argument shapes make.
+			if node.Type != wantType {
+				return "", fmt.Errorf("%s is a Load of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
+			}
+			if len(node.Children) != 1 {
+				return "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+			}
+			place, ok := unit.Node(node.Children[0])
+			if !ok {
+				return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
+			}
+			if place.Kind != tir.DereferencePlace {
+				return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-struct read through a pointer)", context, place.Kind)
+			}
+			return buildDereferencePlaceRead(unit, snapshot, fileSet, place, locals, width, node.Span, false)
 		}
 		return "", fmt.Errorf("%s is a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only passing an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
 	}

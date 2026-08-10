@@ -542,17 +542,27 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 		return buildAggregateCallInitializer(unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, false)
 	}
 	if initValue.Kind == tir.Load {
-		// A by-value read of one struct element of an array or slice local —
-		// `let e = old_entries[j];`, the std/hmap.peb rehash shape — lowered by
-		// the checker to a Load of a CheckedIndexPlace whose single child is the
-		// StoragePlace naming the array/slice local (the exact shape a scalar
-		// element read uses, confirmed against a real fixture). The emitted C is
-		// a whole-struct copy declaration, `pebble_struct_<typeID>_t
-		// pebble_local_<symbol> = <lvalue>;`, where the lvalue is the
-		// bounds-checked element projection built by buildPlaceLValue (the same
+		// A by-value read used as the whole-struct initializer, in two shapes:
+		//
+		//   - one struct element of an array or slice local — `let e =
+		//     old_entries[j];`, the std/hmap.peb rehash shape — lowered by the
+		//     checker to a Load of a CheckedIndexPlace whose single child is the
+		//     StoragePlace naming the array/slice local (the exact shape a scalar
+		//     element read uses, confirmed against a real fixture);
+		//   - a whole struct read through a pointer deref — `let q = *ptr;`, the
+		//     read-side twin of the `*self = other;` write — lowered to a Load of
+		//     a DereferencePlace whose single child is the pointer expression.
+		//
+		// The emitted C is a whole-struct copy declaration,
+		// `pebble_struct_<typeID>_t pebble_local_<symbol> = <lvalue>;`, where the
+		// lvalue is the place's own C expression built by buildPlaceLValue — the
+		// bounds-checked element projection for a CheckedIndexPlace (the same
 		// lvalue an address-of or field-write through a slice index lowers to),
-		// and its resolved element type must be exactly the local's declared
-		// type (defense for hand-built IR). Like every local, the declaration is
+		// or the null-checked dereference `*(pebble_struct_<typeID>_t)
+		// (pebble_rt_checked_deref_ptr(...))` for a DereferencePlace (the same
+		// whole-struct deref value buildDereferencePlaceRead produces) — and its
+		// resolved element type must be exactly the local's declared type
+		// (defense for hand-built IR). Like every local, the declaration is
 		// followed by a (void) cast against -Wunused-variable.
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, structTypeName(initValue.Type), len(initValue.Children))
@@ -561,8 +571,8 @@ func buildStructLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileS
 		if !ok {
 			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load referencing invalid place node %d", context, structTypeName(initValue.Type), initValue.Children[0])
 		}
-		if place.Kind != tir.CheckedIndexPlace {
-			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value struct-element read)", context, structTypeName(initValue.Type), place.Kind)
+		if place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value struct-element read) or a DereferencePlace (a by-value whole-struct read through a pointer)", context, structTypeName(initValue.Type), place.Kind)
 		}
 		lvalue, elementType, err := buildPlaceLValue(unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {

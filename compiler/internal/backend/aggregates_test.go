@@ -1421,6 +1421,67 @@ func TestEmitStructPointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testi
 	emitAndRun(t, "type Point = struct { x int; y int; };\nfn make_point() Point { return Point.{ x = 9, y = 9 }; }\nfn reset(self *Point) void { *self = make_point(); }\nfn main() int { var p = Point.{ x = 1, y = 2 }; reset(&p); return p.x; }", false, 9, false)
 }
 
+func TestEmitStructPointerDerefLocalInitializerCompilesAndRuns(t *testing.T) {
+	// A whole struct read through a pointer deref used as a struct-typed
+	// local's declaration initializer (`let q = *ptr;`), the reproduction's
+	// local shape: the local's initializer is a Load whose place is a
+	// DereferencePlace, emitted as the null-checked whole-struct deref value
+	// `pebble_local_<q> = *(pebble_struct_<id>_t)(pebble_rt_checked_deref_ptr(...));`.
+	// The initialized local is then passed to the helper, whose read of p.x
+	// must return 5 (the dereferenced struct's x field).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn use_point(p Point) int { return p.x; }\nfn main() int { var p = Point.{ x = 5, y = 6 }; let ptr = &p; let q = *ptr; return use_point(q); }", false, 5, false)
+}
+
+func TestEmitStructPointerDerefCallArgumentCompilesAndRuns(t *testing.T) {
+	// A whole struct read through a pointer deref used directly as a call
+	// argument (`use_point(*ptr);`), the reproduction's direct-argument shape:
+	// the argument is a Load whose place is a DereferencePlace, emitted as the
+	// null-checked whole-struct deref value passed by value to the helper,
+	// whose read of p.x must return 5 (the dereferenced struct's x field).
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn use_point(p Point) int { return p.x; }\nfn main() int { var p = Point.{ x = 5, y = 6 }; let ptr = &p; return use_point(*ptr); }", false, 5, false)
+}
+
+func TestEmitStructPointerDerefLocalInitializerWritesC(t *testing.T) {
+	// The emitted C for the reproduction's local-initializer shape: the
+	// struct-typed local's initializer lowers to a whole-struct copy
+	// declaration whose value is the null-checked dereference
+	// `*(pebble_struct_<typeID>_t)(pebble_rt_checked_deref_ptr(pebble_local_<ptr>,
+	// <loc>))` — the struct's own typedef makes the by-value deref read
+	// trivially valid C, and the struct typedef is still emitted ahead of
+	// main.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn use_point(p Point) int { return p.x; }\nfn main() int { var p = Point.{ x = 5, y = 6 }; let ptr = &p; let q = *ptr; return use_point(q); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	derefRE := regexp.MustCompile(`pebble_struct_\d+_t pebble_local_\d+ = \*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
+	if !derefRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-struct deref local initializer %q:\n%s", derefRE, out)
+	}
+	if !strings.Contains(out, "typedef struct {\n    int32_t pebble_field_") {
+		t.Errorf("emitted C missing the Point struct typedef:\n%s", out)
+	}
+}
+
+func TestEmitStructPointerDerefCallArgumentWritesC(t *testing.T) {
+	// The emitted C for the reproduction's direct-argument shape: the call
+	// argument lowers to the null-checked dereference value passed directly in
+	// the call `pebble_fn_<id>(ctx, *(pebble_struct_<typeID>_t)
+	// (pebble_rt_checked_deref_ptr(pebble_local_<ptr>, <loc>)))` — a plain
+	// by-value struct argument.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn use_point(p Point) int { return p.x; }\nfn main() int { var p = Point.{ x = 5, y = 6 }; let ptr = &p; return use_point(*ptr); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	derefRE := regexp.MustCompile(`return pebble_fn_\d+\(ctx, \*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
+	if !derefRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-struct deref call argument %q:\n%s", derefRE, out)
+	}
+}
+
 func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
 	// The emitted C for the plain-local whole-struct reassignment: the store
 	// lowers to a plain C struct assignment `pebble_local_<p> = pebble_local_<q>;`
