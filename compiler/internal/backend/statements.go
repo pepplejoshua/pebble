@@ -562,7 +562,10 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	// grammar: an integer subject of any fixed-width integer builtin (the
 	// entry's width, the abstract int, or a narrower/wider fixed-width
 	// integer like u8 or i16) is built by buildExpr at the subject's own
-	// width, a bool subject by buildBoolExpr, a char subject by
+	// width, a uint subject by buildUintExpr (uint is the word-sized
+	// unsigned builtin, a DISTINCT builtin from u64, so it needs its own
+	// grammar rather than the fixed-width branch), a bool subject by
+	// buildBoolExpr, a char subject by
 	// buildCharOperand, a tagged-union subject by
 	// buildUnionConstruction (reading its .tag field), a plain enum subject
 	// by buildEnumValue.
@@ -586,10 +589,12 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 	}
 	var subjectExpr string
 	var err error
-	// subjectIntWidth is the subject's own resolved fixed-width integer
-	// builtin (i8/i16/i32/i64 or u8/u16/u32/u64 — the entry's width being
-	// just one of them), or zero when the subject is not a concrete
-	// fixed-width integer (an abstract-int, bool, char, str, or enum/tagged-
+	// subjectIntWidth is the subject's own resolved integer builtin: a
+	// fixed-width integer (i8/i16/i32/i64 or u8/u16/u32/u64 — the entry's
+	// width being just one of them) or uint (whose case labels are spelled at
+	// uint's own width), or zero when the subject is not a concrete
+	// fixed-width/word-sized integer (an abstract-int, bool, char, str, or
+	// enum/tagged-
 	// union subject). buildCaseLabel spells integer case labels at THIS
 	// width rather than the ambient entry width, so the C switch compares the
 	// subject's own C type against matching-width constants (a u8 subject
@@ -665,6 +670,19 @@ func buildSwitchStatement(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sou
 		// SymbolValue, both handled directly by the two branches below.
 		subjectIntWidth = integerSubjectWidth
 		subjectExpr, err = buildExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, integerSubjectWidth, width)
+	} else if isUint(snapshot, subjectNode.Type) {
+		// A uint-typed subject (the word-sized unsigned builtin,
+		// snapshot.Builtins().Uint, deliberately excluded from the fixed-width
+		// branch above): built by buildUintExpr, the same builder every other
+		// uint value position in this backend uses (uint-typed parameters,
+		// locals, returns, checked arithmetic, and range-loop bounds). uint's
+		// C type is the fixed uint64_t (cType(types.Uint)), so subjectIntWidth
+		// is set to types.Uint and buildCaseLabel spells the case labels at
+		// that width — `case 5u:`, the "u" suffix integerLiteralText gives
+		// every unsigned value — keeping the case constants' C type aligned
+		// with the uint64_t subject.
+		subjectIntWidth = types.Uint
+		subjectExpr, err = buildUintExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isBool(snapshot, subjectNode.Type) {
 		subjectExpr, err = buildBoolExpr(unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isChar(snapshot, subjectNode.Type) {

@@ -1334,6 +1334,52 @@ func TestEmitSwitchU32SubjectCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { let x u32 = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
 }
 
+func TestEmitSwitchUintSubjectCompilesAndRuns(t *testing.T) {
+	// The exact reproduction from proposal 13's active defect: a uint-typed
+	// switch subject with an integer case label and an else/default arm. The
+	// checker accepts a uint switch and proves exhaustiveness correctly, but
+	// the backend previously rejected it at emission because the switch-
+	// subject dispatch had no uint branch (2b3d684's fixed-width widening
+	// deliberately excluded uint, the word-sized unsigned builtin distinct
+	// from u64). Subject x = 5 hits the case and returns 1.
+	emitAndRun(t, "fn main() int { let x uint = 5; switch x { case 5: return 1; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchUintSubjectElseCompilesAndRuns(t *testing.T) {
+	// Same uint switch, subject x = 9 (not among the case labels) falls to
+	// the else/default arm and returns 0, confirming the else arm is
+	// reachable for a uint subject.
+	emitAndRun(t, "fn main() int { let x uint = 9; switch x { case 5: return 1; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchUintSubjectWritesC(t *testing.T) {
+	// Confirm the emitted C for a uint switch: the subject is the uint local
+	// declared at its own uint64_t width (uint's C type, cType(types.Uint)),
+	// and the integer case label is emitted at uint's OWN width — `case 5u:`,
+	// the same unsigned suffix integerLiteralText gives a uint value
+	// everywhere — so the label's C type matches the uint64_t subject. The
+	// else arm is the default label.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x uint = 5; switch x { case 5: return 1; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"uint64_t pebble_local_27 = 5u;",
+		"switch (pebble_local_27)",
+		"case 5u:",
+		"default:",
+		"return 1;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
 func TestEmitSwitchU8ExhaustiveNoElseCompilesAndRuns(t *testing.T) {
 	// An exhaustive u8 switch covering all 256 values (0..255) with no else
 	// arm: the checker proves exhaustiveness for a u8 subject (the 4817dae
