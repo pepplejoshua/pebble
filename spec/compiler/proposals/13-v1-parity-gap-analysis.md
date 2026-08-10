@@ -44,5 +44,54 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: composite print slice 3 — nested aggregates (struct-of-struct, struct-of-tuple, struct-of-array, tuple-of-struct, array-of-struct).**
+
+Sourced from proposal 17, slice 3 of 9. Slices 1 (struct-of-scalars) and 2
+(tuple/array-of-scalars) landed in `c182e73`/`5e6e786`.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Inner = struct { v int; };
+type Outer = struct { inner Inner; };
+
+fn main() int {
+    let o = Outer.{ inner = Inner.{ v = 1 } };
+    print o;
+    return 0;
+}
+```
+
+Fails with `error[C0612]: print operand is not printable`.
+
+**Scope for this slice:** every field/element type printable at this
+point (scalar, struct, tuple, array — any combination, arbitrarily
+nested) is now accepted. A field/element of a type NOT yet printable
+(enum, union, optional, slice, pointer) still rejects — those are later
+slices.
+- Checker: generalize `valuePrintable`'s struct/tuple/array field-type
+  check to recurse — a field/element is acceptable if it's a scalar OR
+  itself a printable struct/tuple/array (recursive definition), not just
+  a flat scalar check.
+- Backend: the existing `buildStructPrintOperand`/`buildTuplePrintOperand`/
+  `buildArrayPrintOperand` (slices 1-2) need their per-field/per-element
+  dispatch widened to recurse into a nested struct/tuple/array field
+  (currently they likely only call `buildScalarPrintParts`, which will
+  reject a non-scalar field/element type) — recursing means emitting that
+  field/element's own nested punctuation+label+value sequence inline,
+  not a separate print statement.
+- The print expression must STILL be materialized exactly once at the
+  operand level (as slices 1-2 already do) — a side-effecting nested
+  aggregate read must not be re-evaluated per nesting level.
+- Verify the reproduction prints exactly `Outer{ inner: Inner{ v: 1 } }`.
+- Also verify at least one struct-of-tuple, one struct-of-array, one
+  array-of-struct, and one tuple-of-struct case (proposal 17's own
+  example, `Line{ a: Point{ x: 1, y: 2 }, b: Point{ x: 3, y: 4 } }`, is
+  a good struct-of-struct-of-scalars fixture to include).
+- Confirm slices 1-2 and all scalar prints are unaffected.
+- Write tests: checker acceptance for at least struct-of-struct and
+  array-of-struct, checker rejection still holds for a field/element of
+  a not-yet-printable type (e.g. an enum field), and backend compile-run
+  tests asserting exact printed output for the reproduction plus at
+  least one other nested shape.
 
