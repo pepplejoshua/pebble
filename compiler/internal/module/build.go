@@ -65,11 +65,21 @@ func build(config BuildConfig, provider SourceProvider, sources *source.FileSet,
 	}
 
 	entryName := entryDisplay(config.EntryPath)
+	if config.PreludePath != "" {
+		prelude, ok := b.loadCandidate(config.Package, config.PreludePath, entryDisplay(config.PreludePath), source.Span{})
+		if !ok {
+			return b.graph
+		}
+		b.graph.Prelude = b.addModule(prelude, 0, source.Span{}, RolePrelude)
+		if b.graph.Prelude == 0 {
+			return b.graph
+		}
+	}
 	entry, ok := b.loadCandidate(config.Package, config.EntryPath, entryName, source.Span{})
 	if !ok {
 		return b.graph
 	}
-	b.graph.Root = b.addModule(entry, 0, source.Span{})
+	b.graph.Root = b.addModule(entry, 0, source.Span{}, RoleNormal)
 	for index := 0; index < len(b.graph.modules); index++ {
 		b.processImports(ModuleID(index+1), b.depths[index])
 	}
@@ -85,7 +95,7 @@ func entryDisplay(entry string) string {
 	return clean
 }
 
-func (b *builder) addModule(item candidate, depth uint32, importSpan source.Span) ModuleID {
+func (b *builder) addModule(item candidate, depth uint32, importSpan source.Span, role ModuleRole) ModuleID {
 	if existing, ok := b.graph.byKey[item.key]; ok {
 		return existing
 	}
@@ -102,7 +112,7 @@ func (b *builder) addModule(item candidate, depth uint32, importSpan source.Span
 	}
 	file, _ := b.sources.File(sourceID)
 	tree := syntax.Parse(file, b.diagnostics)
-	b.graph.modules = append(b.graph.modules, Module{ID: id, Key: item.key, Source: sourceID, Tree: tree})
+	b.graph.modules = append(b.graph.modules, Module{ID: id, Key: item.key, Source: sourceID, Tree: tree, Role: role})
 	b.graph.byKey[item.key] = id
 	b.displays = append(b.displays, item.display)
 	b.depths = append(b.depths, depth)
@@ -145,7 +155,7 @@ func (b *builder) processImports(id ModuleID, depth uint32) {
 				b.report(CodeResourceLimit, fmt.Sprintf("import depth limit of %d exceeded", b.maxDepth), authored.span)
 				continue
 			}
-			target = b.addModule(resolved, depth+1, authored.span)
+			target = b.addModule(resolved, depth+1, authored.span, RoleNormal)
 		}
 		if target == 0 {
 			continue

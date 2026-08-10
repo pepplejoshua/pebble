@@ -48,8 +48,16 @@ type SearchRoot struct {
 
 // BuildConfig contains all path-resolution state for one graph build.
 type BuildConfig struct {
-	EntryPath      string
-	Package        PackageID
+	// EntryPath is the root module loaded first (unless a prelude is
+	// configured) and becomes Graph.Root.
+	EntryPath string
+	// Package is the package identity assigned to the entry module.
+	Package PackageID
+	// PreludePath optionally names a module parsed and resolved before the
+	// entry module. Its top-level declarations are injected into prelude
+	// scope so they are visible to every other module without an explicit
+	// import. An empty value disables the mechanism entirely.
+	PreludePath    string
 	StandardRoot   string
 	SearchRoots    []SearchRoot
 	MaxModules     uint32
@@ -140,6 +148,18 @@ type ImportEdge struct {
 	Target    ModuleID
 }
 
+// ModuleRole classifies a module's position in the compilation.
+type ModuleRole uint8
+
+const (
+	// RoleNormal is every module loaded through the ordinary entry/import
+	// discovery path.
+	RoleNormal ModuleRole = iota + 1
+	// RolePrelude marks the prelude module, parsed and resolved before the
+	// entry module so its top-level declarations are visible everywhere.
+	RolePrelude
+)
+
 // Module is an immutable graph value. Imports is copied by graph accessors.
 type Module struct {
 	ID      ModuleID
@@ -147,14 +167,22 @@ type Module struct {
 	Source  source.ID
 	Tree    *syntax.Tree
 	Imports []ImportEdge
+	Role    ModuleRole
 }
 
 // Graph is the immutable result of one deterministic graph build.
 type Graph struct {
 	Root       ModuleID
+	Prelude    ModuleID
 	modules    []Module
 	byKey      map[ModuleKey]ModuleID
 	dependency []ModuleID
+}
+
+// HasPrelude reports whether the graph was built with a configured prelude
+// module.
+func (g *Graph) HasPrelude() bool {
+	return g != nil && g.Prelude != 0
 }
 
 // Len returns the number of successfully loaded reachable modules.

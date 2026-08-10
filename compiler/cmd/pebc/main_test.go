@@ -98,6 +98,26 @@ func TestRunStdImportEmitsRunnableC(t *testing.T) {
 	}
 }
 
+func TestRunPreludeFlagEmitsRunnableC(t *testing.T) {
+	dir := t.TempDir()
+	preludePath := filepath.Join(dir, "prelude.peb")
+	writeFile(t, preludePath, "type Frobnicator = struct { quux i32; };\n")
+	mainPath := filepath.Join(dir, "main.peb")
+	writeFile(t, mainPath, "fn main() int { let f Frobnicator = Frobnicator.{ quux = 42 }; return f.quux; }\n")
+	outPath := filepath.Join(dir, "out.c")
+	var stderr bytes.Buffer
+	if code := run([]string{"-prelude", preludePath, "-o", outPath, mainPath}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("prelude run returned %d: %s", code, stderr.String())
+	}
+	emitted, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compileEmittedC(t, dir, emitted, "prelude", 42); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunFlagCompilesAndRuns(t *testing.T) {
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)

@@ -700,6 +700,85 @@ func TestConfiguredLimitsAndInvalidInputsAreBounded(t *testing.T) {
 	requireCode(t, missing, CodeResourceLimit)
 }
 
+func TestPreludeDeclarationsVisibleEverywhereWithoutImport(t *testing.T) {
+	// The prelude declares a type AND a function; the entry module references
+	// both with no import at all.
+	prelude := "type Frobnicator = struct { quux i32; }; fn frob(value Frobnicator) Frobnicator => value;"
+	files := map[string]string{
+		"prelude.peb": prelude,
+		"main.peb":    "fn main() i32 { let f Frobnicator = Frobnicator.{ quux = 7 }; let g Frobnicator = frob(f); return g.quux; }",
+	}
+	result, diagnostics, graph, sources := resolveFilesWithPrelude(t, files, "prelude.peb")
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("unexpected name diagnostics: %+v", got)
+	}
+	if !graph.HasPrelude() {
+		t.Fatal("graph has no prelude module")
+	}
+	preludeModule, _ := graph.Module(graph.Prelude)
+	mainModule, _ := graph.Module(graph.Root)
+	mainFile, _ := sources.File(mainModule.Source)
+	preludeModuleID := preludeModule.ID
+	for _, name := range []string{"Frobnicator", "frob"} {
+		for _, id := range nameNodes(t, mainModule, mainFile, name) {
+			res, ok := result.Reference(SyntaxRef{Module: mainModule.ID, Node: id})
+			if !ok || res.State != ResolutionResolved || res.Symbol == 0 {
+				t.Fatalf("reference to %q did not resolve: %+v", name, res)
+			}
+			sym, _ := result.Symbols.Symbol(res.Symbol)
+			if sym.Module != preludeModuleID {
+				t.Fatalf("reference to %q resolved to symbol in module %d, want prelude module %d", name, sym.Module, preludeModuleID)
+			}
+		}
+	}
+	assertResultInvariants(t, result)
+}
+
+func TestPreludeDeclarationsVisibleFromImportedModules(t *testing.T) {
+	// Both the entry module and an explicitly imported module reference the
+	// prelude type; neither imports the prelude.
+	files := map[string]string{
+		"prelude.peb": "type Frobnicator = struct { quux i32; };",
+		"dep.peb":     "fn helper(value Frobnicator) i32 => value.quux;",
+		"main.peb":    "import \"./dep\"; fn main() i32 => dep::helper(Frobnicator.{ quux = 1 });",
+	}
+	result, diagnostics, graph, sources := resolveFilesWithPrelude(t, files, "prelude.peb")
+	if got := nameErrors(diagnostics.Items()); len(got) != 0 {
+		t.Fatalf("unexpected name diagnostics: %+v", got)
+	}
+	preludeModule, _ := graph.Module(graph.Prelude)
+	for _, moduleID := range []module.ModuleID{graph.Root, module.ModuleID(2)} {
+		item, _ := graph.Module(moduleID)
+		file, _ := sources.File(item.Source)
+		for _, id := range nameNodes(t, item, file, "Frobnicator") {
+			res, ok := result.Reference(SyntaxRef{Module: item.ID, Node: id})
+			if !ok || res.State != ResolutionResolved || res.Symbol == 0 {
+				t.Fatalf("reference in module %d to Frobnicator did not resolve: %+v", item.ID, res)
+			}
+			sym, _ := result.Symbols.Symbol(res.Symbol)
+			if sym.Module != preludeModule.ID {
+				t.Fatalf("reference in module %d resolved to symbol in module %d, want prelude module %d", item.ID, sym.Module, preludeModule.ID)
+			}
+		}
+	}
+	assertResultInvariants(t, result)
+}
+
+func TestPreludeConfigurationIsInertInResolution(t *testing.T) {
+	text := "type Unit = struct {}; fn use(value Unit) Unit => value;"
+	absent, absentDiagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	empty, emptyDiagnostics, emptyGraph, _ := resolveFilesWithPrelude(t, map[string]string{"main.peb": text}, "")
+	if dump(absent) != dump(empty) {
+		t.Fatal("resolution dump differs between absent and empty PreludePath")
+	}
+	if !reflect.DeepEqual(absentDiagnostics.Items(), emptyDiagnostics.Items()) {
+		t.Fatal("diagnostics differ between absent and empty PreludePath")
+	}
+	if emptyGraph.HasPrelude() {
+		t.Fatal("empty PreludePath unexpectedly enabled a prelude")
+	}
+}
+
 func TestRequiredFixtureShapes(t *testing.T) {
 	required := []string{"valid/forward_and_scopes.peb", "valid/generics_members_brackets.peb", "valid/capture.peb", "valid/runtime_allocator.peb", "valid/multimodule/qualified/main.peb", "invalid/N0001/block_lifetime.peb", "invalid/N0001/loop_lifetime.peb", "invalid/N0001/local_forward.peb", "invalid/N0001/runtime_context_hidden.peb", "invalid/N0002/cross_kind.peb", "invalid/N0002/parameter_body.peb", "invalid/N0002/parameters.peb", "invalid/N0002/members.peb", "invalid/N0002/multimodule/qualifier_collision/main.peb", "invalid/N0003/not_a_qualifier.peb", "invalid/N0003/multimodule/qualifier_shadow/main.peb", "invalid/N0004/multimodule/missing_member/main.peb", "invalid/N0005/category.peb", "invalid/N0005/value_as_type.peb", "invalid/N0007/reserved_builtin.peb", "invalid/N0007/reserved_allocator.peb", "recovery/damaged.peb"}
 	root := filepath.Join(repoRoot(t), "tests", "names")
@@ -712,13 +791,23 @@ func TestRequiredFixtureShapes(t *testing.T) {
 
 func resolveFiles(t *testing.T, files map[string]string, config Config) (*Result, *diagnostic.DiagnosticSet, *module.Graph, *source.FileSet) {
 	t.Helper()
+	return resolveFilesWithConfig(t, files, config, "")
+}
+
+func resolveFilesWithPrelude(t *testing.T, files map[string]string, prelude string) (*Result, *diagnostic.DiagnosticSet, *module.Graph, *source.FileSet) {
+	t.Helper()
+	return resolveFilesWithConfig(t, files, Config{}, prelude)
+}
+
+func resolveFilesWithConfig(t *testing.T, files map[string]string, config Config, prelude string) (*Result, *diagnostic.DiagnosticSet, *module.Graph, *source.FileSet) {
+	t.Helper()
 	providerFiles := make(map[module.CanonicalPath][]byte, len(files))
 	for name, text := range files {
 		providerFiles[module.CanonicalPath(filepath.ToSlash(name))] = []byte(text)
 	}
 	diagnostics := diagnostic.NewDiagnosticSet()
 	sources := source.NewFileSet()
-	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app"}, memoryProvider{files: providerFiles}, sources, diagnostics)
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", PreludePath: prelude}, memoryProvider{files: providerFiles}, sources, diagnostics)
 	result := Resolve(graph, sources, diagnostics, config)
 	return result, diagnostics, graph, sources
 }

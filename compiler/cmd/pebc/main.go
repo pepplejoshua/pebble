@@ -30,12 +30,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	outputPath := flags.String("o", "", "write emitted C to path instead of stdout")
 	runFlag := flags.Bool("run", false, "compile the emitted C with cc and execute it, forwarding its exit code")
 	releaseFlag := flags.Bool("release", false, "compile in release mode (no runtime safety checks) when -run is set")
+	preludeFlag := flags.String("prelude", "", "path to a prelude module parsed before the entry module; its top-level declarations are visible to every module without an import")
 	runtimeRootFlag := flags.String("runtime-root", "", "path to the runtime/ directory (auto-detected from the working directory when empty)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pebc [-o path] [-run] [-release] [-runtime-root dir] <entry.peb>")
+		fmt.Fprintln(stderr, "usage: pebc [-o path] [-run] [-release] [-prelude path] [-runtime-root dir] <entry.peb>")
 		return 2
 	}
 
@@ -47,7 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pebc: cannot resolve entry %q: %v\n", flags.Arg(0), err)
 		return 1
 	}
-	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
+	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", PreludePath: *preludeFlag, StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
 	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
 	store, err := types.New(types.Config{})
 	if err != nil {

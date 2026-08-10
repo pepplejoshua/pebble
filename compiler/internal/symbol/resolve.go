@@ -69,14 +69,36 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	}
 	r.installPrelude()
 	// Module scopes are allocated in graph ID order so qualified lookup can target
-	// any reachable module before reference resolution begins.
+	// any reachable module before reference resolution begins. When a prelude
+	// module is present, its scope is created first and becomes the parent of
+	// every ordinary module scope, so its top-level declarations (collected by
+	// the ordinary per-module walk) are visible to every module without an
+	// explicit import.
+	preludeScope := ScopeID(0)
 	for _, item := range graph.Modules() {
+		if item.Role != module.RolePrelude {
+			continue
+		}
 		origin := SyntaxRef{Module: item.ID}
 		if item.Tree != nil {
 			origin.Node = item.Tree.Root()
 		}
-		scope := r.newScope(ScopeModule, r.result.prelude, item.ID, 0, origin)
-		r.moduleScopes[item.ID] = scope
+		preludeScope = r.newScope(ScopeModule, r.result.prelude, item.ID, 0, origin)
+		r.moduleScopes[item.ID] = preludeScope
+	}
+	for _, item := range graph.Modules() {
+		if item.Role == module.RolePrelude {
+			continue
+		}
+		origin := SyntaxRef{Module: item.ID}
+		if item.Tree != nil {
+			origin.Node = item.Tree.Root()
+		}
+		parent := r.result.prelude
+		if preludeScope != 0 {
+			parent = preludeScope
+		}
+		r.moduleScopes[item.ID] = r.newScope(ScopeModule, parent, item.ID, 0, origin)
 	}
 	for _, item := range graph.Modules() {
 		r.collectModule(item)

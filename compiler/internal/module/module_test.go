@@ -200,6 +200,116 @@ func TestImportSpellingContract(t *testing.T) {
 	}
 }
 
+func TestPreludeModuleIsLoadedFirstAndMarked(t *testing.T) {
+	provider := &memoryProvider{files: map[CanonicalPath][]byte{
+		"prelude.peb": []byte("type Frobnicator = struct { quux I32; };"),
+		"main.peb":    []byte("fn main() i32 => 0;"),
+	}}
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := Build(BuildConfig{EntryPath: "main.peb", Package: "app", PreludePath: "prelude.peb"}, provider, source.NewFileSet(), diagnostics)
+	if diagnostics.HasErrors() {
+		t.Fatalf("prelude build produced diagnostics: %+v", diagnostics.Items())
+	}
+	if graph.Len() != 2 {
+		t.Fatalf("modules = %d, want 2", graph.Len())
+	}
+	if !graph.HasPrelude() || graph.Prelude != 1 {
+		t.Fatalf("graph prelude = %d, want 1", graph.Prelude)
+	}
+	if graph.Root != 2 {
+		t.Fatalf("graph root = %d, want 2", graph.Root)
+	}
+	prelude, ok := graph.Module(graph.Prelude)
+	if !ok || prelude.Role != RolePrelude {
+		t.Fatalf("prelude module role = %v", prelude.Role)
+	}
+	root, ok := graph.Module(graph.Root)
+	if !ok || root.Role != RoleNormal {
+		t.Fatalf("root module role = %v", root.Role)
+	}
+	order := graph.DependencyOrder()
+	if len(order) != 2 || order[0] != graph.Prelude || order[1] != graph.Root {
+		t.Fatalf("dependency order = %v, want prelude then root", order)
+	}
+	assertGraphInvariants(t, graph)
+}
+
+func TestPreludeModuleSupportsExplicitImports(t *testing.T) {
+	provider := &memoryProvider{files: map[CanonicalPath][]byte{
+		"prelude.peb": []byte("import \"./leaf\"; type Frobnicator = struct { quux I32; };"),
+		"leaf.peb":    []byte("fn leaf() int => 0;"),
+		"main.peb":    []byte("fn main() i32 => 0;"),
+	}}
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := Build(BuildConfig{EntryPath: "main.peb", Package: "app", PreludePath: "prelude.peb"}, provider, source.NewFileSet(), diagnostics)
+	if diagnostics.HasErrors() {
+		t.Fatalf("prelude-with-import build produced diagnostics: %+v", diagnostics.Items())
+	}
+	if graph.Len() != 3 {
+		t.Fatalf("modules = %d, want 3", graph.Len())
+	}
+	if graph.Prelude != 1 || graph.Root != 2 {
+		t.Fatalf("prelude/root = %d/%d, want 1/2", graph.Prelude, graph.Root)
+	}
+	prelude, _ := graph.Module(graph.Prelude)
+	if len(prelude.Imports) != 1 || prelude.Imports[0].Target != 3 {
+		t.Fatalf("prelude imports = %+v, want one edge to module 3", prelude.Imports)
+	}
+	order := graph.DependencyOrder()
+	if len(order) != 3 || order[0] != 3 || order[1] != graph.Prelude || order[2] != graph.Root {
+		t.Fatalf("dependency order = %v, want [leaf prelude root]", order)
+	}
+	assertGraphInvariants(t, graph)
+}
+
+func TestPreludeModuleFailureReportsDiagnostic(t *testing.T) {
+	provider := &memoryProvider{files: map[CanonicalPath][]byte{
+		"main.peb": []byte("fn main() i32 => 0;"),
+	}}
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := Build(BuildConfig{EntryPath: "main.peb", Package: "app", PreludePath: "missing_prelude.peb"}, provider, source.NewFileSet(), diagnostics)
+	if graph.Len() != 0 {
+		t.Fatalf("graph = %d modules, want 0 after prelude failure", graph.Len())
+	}
+	if !hasModuleCode(diagnostics, CodeModuleUnavailable) {
+		t.Fatalf("missing prelude produced no M0002 diagnostic: %+v", diagnostics.Items())
+	}
+}
+
+func TestPreludeConfigurationIsInertWithoutAPrelude(t *testing.T) {
+	files := map[CanonicalPath][]byte{
+		"main.peb": []byte("import \"./dep\"; fn main() i32 => 0;"),
+		"dep.peb":  []byte("fn dep() int => 0;"),
+	}
+	explicit, explicitDiagnostics := buildWithProvider(t, BuildConfig{EntryPath: "main.peb", Package: "app"}, files)
+	absent, absentDiagnostics := buildWithProvider(t, BuildConfig{EntryPath: "main.peb", Package: "app", PreludePath: ""}, files)
+	if got, want := graphSnapshot(explicit), graphSnapshot(absent); got != want {
+		t.Fatalf("graph differs between absent and empty PreludePath:\n%s\nvs\n%s", got, want)
+	}
+	if !reflect.DeepEqual(explicitDiagnostics.Items(), absentDiagnostics.Items()) {
+		t.Fatal("diagnostics differ between absent and empty PreludePath")
+	}
+	if explicit.HasPrelude() || absent.HasPrelude() {
+		t.Fatal("empty PreludePath unexpectedly enabled a prelude")
+	}
+}
+
+func buildWithProvider(t *testing.T, config BuildConfig, files map[CanonicalPath][]byte) (*Graph, *diagnostic.DiagnosticSet) {
+	t.Helper()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := Build(config, &memoryProvider{files: files}, source.NewFileSet(), diagnostics)
+	return graph, diagnostics
+}
+
+func hasModuleCode(diagnostics *diagnostic.DiagnosticSet, code diagnostic.Code) bool {
+	for _, item := range diagnostics.Items() {
+		if item.Severity == diagnostic.Error && item.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestModuleDiagnosticLimitIsBounded(t *testing.T) {
 	provider := &memoryProvider{files: map[CanonicalPath][]byte{
 		"main.peb": []byte("import \"./one\"; import \"./two\";"),
@@ -314,8 +424,9 @@ func assertGraphInvariants(t *testing.T, graph *Graph) {
 
 func graphSnapshot(graph *Graph) string {
 	var result strings.Builder
+	fmt.Fprintf(&result, "root %d prelude %d\n", graph.Root, graph.Prelude)
 	for _, module := range graph.Modules() {
-		fmt.Fprintf(&result, "%d %s %s\n", module.ID, module.Key.Package, module.Key.Path)
+		fmt.Fprintf(&result, "%d %s %s role=%d\n", module.ID, module.Key.Package, module.Key.Path, module.Role)
 		for _, edge := range module.Imports {
 			fmt.Fprintf(&result, "  %s %s -> %d [%d,%d)\n", edge.Spelling, edge.Qualifier, edge.Target, edge.Span.Start, edge.Span.End)
 		}
