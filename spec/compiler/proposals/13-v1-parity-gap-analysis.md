@@ -44,5 +44,64 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: composite print slice 1 — struct-of-scalars printing.**
+
+Sourced from proposal 17's design and slice plan (composite printing),
+not proposal 14 — proposal 14 listed "composite print from V1 is absent"
+with "policy undecided"; the policy is now decided (implement it, quality
+bar is real). Proposal 17 has the full design (formatting policy, cycle
+safety, storage strategy, generated-C shape). This is slice 1 of 9:
+struct-of-scalars only.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Point = struct {
+    x int;
+    y int;
+};
+
+fn main() int {
+    let p = Point.{ x = 1, y = 2 };
+    print p;
+    return 0;
+}
+```
+
+Current failure:
+
+```
+print_struct.peb:8:5: error[C0612]: print operand is not printable
+      print p;
+      ^
+```
+
+**Scope for this slice (do NOT exceed):**
+1. Checker: widen `valuePrintable`
+   (`compiler/internal/check/control_flow_validation.go:111-122`) to
+   accept a struct-typed value WHOSE FIELDS ARE ALL currently-printable
+   scalar types (bool, char, str, integer, float) — not yet nested
+   structs, tuples, arrays, slices, enums, unions, optionals, or
+   pointers; those are later slices. A struct with a non-scalar field
+   stays rejected for now (later slices will lift this incrementally).
+2. Backend: extend `buildPrint`
+   (`compiler/internal/backend/statements.go:2511-2770`) with a struct
+   branch that emits `TypeName{ field: value, field: value }` using
+   direct sequential `fprintf(stdout, ...)` calls (NOT a runtime string
+   allocator — proposal 17 explicitly requires no dependency on the
+   unfinished Allocator/Context redesign). Field names come from the
+   struct's own declared field names in declaration order. Each scalar
+   field value reuses the EXISTING scalar print builders exactly (the
+   same code paths `buildPrint` already uses for a bare integer/bool/
+   char/str/float print) — do not reimplement scalar formatting.
+3. The print statement still ends with exactly one trailing newline,
+   matching current behavior for scalars.
+4. Verify the reproduction above compiles and runs, printing
+   `Point{ x: 1, y: 2 }` followed by a newline.
+5. Confirm existing scalar `print` statements are completely unaffected.
+6. Write tests: checker acceptance for struct-of-scalars, checker
+   rejection still holds for a struct with a non-scalar field (e.g. a
+   nested struct field — confirm this is EXPECTED to still reject at
+   this slice, not a regression), and a backend compile-run test
+   asserting the exact printed output.
 
