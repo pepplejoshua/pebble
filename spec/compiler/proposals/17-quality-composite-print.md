@@ -1,0 +1,193 @@
+# 17 — Quality composite printing for every value type
+
+**Status:** decision made (implement it, quality bar is real — "every type
+of value in this language printable out of the box," clear output, not a
+grudging minimum). Investigated via a read-only Luna dispatch
+(2026-08-10); this document is that investigation's findings plus the
+design it proposed, kept as the plan of record. Implementation proceeds
+slice by slice through `13-v1-parity-gap-analysis.md`, same discipline as
+every other item in that tracker.
+
+## Part 1 — V1 reference behavior
+
+V1 (`src/codegen.c`) is a compile-time recursive formatter, not a runtime
+metadata walker — it statically unrolls a format string and argument list
+for the value's known type, then emits ONE combined `printf`.
+
+- Scalar format selection: `src/codegen.c:1753-1781`
+- Composite format generation: `src/codegen.c:1784-1864`
+  (`build_composite_format_string`)
+- Composite argument generation: `src/codegen.c:1866-2022`
+  (`build_composite_args`)
+- Print statement generation: `src/codegen.c:2046-2185`, `2187-2242`
+
+Generated shapes: `StructType.{field = value, field = value}`,
+`(value, value)` (tuple), `[value, value]` (array). Builds the formatted
+composite into a temp via `snprintf(NULL, 0, ...)` sizing +
+`alloca`-backed `sprintf`, then passes it to the final `printf`
+(`codegen.c:2094-2159`).
+
+V1's nesting is real but incomplete: structs/tuples/arrays recurse fully
+into each other, but a nested SLICE is not traversed (prints the type name
+as a literal string, `codegen.c:1879-1886`); optional/pointer/union fields
+fall into a generic fallback that prints the type name as a quoted string
+(`codegen.c:2168-2181`) rather than inspecting the value, which for an
+optional can produce invalid generated C. No cycle/depth protection exists
+in the print path, but it doesn't need one: V1 never recursively
+dereferences pointers, so pointer cycles never enter the formatter.
+Top-level plain enums print `EnumType.variant` via a generated name table
+(`codegen.c:2160-2167`, `2221-2225`).
+
+## Part 2 — V2 current state
+
+`print` currently accepts only bool, char, str, integer, and float —
+`valuePrintable` in `compiler/internal/check/control_flow_validation.go:111-122`
+rejects everything else at `control_flow_validation.go:230-234`. Backend
+dispatch is `buildPrint` in `compiler/internal/backend/statements.go:2511-2770`,
+switching on resolved builtin type at `statements.go:2634-2752` with no
+composite branch at all.
+
+The exact TIR type is already available at the print site
+(`child.Type`, `statements.go:2581-2585`) — no runtime type info is
+needed, matching V1's architecture. Existing scalar leaf behavior to
+reuse exactly: integers use exact-width `PRI*` macros
+(`statements.go:2661-2679`), bool emits `"true"`/`"false"`
+(`2680-2699`), char converts through `pebble_rt_char_to_utf8`
+(`2700-2732`), str emits `PebbleStr.data` (`2733-2743`), `f32`/`f64` use
+`%f` (`2744-2750`).
+
+Reusable existing recursive-traversal patterns (type collection/typedef
+walkers, not print walkers, but the right shape to mirror): fixed-array
+collection (`collect.go:135-199`), tuple (`collect.go:329-428`), optional
+(`collect.go:429-513`), slice (`collect.go:542-631`), struct incl. nested
+field traversal (`collect.go:883-997`), tagged-union
+(`collect.go:1199-1289`), dependency-first aggregate ordering
+(`typedefs.go:25-165`). Aggregate C layouts are already explicit: optional
+is `has_value`+`value` (`typedefs.go:287-318`), tagged union is
+`tag`+`payload` (`typedefs.go:401-455`), slice is `data`+`len`
+(`typedefs.go:590-606`), struct fields at `typedefs.go:338-378`.
+
+## Part 3 — Design
+
+### Formatting policy
+
+Readable, source-oriented, not V1's exact spelling:
+
+```
+Point{ x: 1, y: 2 }
+Line{ a: Point{ x: 1, y: 2 }, b: Point{ x: 3, y: 4 } }
+(1, "hello")
+(1,)                 -- one-element tuple, trailing comma avoids paren ambiguity
+[1, 2, 3]
+[]                   -- empty slice
+some(42)
+none
+Color.red
+Color<invalid: 7>    -- defensive, invalid discriminant
+Result.ok(42)
+Result.done          -- payload-less variant
+nil                  -- null pointer
+&0x7ffee1234560       -- non-null pointer, address only, NEVER auto-dereferenced
+<fn add>              -- statically known function reference
+<fn @0x1234abcd>       -- indirect function pointer
+```
+
+Struct fields use `:` (not V1's `=`). Every print statement still ends
+with exactly one newline. Strings keep V2's current unquoted scalar
+output for now (quoting, if ever wanted, is a separate scalar-policy
+change, not a composite-traversal one). The core quality bar: every value
+gets a truthful representation — nothing silently prints only its type
+name the way V1's fallback branch does for union/optional/pointer.
+
+Scalar leaves reuse the existing V2 builders exactly (`buildCharOperand`,
+`buildStrOperand`, the width-aware integer builders) — the composite
+formatter never bypasses them.
+
+### Cycles — the key architectural decision
+
+**Pointers are always leaves.** `print p` where `p` is a pointer prints
+the address only, never the pointee, unless the source explicitly writes
+`print *p` (which prints the pointee using the normal composite
+formatter — and any pointer FIELDS reached from there are again
+address-only leaves). Structs/tuples/arrays/slices/optionals/enums/union
+payloads all recurse by value.
+
+Since Pebble permits a runtime cycle only through pointer indirection
+(V1's checker treats pointers as cycle-breaking indirection,
+`src/checker.c:356-361`, and rejects a genuinely infinite-size type
+outright, `checker.c:363-407`/`570-613`), making pointers leaves makes
+ordinary composite printing cycle-safe BY CONSTRUCTION — no visited-set,
+no depth counter needed as the primary mechanism. A depth cap is still a
+reasonable defensive backstop for pathologically deep BY-VALUE nesting,
+but not the real safety mechanism.
+
+### Output storage — no allocator dependency
+
+Direct sequential `fprintf(stdout, ...)` calls, no intermediate dynamic
+string. Deliberately chosen over V1's `alloca`+`snprintf`-sizing+`sprintf`
+approach because it requires no allocator at all — this must not create a
+dependency on proposal 15's Allocator/Context redesign, which is a
+separate, parallel, not-yet-implemented effort. Also naturally supports a
+dynamic slice's runtime-determined element count and lets enum/union
+branches emit output conditionally without pre-computing a total length.
+
+### Generated C shape (concrete example)
+
+For `type Point = struct { x int; y int; }; type Line = struct { a Point; b Point; }; print my_line;`:
+
+```c
+Line pebble_print_value = my_line;
+fprintf(stdout, "Line{ a: ");
+fprintf(stdout, "Point{ x: ");
+fprintf(stdout, "%" PRId32, pebble_print_value.pebble_field_a.pebble_field_x);
+fprintf(stdout, ", y: ");
+fprintf(stdout, "%" PRId32, pebble_print_value.pebble_field_a.pebble_field_y);
+fprintf(stdout, " }, b: ");
+fprintf(stdout, "Point{ x: ");
+fprintf(stdout, "%" PRId32, pebble_print_value.pebble_field_b.pebble_field_x);
+fprintf(stdout, ", y: ");
+fprintf(stdout, "%" PRId32, pebble_print_value.pebble_field_b.pebble_field_y);
+fprintf(stdout, " }\n");
+```
+
+A slice needs a real runtime loop (element formatter is still statically
+generated, only the iteration count is dynamic):
+
+```c
+fprintf(stdout, "[");
+for (size_t i = 0; i < value.len; i++) {
+    if (i != 0) fprintf(stdout, ", ");
+    /* recursively emitted element formatter */
+}
+fprintf(stdout, "]");
+```
+
+The right internal abstraction is a recursive emitter, conceptually
+`emitPrintValue(typeID, cExpression, context)` — dispatches on `TypeID`,
+emits punctuation/labels as static text, calls the existing scalar
+builders at leaves, generates a runtime loop only for a dynamic slice,
+and a runtime switch only for an enum/union discriminant.
+
+## Implementation slices (recommended order, least risk first)
+
+1. **Structs of scalars** — checker acceptance for struct values, named
+   fields, reuse scalar leaves. Highest value, lowest risk.
+2. **Tuples and fixed arrays** — positional recursion, compile-time
+   unrolled (array length is part of the type).
+3. **Nested aggregates** — structs containing structs/tuples/arrays/
+   optionals; the print expression must be materialized once so an
+   operand with side effects isn't evaluated twice.
+4. **Slices** — dynamic runtime loop; scalar slices first, then slices
+   of structs/tuples.
+5. **Plain enums** — variant-name generation with an invalid-discriminant
+   defensive case.
+6. **Tagged unions** — tag switch + payload recursion; payload-less
+   variants and invalid tags need explicit handling.
+7. **Optionals** — `none`/`some(...)`, reusing the payload formatter
+   recursively.
+8. **Pointers** — nil-safe address-only printing; a dedicated test
+   proving a self-referential (`Node`) pointer cycle cannot cause
+   unbounded print recursion.
+9. **Function values** — named-function formatting first, indirect
+   pointer-address formatting second; lowest priority but not left
+   silently rejected, since the goal is universal printability.

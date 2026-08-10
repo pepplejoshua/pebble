@@ -1,12 +1,16 @@
 # 15 — Allocator/Context as ordinary structs, not special runtime types
 
-**Status:** decision made, not yet implemented. Two orc dispatches
-(`opencode-go/deepseek-v4-flash`, then escalated to `openai/gpt-5.6-luna`)
-were sent to turn this into a full implementation plan; neither produced a
-usable result (no deliverable, near-empty worklogs) — both attempts are
-recorded here as failed, not repeated a third time tonight. This document is
-the human-reasoned decision record and starting point for a real
-investigation dispatch next session.
+**Status:** decision made, investigated, implementation starting. Two
+earlier orc dispatches (`opencode-go/deepseek-v4-flash`, then escalated to
+`openai/gpt-5.6-luna`) that tried to jump straight to a full implementation
+plan produced no usable result. A THIRD dispatch (`openai/gpt-5.6-luna`,
+2026-08-10), scoped as read-only investigation only — answer the four
+open questions below, write no code — succeeded: 70 real tool calls,
+concrete file/line citations for every claim, independently spot-checked
+against the actual source and confirmed accurate. See "Investigation
+findings" below. The honest size estimate (question 4) is mine, synthesized
+from the investigation's raw findings after its own session ran out of
+budget before writing it.
 
 ## The problem
 
@@ -83,26 +87,74 @@ backend keeps threading it implicitly as the hidden `ctx` parameter — e.g. a
 well-known name check or a single flag on the resolved type, not a parallel
 type-registration system.
 
-## Open questions for the next real investigation (neither dispatch reached these)
+## Investigation findings (2026-08-10, `openai/gpt-5.6-luna`, spot-checked and confirmed accurate)
 
-1. Does `compiler/internal/module`'s graph/resolution model support
-   injecting a module before user modules are resolved, with its top-level
-   declarations visible to every other module without an explicit `import`?
-   If not, what's the smallest addition that gives it that?
-2. Full inventory of every site that currently special-cases
-   `SymbolRuntimeType`/`RuntimeAllocator`/`RuntimeContext` across
-   `compiler/internal/symbol`, `compiler/internal/check`,
-   `compiler/internal/infer`, `compiler/internal/backend` — which become
-   unnecessary and can be deleted once Allocator/Context are ordinary
-   parsed structs, vs. which encode the genuinely-special ctx-threading
-   behavior and need a minimal replacement marker.
-3. Confirm the backend's ctx-threading decision (search `emit.go` for where
-   `PebbleContext *ctx` gets added to signatures/call sites) is driven by
-   calling convention (`types.Pebble`) alone, not secretly by
-   `SymbolRuntimeType` — if it's already convention-driven, this whole
-   redesign is safe with no changes needed to that part at all.
-4. Honest size estimate once 1–3 are answered — this may need splitting into
-   multiple implementation slices rather than one.
+**Q1 — module prelude injection: nothing exists today.** `module.Build`
+loads only `config.EntryPath`, then processes authored imports in
+discovery order (`build.go:67-75`, `processImports` at `build.go:112-156`).
+`std:` is purely an import route (`build.go:201-212`) — there is no
+implicit-visibility or prelude-injection mechanism anywhere in the module
+package. `DependencyOrder` is a DFS postorder (`cycle.go:10-55`). A real
+addition is needed; see the implementation plan below for the proposed
+shape.
+
+**Q2 — full special-case inventory**, confirmed by direct spot-check
+(`resolve.go:118-150` matches exactly):
+
+| Site | What it does | Disposition once Allocator/Context are ordinary structs |
+|---|---|---|
+| `symbol.Resolve.installPrelude` (`resolve.go:118-150`) | Synthesizes the `Allocator`/`Context` symbols and their fields directly, no `.peb` source | **Delete** — replaced by real parsed declarations from the prelude module |
+| `symbol.resolveRecord` (`visit.go:511-555`) | A runtime-member branch for resolving a member access on the synthesized types | **Delete** — ordinary member resolution already handles a real struct |
+| `infer.prepareRuntimePrelude`/`runtimeSymbol` (`runtime_prelude.go:10-105`) | Synthesizes declarations and validates runtime identities | **Delete** — ordinary declaration inference already handles a real struct |
+| `templateForSymbol` (`type_resolver.go:174-224`) | Rejects `Context`, maps `Allocator` specially | **Delete** the special-case branches — falls through to ordinary nominal-type handling |
+| Checker `buildUnit` (`check/ir_builder.go:26-55`) | Extracts runtime identities/fields | **Delete** — ordinary struct field extraction already exists |
+| Backend: `locals.go:14-31`, `aggregates.go:193-314` and `1142-1159`, `collect.go:1333-1369`, `types.go:1107-1141` | Allocator ABI/type-naming and adapter logic | **Keep, minimized** — this is the genuinely-special part (the C ABI shape for `Allocator`'s function-pointer fields); audit each site during implementation to confirm it's ABI-shape logic, not identity-special-casing, and shrink to the minimum needed |
+
+**Q3 — ctx-threading is convention-driven only, confirmed.** `helperFunction`/
+`helperPrototype` (`calls.go:1888-1918`) always emit `PebbleContext *ctx`
+for a Pebble-convention function; `validateHelperSignature`
+(`validate.go:166-169`) rejects any non-`types.Pebble` declaration.
+`buildDirectCallArgs` requires `types.Pebble` + `ContextForward`
+(`calls.go:1006-1010`, confirmed by direct read) and emits
+`callee(ctx, ...)` (`calls.go:1048-1052`). **No**
+`SymbolRuntimeType`/`RuntimeAllocator`/`RuntimeContext` appears anywhere in
+this path — the backend's context-threading needs **zero changes**. This
+is the single biggest risk-reducer this investigation found: the part of
+the system most load-bearing for correctness (every function call in every
+compiled program) is untouched by this redesign.
+
+**Q4 — implementation plan (synthesized from the above, since the
+investigation's own session ran out of budget before writing this part):**
+
+1. **Slice 1 — prelude-injection mechanism, proven in isolation.** Add the
+   smallest addition to `compiler/internal/module` that lets a module be
+   parsed and resolved before user modules, with its top-level
+   declarations visible everywhere without an explicit `import`. Prove it
+   with a trivial throwaway test type (NOT `Allocator`/`Context` yet) —
+   isolates the novel infrastructure risk from the special-case removal
+   risk. Lowest confidence, do this first and re-estimate afterward.
+2. **Slice 2 — real `.peb` prelude source, shadow-verified.** Write
+   `Allocator`/`Context` as real Pebble struct declarations (matching
+   `installPrelude`'s current field shape: `ptr`, `alloc`, `realloc`,
+   `free` on `Allocator`; `default_allocator` on `Context`), inject via
+   slice 1's mechanism under the real names, but do NOT yet delete the old
+   synthesized path — verify the parsed-struct route alone produces the
+   identical C ABI shape before cutover.
+3. **Slice 3 — the cutover.** Delete `installPrelude`'s Allocator/Context
+   registration and the other four "delete" sites from the Q2 table;
+   confirm the backend's ctx-threading is untouched (Q3 says it should be)
+   and the ABI-shape sites in `aggregates.go`/`collect.go`/`types.go`/
+   `locals.go` still work against the now-ordinary struct declarations,
+   shrinking them to the minimum genuinely-special logic.
+4. **Slice 4 — verification.** Tracker item 1's original reproduction
+   (a constructed `Allocator` crossing a function boundary — argument,
+   return, and struct-field assignment) passes end-to-end; `arena.peb`
+   (tracker item 2's blocker) re-attempted.
+
+Given the architecture risk is concentrated entirely in slice 1 (novel,
+compiler-wide infrastructure) and slice 3 (many coordinated deletions),
+those two get the most scrutiny; slices 2 and 4 are comparatively
+mechanical once 1 and 3 land.
 
 ## Relationship to other open items
 
