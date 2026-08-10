@@ -170,8 +170,12 @@ and a runtime switch only for an enum/union discriminant.
 
 ## Implementation slices (recommended order, least risk first)
 
-1. **Structs of scalars** — checker acceptance for struct values, named
-   fields, reuse scalar leaves. Highest value, lowest risk.
+1. ~~**Structs of scalars**~~ **RESOLVED (`c182e73`).** Checker's
+   `valuePrintable` accepts a struct whose fields are all scalar; backend
+   emits `TypeName{ field: value, field: value }` via direct sequential
+   `fprintf` calls, real source field/type names, materialized once to
+   avoid double-evaluating a struct-returning call operand. Verified,
+   causation-checked.
 2. **Tuples and fixed arrays** — positional recursion, compile-time
    unrolled (array length is part of the type).
 3. **Nested aggregates** — structs containing structs/tuples/arrays/
