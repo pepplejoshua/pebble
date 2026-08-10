@@ -1649,6 +1649,7 @@ func TestEmitCheckedNegateLiteralNarrowWidthCompilesAndRuns(t *testing.T) {
 }
 
 func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
+	t.Parallel()
 	// buildCaseLabel is the single place a negative integer case-label text
 	// (the checker's canonical big.Int spelling, a leading `-` followed by
 	// digits) is turned into a C case label. On every SIGNED subject width the
@@ -1672,6 +1673,7 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 		{"int", types.Int},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := buildCaseLabel(snapshot, caseNode, tc.width)
 			if err != nil {
 				t.Fatalf("buildCaseLabel rejected a negative label on signed %s: %v", tc.name, err)
@@ -1692,6 +1694,7 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 		{"uint", types.Uint},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := buildCaseLabel(snapshot, caseNode, tc.width)
 			if err == nil {
 				t.Fatalf("buildCaseLabel accepted a negative label on unsigned %s, want rejection", tc.name)

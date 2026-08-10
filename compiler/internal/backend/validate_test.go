@@ -277,6 +277,7 @@ func TestEmitRejectsBareI64LocalReferenceInI32Context(t *testing.T) {
 }
 
 func TestEmitRejectsMixedWidthFloatArithmeticAndComparison(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{
 		"fn main() f64 { var a f32 = 1.0; var b f64 = 2.0; return a + b; }",
 		"fn main() f64 { var a f32 = 1.0; var b f64 = 2.0; if a < b { return 1.0; } else { return 0.0; } }",
@@ -569,6 +570,7 @@ func TestEmitRejectsEntryReturningTuple(t *testing.T) {
 }
 
 func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
+	t.Parallel()
 	// A switch with no else and non-exhaustive cases, used as a tail
 	// statement: some paths do not end in a return. The checker may or may
 	// not reject this; if it reaches the backend, the switch as a whole is
@@ -584,6 +586,7 @@ func TestEmitSwitchRejectsNonExhaustiveNoElse(t *testing.T) {
 }
 
 func TestEmitRejectsOptionalIntegerToEnumReturnPosition(t *testing.T) {
+	t.Parallel()
 	// A return-position cast (`return 5 as ?Color;`) is rejected by the
 	// CHECKER before the backend ever runs — a clean compile-time rejection,
 	// not a backend crash and not a double-evaluated emission.
@@ -648,6 +651,7 @@ func TestEmitRejectsWrappingU64BuiltinNonU64Argument(t *testing.T) {
 }
 
 func TestEmitRejectsMismatchedNonEntryWidthComparison(t *testing.T) {
+	t.Parallel()
 	// A comparison between two mismatched non-entry-width integers (u64 vs
 	// u8) is a CLEAN rejection — an error, never a crash and never
 	// silently-wrong C. The checker requires both comparison operands to carry

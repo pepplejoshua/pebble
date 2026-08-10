@@ -184,6 +184,7 @@ func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t 
 }
 
 func TestEmitTupleParameterParamOnlyTypeGetsTypedef(t *testing.T) {
+	t.Parallel()
 	// The typedef-discovery extension: the (i32, i32) tuple type appears ONLY
 	// as sumT's parameter type — sumT is never called (so no reachable body
 	// constructs a tuple of that type) and main constructs no tuple at all —
@@ -299,6 +300,7 @@ func TestEmitNestedTypedefOrderWritesAndCompiles(t *testing.T) {
 }
 
 func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
+	t.Parallel()
 	// The typedef-discovery extension, struct side: the Point type appears ONLY
 	// as f's parameter type — f is never called (so no reachable body
 	// constructs a Point of that type) and main constructs no struct at all —
@@ -343,6 +345,7 @@ func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 }
 
 func TestEmitTupleResultTypeScanGetsTypedef(t *testing.T) {
+	t.Parallel()
 	// The ResultType scan in collectTupleTypes, proven load-bearing: the
 	// (i32, i32) tuple type is used ONLY as makeT's result type, and the
 	// helpers slice pairs makeT's declaration with main's body block — a real,

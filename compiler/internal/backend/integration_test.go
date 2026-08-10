@@ -17,6 +17,7 @@ import (
 )
 
 func TestCheckStdMemImport(t *testing.T) {
+	t.Parallel()
 	unit, _, _, _ := buildStdMemFixture(t, `import "std:mem"; fn main() i32 { return 0; }`, "main")
 	if unit == nil {
 		t.Fatal("std:mem import produced no IR")
@@ -140,6 +141,7 @@ func TestEmitStdHmapInsertGetFullConsumer(t *testing.T) {
 }
 
 func TestCheckStdHmapRehash(t *testing.T) {
+	t.Parallel()
 	// The C0619 regression this test pins: calling std/hmap.peb's generic
 	// `rehash` method — an indexed slice-element FIELD WRITE
 	// (`self.entries[i].state = .Empty`) inside a method of a generic struct

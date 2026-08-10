@@ -1179,6 +1179,7 @@ func TestEmitIntegerCastUnsignedRoundTripCompilesAndRuns(t *testing.T) {
 }
 
 func TestCheckStdHmapU64HashFnTypes(t *testing.T) {
+	t.Parallel()
 	// The real motivating module: std/hmap.peb declares `hash_fn fn (K) u64`
 	// and `fn new[K, V](hash_fn fn (K) u64, eq_fn fn (K, K) bool) HashMap[K, V]`
 	// — u64 in function-type parameter and RESULT positions (line 19 and 191 in

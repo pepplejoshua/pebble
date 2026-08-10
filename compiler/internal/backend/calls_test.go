@@ -19,6 +19,7 @@ import (
 )
 
 func TestCheckStdVecHasNoGenericPointerReceiverShapeErrors(t *testing.T) {
+	t.Parallel()
 	vec, err := os.ReadFile("../../std/vec.peb")
 	if err != nil {
 		t.Fatal(err)
@@ -1538,6 +1539,7 @@ func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
 }
 
 func TestCheckStdModuleGenericMethodIndexedFieldWrite(t *testing.T) {
+	t.Parallel()
 	// The minimal cross-module reproduction bisection isolated: a generic
 	// struct in an imported std module whose method performs an indexed
 	// slice-element field write. Before the store/snapshot fix this checked
