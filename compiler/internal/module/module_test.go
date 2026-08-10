@@ -105,8 +105,8 @@ func TestModuleFixtureCorpus(t *testing.T) {
 func TestRecoveryFixtureInspectsIndependentImports(t *testing.T) {
 	root := filepath.Join(testRepoRoot(t), "tests", "module", "recovery", "damaged_dependency")
 	graph, diagnostics := buildFixture(t, root, "damaged_dependency", "")
-	if graph.Len() != 3 {
-		t.Fatalf("loaded modules = %d, want 3", graph.Len())
+	if graph.Len() != 4 {
+		t.Fatalf("loaded modules = %d, want 4 (embedded prelude + 3 fixtures)", graph.Len())
 	}
 	if !diagnostics.HasErrors() || len(moduleErrors(diagnostics.Items())) != 0 {
 		t.Fatalf("want parser recovery diagnostics only, got %+v", diagnostics.Items())
@@ -135,8 +135,8 @@ func TestDiamondGraphSharesOneModuleAndIsDeterministic(t *testing.T) {
 	fixture := filepath.Join(testRepoRoot(t), "tests", "module", "valid", "diamond")
 	first, firstDiagnostics := buildFixture(t, fixture, "diamond", "")
 	second, secondDiagnostics := buildFixture(t, fixture, "diamond", "")
-	if first.Len() != 4 {
-		t.Fatalf("diamond modules = %d, want 4", first.Len())
+	if first.Len() != 5 {
+		t.Fatalf("diamond modules = %d, want 5 (embedded prelude + 4 fixtures)", first.Len())
 	}
 	if got, want := graphSnapshot(first), graphSnapshot(second); got != want {
 		t.Fatalf("graph is not deterministic:\nfirst:\n%s\nsecond:\n%s", got, want)
@@ -145,7 +145,7 @@ func TestDiamondGraphSharesOneModuleAndIsDeterministic(t *testing.T) {
 		t.Fatal("diagnostics are not deterministic")
 	}
 	order := first.DependencyOrder()
-	if len(order) != 4 || order[len(order)-1] != first.Root {
+	if len(order) != 5 || order[len(order)-1] != first.Root {
 		t.Fatalf("dependency order = %v", order)
 	}
 }
@@ -163,7 +163,18 @@ func TestGraphAccessorsDoNotExposeImportStorage(t *testing.T) {
 		t.Fatal("Module exposed mutable import storage")
 	}
 	modules := graph.Modules()
-	modules[0].Imports[0].Spelling = "changed"
+	// Module 0 is now the always-present embedded prelude (which has no
+	// imports); locate the root entry module by its graph identity instead of
+	// by list position.
+	for i := range modules {
+		if modules[i].ID != graph.Root {
+			continue
+		}
+		if len(modules[i].Imports) == 0 {
+			t.Fatal("root entry has no imports")
+		}
+		modules[i].Imports[0].Spelling = "changed"
+	}
 	again, _ = graph.Module(graph.Root)
 	if again.Imports[0].Spelling == "changed" {
 		t.Fatal("Modules exposed mutable import storage")
@@ -289,8 +300,11 @@ func TestPreludeConfigurationIsInertWithoutAPrelude(t *testing.T) {
 	if !reflect.DeepEqual(explicitDiagnostics.Items(), absentDiagnostics.Items()) {
 		t.Fatal("diagnostics differ between absent and empty PreludePath")
 	}
-	if explicit.HasPrelude() || absent.HasPrelude() {
-		t.Fatal("empty PreludePath unexpectedly enabled a prelude")
+	// Both absent and empty PreludePath now load the compiler's embedded
+	// runtime prelude (Allocator/Context are implicitly available to every
+	// compilation), so both graphs carry the prelude module.
+	if !explicit.HasPrelude() || !absent.HasPrelude() {
+		t.Fatal("absent/empty PreludePath must load the embedded default prelude")
 	}
 }
 
@@ -330,8 +344,8 @@ func TestImportDepthUsesDeterministicShortestDiscoveryPath(t *testing.T) {
 	}}
 	diagnostics := diagnostic.NewDiagnosticSet()
 	graph := Build(BuildConfig{EntryPath: "main.peb", Package: "app", MaxImportDepth: 2}, provider, source.NewFileSet(), diagnostics)
-	if diagnostics.HasErrors() || graph.Len() != 4 {
-		t.Fatalf("shortest-path graph = %d modules, diagnostics %+v", graph.Len(), diagnostics.Items())
+	if diagnostics.HasErrors() || graph.Len() != 5 {
+		t.Fatalf("shortest-path graph = %d modules (embedded prelude + 4 fixtures), diagnostics %+v", graph.Len(), diagnostics.Items())
 	}
 }
 

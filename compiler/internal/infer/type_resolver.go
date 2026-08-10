@@ -183,20 +183,6 @@ func (p *Program) templateForSymbol(id, owner symbol.SymbolID, depth uint32) Tem
 			return 0
 		}
 		return p.knownTemplate(typeID)
-	case symbol.SymbolRuntimeType:
-		switch sym.Runtime {
-		case symbol.RuntimeContext:
-			p.reporter.error(CodeInvalidType, "compiler-owned context type is not source-spellable", Origin{Span: sym.Span, Symbol: id})
-			return 0
-		case symbol.RuntimeAllocator:
-			if !p.runtimeReady {
-				return 0
-			}
-			return p.knownTemplate(p.runtimeTypes.Allocator)
-		default:
-			p.reporter.error(CodeInvalidType, "unknown compiler-owned runtime type", Origin{Span: sym.Span, Symbol: id})
-			return 0
-		}
 	case symbol.SymbolTypeParameter:
 		if !containsSymbol(p.ownerParameters(owner), id) {
 			p.reporter.error(CodeInvalidType, "type parameter is outside the selected owner environment", Origin{Span: sym.Span, Symbol: id})

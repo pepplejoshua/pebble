@@ -1659,7 +1659,7 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	// fixture dump). The local initializer is a C99 designated-initializer
 	// brace list placing each value under its own member's C field, and the
 	// field read lowers to pebble_local_<id>.pebble_field_<member>. Symbols
-	// 24 (Point), 25 (x), 26 (y), 28 (point), and struct type 23 come from the
+	// 24 (Point), 25 (x), 26 (y), 28 (point), and struct type 19 come from the
 	// real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { let point Point = Point.{ y = 2, x = 1 }; return point.x; }", "main", false)
 	var buf bytes.Buffer
@@ -1668,8 +1668,8 @@ func TestEmitStructOutOfOrderWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_26 = 2, .pebble_field_25 = 1 };",
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_26 = 2, .pebble_field_25 = 1 };",
 		"    (void)pebble_local_30;",
 		"return pebble_local_30.pebble_field_25;",
 	} {
@@ -1690,7 +1690,7 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 	// must be the C bool, the local's initializer carries the integer and bool
 	// field values under their designated fields, and the if condition is the
 	// raw field read pebble_local_<id>.pebble_field_<b> (a C bool needs no
-	// comparison). Symbols 25 (a), 26 (b), 28 (p), and struct type 23 come
+	// comparison). Symbols 25 (a), 26 (b), 28 (p), and struct type 19 come
 	// from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Pair = struct { a i32; b bool; };\nfn main() i32 { let p Pair = Pair.{ a = 1, b = true }; if p.b { return 10; } else { return 20; } }", "main", false)
 	var buf bytes.Buffer
@@ -1699,8 +1699,8 @@ func TestEmitStructBoolFieldWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_25;\n    bool pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 1, .pebble_field_26 = true };",
+		"typedef struct {\n    int32_t pebble_field_25;\n    bool pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = 1, .pebble_field_26 = true };",
 		"    if (pebble_local_30.pebble_field_26) {\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -1723,8 +1723,8 @@ func TestEmitStructFieldAsCallArgumentWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_33 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_33 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
 		"return pebble_fn_27(ctx, pebble_local_33.pebble_field_25, pebble_local_33.pebble_field_26);",
 	} {
 		if !strings.Contains(out, want) {
@@ -1750,8 +1750,8 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int64_t pebble_field_25;\n    int64_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"typedef struct {\n    int64_t pebble_field_25;\n    int64_t pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
 		"return pebble_local_30.pebble_field_26;",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
@@ -1780,8 +1780,8 @@ func TestEmitStrStructFieldLiteralC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    PebbleStr pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_26 = 7, .pebble_field_25 = (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 } };",
+		"typedef struct {\n    PebbleStr pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_26 = 7, .pebble_field_25 = (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 } };",
 		"return pebble_local_30.pebble_field_26;",
 	} {
 		if !strings.Contains(out, want) {
@@ -1941,7 +1941,7 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 	// pebble_local_28.pebble_field_25 / .pebble_field_26, and the call site
 	// passes the entry's struct local pebble_local_30 directly (no construction
 	// at the call site). Symbols 24 (Point), 25 (x), 26 (y), 27 (f), 28 (p
-	// param), 29 (main), 30 (p local), and struct type 23 come from the real
+	// param), 29 (main), 30 (p local), and struct type 19 come from the real
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x + p.y; } fn main() i32 { let p Point = Point.{ x = 20, y = 22 }; return f(p); }", "main", false)
 	var buf bytes.Buffer
@@ -1950,11 +1950,11 @@ func TestEmitStructParameterWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"static int32_t pebble_fn_27(PebbleContext *ctx, pebble_struct_23_t pebble_local_28) {",
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_19_t;",
+		"static int32_t pebble_fn_27(PebbleContext *ctx, pebble_struct_19_t pebble_local_28) {",
 		"    (void)pebble_local_28;",
 		"    return pebble_rt_checked_add_i32(pebble_local_28.pebble_field_25, pebble_local_28.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 28});",
-		"pebble_struct_23_t pebble_local_32 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"pebble_struct_19_t pebble_local_32 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
 		"return pebble_fn_27(ctx, pebble_local_32);",
 	} {
 		if !strings.Contains(out, want) {
@@ -2093,10 +2093,10 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 	t.Parallel()
 	// The emitted C for the struct flagship: the struct typedef precedes the
 	// helper, the helper's signature declares its return type as
-	// pebble_struct_23_t, its return statement emits the designated-
+	// pebble_struct_19_t, its return statement emits the designated-
 	// initializer compound-literal expression, and the call site initializes
 	// the local from pebble_fn_27(ctx). Symbols 24 (Point), 25 (x), 26 (y), 27
-	// (makeP), 28 (main), 29 (p local), and struct type 23 come from the real
+	// (makeP), 28 (main), 29 (p local), and struct type 19 come from the real
 	// fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", "main", false)
 	var buf bytes.Buffer
@@ -2105,10 +2105,10 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_23_t;",
-		"static pebble_struct_23_t pebble_fn_27(PebbleContext *ctx) {",
-		"    return (pebble_struct_23_t){ .pebble_field_25 = 20, .pebble_field_26 = 22 };",
-		"pebble_struct_23_t pebble_local_31 = pebble_fn_27(ctx);",
+		"typedef struct {\n    int32_t pebble_field_25;\n    int32_t pebble_field_26;\n} pebble_struct_19_t;",
+		"static pebble_struct_19_t pebble_fn_27(PebbleContext *ctx) {",
+		"    return (pebble_struct_19_t){ .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"pebble_struct_19_t pebble_local_31 = pebble_fn_27(ctx);",
 		"return pebble_rt_checked_add_i32(pebble_local_31.pebble_field_25, pebble_local_31.pebble_field_26, (PebbleSourceLoc){\"main.peb\", 2, 101});",
 	} {
 		if !strings.Contains(out, want) {
@@ -2116,7 +2116,7 @@ func TestEmitStructReturningHelperWritesC(t *testing.T) {
 		}
 	}
 	typedefIndex := strings.Index(out, "typedef struct")
-	helperIndex := strings.Index(out, "static pebble_struct_23_t pebble_fn_27")
+	helperIndex := strings.Index(out, "static pebble_struct_19_t pebble_fn_27")
 	if typedefIndex < 0 || helperIndex < 0 || typedefIndex > helperIndex {
 		t.Errorf("struct typedef does not precede the helper function (definition before use):\n%s", out)
 	}
@@ -3398,7 +3398,7 @@ fn main() int {
 		t.Fatal("fixture has no SizeofType node to read its struct TypeArg from")
 	}
 	var members []symbol.SymbolID
-	for _, td := range unit.TypeDeclarations() {
+	for _, td := range entryTypeDeclarations(unit) {
 		members = td.Members
 		break
 	}
@@ -3468,7 +3468,7 @@ fn main() int {
 		t.Fatal("fixture has no SizeofType node to read its enum TypeArg from")
 	}
 	var members []symbol.SymbolID
-	for _, td := range unit.TypeDeclarations() {
+	for _, td := range entryTypeDeclarations(unit) {
 		members = td.Members
 		break
 	}
@@ -3986,8 +3986,8 @@ func TestEmitSliceReturningHelperWritesC(t *testing.T) {
 	for _, want := range []string{
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_23_t;",
 		"static pebble_slice_23_t pebble_fn_24(PebbleContext *ctx) {",
-		"int32_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
-		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+		"int32_t pebble_slice_ret_33 = pebble_rt_checked_slice_start_i32(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
+		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_33, .len = (size_t)(3 - pebble_slice_ret_33) };",
 		"pebble_slice_23_t pebble_local_29 = pebble_fn_24(ctx);",
 		"return pebble_local_29.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_29.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
@@ -4012,8 +4012,8 @@ func TestEmitSliceReturningHelperI64WritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"int64_t *data;",
-		"int64_t pebble_slice_ret_18 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
-		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_18, .len = (size_t)(3 - pebble_slice_ret_18) };",
+		"int64_t pebble_slice_ret_33 = pebble_rt_checked_slice_start_i64(1, 3, 5, (PebbleSourceLoc){\"main.peb\"",
+		"return (pebble_slice_23_t){ .data = pebble_local_28 + pebble_slice_ret_33, .len = (size_t)(3 - pebble_slice_ret_33) };",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -4080,7 +4080,7 @@ func TestEmitReSliceSliceFieldWritesC(t *testing.T) {
 	// bound argument is the base slice's RUNTIME .len field
 	// (pebble_local_28.pebble_field_25.len), the construction's .data is the
 	// base slice's OWN .data pointer offset by the temp
-	// (pebble_local_28.pebble_field_25.data + pebble_slice_ret_24), and the
+	// (pebble_local_28.pebble_field_25.data + pebble_slice_ret_39), and the
 	// .len is the runtime end bound minus the temp. Symbols 24 (slice type),
 	// 25 (data field), 26 (len field), 28 (self), return value node 24, and
 	// field value node 34 come from the real fixture dump.
@@ -4103,8 +4103,8 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_ret_24 = pebble_rt_checked_slice_start_i32(0, pebble_local_28.pebble_field_26, pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
-		"return (pebble_slice_24_t){ .data = pebble_local_28.pebble_field_25.data + pebble_slice_ret_24, .len = (size_t)(pebble_local_28.pebble_field_26 - pebble_slice_ret_24) };",
+		"int32_t pebble_slice_ret_39 = pebble_rt_checked_slice_start_i32(0, pebble_local_28.pebble_field_26, pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+		"return (pebble_slice_24_t){ .data = pebble_local_28.pebble_field_25.data + pebble_slice_ret_39, .len = (size_t)(pebble_local_28.pebble_field_26 - pebble_slice_ret_39) };",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -4248,8 +4248,8 @@ fn main() int {
 	for _, want := range []string{
 		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_24_t;",
 		"pebble_slice_24_t pebble_field_25;",
-		"int32_t pebble_field_slice_17 = pebble_rt_checked_slice_start_i32(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
-		"pebble_struct_23_t pebble_local_30 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_29 + pebble_field_slice_17, .len = (size_t)(3 - pebble_field_slice_17) } };",
+		"int32_t pebble_field_slice_32 = pebble_rt_checked_slice_start_i32(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_29 + pebble_field_slice_32, .len = (size_t)(3 - pebble_field_slice_32) } };",
 		"return pebble_local_30.pebble_field_25.data[pebble_rt_checked_index_i32(1, (int32_t)pebble_local_30.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
@@ -4492,7 +4492,7 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 	// (definition before use — the same ordering the aggregate-typedef DFS
 	// guarantees for tuple/struct payloads), and the helper's return emits the
 	// nested compound literal with the struct construction as .value. Symbols
-	// 24 (P), 25 (x), 26 (y), 27 (f), 28 (main), 29 (o local), struct type 23,
+	// 24 (P), 25 (x), 26 (y), 27 (f), 28 (main), 29 (o local), struct type 19,
 	// and optional type 24 come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "type P = struct { x int; y int; };\nfn f() ?P { return some P.{ x = 1, y = 2 }; } fn main() int { var o ?P = f(); if o.has_value { return 1; } return 0; }", "main", false)
 	var buf bytes.Buffer
@@ -4501,9 +4501,9 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    bool has_value;\n    pebble_struct_23_t value;\n} pebble_optional_24_t;",
+		"typedef struct {\n    bool has_value;\n    pebble_struct_19_t value;\n} pebble_optional_24_t;",
 		"static pebble_optional_24_t pebble_fn_27(PebbleContext *ctx) {",
-		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_23_t){ .pebble_field_25 = 1, .pebble_field_26 = 2 } };",
+		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_19_t){ .pebble_field_25 = 1, .pebble_field_26 = 2 } };",
 		"pebble_optional_24_t pebble_local_31 = pebble_fn_27(ctx);",
 	} {
 		if !strings.Contains(out, want) {

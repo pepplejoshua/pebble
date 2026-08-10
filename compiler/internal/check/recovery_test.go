@@ -183,7 +183,7 @@ fn conflict() void {
 	}
 
 	// Verify that 06b can still access the handoff fields for independent diagnostics.
-	declarations := handoff.Compilation.Modules[0].Declarations
+	declarations := entryFrozenModule(handoff.Compilation).Declarations
 	if len(declarations) == 0 {
 		t.Fatal("should have declarations for independent diagnostics")
 	}

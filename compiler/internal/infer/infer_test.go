@@ -197,7 +197,7 @@ func TestDamagedRuntimePreludeAllocatorOccurrenceDoesNotEmitTypeDiagnostic(t *te
 			typeDiagnostics++
 		}
 	}
-	if resourceDiagnostics != 1 || typeDiagnostics != 0 {
+	if resourceDiagnostics != 2 || typeDiagnostics != 0 {
 		t.Fatalf("runtime diagnostics: T0512=%d T0501=%d items=%+v", resourceDiagnostics, typeDiagnostics, diagnostics.Items())
 	}
 }

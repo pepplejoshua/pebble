@@ -1,26 +1,60 @@
-unit nodes=12 components=36 snapshot=24 regions=2 functions=1 temps=0
-module id=1 package="facts" path="main.peb" source=0 span=0[0,86)
+unit nodes=27 components=75 snapshot=24 regions=2 functions=1 temps=0
+module id=1 package="facts" path="prelude/runtime.peb" source=0 span=0[0,1941)
+  decl symbol=17
+  decl symbol=22
+module id=2 package="facts" path="main.peb" source=1 span=1[0,86)
   decl symbol=24
-funcdecl symbol=24 fid=1 node=11 span=0[3,4)
-node 1 Module type=0 span=0[0,86) syntax=0:0 symbol=1
-node 2 ParameterDeclaration type=0 span=0[5,9) syntax=1:4 symbol=25
-node 3 ParameterDeclaration type=0 span=0[15,20) syntax=1:7 symbol=26
-node 4 TypeUse type=0 span=0[10,13) syntax=1:3 typearg=3
-node 5 TypeUse type=0 span=0[21,24) syntax=1:6 typearg=9
-node 6 TypeUse type=0 span=0[26,29) syntax=1:8 typearg=3
-node 7 SymbolValue type=3 span=0[51,55) syntax=1:10 symbol=25
-node 8 SymbolValue type=9 span=0[68,73) syntax=1:12 symbol=26
-node 9 InterpolatedString type=3 span=0[43,82) syntax=1:14 parts=[text="hello " value=7 text=", you have " value=8 text=" items!"]
-node 10 Return type=0 span=0[36,83) syntax=1:15 function=1 defer=[] children=[9]
-node 11 Block type=0 span=0[30,85) syntax=0:0 region=2 children=[10]
-node 12 FunctionDeclaration type=0 span=0[3,4) syntax=1:17 symbol=24 function=1 convention=1 variadic=false inline=false hasBody=true params=[25:3 26:9]
-sourcemap 1:3 -> 4
-sourcemap 1:4 -> 2
-sourcemap 1:6 -> 5
-sourcemap 1:7 -> 3
-sourcemap 1:8 -> 6
-sourcemap 1:10 -> 7
-sourcemap 1:12 -> 8
-sourcemap 1:14 -> 9
-sourcemap 1:15 -> 10
-sourcemap 1:17 -> 12
+typedecl symbol=17 node=3 members=[18 19 20 21] span=0[1722,1731)
+typedecl symbol=22 node=8 members=[23] span=0[1886,1893)
+funcdecl symbol=24 fid=1 node=26 span=1[3,4)
+node 1 Module type=0 span=0[0,1941) syntax=0:0 symbol=1
+node 2 Module type=0 span=1[0,86) syntax=0:0 symbol=2
+node 3 TypeDeclaration type=0 span=0[1722,1731) syntax=1:33 symbol=17
+node 4 FieldDeclaration type=0 span=0[1747,1750) syntax=1:5 symbol=18
+node 5 FieldDeclaration type=0 span=0[1766,1771) syntax=1:13 symbol=19
+node 6 FieldDeclaration type=0 span=0[1802,1809) syntax=1:23 symbol=20
+node 7 FieldDeclaration type=0 span=0[1845,1849) syntax=1:31 symbol=21
+node 8 TypeDeclaration type=0 span=0[1886,1893) syntax=1:39 symbol=22
+node 9 FieldDeclaration type=0 span=0[1909,1926) syntax=1:37 symbol=23
+node 10 ParameterDeclaration type=0 span=1[5,9) syntax=2:4 symbol=25
+node 11 ParameterDeclaration type=0 span=1[15,20) syntax=2:7 symbol=26
+node 12 TypeUse type=0 span=0[1734,1878) syntax=1:32 typearg=17
+node 13 TypeUse type=0 span=0[1755,1760) syntax=1:4 typearg=19
+node 14 TypeUse type=0 span=0[1774,1796) syntax=1:12 typearg=20
+node 15 TypeUse type=0 span=0[1810,1839) syntax=1:22 typearg=21
+node 16 TypeUse type=0 span=0[1853,1875) syntax=1:30 typearg=22
+node 17 TypeUse type=0 span=0[1896,1939) syntax=1:38 typearg=18
+node 18 TypeUse type=0 span=0[1927,1936) syntax=1:36 typearg=17
+node 19 TypeUse type=0 span=1[10,13) syntax=2:3 typearg=3
+node 20 TypeUse type=0 span=1[21,24) syntax=2:6 typearg=9
+node 21 TypeUse type=0 span=1[26,29) syntax=2:8 typearg=3
+node 22 SymbolValue type=3 span=1[51,55) syntax=2:10 symbol=25
+node 23 SymbolValue type=9 span=1[68,73) syntax=2:12 symbol=26
+node 24 InterpolatedString type=3 span=1[43,82) syntax=2:14 parts=[text="hello " value=22 text=", you have " value=23 text=" items!"]
+node 25 Return type=0 span=1[36,83) syntax=2:15 function=1 defer=[] children=[24]
+node 26 Block type=0 span=1[30,85) syntax=0:0 region=2 children=[25]
+node 27 FunctionDeclaration type=0 span=1[3,4) syntax=2:17 symbol=24 function=1 convention=1 variadic=false inline=false hasBody=true params=[25:3 26:9]
+sourcemap 1:4 -> 13
+sourcemap 1:5 -> 4
+sourcemap 1:12 -> 14
+sourcemap 1:13 -> 5
+sourcemap 1:22 -> 15
+sourcemap 1:23 -> 6
+sourcemap 1:30 -> 16
+sourcemap 1:31 -> 7
+sourcemap 1:32 -> 12
+sourcemap 1:33 -> 3
+sourcemap 1:36 -> 18
+sourcemap 1:37 -> 9
+sourcemap 1:38 -> 17
+sourcemap 1:39 -> 8
+sourcemap 2:3 -> 19
+sourcemap 2:4 -> 10
+sourcemap 2:6 -> 20
+sourcemap 2:7 -> 11
+sourcemap 2:8 -> 21
+sourcemap 2:10 -> 22
+sourcemap 2:12 -> 23
+sourcemap 2:14 -> 24
+sourcemap 2:15 -> 25
+sourcemap 2:17 -> 27

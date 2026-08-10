@@ -20,6 +20,28 @@ func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 		// emitted here as a designated-initializer PebbleAllocator local.
 		return buildRuntimeAllocatorRecordDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 	}
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
+		// A call to an Allocator-returning helper used as the direct
+		// initializer of a matching Allocator-typed local — `let a = build();`.
+		// The call expression is the whole initializer, declared with the
+		// hand-written runtime C type name, the same aggregate-call-initializer
+		// shape buildAggregateCallInitializer uses for ordinary struct-typed
+		// locals. The callee's declared result type must be exactly the local's
+		// type (defense for hand-built IR).
+		calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != initValue.Type {
+			return "", fmt.Errorf("%s declares a runtime-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, runtimeTypeName(unit, snapshot, initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type, runtimeType: initValue.Type}
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
+	}
 	if initValue.Kind != tir.FieldValue && initValue.Kind != tir.Load && initValue.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s declares a runtime-typed local initialized from a %s", context, initValue.Kind)
 	}
@@ -27,7 +49,14 @@ func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 	if err != nil {
 		return "", err
 	}
-	scope[statement.Symbol] = localInfo{runtimeType: initValue.Type}
+	// The local is declared with its hand-written C type (PebbleAllocator) via
+	// runtimeTypeName, but it is ALSO seeded as a struct-typed local
+	// (localInfo.structType) so the general by-value movement machinery — a
+	// whole-struct argument, a function return, a store into a struct field —
+	// treats it exactly like the ordinary struct it is, emitting
+	// pebble_local_<sym> whose C type matches the callee parameter or field
+	// type declared with the same runtime type name.
+	scope[statement.Symbol] = localInfo{structType: initValue.Type, runtimeType: initValue.Type}
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, expr, indent, statement.Symbol), nil
 }
 

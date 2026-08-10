@@ -75,6 +75,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	// the ordinary per-module walk) are visible to every module without an
 	// explicit import.
 	preludeScope := ScopeID(0)
+	preludeModuleID := ModuleID(0)
 	for _, item := range graph.Modules() {
 		if item.Role != module.RolePrelude {
 			continue
@@ -83,6 +84,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 		if item.Tree != nil {
 			origin.Node = item.Tree.Root()
 		}
+		preludeModuleID = item.ID
 		preludeScope = r.newScope(ScopeModule, r.result.prelude, item.ID, 0, origin)
 		r.moduleScopes[item.ID] = preludeScope
 	}
@@ -103,6 +105,7 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	for _, item := range graph.Modules() {
 		r.collectModule(item)
 	}
+	r.registerRuntimeSymbols(preludeModuleID)
 	r.registerBuiltinFunctions()
 	for _, item := range graph.Modules() {
 		r.resolveModule(item)
@@ -137,6 +140,31 @@ func (r *resolver) registerBuiltinFunctions() {
 	}
 }
 
+// registerRuntimeSymbols records the prelude module's parsed Allocator and
+// Context declarations as the compiler's runtime identities. Since the
+// Allocator/Context cutover these are ordinary struct declarations in the
+// prelude module; this step only marks which prelude declarations are "the"
+// Allocator and Context so the checker and backend can keep threading the
+// implicit context value and applying the Allocator C-ABI shape. The parsed
+// symbols flow through the ordinary declaration pipeline exactly like any
+// other .peb-declared struct.
+func (r *resolver) registerRuntimeSymbols(preludeModuleID ModuleID) {
+	if preludeModuleID == 0 {
+		return
+	}
+	for _, value := range r.result.Symbols.All() {
+		if value.Error || value.Kind != SymbolType || value.Module != preludeModuleID {
+			continue
+		}
+		switch value.Name {
+		case "Allocator":
+			r.result.runtimes[RuntimeAllocator] = value.ID
+		case "Context":
+			r.result.runtimes[RuntimeContext] = value.ID
+		}
+	}
+}
+
 func (r *resolver) installPrelude() {
 	scope := r.newScope(ScopePrelude, 0, 0, 0, SyntaxRef{})
 	r.result.prelude = scope
@@ -146,28 +174,6 @@ func (r *resolver) installPrelude() {
 	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
 		id := r.addSymbol(Symbol{Name: kind.String(), Kind: SymbolBuiltinType, Scope: scope, Builtin: kind}, true, 0)
 		r.result.builtins[kind] = id
-	}
-	allocator := r.addSymbol(Symbol{Name: "Allocator", Kind: SymbolRuntimeType, Scope: scope, Runtime: RuntimeAllocator}, true, 0)
-	context := r.addSymbol(Symbol{Kind: SymbolRuntimeType, Scope: scope, Runtime: RuntimeContext}, false, 0)
-	r.result.runtimes[RuntimeAllocator] = allocator
-	r.result.runtimes[RuntimeContext] = context
-	for _, member := range []struct {
-		owner SymbolID
-		name  string
-	}{
-		{allocator, "ptr"},
-		{allocator, "alloc"},
-		{allocator, "realloc"},
-		{allocator, "free"},
-		{context, "default_allocator"},
-	} {
-		if member.owner == 0 {
-			continue
-		}
-		id := r.addSymbol(Symbol{Name: member.name, Kind: SymbolField, Containing: member.owner}, false, 0)
-		if id != 0 {
-			r.result.members[member.owner] = append(r.result.members[member.owner], id)
-		}
 	}
 }
 
@@ -450,9 +456,10 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 }
 
 func reservedBuiltin(name string) bool {
-	if name == "Allocator" {
-		return true
-	}
+	// Only the actual builtin scalar type names stay reserved against source
+	// redeclaration. "Allocator" is no longer guarded: since the Allocator/
+	// Context cutover it is an ordinary parsed prelude declaration, not a
+	// compiler-owned synthesized type.
 	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
 		if name == kind.String() {
 			return true

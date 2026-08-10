@@ -47,8 +47,14 @@ fn main() void {
 		t.Fatalf("FunctionCount = %d, want 2", got)
 	}
 	modules := unit.Modules()
-	if len(modules) != 1 || modules[0].ID != 1 {
-		t.Fatalf("Modules = %+v, want exactly the root module with ID 1", modules)
+	foundRoot := false
+	for _, m := range modules {
+		if m.Key.Path == "main.peb" {
+			foundRoot = true
+		}
+	}
+	if !foundRoot {
+		t.Fatalf("Modules = %+v, want an entry module declared for main.peb", modules)
 	}
 	if unit.NodeCount() == 0 {
 		t.Fatal("published IR has an empty node store")

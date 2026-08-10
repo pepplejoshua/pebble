@@ -239,28 +239,28 @@ func buildRuntimeAllocatorCallbackAdapter(st *emitState, unit *tir.Unit, snapsho
 	return name, nil
 }
 
-// buildRuntimeAllocatorRecordDeclaration builds one runtime Allocator literal's
-// C local declaration:
-//
-//	PebbleAllocator pebble_local_<sym> = { .state = <ptr>, .alloc = <bridge>,
-//	                                        .realloc = <bridge>, .free = <bridge> };
-//	(void)pebble_local_<sym>;
-//
-// a C99 designated-initializer brace list over the hand-written runtime
-// PebbleAllocator struct (runtimeFieldName maps ptr→state, alloc→alloc, realloc→
-// realloc, free→free), one designated initializer per construction field, so the
-// construction-site field order a RecordConstruct's Fields carry needs no
-// reordering. The four known Allocator fields are handled: ptr's value is built
-// under the pointer grammar (nil, a pointer-typed local, an address-of cast, a
-// pointer-returning call), and each callback field's value must be a reference
-// to a top-level source function, bridged into the runtime callback ABI by
+// buildRuntimeAllocatorBraceList validates one runtime Allocator literal's
+// construction fields and builds its C99 designated-initializer brace-list
+// content, `{ .state = <ptr>, .alloc = <bridge>, .realloc = <bridge>, .free =
+// <bridge> }` — the part after the opening brace. The field names come from
+// runtimeFieldName (ptr→state, alloc→alloc, realloc→realloc, free→free), one
+// designated initializer per construction field, so the construction-site
+// field order a RecordConstruct's Fields carry needs no reordering. The four
+// known Allocator fields are handled: ptr's value is built under the pointer
+// grammar (nil, a pointer-typed local, an address-of cast, a pointer-returning
+// call), and each callback field's value must be a reference to a top-level
+// source function, bridged into the runtime callback ABI by
 // buildRuntimeAllocatorCallbackAdapter. Anything else — a non-Allocator runtime
 // type, a wrong field count, an unknown or duplicated field, a malformed field
-// value — is a clean rejection naming what was found. Like every local, the
-// declaration is followed by a (void) cast against -Wunused-variable.
-func buildRuntimeAllocatorRecordDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+// value — is a clean rejection naming what was found. The same brace-list
+// content serves both a local declaration
+// (buildRuntimeAllocatorRecordDeclaration) and a value position
+// (buildStructValueExpr, where it is wrapped as a (PebbleAllocator){ ... }
+// compound literal), so a constructed Allocator can be returned from a
+// function or passed inline as an argument with the exact runtime ABI shape.
+func buildRuntimeAllocatorBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, initValue tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if runtimeType(unit, snapshot, initValue.Type) != symbol.RuntimeAllocator {
-		return "", fmt.Errorf("%s declares a runtime-typed local of type %s initialized from a RecordConstruct, which is supported only for the built-in Allocator", context, runtimeTypeName(unit, snapshot, initValue.Type))
+		return "", fmt.Errorf("%s constructs a runtime-typed value of type %s, which is supported only for the built-in Allocator", context, runtimeTypeName(unit, snapshot, initValue.Type))
 	}
 	info := unit.Runtime()
 	if len(initValue.Fields) != 4 {
@@ -309,8 +309,30 @@ func buildRuntimeAllocatorRecordDeclaration(st *emitState, unit *tir.Unit, snaps
 		}
 		inits = append(inits, fmt.Sprintf(".%s = %s", cname, expr))
 	}
-	scope[statement.Symbol] = localInfo{runtimeType: initValue.Type}
-	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, strings.Join(inits, ", "), indent, statement.Symbol), nil
+	return strings.Join(inits, ", "), nil
+}
+
+// buildRuntimeAllocatorRecordDeclaration builds one runtime Allocator literal's
+// C local declaration:
+//
+//	PebbleAllocator pebble_local_<sym> = { .state = <ptr>, .alloc = <bridge>,
+//	                                        .realloc = <bridge>, .free = <bridge> };
+//	(void)pebble_local_<sym>;
+//
+// a C99 designated-initializer brace list over the hand-written runtime
+// PebbleAllocator struct, delegating the brace-list content to
+// buildRuntimeAllocatorBraceList. Like every local, the declaration is
+// followed by a (void) cast against -Wunused-variable.
+func buildRuntimeAllocatorRecordDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	inits, err := buildRuntimeAllocatorBraceList(st, unit, snapshot, fileSet, initValue, scope, context, width)
+	if err != nil {
+		return "", err
+	}
+	// See buildRuntimeLocalDeclaration: the Allocator local is also seeded as a
+	// struct-typed local so the general by-value movement machinery (argument,
+	// return, field store) accepts it like the ordinary struct it is.
+	scope[statement.Symbol] = localInfo{structType: initValue.Type, runtimeType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = { %s };\n%s(void)pebble_local_%d;", indent, runtimeTypeName(unit, snapshot, initValue.Type), statement.Symbol, inits, indent, statement.Symbol), nil
 }
 
 // buildTupleBraceList validates one TupleValue node's element list and builds

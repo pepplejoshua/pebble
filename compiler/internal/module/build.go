@@ -3,6 +3,7 @@ package module
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
+	"github.com/pepplejoshua/pebble/compiler/prelude"
 )
 
 type candidate struct {
@@ -65,15 +67,20 @@ func build(config BuildConfig, provider SourceProvider, sources *source.FileSet,
 	}
 
 	entryName := entryDisplay(config.EntryPath)
-	if config.PreludePath != "" {
-		prelude, ok := b.loadCandidate(config.Package, config.PreludePath, entryDisplay(config.PreludePath), source.Span{})
-		if !ok {
-			return b.graph
+	if config.PreludePath == "" {
+		if preludeModule, ok := b.loadEmbeddedPrelude(); ok {
+			b.graph.Prelude = b.addModule(preludeModule, 0, source.Span{}, RolePrelude)
+			if b.graph.Prelude == 0 {
+				return b.graph
+			}
 		}
+	} else if prelude, ok := b.loadCandidate(config.Package, config.PreludePath, entryDisplay(config.PreludePath), source.Span{}); ok {
 		b.graph.Prelude = b.addModule(prelude, 0, source.Span{}, RolePrelude)
 		if b.graph.Prelude == 0 {
 			return b.graph
 		}
+	} else {
+		return b.graph
 	}
 	entry, ok := b.loadCandidate(config.Package, config.EntryPath, entryName, source.Span{})
 	if !ok {
@@ -93,6 +100,29 @@ func entryDisplay(entry string) string {
 		return base
 	}
 	return clean
+}
+
+// embeddedPreludePath is the module key for the compiler's built-in runtime
+// prelude, loaded from embedded content rather than a source provider. It is a
+// sentinel that no provider-resolved path can collide with meaningfully: the
+// prelude never appears on a filesystem and never imports anything, so its key
+// is used only for graph identity.
+const embeddedPreludePath = "prelude/runtime.peb"
+
+// loadEmbeddedPrelude reads the compiler's embedded runtime prelude
+// (compiler/prelude/runtime.peb) from the binary itself, so every compilation
+// sees Allocator/Context with no -prelude flag and no filesystem discovery.
+func (b *builder) loadEmbeddedPrelude() (candidate, bool) {
+	contents, err := fs.ReadFile(prelude.FS, "runtime.peb")
+	if err != nil {
+		b.report(CodeModuleUnavailable, fmt.Sprintf("cannot load embedded runtime prelude: %v", err), source.Span{})
+		return candidate{}, false
+	}
+	return candidate{
+		key:      ModuleKey{Package: b.config.Package, Path: CanonicalPath(embeddedPreludePath)},
+		display:  embeddedPreludePath,
+		contents: contents,
+	}, true
 }
 
 func (b *builder) addModule(item candidate, depth uint32, importSpan source.Span, role ModuleRole) ModuleID {

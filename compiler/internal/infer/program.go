@@ -318,8 +318,8 @@ func Prepare(inputs ProgramInputs, diagnostics *diagnostic.DiagnosticSet, config
 	for _, m := range inputs.Graph.Modules() {
 		p.modules[m.ID] = m
 	}
-	p.prepareRuntimePrelude()
 	p.prepareDeclarations()
+	p.recordRuntimeTypes()
 	p.prepareSignatures()
 	p.prepareBuiltinSignatures()
 	p.reporter.flush()

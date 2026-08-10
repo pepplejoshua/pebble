@@ -151,10 +151,10 @@ func TestResolveRecordsGuardedInactive(t *testing.T) {
 func TestResolveRecordsDuplicateRoot(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
 	full := run06a(inputs, diagnostics, Config{})
-	if full == nil || len(full.Compilation.Modules) == 0 || len(full.Compilation.Modules[0].Declarations) == 0 {
+	if full == nil || len(full.Compilation.Modules) == 0 || len(entryFrozenModule(full.Compilation).Declarations) == 0 {
 		t.Fatal("test setup: no valid handoff with module declarations")
 	}
-	symbolID := full.Compilation.Modules[0].Declarations[0]
+	symbolID := entryFrozenModule(full.Compilation).Declarations[0]
 
 	handoff := &solveHandoff{
 		Semantics: full.Semantics,

@@ -2300,6 +2300,35 @@ func buildFixtureMaybeFailing(t *testing.T, sourceText, entryName string, requir
 
 // --- 10.34: plain enum locals and switch matching ---
 
+// embeddedPreludePath mirrors module's embedded prelude module key so test
+// helpers can exclude the always-present runtime prelude (Allocator/Context)
+// from "the fixture's own type declarations".
+const embeddedPreludePath = "prelude/runtime.peb"
+
+// entryTypeDeclarations returns the unit's TypeDecls owned by a module other
+// than the embedded runtime prelude. The prelude module (path
+// prelude/runtime.peb) is always the first graph module, so
+// unit.TypeDeclarations()[0] is now the prelude's Allocator, not the fixture's
+// authored type; helpers that need the fixture's own declarations must filter
+// the prelude out.
+func entryTypeDeclarations(unit *tir.Unit) []tir.TypeDecl {
+	preludeDecls := make(map[symbol.SymbolID]bool)
+	for _, m := range unit.Modules() {
+		if m.Key.Path == module.CanonicalPath(embeddedPreludePath) {
+			for _, declaration := range m.Declarations {
+				preludeDecls[declaration] = true
+			}
+		}
+	}
+	var out []tir.TypeDecl
+	for _, declaration := range unit.TypeDeclarations() {
+		if !preludeDecls[declaration.Symbol] {
+			out = append(out, declaration)
+		}
+	}
+	return out
+}
+
 // enumFixture resolves the single enum type a checker-built fixture declares:
 // its TypeID (from the unit's Nominal TypeUse node) and its variant symbols in
 // declared order (from the TypeDecl container's Members). Tests hardcode the
@@ -2311,7 +2340,7 @@ func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, s
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", false)
 	var decl symbol.SymbolID
 	var members []symbol.SymbolID
-	for _, td := range unit.TypeDeclarations() {
+	for _, td := range entryTypeDeclarations(unit) {
 		decl = td.Symbol
 		members = td.Members
 		break

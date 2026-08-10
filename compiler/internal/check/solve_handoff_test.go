@@ -80,12 +80,12 @@ fn main() void {
 	if len(handoff.Compilation.Modules) == 0 {
 		t.Fatal("handoff.Compilation.Modules is empty")
 	}
-	if len(handoff.Compilation.Modules) != 1 {
-		t.Fatalf("handoff.Compilation.Modules length = %d, want 1", len(handoff.Compilation.Modules))
+	if len(handoff.Compilation.Modules) != 2 {
+		t.Fatalf("handoff.Compilation.Modules length = %d, want 2 (embedded prelude + entry)", len(handoff.Compilation.Modules))
 	}
 
 	// Verify declarations are in source order: type, function, function
-	module := handoff.Compilation.Modules[0]
+	module := entryFrozenModule(handoff.Compilation)
 	if len(module.Declarations) < 3 {
 		t.Fatalf("module has %d declarations, want at least 3", len(module.Declarations))
 	}
@@ -176,44 +176,36 @@ fn main() void {
 		t.Fatal("handoff.Semantics is nil")
 	}
 
-	// Should have two modules.
-	if len(handoff.Compilation.Modules) != 2 {
-		t.Fatalf("module count = %d, want 2", len(handoff.Compilation.Modules))
+	// Should have three modules: embedded prelude + entry + helper.
+	if len(handoff.Compilation.Modules) != 3 {
+		t.Fatalf("module count = %d, want 3", len(handoff.Compilation.Modules))
 	}
 
-	// DependencyOrder should also have both modules.
-	if len(handoff.Compilation.DependencyOrder) != 2 {
-		t.Fatalf("dependency order length = %d, want 2", len(handoff.Compilation.DependencyOrder))
+	// DependencyOrder should also have all modules.
+	if len(handoff.Compilation.DependencyOrder) != 3 {
+		t.Fatalf("dependency order length = %d, want 3", len(handoff.Compilation.DependencyOrder))
 	}
 
 	// Verify each module has valid declarations and (for main) imports.
-	mainModule := handoff.Compilation.Modules[0]
-	helperModule := handoff.Compilation.Modules[1]
-
-	// Main module should have imports and declarations.
+	mainModule := entryFrozenModule(handoff.Compilation)
+	var helperModule frozenModule
 	if len(mainModule.Imports) == 0 {
 		t.Fatal("main module has no imports")
 	}
-
-	// Check that import target exists in modules.
 	importTarget := mainModule.Imports[0].Target
-	foundTarget := false
 	for _, m := range handoff.Compilation.Modules {
 		if m.ID == importTarget {
-			foundTarget = true
+			helperModule = m
 			break
 		}
-	}
-	if !foundTarget {
-		t.Fatalf("import target %d not found in modules", importTarget)
 	}
 
 	// Both modules should have declarations.
 	if len(mainModule.Declarations) == 0 {
 		t.Fatal("main module has no declarations")
 	}
-	if len(helperModule.Declarations) == 0 {
-		t.Fatal("helper module has no declarations")
+	if helperModule.ID == 0 || len(helperModule.Declarations) == 0 {
+		t.Fatal("helper module has no declarations or was not found")
 	}
 
 	// Verify module spans are valid.
@@ -248,7 +240,7 @@ fn main() void {
 		t.Fatal("handoff.Semantics is nil")
 	}
 
-	module := handoff.Compilation.Modules[0]
+	module := entryFrozenModule(handoff.Compilation)
 	declarations := module.Declarations
 
 	// We expect: main, c_func1, c_func2 as three separate declarations (no ExternBlock entry).
@@ -978,11 +970,11 @@ func TestSolveHandoffEmptyModuleIsNotAFailure(t *testing.T) {
 	if handoff.Semantics == nil {
 		t.Fatal("Semantics should be non-nil for a valid empty module")
 	}
-	if len(handoff.Compilation.Modules) != 1 {
-		t.Fatalf("expected exactly one module, got %d", len(handoff.Compilation.Modules))
+	if len(handoff.Compilation.Modules) != 2 {
+		t.Fatalf("expected exactly two modules (embedded prelude + empty entry), got %d", len(handoff.Compilation.Modules))
 	}
-	if len(handoff.Compilation.Modules[0].Declarations) != 0 {
-		t.Fatalf("expected zero declarations, got %d", len(handoff.Compilation.Modules[0].Declarations))
+	if len(entryFrozenModule(handoff.Compilation).Declarations) != 0 {
+		t.Fatalf("expected zero declarations, got %d", len(entryFrozenModule(handoff.Compilation).Declarations))
 	}
 }
 

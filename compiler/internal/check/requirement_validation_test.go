@@ -17,7 +17,7 @@ func TestRun06bPublishesNumericRequirement(t *testing.T) {
 	if !result.Successful() {
 		t.Fatalf("generic numeric function rejected: %+v", diagnostics.Items())
 	}
-	owner := handoff.Compilation.Modules[0].Declarations[0]
+	owner := entryFrozenModule(handoff.Compilation).Declarations[0]
 	requirements := result.Requirements(owner)
 	if len(requirements) != 1 || requirements[0].Kind != RequirementNumeric || requirements[0].Parameter == 0 || requirements[0].Operator == 0 {
 		t.Fatalf("unexpected requirements: %+v", requirements)
@@ -31,7 +31,7 @@ func TestRun06bDeduplicatesRepeatedGenericUses(t *testing.T) {
 	if !result.Successful() {
 		t.Fatalf("repeated generic use rejected: %+v", diagnostics.Items())
 	}
-	owner := handoff.Compilation.Modules[0].Declarations[0]
+	owner := entryFrozenModule(handoff.Compilation).Declarations[0]
 	count := 0
 	for _, requirement := range result.Requirements(owner) {
 		if requirement.Kind == RequirementNumeric {
@@ -50,7 +50,7 @@ func TestRun06bPublishesEquatableRequirement(t *testing.T) {
 	if !result.Successful() {
 		t.Fatalf("generic equality function rejected: %+v", diagnostics.Items())
 	}
-	owner := handoff.Compilation.Modules[0].Declarations[0]
+	owner := entryFrozenModule(handoff.Compilation).Declarations[0]
 	requirements := result.Requirements(owner)
 	if len(requirements) != 1 || requirements[0].Kind != RequirementEquatable || requirements[0].Parameter == 0 || requirements[0].Operator == 0 {
 		t.Fatalf("unexpected requirements: %+v", requirements)
@@ -73,7 +73,7 @@ func TestRun06bPublishesLiteralFitRequirement(t *testing.T) {
 	if !result.Successful() {
 		t.Fatalf("generic literal function rejected: %+v", diagnostics.Items())
 	}
-	owner := handoff.Compilation.Modules[0].Declarations[0]
+	owner := entryFrozenModule(handoff.Compilation).Declarations[0]
 	for _, requirement := range result.Requirements(owner) {
 		if requirement.Kind == RequirementLiteralFits {
 			if requirement.Parameter == 0 || requirement.LiteralKind == 0 || requirement.Numerator != "1" {

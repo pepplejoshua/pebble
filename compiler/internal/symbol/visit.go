@@ -533,18 +533,7 @@ func (r *resolver) resolveRecord(ctx walkContext, nodeID syntax.NodeID, node syn
 		}
 		if owner != 0 {
 			if name, ok := ctx.module.Tree.Node(parts[0]); ok {
-				symbol, _ := r.result.Symbols.Symbol(owner)
-				switch symbol.Kind {
-				case SymbolRuntimeType:
-					ref := SyntaxRef{Module: ctx.module.ID, Node: parts[0]}
-					if member := r.memberByName(owner, r.nodeText(ctx.file, name)); member != 0 {
-						r.result.references[ref] = Resolution{Syntax: ref, Symbol: member, State: ResolutionResolved}
-					} else {
-						r.result.references[ref] = Resolution{Syntax: ref, State: ResolutionDeferred}
-					}
-				default:
-					r.resolveNamedMember(ctx, parts[0], name, owner)
-				}
+				r.resolveNamedMember(ctx, parts[0], name, owner)
 			}
 		}
 		if len(parts) > 1 {
@@ -587,15 +576,6 @@ func (r *resolver) resolveNamedMember(ctx walkContext, nodeID syntax.NodeID, nod
 	result := Resolution{Syntax: ref, Symbol: id, State: ResolutionResolved}
 	r.result.references[ref] = result
 	return result
-}
-
-func (r *resolver) memberByName(owner SymbolID, name string) SymbolID {
-	for _, id := range r.result.members[owner] {
-		if member, ok := r.result.Symbols.Symbol(id); ok && member.Name == name {
-			return id
-		}
-	}
-	return 0
 }
 
 func (r *resolver) resolveBracket(ctx walkContext, nodeID syntax.NodeID, node syntax.Node, expected nameContext) Resolution {

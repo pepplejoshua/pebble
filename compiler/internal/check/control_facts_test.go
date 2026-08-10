@@ -1188,6 +1188,9 @@ fn dataValue(d Data) int {
 	item, _ := inputs.Graph.Module(inputs.Graph.Root)
 	partial, qualified := 0, 0
 	for _, ref := range facts.Walk.order {
+		if ref.Module != item.ID {
+			continue // the embedded prelude module is also walked; only the entry module's cases are under test
+		}
 		node, _ := item.Tree.Node(ref.Node)
 		if node.Kind() != syntax.SwitchCase {
 			continue
@@ -1246,6 +1249,9 @@ fn dataValue(d Data) int {
 	item, _ := inputs.Graph.Module(inputs.Graph.Root)
 	count := 0
 	for _, ref := range facts.Walk.order {
+		if ref.Module != item.ID {
+			continue // the embedded prelude module is also walked; only the entry module's cases are under test
+		}
 		node, _ := item.Tree.Node(ref.Node)
 		if node.Kind() != syntax.SwitchCase {
 			continue

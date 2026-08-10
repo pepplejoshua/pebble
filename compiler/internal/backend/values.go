@@ -12,6 +12,18 @@ import (
 )
 
 func buildRuntimeValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if node.Kind == tir.RecordConstruct {
+		// A fresh Allocator construction used as a nested runtime-typed field
+		// value (e.g. `Holder.{ a = Allocator.{ ptr, alloc, realloc, free } }`):
+		// the runtime ABI compound literal, the same shape buildStructValueExpr
+		// uses for an Allocator construction in a return/argument/store value
+		// position.
+		inits, err := buildRuntimeAllocatorBraceList(st, unit, snapshot, fileSet, node, scope, "runtime value", width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ %s }", runtimeTypeName(unit, snapshot, node.Type), inits), nil
+	}
 	if node.Kind == tir.SymbolValue {
 		if node.Symbol == unit.Runtime().Context {
 			return "(*ctx)", nil
@@ -370,6 +382,23 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)
+	}
+	if runtimeType(unit, snapshot, node.Type) != 0 {
+		// A construction of the compiler's Allocator runtime type used in a
+		// value position (a function return, a call argument, a store value).
+		// It must be emitted as a (PebbleAllocator){ ... } compound literal over
+		// the hand-written runtime ABI struct (runtimeFieldName's state/alloc/
+		// realloc/free fields, callback values bridged by file-scope adapters),
+		// NOT the generic pebble_struct_<typeID>_t compound literal: Allocator
+		// has no per-TypeID struct typedef (typedef collection excludes runtime
+		// types) and every other reference to an Allocator value — a local, a
+		// parameter, a field, a helper's return type — names the hand-written
+		// PebbleAllocator, so the compound literal must carry the same C type.
+		inits, err := buildRuntimeAllocatorBraceList(st, unit, snapshot, fileSet, node, scope, context, width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ %s }", runtimeTypeName(unit, snapshot, node.Type), inits), nil
 	}
 	preStatements, braceList, err := buildStructBraceList(st, unit, snapshot, fileSet, node, scope, "", context, width)
 	if err != nil {

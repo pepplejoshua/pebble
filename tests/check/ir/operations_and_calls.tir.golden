@@ -1,146 +1,180 @@
-unit nodes=78 components=202 snapshot=28 regions=5 functions=3 temps=0
-module id=1 package="facts" path="main.peb" source=0 span=0[0,420)
+unit nodes=93 components=241 snapshot=28 regions=5 functions=3 temps=0
+module id=1 package="facts" path="prelude/runtime.peb" source=0 span=0[0,1941)
+  decl symbol=17
+  decl symbol=22
+module id=2 package="facts" path="main.peb" source=1 span=1[0,420)
   decl symbol=24
   decl symbol=27
   decl symbol=28
-funcdecl symbol=24 fid=1 node=31 span=0[3,6)
-funcdecl symbol=27 fid=2 node=33 span=0[52,58)
-funcdecl symbol=28 fid=3 node=75 span=0[73,83)
-node 1 Module type=0 span=0[0,420) syntax=0:0 symbol=1
-node 2 ParameterDeclaration type=0 span=0[7,11) syntax=1:4 symbol=25
-node 3 ParameterDeclaration type=0 span=0[17,22) syntax=1:7 symbol=26
-node 4 ParameterDeclaration type=0 span=0[84,89) syntax=1:22 symbol=29
-node 5 ParameterDeclaration type=0 span=0[98,104) syntax=1:26 symbol=30
-node 6 ParameterDeclaration type=0 span=0[112,117) syntax=1:29 symbol=31
-node 7 ParameterDeclaration type=0 span=0[123,127) syntax=1:32 symbol=32
-node 8 LocalDeclaration type=0 span=0[149,154) syntax=1:37 symbol=35
-node 9 LocalDeclaration type=0 span=0[224,229) syntax=1:55 symbol=36
-node 10 LocalDeclaration type=0 span=0[258,261) syntax=1:62 symbol=37
-node 11 LocalDeclaration type=0 span=0[294,301) syntax=1:69 symbol=38
-node 12 LocalDeclaration type=0 span=0[328,336) syntax=1:78 symbol=39
-node 13 TypeUse type=0 span=0[12,15) syntax=1:3 typearg=9
-node 14 TypeUse type=0 span=0[23,26) syntax=1:6 typearg=9
-node 15 TypeUse type=0 span=0[28,31) syntax=1:8 typearg=9
-node 16 TypeUse type=0 span=0[61,65) syntax=1:14 typearg=4
-node 17 TypeUse type=0 span=0[90,96) syntax=1:21 typearg=23
-node 18 TypeUse type=0 span=0[105,110) syntax=1:25 typearg=24
-node 19 TypeUse type=0 span=0[118,121) syntax=1:28 typearg=9
-node 20 TypeUse type=0 span=0[128,132) syntax=1:31 typearg=1
-node 21 TypeUse type=0 span=0[134,138) syntax=1:33 typearg=4
-node 22 TypeUse type=0 span=0[155,158) syntax=1:35 typearg=9
-node 23 TypeUse type=0 span=0[230,233) syntax=1:51 typearg=9
-node 24 TypeUse type=0 span=0[262,267) syntax=1:58 typearg=24
-node 25 TypeUse type=0 span=0[302,305) syntax=1:64 typearg=9
-node 26 TypeUse type=0 span=0[337,341) syntax=1:71 typearg=1
-node 27 SymbolValue type=9 span=0[35,39) syntax=1:9 symbol=25
-node 28 SymbolValue type=9 span=0[42,47) syntax=1:10 symbol=26
-node 29 CheckedArithmetic type=9 span=0[35,47) syntax=1:11 operator=57 children=[27 28]
-node 30 Return type=0 span=0[35,47) syntax=0:0 function=1 defer=[] children=[29]
-node 31 Block type=0 span=0[0,48) syntax=0:0 region=1 children=[30]
-node 32 ImplicitReturn type=0 span=origin=0[66,68) role=implicit-return syntax=0:0 function=2 defer=[]
-node 33 Block type=0 span=0[66,68) syntax=0:0 region=3 children=[32]
-node 34 IntegerLiteral type=9 span=0[161,162) syntax=1:36 int=0/1
-node 35 Initialize type=0 span=0[145,163) syntax=0:0 symbol=35 children=[34]
-node 36 StoragePlace type=9 span=0[168,186) syntax=0:0 symbol=35 writable=true writable=true
-node 37 IntegerLiteral type=9 span=0[180,181) syntax=1:40 int=1/1
-node 38 IntegerLiteral type=9 span=0[183,184) syntax=1:41 int=2/1
-node 39 DirectCall type=9 span=0[176,185) syntax=1:42 convention=1 context=ForwardCurrentContext symbol=24 member=0 children=[37 38]
-node 40 Store type=0 span=0[168,186) syntax=1:43 children=[36 39]
-node 41 StoragePlace type=9 span=0[191,202) syntax=0:0 symbol=35 writable=true writable=true
-node 42 IntegerLiteral type=9 span=0[200,201) syntax=1:45 int=1/1
-node 43 CompoundStore type=0 span=0[191,202) syntax=1:46 operator=57 children=[41 42]
-node 44 StoragePlace type=9 span=0[207,214) syntax=0:0 symbol=35 writable=true writable=true
-node 45 IntegerLiteral type=9 span=origin=0[207,214) role=postfix-update-one syntax=0:0 int=1/1
-node 46 CompoundStore type=0 span=0[207,215) syntax=1:49 operator=57 children=[44 45]
-node 47 StoragePlace type=23 span=0[236,241) syntax=0:0 symbol=29 writable=false
-node 48 SymbolValue type=9 span=0[242,247) syntax=1:53 symbol=31
-node 49 CheckedIndexPlace type=9 span=0[236,248) syntax=0:0 children=[47 48]
-node 50 Load type=9 span=0[236,248) syntax=1:54 children=[49]
-node 51 Initialize type=0 span=0[220,249) syntax=0:0 symbol=36 children=[50]
-node 52 SymbolValue type=24 span=0[270,276) syntax=1:59 symbol=30
-node 53 SymbolValue type=9 span=0[277,282) syntax=1:60 symbol=31
-node 54 CheckedSlice type=24 span=0[270,284) syntax=1:61 children=[52 53]
-node 55 Initialize type=0 span=0[254,285) syntax=0:0 symbol=37 children=[54]
-node 56 SymbolValue type=9 span=0[309,314) syntax=1:65 symbol=36
-node 57 CheckedNegate type=9 span=0[308,314) syntax=1:66 operator=58 children=[56]
-node 58 IntegerLiteral type=9 span=0[317,318) syntax=1:67 int=2/1
-node 59 CheckedArithmetic type=9 span=0[308,318) syntax=1:68 operator=59 children=[57 58]
-node 60 Initialize type=0 span=0[290,319) syntax=0:0 symbol=38 children=[59]
-node 61 SymbolValue type=1 span=0[344,348) syntax=1:72 symbol=32
-node 62 SymbolValue type=9 span=0[353,358) syntax=1:73 symbol=35
-node 63 IntegerLiteral type=9 span=0[361,362) syntax=1:74 int=0/1
-node 64 BinaryValue type=1 span=0[353,362) syntax=1:75 operator=74 children=[62 63]
-node 65 SourceAlias type=1 span=0[352,363) syntax=1:76 explicitCast=false children=[64]
-node 66 ShortCircuitValue type=1 span=0[344,363) syntax=1:77 operator=76 children=[61 65]
-node 67 Initialize type=0 span=0[324,364) syntax=0:0 symbol=39 children=[66]
-node 68 DirectCall type=4 span=0[369,377) syntax=1:80 convention=1 context=ForwardCurrentContext symbol=27 member=0
-node 69 ExpressionStatement type=0 span=0[369,378) syntax=1:81 children=[68]
-node 70 SymbolValue type=9 span=0[389,396) syntax=1:82 symbol=38
-node 71 Print type=0 span=0[383,397) syntax=1:83 children=[70]
-node 72 SymbolValue type=1 span=0[408,416) syntax=1:84 symbol=39
-node 73 Print type=0 span=0[402,417) syntax=1:85 children=[72]
-node 74 ImplicitReturn type=0 span=origin=0[139,419) role=implicit-return syntax=0:0 function=3 defer=[]
-node 75 Block type=0 span=0[139,419) syntax=0:0 region=5 children=[35 40 43 46 51 55 60 67 69 71 73 74]
-node 76 FunctionDeclaration type=0 span=0[3,6) syntax=1:12 symbol=24 function=1 convention=1 variadic=false inline=false hasBody=true params=[25:9 26:9]
-node 77 FunctionDeclaration type=0 span=0[52,58) syntax=1:16 symbol=27 function=2 convention=1 variadic=false inline=false hasBody=true
-node 78 FunctionDeclaration type=0 span=0[73,83) syntax=1:87 symbol=28 function=3 convention=1 variadic=false inline=false hasBody=true params=[29:23 30:24 31:9 32:1]
-sourcemap 1:3 -> 13
-sourcemap 1:4 -> 2
-sourcemap 1:6 -> 14
-sourcemap 1:7 -> 3
-sourcemap 1:8 -> 15
-sourcemap 1:9 -> 27
-sourcemap 1:10 -> 28
-sourcemap 1:11 -> 29
-sourcemap 1:12 -> 76
-sourcemap 1:14 -> 16
-sourcemap 1:16 -> 77
-sourcemap 1:21 -> 17
-sourcemap 1:22 -> 4
-sourcemap 1:25 -> 18
-sourcemap 1:26 -> 5
-sourcemap 1:28 -> 19
-sourcemap 1:29 -> 6
-sourcemap 1:31 -> 20
-sourcemap 1:32 -> 7
-sourcemap 1:33 -> 21
-sourcemap 1:35 -> 22
-sourcemap 1:36 -> 34
-sourcemap 1:37 -> 8
-sourcemap 1:40 -> 37
-sourcemap 1:41 -> 38
-sourcemap 1:42 -> 39
-sourcemap 1:43 -> 40
-sourcemap 1:45 -> 42
-sourcemap 1:46 -> 43
-sourcemap 1:49 -> 46
-sourcemap 1:51 -> 23
-sourcemap 1:53 -> 48
-sourcemap 1:54 -> 50
-sourcemap 1:55 -> 9
-sourcemap 1:58 -> 24
-sourcemap 1:59 -> 52
-sourcemap 1:60 -> 53
-sourcemap 1:61 -> 54
-sourcemap 1:62 -> 10
-sourcemap 1:64 -> 25
-sourcemap 1:65 -> 56
-sourcemap 1:66 -> 57
-sourcemap 1:67 -> 58
-sourcemap 1:68 -> 59
-sourcemap 1:69 -> 11
-sourcemap 1:71 -> 26
-sourcemap 1:72 -> 61
-sourcemap 1:73 -> 62
-sourcemap 1:74 -> 63
-sourcemap 1:75 -> 64
-sourcemap 1:76 -> 65
-sourcemap 1:77 -> 66
-sourcemap 1:78 -> 12
-sourcemap 1:80 -> 68
-sourcemap 1:81 -> 69
-sourcemap 1:82 -> 70
-sourcemap 1:83 -> 71
-sourcemap 1:84 -> 72
-sourcemap 1:85 -> 73
-sourcemap 1:87 -> 78
+typedecl symbol=17 node=3 members=[18 19 20 21] span=0[1722,1731)
+typedecl symbol=22 node=8 members=[23] span=0[1886,1893)
+funcdecl symbol=24 fid=1 node=46 span=1[3,6)
+funcdecl symbol=27 fid=2 node=48 span=1[52,58)
+funcdecl symbol=28 fid=3 node=90 span=1[73,83)
+node 1 Module type=0 span=0[0,1941) syntax=0:0 symbol=1
+node 2 Module type=0 span=1[0,420) syntax=0:0 symbol=2
+node 3 TypeDeclaration type=0 span=0[1722,1731) syntax=1:33 symbol=17
+node 4 FieldDeclaration type=0 span=0[1747,1750) syntax=1:5 symbol=18
+node 5 FieldDeclaration type=0 span=0[1766,1771) syntax=1:13 symbol=19
+node 6 FieldDeclaration type=0 span=0[1802,1809) syntax=1:23 symbol=20
+node 7 FieldDeclaration type=0 span=0[1845,1849) syntax=1:31 symbol=21
+node 8 TypeDeclaration type=0 span=0[1886,1893) syntax=1:39 symbol=22
+node 9 FieldDeclaration type=0 span=0[1909,1926) syntax=1:37 symbol=23
+node 10 ParameterDeclaration type=0 span=1[7,11) syntax=2:4 symbol=25
+node 11 ParameterDeclaration type=0 span=1[17,22) syntax=2:7 symbol=26
+node 12 ParameterDeclaration type=0 span=1[84,89) syntax=2:22 symbol=29
+node 13 ParameterDeclaration type=0 span=1[98,104) syntax=2:26 symbol=30
+node 14 ParameterDeclaration type=0 span=1[112,117) syntax=2:29 symbol=31
+node 15 ParameterDeclaration type=0 span=1[123,127) syntax=2:32 symbol=32
+node 16 LocalDeclaration type=0 span=1[149,154) syntax=2:37 symbol=35
+node 17 LocalDeclaration type=0 span=1[224,229) syntax=2:55 symbol=36
+node 18 LocalDeclaration type=0 span=1[258,261) syntax=2:62 symbol=37
+node 19 LocalDeclaration type=0 span=1[294,301) syntax=2:69 symbol=38
+node 20 LocalDeclaration type=0 span=1[328,336) syntax=2:78 symbol=39
+node 21 TypeUse type=0 span=0[1734,1878) syntax=1:32 typearg=17
+node 22 TypeUse type=0 span=0[1755,1760) syntax=1:4 typearg=19
+node 23 TypeUse type=0 span=0[1774,1796) syntax=1:12 typearg=20
+node 24 TypeUse type=0 span=0[1810,1839) syntax=1:22 typearg=21
+node 25 TypeUse type=0 span=0[1853,1875) syntax=1:30 typearg=22
+node 26 TypeUse type=0 span=0[1896,1939) syntax=1:38 typearg=18
+node 27 TypeUse type=0 span=0[1927,1936) syntax=1:36 typearg=17
+node 28 TypeUse type=0 span=1[12,15) syntax=2:3 typearg=9
+node 29 TypeUse type=0 span=1[23,26) syntax=2:6 typearg=9
+node 30 TypeUse type=0 span=1[28,31) syntax=2:8 typearg=9
+node 31 TypeUse type=0 span=1[61,65) syntax=2:14 typearg=4
+node 32 TypeUse type=0 span=1[90,96) syntax=2:21 typearg=23
+node 33 TypeUse type=0 span=1[105,110) syntax=2:25 typearg=24
+node 34 TypeUse type=0 span=1[118,121) syntax=2:28 typearg=9
+node 35 TypeUse type=0 span=1[128,132) syntax=2:31 typearg=1
+node 36 TypeUse type=0 span=1[134,138) syntax=2:33 typearg=4
+node 37 TypeUse type=0 span=1[155,158) syntax=2:35 typearg=9
+node 38 TypeUse type=0 span=1[230,233) syntax=2:51 typearg=9
+node 39 TypeUse type=0 span=1[262,267) syntax=2:58 typearg=24
+node 40 TypeUse type=0 span=1[302,305) syntax=2:64 typearg=9
+node 41 TypeUse type=0 span=1[337,341) syntax=2:71 typearg=1
+node 42 SymbolValue type=9 span=1[35,39) syntax=2:9 symbol=25
+node 43 SymbolValue type=9 span=1[42,47) syntax=2:10 symbol=26
+node 44 CheckedArithmetic type=9 span=1[35,47) syntax=2:11 operator=57 children=[42 43]
+node 45 Return type=0 span=1[35,47) syntax=0:0 function=1 defer=[] children=[44]
+node 46 Block type=0 span=1[0,48) syntax=0:0 region=1 children=[45]
+node 47 ImplicitReturn type=0 span=origin=1[66,68) role=implicit-return syntax=0:0 function=2 defer=[]
+node 48 Block type=0 span=1[66,68) syntax=0:0 region=3 children=[47]
+node 49 IntegerLiteral type=9 span=1[161,162) syntax=2:36 int=0/1
+node 50 Initialize type=0 span=1[145,163) syntax=0:0 symbol=35 children=[49]
+node 51 StoragePlace type=9 span=1[168,186) syntax=0:0 symbol=35 writable=true writable=true
+node 52 IntegerLiteral type=9 span=1[180,181) syntax=2:40 int=1/1
+node 53 IntegerLiteral type=9 span=1[183,184) syntax=2:41 int=2/1
+node 54 DirectCall type=9 span=1[176,185) syntax=2:42 convention=1 context=ForwardCurrentContext symbol=24 member=0 children=[52 53]
+node 55 Store type=0 span=1[168,186) syntax=2:43 children=[51 54]
+node 56 StoragePlace type=9 span=1[191,202) syntax=0:0 symbol=35 writable=true writable=true
+node 57 IntegerLiteral type=9 span=1[200,201) syntax=2:45 int=1/1
+node 58 CompoundStore type=0 span=1[191,202) syntax=2:46 operator=57 children=[56 57]
+node 59 StoragePlace type=9 span=1[207,214) syntax=0:0 symbol=35 writable=true writable=true
+node 60 IntegerLiteral type=9 span=origin=1[207,214) role=postfix-update-one syntax=0:0 int=1/1
+node 61 CompoundStore type=0 span=1[207,215) syntax=2:49 operator=57 children=[59 60]
+node 62 StoragePlace type=23 span=1[236,241) syntax=0:0 symbol=29 writable=false
+node 63 SymbolValue type=9 span=1[242,247) syntax=2:53 symbol=31
+node 64 CheckedIndexPlace type=9 span=1[236,248) syntax=0:0 children=[62 63]
+node 65 Load type=9 span=1[236,248) syntax=2:54 children=[64]
+node 66 Initialize type=0 span=1[220,249) syntax=0:0 symbol=36 children=[65]
+node 67 SymbolValue type=24 span=1[270,276) syntax=2:59 symbol=30
+node 68 SymbolValue type=9 span=1[277,282) syntax=2:60 symbol=31
+node 69 CheckedSlice type=24 span=1[270,284) syntax=2:61 children=[67 68]
+node 70 Initialize type=0 span=1[254,285) syntax=0:0 symbol=37 children=[69]
+node 71 SymbolValue type=9 span=1[309,314) syntax=2:65 symbol=36
+node 72 CheckedNegate type=9 span=1[308,314) syntax=2:66 operator=58 children=[71]
+node 73 IntegerLiteral type=9 span=1[317,318) syntax=2:67 int=2/1
+node 74 CheckedArithmetic type=9 span=1[308,318) syntax=2:68 operator=59 children=[72 73]
+node 75 Initialize type=0 span=1[290,319) syntax=0:0 symbol=38 children=[74]
+node 76 SymbolValue type=1 span=1[344,348) syntax=2:72 symbol=32
+node 77 SymbolValue type=9 span=1[353,358) syntax=2:73 symbol=35
+node 78 IntegerLiteral type=9 span=1[361,362) syntax=2:74 int=0/1
+node 79 BinaryValue type=1 span=1[353,362) syntax=2:75 operator=74 children=[77 78]
+node 80 SourceAlias type=1 span=1[352,363) syntax=2:76 explicitCast=false children=[79]
+node 81 ShortCircuitValue type=1 span=1[344,363) syntax=2:77 operator=76 children=[76 80]
+node 82 Initialize type=0 span=1[324,364) syntax=0:0 symbol=39 children=[81]
+node 83 DirectCall type=4 span=1[369,377) syntax=2:80 convention=1 context=ForwardCurrentContext symbol=27 member=0
+node 84 ExpressionStatement type=0 span=1[369,378) syntax=2:81 children=[83]
+node 85 SymbolValue type=9 span=1[389,396) syntax=2:82 symbol=38
+node 86 Print type=0 span=1[383,397) syntax=2:83 children=[85]
+node 87 SymbolValue type=1 span=1[408,416) syntax=2:84 symbol=39
+node 88 Print type=0 span=1[402,417) syntax=2:85 children=[87]
+node 89 ImplicitReturn type=0 span=origin=1[139,419) role=implicit-return syntax=0:0 function=3 defer=[]
+node 90 Block type=0 span=1[139,419) syntax=0:0 region=5 children=[50 55 58 61 66 70 75 82 84 86 88 89]
+node 91 FunctionDeclaration type=0 span=1[3,6) syntax=2:12 symbol=24 function=1 convention=1 variadic=false inline=false hasBody=true params=[25:9 26:9]
+node 92 FunctionDeclaration type=0 span=1[52,58) syntax=2:16 symbol=27 function=2 convention=1 variadic=false inline=false hasBody=true
+node 93 FunctionDeclaration type=0 span=1[73,83) syntax=2:87 symbol=28 function=3 convention=1 variadic=false inline=false hasBody=true params=[29:23 30:24 31:9 32:1]
+sourcemap 1:4 -> 22
+sourcemap 1:5 -> 4
+sourcemap 1:12 -> 23
+sourcemap 1:13 -> 5
+sourcemap 1:22 -> 24
+sourcemap 1:23 -> 6
+sourcemap 1:30 -> 25
+sourcemap 1:31 -> 7
+sourcemap 1:32 -> 21
+sourcemap 1:33 -> 3
+sourcemap 1:36 -> 27
+sourcemap 1:37 -> 9
+sourcemap 1:38 -> 26
+sourcemap 1:39 -> 8
+sourcemap 2:3 -> 28
+sourcemap 2:4 -> 10
+sourcemap 2:6 -> 29
+sourcemap 2:7 -> 11
+sourcemap 2:8 -> 30
+sourcemap 2:9 -> 42
+sourcemap 2:10 -> 43
+sourcemap 2:11 -> 44
+sourcemap 2:12 -> 91
+sourcemap 2:14 -> 31
+sourcemap 2:16 -> 92
+sourcemap 2:21 -> 32
+sourcemap 2:22 -> 12
+sourcemap 2:25 -> 33
+sourcemap 2:26 -> 13
+sourcemap 2:28 -> 34
+sourcemap 2:29 -> 14
+sourcemap 2:31 -> 35
+sourcemap 2:32 -> 15
+sourcemap 2:33 -> 36
+sourcemap 2:35 -> 37
+sourcemap 2:36 -> 49
+sourcemap 2:37 -> 16
+sourcemap 2:40 -> 52
+sourcemap 2:41 -> 53
+sourcemap 2:42 -> 54
+sourcemap 2:43 -> 55
+sourcemap 2:45 -> 57
+sourcemap 2:46 -> 58
+sourcemap 2:49 -> 61
+sourcemap 2:51 -> 38
+sourcemap 2:53 -> 63
+sourcemap 2:54 -> 65
+sourcemap 2:55 -> 17
+sourcemap 2:58 -> 39
+sourcemap 2:59 -> 67
+sourcemap 2:60 -> 68
+sourcemap 2:61 -> 69
+sourcemap 2:62 -> 18
+sourcemap 2:64 -> 40
+sourcemap 2:65 -> 71
+sourcemap 2:66 -> 72
+sourcemap 2:67 -> 73
+sourcemap 2:68 -> 74
+sourcemap 2:69 -> 19
+sourcemap 2:71 -> 41
+sourcemap 2:72 -> 76
+sourcemap 2:73 -> 77
+sourcemap 2:74 -> 78
+sourcemap 2:75 -> 79
+sourcemap 2:76 -> 80
+sourcemap 2:77 -> 81
+sourcemap 2:78 -> 20
+sourcemap 2:80 -> 83
+sourcemap 2:81 -> 84
+sourcemap 2:82 -> 85
+sourcemap 2:83 -> 86
+sourcemap 2:84 -> 87
+sourcemap 2:85 -> 88
+sourcemap 2:87 -> 93

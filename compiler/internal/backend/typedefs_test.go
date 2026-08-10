@@ -343,12 +343,12 @@ func TestEmitStructParameterParamOnlyTypeGetsTypedef(t *testing.T) {
 	}
 	found := false
 	for _, info := range infos {
-		if info.typ == 23 {
+		if info.typ == 19 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("struct type 23 used only as a parameter type was not discovered, got %+v", infos)
+		t.Fatalf("struct type 19 used only as a parameter type was not discovered, got %+v", infos)
 	}
 }
 

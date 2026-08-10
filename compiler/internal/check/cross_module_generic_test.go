@@ -212,8 +212,8 @@ func TestCrossModuleGenericTwoModulesAndImportedOwnership(t *testing.T) {
 	fx := buildCrossModuleGenericFixture(t)
 
 	modules := fx.unit.Modules()
-	if len(modules) != 2 {
-		t.Fatalf("modules = %d, want exactly two", len(modules))
+	if len(modules) != 3 {
+		t.Fatalf("modules = %d, want exactly three (embedded prelude + root + helper)", len(modules))
 	}
 	var root, helper *tir.ModuleDecl
 	for i := range modules {

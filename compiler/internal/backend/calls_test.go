@@ -1085,9 +1085,9 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 	// bare brace list — with the cast naming the aggregate's own typedef. The
 	// tuple form is the positional (pebble_tuple_23_t){ 20, 22 }; the struct
 	// form written out of declared order is
-	// (pebble_struct_23_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 }.
+	// (pebble_struct_19_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 }.
 	// Symbols and type IDs come from the real fixture dumps (tuple: f=24,
-	// tuple type 23; struct: Point=24, x=25, y=26, f=27, struct type 23).
+	// tuple type 23; struct: Point=24, x=25, y=26, f=27, struct type 19).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f((20, 22)); }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -1104,7 +1104,7 @@ func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, "return pebble_fn_27(ctx, (pebble_struct_23_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 });") {
+	if !strings.Contains(out, "return pebble_fn_27(ctx, (pebble_struct_19_t){ .pebble_field_26 = 22, .pebble_field_25 = 20 });") {
 		t.Errorf("emitted C missing the struct compound-literal argument:\n%s", out)
 	}
 }

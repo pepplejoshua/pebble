@@ -64,15 +64,16 @@ func TestFactHandoffRepositoryFixtures(t *testing.T) {
 			}
 
 			// Assert the frozenCompilation has the expected structure. Both
-			// fixture cases are exactly two files (main.peb plus one sibling),
-			// so this checks the real module count, not just "at least one" -
-			// a regression that silently collapsed the two files into one
-			// module must fail this test, not pass it by accident.
+			// fixture cases are exactly two files (main.peb plus one sibling);
+			// with the embedded runtime prelude module always present, the
+			// frozen compilation is exactly 3 modules. This still catches the
+			// "collapsed the two fixture files into one module" regression: a
+			// collapse would report 2, not 3.
 			if len(paths) != 2 {
 				t.Fatalf("fixture directory %s has %d .peb files, expected exactly 2", dir, len(paths))
 			}
-			if len(handoff.Compilation.Modules) != 2 {
-				t.Fatalf("Compilation.Modules has %d entries, want exactly 2 (real cross-file loading collapsed?): %+v",
+			if len(handoff.Compilation.Modules) != 3 {
+				t.Fatalf("Compilation.Modules has %d entries, want exactly 3 (embedded prelude + two fixture modules): %+v",
 					len(handoff.Compilation.Modules), handoff.Compilation.Modules)
 			}
 			if handoff.Compilation.Root == 0 {

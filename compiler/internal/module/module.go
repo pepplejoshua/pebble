@@ -56,7 +56,10 @@ type BuildConfig struct {
 	// PreludePath optionally names a module parsed and resolved before the
 	// entry module. Its top-level declarations are injected into prelude
 	// scope so they are visible to every other module without an explicit
-	// import. An empty value disables the mechanism entirely.
+	// import. An empty value loads the compiler's embedded runtime prelude
+	// (compiler/prelude/runtime.peb), which declares Allocator and Context;
+	// every compilation therefore sees them with no flag or filesystem
+	// discovery required.
 	PreludePath    string
 	StandardRoot   string
 	SearchRoots    []SearchRoot

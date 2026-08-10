@@ -25,6 +25,19 @@ func factInputs(t *testing.T, files checkProvider) (Inputs, *diagnostic.Diagnost
 	return Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics
 }
 
+// entryFrozenModule returns the compilation's root (entry) module. The
+// embedded runtime prelude is always the first graph module, so the entry
+// module is no longer Modules[0]; tests that need the authored entry must
+// select it by graph identity.
+func entryFrozenModule(c frozenCompilation) frozenModule {
+	for _, m := range c.Modules {
+		if m.ID == c.Root {
+			return m
+		}
+	}
+	return frozenModule{}
+}
+
 func TestWalkClosedDispatchIncludesEveryNodeKind(t *testing.T) {
 	for kind := syntax.Missing; kind <= syntax.VariantDecl; kind++ {
 		if !dispatchedNodeKind(kind) {
@@ -55,7 +68,8 @@ func TestWalkPreparationAndAuthoredOrder(t *testing.T) {
 		t.Fatalf("first visited node = %s, want File", node.Kind())
 	}
 	last := facts.Walk.order[len(facts.Walk.order)-1]
-	lastNode, _ := item.Tree.Node(last.Node)
+	lastItem, _ := inputs.Graph.Module(last.Module)
+	lastNode, _ := lastItem.Tree.Node(last.Node)
 	if lastNode.Kind() != syntax.EndOfFile {
 		t.Fatalf("last visited node = %s, want EndOfFile", lastNode.Kind())
 	}
@@ -89,7 +103,7 @@ func TestWalkDependencyOrderAndDuplicateDetection(t *testing.T) {
 	})
 	facts := run06a3(inputs, diagnostics, Config{})
 	order := inputs.Graph.DependencyOrder()
-	if len(order) != 2 || len(facts.Walk.order) == 0 || facts.Walk.order[0].Module != order[0] {
+	if len(order) != 3 || len(facts.Walk.order) == 0 || facts.Walk.order[0].Module != order[0] {
 		t.Fatalf("walk module order starts %v, dependency order %v", facts.Walk.order, order)
 	}
 	root, _ := inputs.Graph.Module(inputs.Graph.Root)

@@ -915,9 +915,11 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 // only the SizeofType node carries it, the same SizeofType collection gap
 // collectUnionTypesWalk and collectArrayTypesWalk close for their own kinds).
 // A RecordConstruct whose own type is a
-// compiler-builtin runtime type (Allocator, Context) is excluded — it has no
-// TypeDeclaration in the unit, so resolveStructInfo could never resolve it
-// (see the guard on its append below). The same walk also records, in
+// compiler-builtin runtime type (Allocator, Context) is excluded — its C type
+// is the hand-written PebbleAllocator / PebbleContext (never a per-TypeID
+// pebble_struct_<id>_t typedef, which this pass exists to emit), and every
+// value position names that hand-written type, so collecting it would only
+// emit a dead, ABI-misleading typedef. The same walk also records, in
 // fieldTypes, every field symbol's resolved type from exactly the two nodes
 // that carry it: a RecordConstruct field value node's own Type, and a
 // FieldPlace node's Type — the only in-unit sources of a field's type, since
@@ -935,21 +937,28 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		// sizeof(pebble_struct_<typeID>_t) names an undeclared C type (see
 		// sizeofCTypeName). The same guard every other struct-collection shape
 		// uses applies here: a compiler-builtin runtime type (Allocator,
-		// Context) has no TypeDeclaration, so resolveStructInfo could never
-		// resolve it, and an enum-shaped type (a plain enum or tagged union)
+		// Context) is sized through its hand-written C type (PebbleAllocator /
+		// PebbleContext, see sizeofCTypeName), never a per-TypeID struct
+		// typedef, and an enum-shaped type (a plain enum or tagged union)
 		// is collected by collectEnumTypes/collectUnionTypes instead.
 		*out = append(*out, node.TypeArg)
 	}
 	if node.Kind == tir.RecordConstruct {
 		// A compiler-builtin runtime type (Allocator, Context) is Nominal like
-		// a struct but is never a parsed user struct: it has no TypeDeclaration
-		// in the unit, so resolveStructInfo would fail on it, and its C typedef
-		// (PebbleAllocator / PebbleContext) is hand-written in the emitted
-		// header. A source-level Allocator literal lowers to a RecordConstruct
-		// (e.g. std/alloc.peb's Allocator.{ ptr, alloc, realloc, free }), so a
-		// runtime-typed construction must be excluded from the struct
-		// collection here — the same runtimeType guard the Initialize,
-		// Parameters, and ResultType collection paths already use. Its field
+		// a struct but its C representation is the hand-written runtime ABI
+		// type PebbleAllocator / PebbleContext, never a per-TypeID
+		// pebble_struct_<id>_t typedef: every Allocator value position — a
+		// local, a parameter, a return, a call argument, a struct field — names
+		// that hand-written type via runtimeTypeName, and a construction is
+		// emitted by buildRuntimeAllocatorBraceList (or the same ABI shape in
+		// buildStructValueExpr), so collecting it here would only emit a dead
+		// typedef that mirrors neither the real PebbleAllocator layout nor
+		// anything the emitted C references. A source-level Allocator literal
+		// lowers to a RecordConstruct (e.g. std/alloc.peb's Allocator.{ ptr,
+		// alloc, realloc, free }), so a runtime-typed construction must be
+		// excluded from the struct collection here — the same runtimeType guard
+		// the Initialize, Parameters, and ResultType collection paths already
+		// use. Its field
 		// value types are still recorded and its field values still recurse
 		// below, so nested ordinary structs inside a runtime construction keep
 		// their typedefs.

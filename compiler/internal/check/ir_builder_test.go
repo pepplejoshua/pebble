@@ -61,7 +61,7 @@ func TestBuildUnitDeclarations(t *testing.T) {
 	if !ok || unit == nil {
 		t.Fatal("buildUnit rejected valid handoff")
 	}
-	if len(unit.Modules()) != 1 || len(unit.FunctionDeclarations()) != 1 || len(unit.GlobalDeclarations()) != 1 {
+	if len(unit.Modules()) != 2 || len(unit.FunctionDeclarations()) != 1 || len(unit.GlobalDeclarations()) != 1 {
 		t.Fatalf("unexpected containers: modules=%d funcs=%d globals=%d", len(unit.Modules()), len(unit.FunctionDeclarations()), len(unit.GlobalDeclarations()))
 	}
 	seenFunction, seenGlobal := false, false

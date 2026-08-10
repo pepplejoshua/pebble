@@ -24,7 +24,7 @@ func TestRun06bSuccess(t *testing.T) {
 		t.Fatal("Solution() returned unexpected value")
 	}
 
-	symID := handoff.Compilation.Modules[0].Declarations[0]
+	symID := entryFrozenModule(handoff.Compilation).Declarations[0]
 	tr, ok := result.SymbolType(symID)
 	if !ok {
 		t.Fatal("SymbolType should find the main symbol")
@@ -69,10 +69,10 @@ func TestRun06bAuditHandoffFailure(t *testing.T) {
 func TestRun06bResolveRecordsFailure(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
 	full := run06a(inputs, diagnostics, Config{})
-	if full == nil || len(full.Compilation.Modules) == 0 || len(full.Compilation.Modules[0].Declarations) == 0 {
+	if full == nil || len(full.Compilation.Modules) == 0 || len(entryFrozenModule(full.Compilation).Declarations) == 0 {
 		t.Fatal("test setup: no valid handoff")
 	}
-	symID := full.Compilation.Modules[0].Declarations[0]
+	symID := entryFrozenModule(full.Compilation).Declarations[0]
 
 	handoff := &solveHandoff{
 		Semantics: full.Semantics,

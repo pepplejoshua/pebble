@@ -100,8 +100,18 @@ func TestRunStdImportEmitsRunnableC(t *testing.T) {
 
 func TestRunPreludeFlagEmitsRunnableC(t *testing.T) {
 	dir := t.TempDir()
+	// Since the Allocator/Context cutover, an explicit -prelude REPLACES the
+	// compiler's embedded default runtime prelude (every compilation sees
+	// Allocator/Context from the prelude), so a custom prelude must provide the
+	// runtime types itself. Read the real runtime prelude and extend it with a
+	// user type, proving the -prelude mechanism still injects declarations
+	// visible to every module without an import.
+	runtimePrelude, err := os.ReadFile("../../prelude/runtime.peb")
+	if err != nil {
+		t.Fatal(err)
+	}
 	preludePath := filepath.Join(dir, "prelude.peb")
-	writeFile(t, preludePath, "type Frobnicator = struct { quux i32; };\n")
+	writeFile(t, preludePath, string(runtimePrelude)+"\ntype Frobnicator = struct { quux i32; };\n")
 	mainPath := filepath.Join(dir, "main.peb")
 	writeFile(t, mainPath, "fn main() int { let f Frobnicator = Frobnicator.{ quux = 42 }; return f.quux; }\n")
 	outPath := filepath.Join(dir, "out.c")
