@@ -920,6 +920,122 @@ func TestEmitPrintStructFieldNamesAreSourceNames(t *testing.T) {
 	}
 }
 
+func TestEmitPrintSliceOfScalarsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 4: a slice operand prints as `[<e0>, <e1>, <e2>]`
+	// with `, ` separators, and an EMPTY slice prints `[]`. A slice's element
+	// COUNT is a runtime value — unlike a fixed array's compile-time length —
+	// so the element formatter is generated once at Go-compile-time and
+	// executed N times at C runtime inside a real for-loop. Every scalar
+	// element is formatted by the same buildScalarPrintParts a bare scalar
+	// print operand uses. The inline-construction operand (`print arr[:]`)
+	// proves a CheckedSlice print operand's checked-start temp statement is
+	// hosted as a leading pre-statement; the partial-range operand proves the
+	// loop iterates the slice's runtime .len, not the backing array's length.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"multi-element", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s; return 0; }", "[1, 2, 3]\n"},
+		{"empty", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[0:0]; print s; return 0; }", "[]\n"},
+		{"partial range", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[1:3]; print s; return 0; }", "[2, 3]\n"},
+		{"inline construction", "fn main() i32 { var arr [3]int = [1, 2, 3]; print arr[:]; return 0; }", "[1, 2, 3]\n"},
+		{"bool elements", "fn main() i32 { var arr [2]bool = [true, false]; var s []bool = arr[:]; print s; return 0; }", "[true, false]\n"},
+		{"char elements", "fn main() i32 { var arr [2]char = ['x', 'é']; var s []char = arr[:]; print s; return 0; }", "[x, é]\n"},
+		{"mixed with scalar operands", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s, \" and \", 42; return 0; }", "[1, 2, 3] and 42\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintSliceOfCompositeElementsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The runtime loop's element formatter routes through the SAME
+	// buildPrintValueCalls recursion the fixed-aggregate slice-3 work uses, so
+	// a slice of structs or tuples prints each element with its full nested
+	// `TypeName{ ... }` / `(...)` sequence inline inside the loop body — the
+	// element formatter is generated against the element TYPE, only the
+	// iteration count is dynamic (proposal 17 slice 4's second half).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"slice of struct", "type Point = struct { x int; y int; };\nfn main() i32 { var arr [2]Point = [Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }]; var s []Point = arr[:]; print s; return 0; }", "[Point{ x: 1, y: 2 }, Point{ x: 3, y: 4 }]\n"},
+		{"slice of tuple", "fn main() i32 { var arr [2](int, str) = [(1, \"a\"), (2, \"b\")]; var s [](int, str) = arr[:]; print s; return 0; }", "[(1, a), (2, b)]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintSliceWritesRuntimeLoop(t *testing.T) {
+	t.Parallel()
+	// A slice operand's print is a REAL C runtime for-loop over the slice's
+	// .len — the runtime-determined element count means the element formatter
+	// can never be unrolled the way a fixed array's is. Asserting the literal
+	// C text proves the dynamic-loop shape: the materialized temp declaration,
+	// `[` punctuation, one `for (size_t pebble_print_i_<id> = 0; ... <
+	// pebble_print_slice_<id>.len; ...++)` loop whose body is the separator
+	// guard plus the single element fprintf reading <temp>.data[<i>], and the
+	// `]` closing punctuation with the statement's trailing newline. A
+	// slice-returning CALL operand must be materialized exactly once into the
+	// temp — the loop reads the temp, never re-calls the helper, so the
+	// helper call text appears exactly once in the emitted C.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn make() []int { var a [2]int = [10, 20]; return a[:]; }\nfn main() i32 { print make(); return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tempRE := regexp.MustCompile(`pebble_slice_\d+_t (pebble_print_slice_\d+) = pebble_fn_\d+\(ctx\);`)
+	match := tempRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the slice operand's materialized temp from the call:\n%s", out)
+	}
+	temp := match[1]
+	i := "pebble_print_i_" + regexp.QuoteMeta(strings.TrimPrefix(temp, "pebble_print_slice_"))
+	loopRE := regexp.MustCompile(`(?m)^\s*for \(size_t ` + i + ` = 0; ` + i + ` < ` + regexp.QuoteMeta(temp) + `\.len; ` + i + `\+\+\) \{`)
+	if !loopRE.MatchString(out) {
+		t.Errorf("emitted C missing the runtime for-loop over the slice's .len:\n%s", out)
+	}
+	guard := regexp.MustCompile(`(?m)^\s*if \(` + i + ` != 0\) fprintf\(stdout, ", "\);`)
+	if !guard.MatchString(out) {
+		t.Errorf("emitted C missing the loop's element-separator guard:\n%s", out)
+	}
+	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId32, ` + regexp.QuoteMeta(temp) + `\.data\[` + i + `\]\);`)
+	if count := len(valueRE.FindAllString(out, -1)); count != 1 {
+		t.Errorf("emitted C has %d slice element value fprintf calls inside the loop, want exactly 1:\n%s", count, out)
+	}
+	for _, want := range []string{
+		`fprintf(stdout, "[");`,
+		`fprintf(stdout, "]""\n");`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	combinedRE := regexp.MustCompile(`(?m)^\s*printf\(`)
+	if combinedRE.MatchString(out) {
+		t.Errorf("emitted C still contains a combined printf call for the slice print:\n%s", out)
+	}
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the slice-returning helper %d time(s), want exactly once (the temp initializer):\n%s", callCount, out)
+	}
+}
+
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A deferred char print routes through the same shared buildPrint, so a

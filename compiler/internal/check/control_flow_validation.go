@@ -119,17 +119,18 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	// printableType is the RECURSIVE print gate for one resolved concrete type:
 	// a scalar builtin (bool, char, str, any integer width, any float width), or
 	// — composite print slice 1 — a struct value, or — slice 2 — a tuple or
-	// fixed array, provided every field/element is itself printable by this same
-	// rule (slice 3: nested aggregates). The recursion terminates because a
-	// field/element type is a strictly nested by-value aggregate; Pebble rejects
-	// a genuinely infinite-size composite at declaration/binding time, so no
-	// by-value cycle can reach here (verified against a self-referential struct
-	// fixture). A struct with any non-struct/non-scalar field (an enum, a tagged
-	// union, a slice, a pointer, an optional) still rejects — those are later
-	// slices. A field/element of a type that is not a concrete known type (a
-	// generic struct's parameter-typed field, which resolves only against a
-	// specific instantiation's type arguments) is not provably printable at the
-	// declaration level, so it rejects too.
+	// fixed array, or — slice 4 — a slice, provided every field/element is
+	// itself printable by this same rule (slice 3: nested aggregates). The
+	// recursion terminates because a field/element type is a strictly nested
+	// by-value aggregate; Pebble rejects a genuinely infinite-size composite at
+	// declaration/binding time, so no by-value cycle can reach here (verified
+	// against a self-referential struct fixture). A struct with any
+	// non-struct/non-scalar field (an enum, a tagged union, a pointer, an
+	// optional) still rejects — those are later slices. A field/element of a
+	// type that is not a concrete known type (a generic struct's parameter-typed
+	// field, which resolves only against a specific instantiation's type
+	// arguments) is not provably printable at the declaration level, so it
+	// rejects too.
 	var printableType func(typeID types.TypeID) bool
 	// memberPrintable resolves one struct member's declared template to its
 	// concrete known type and recurses; a member whose type is not a concrete
@@ -164,6 +165,9 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			return true
 		case types.Array:
 			_, element, ok := key.Array()
+			return ok && printableType(element)
+		case types.Slice:
+			element, ok := key.Child()
 			return ok && printableType(element)
 		case types.Nominal:
 		default:

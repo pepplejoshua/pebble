@@ -2688,7 +2688,7 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isStruct(snapshot, child.Type) && !isEnumType(unit, snapshot, child.Type) {
 			hasComposite = true
 		}
-		if isTuple(snapshot, child.Type) || isArray(snapshot, child.Type) {
+		if isTuple(snapshot, child.Type) || isArray(snapshot, child.Type) || isSlice(snapshot, child.Type) {
 			hasComposite = true
 		}
 	}
@@ -2846,16 +2846,26 @@ func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.No
 // printFprintfCall is one emitted `fprintf(stdout, ...)` call: a static
 // format-string piece and the argument list that feeds it. A label call has no
 // argument (`fprintf(stdout, "Point{ x: ");`); a value call carries the value
-// expression built for the field or scalar operand.
+// expression built for the field or scalar operand. raw is the ONE case that is
+// not a fprintf call at all: a fully-rendered literal C statement block (a
+// slice's runtime for-loop, composite print slice 4) whose lines are all
+// pre-indented, emitted verbatim instead of a call. When raw is set, format and
+// args are ignored.
 type printFprintfCall struct {
 	format string
 	args   []string
+	raw    string
 }
 
-// text renders the call as one indented C statement, `fprintf(stdout,
-// <format>, <args>);` (or `fprintf(stdout, <format>);` for a label call with
-// no argument).
+// text renders the call as one indented C statement. A raw entry's lines are
+// already fully indented when the entry was built (buildSlicePrintValueCalls
+// bakes the indent in), so it is emitted verbatim; every other entry renders as
+// `fprintf(stdout, <format>, <args>);` (or `fprintf(stdout, <format>);` for a
+// label call with no argument).
 func (c printFprintfCall) text(indent string) string {
+	if c.raw != "" {
+		return c.raw
+	}
 	if len(c.args) == 0 {
 		return indent + "fprintf(stdout, " + c.format + ");"
 	}
@@ -2864,21 +2874,26 @@ func (c printFprintfCall) text(indent string) string {
 
 // buildSequentialPrint emits a print statement that contains at least one
 // composite operand (a struct — composite print slice 1 — a tuple, or a fixed
-// array — composite print slice 2) as DIRECT SEQUENTIAL fprintf(stdout, ...)
-// calls (proposal 17's storage policy for composite output: no intermediate
-// dynamic string, so no dependency on the unfinished Allocator/Context
-// redesign). Each operand contributes its calls in source order — a scalar
-// operand exactly one call, a composite operand one punctuation/label/value
-// call per element or field — and the very last call's format string carries
-// the print's one trailing `\n`, so the whole statement still produces exactly
-// one line of output. Every scalar value, every scalar struct field, and every
-// scalar tuple/array element is formatted by the SAME buildScalarPrintParts
-// the all-scalar combined-printf path uses; nothing is reimplemented. A
-// composite operand's value is materialized once into a per-operand temp local
-// (pebble_print_struct_<nodeID> for a struct, pebble_print_tuple_<nodeID> for
-// a tuple, pebble_print_array_<nodeID> for an array) so a composite-returning
-// call operand is evaluated exactly once, and every field/element is then read
-// off the temp.
+// array — composite print slice 2 — or a slice — composite print slice 4) as
+// DIRECT SEQUENTIAL fprintf(stdout, ...) calls (proposal 17's storage policy
+// for composite output: no intermediate dynamic string, so no dependency on the
+// unfinished Allocator/Context redesign). Each operand contributes its calls in
+// source order — a scalar operand exactly one call, a composite operand one
+// punctuation/label/value call per element or field — and the very last call's
+// format string carries the print's one trailing `\n`, so the whole statement
+// still produces exactly one line of output. Every scalar value, every scalar
+// struct field, and every scalar tuple/array/slice element is formatted by the
+// SAME buildScalarPrintParts the all-scalar combined-printf path uses; nothing
+// is reimplemented. A composite operand's value is materialized once into a
+// per-operand temp local (pebble_print_struct_<nodeID> for a struct,
+// pebble_print_tuple_<nodeID> for a tuple, pebble_print_array_<nodeID> for an
+// array, pebble_print_slice_<nodeID> for a slice) so a composite-returning call
+// operand is evaluated exactly once, and every field/element is then read off
+// the temp. A slice's length is a RUNTIME value, so a slice operand cannot
+// contribute a compile-time-known list of per-element calls; instead its
+// operand builder returns one raw pre-rendered C for-loop entry (a printFprintf
+// Call whose raw field is set) alongside its static `[` and `]` calls — see
+// buildSlicePrintValueCalls.
 func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, operands []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, string, error) {
 	var preParts []string
 	var calls []printFprintfCall
@@ -2931,6 +2946,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildTuplePrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isArray(snapshot, child.Type):
 			compositeCalls, pres, err = buildArrayPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isSlice(snapshot, child.Type):
+			compositeCalls, pres, err = buildSlicePrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
 			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
@@ -3037,6 +3054,48 @@ func buildArrayPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	return calls, append(pres, valuePres...), nil
 }
 
+// buildSlicePrintOperand emits one slice operand of a print statement as its
+// sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's `[` punctuation call,
+// a single RAW C for-loop entry iterating the slice's RUNTIME length, and the
+// `]` punctuation call. The loop's body is the element formatter generated at
+// Go-compile-time for the slice's element type (composite print slice 4: a
+// slice's element count is not known until the C program runs, so unlike a
+// fixed array it cannot unroll one value call per element — the whole runtime
+// loop is one pre-rendered block; see buildSlicePrintValueCalls). The operand
+// is materialized once into a per-operand temp so a slice-returning call
+// operand is evaluated exactly once, then every element is read off the temp
+// as <temp>.data[<i>]. An INLINE slice construction operand (`print arr[:];` —
+// the CheckedSlice shape) needs its checked-start temp statement (and any
+// backing-array declaration for an array-literal base) emitted as leading pre-
+// statements at this statement's indent, so it is handled here rather than in
+// buildSlicePrintValueExpr (which has no indent); the construction expression
+// becomes the materialized temp's initializer.
+func buildSlicePrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	var valueExpr string
+	var pres []string
+	var err error
+	if child.Kind == tir.CheckedSlice {
+		tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, child, scope, indent, context, width, fmt.Sprintf("pebble_print_slice_start_%d", operandID), fmt.Sprintf("pebble_print_slice_backing_%d", operandID))
+		if err != nil {
+			return nil, nil, err
+		}
+		valueExpr, pres = constructionExpr, []string{tempDecl}
+	} else {
+		valueExpr, err = buildSlicePrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	tempName := fmt.Sprintf("pebble_print_slice_%d", operandID)
+	pres = append(pres, indent+fmt.Sprintf("%s %s = %s;", sliceTypeName(child.Type), tempName, valueExpr))
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
 // buildPrintValueCalls is the recursive core of composite printing: it emits
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
@@ -3049,13 +3108,19 @@ func buildArrayPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // this same function (composite print slice 3: recursion into already-
 // printable nested aggregates), so a nested aggregate field/element emits its
 // nested sequence INLINE within the same print statement, never a separate
-// print statement. The operand is materialized exactly once by the caller, so
-// a side-effecting outer operand (a struct-returning call) is never re-
-// evaluated per nesting level; nested reads are plain projections. bufferPath
-// tracks the field/element index path from the operand root ("" for the
-// operand itself, "0_2" for field 0's element 2) so every char field — at any
-// nesting depth — gets a distinct UTF-8 buffer name. The pres slice returned
-// is not indented; each caller prefixes indent (mirroring how the slice-1/2
+// print statement. A slice value (composite print slice 4) produces its `[`/
+// `]` calls plus ONE raw pre-rendered C for-loop entry whose body is the
+// element formatter built against `<expr>.data[i]` — a runtime-determined
+// element count cannot be a compile-time list of calls (see
+// buildSlicePrintValueCalls). The operand is materialized exactly once by the
+// caller, so a side-effecting outer operand (a struct-returning call) is never
+// re-evaluated per nesting level; nested reads are plain projections.
+// bufferPath tracks the field/element index path from the operand root ("" for
+// the operand itself, "0_2" for field 0's element 2) so every char field — at
+// any nesting depth — gets a distinct UTF-8 buffer name (a slice element uses
+// the path suffix "_i" for its runtime-indexed position, the loop body's
+// single buffer being reused across iterations). The pres slice returned is
+// not indented; each caller prefixes indent (mirroring how the slice-1/2
 // scalar field builders returned unindented pre-statements).
 func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath string, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
 	if kind, ok := resolvedBuiltin(snapshot, valueType); ok {
@@ -3078,6 +3143,8 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return buildTuplePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	case types.Array:
 		return buildArrayPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	case types.Slice:
+		return buildSlicePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	default:
 		return buildStructPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	}
@@ -3227,6 +3294,87 @@ func buildArrayPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	return calls, pres, nil
 }
 
+// buildSlicePrintValueCalls emits one slice VALUE (a whole operand temp, or a
+// nested slice field/element off an enclosing temp) as its sequence of fprintf
+// calls — `[` punctuation, ONE raw pre-rendered C for-loop over the slice's
+// RUNTIME length, `]` punctuation. Unlike a fixed array, a slice's element
+// count is not known when THIS Go code runs (it is known only when the compiled
+// C program executes), so the sequence cannot be a compile-time-unrolled list
+// of one value call per element; instead the whole loop is built as one
+// pre-indented raw statement block (a printFprintfCall whose raw field is set)
+// whose body is the element formatter generated at Go-compile-time for the
+// element TYPE against the C expression <expr>.data[<i>], so the ONE emitted
+// loop body executes N times at C runtime:
+//
+//	fprintf(stdout, "[");
+//	for (size_t <i> = 0; <i> < <expr>.len; <i>++) {
+//	    if (<i> != 0) fprintf(stdout, ", ");
+//	    /* recursively emitted element formatter for <expr>.data[<i>] */
+//	}
+//	fprintf(stdout, "]");
+//
+// Every element's value is routed through the shared buildPrintValueCalls, so
+// a scalar element produces its one buildScalarPrintParts call and a nested
+// struct/tuple/array element produces its own inline nested sequence — the
+// recursion that slices 1-3 established is reused unchanged for the element
+// TYPE, only the iteration count is dynamic (proposal 17's own sketch). The
+// element formatter's pre-statements (a char element's UTF-8 buffer) land
+// INSIDE the loop body, re-declared and re-filled each iteration, so the one
+// buffer name (suffix "_i" in bufferPath, reused across iterations) never
+// collides with a sibling aggregate's buffers. The loop variable's name also
+// carries the bufferPath suffix, so a slice nested inside another slice's
+// element gets a distinct loop variable from its parent's. Elements are read
+// off the value expression as <expr>.data[<i>] — the slice typedef's own
+// data/len field naming (matching buildSliceIndexValue's read convention, with
+// the loop's index always in-bounds, so no checked-index helper wraps it).
+// No pres are returned: the element formatter's pres are consumed into the
+// loop body text rather than hoisted (they must run once per iteration).
+func buildSlicePrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not in the type snapshot", context, describeType(snapshot, valueType))
+	}
+	element, ok := key.Child()
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which has no element type", context, describeType(snapshot, valueType))
+	}
+	loopVar := fmt.Sprintf("pebble_print_i_%d", operandID)
+	childPath := bufferPath
+	if childPath != "" {
+		childPath += "_"
+	}
+	childPath += "i"
+	if bufferPath != "" {
+		loopVar += "_" + bufferPath
+	}
+	// The element formatter is generated against the element TYPE with the
+	// loop's runtime index in the element's C expression, exactly as a static
+	// field/element projection is, and at the loop body's own indent so every
+	// pre-statement and call it produces lines up inside the loop.
+	loopIndent := indent + "    "
+	elementCalls, elementPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, element, expr+fmt.Sprintf(".data[%s]", loopVar), operandID, childPath, loopIndent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	var body strings.Builder
+	body.WriteString(loopIndent + "if (" + loopVar + " != 0) fprintf(stdout, \", \");\n")
+	for _, pre := range elementPres {
+		body.WriteString(pre + "\n")
+	}
+	for _, call := range elementCalls {
+		body.WriteString(call.text(loopIndent) + "\n")
+	}
+	var block strings.Builder
+	block.WriteString(indent + "for (size_t " + loopVar + " = 0; " + loopVar + " < " + expr + ".len; " + loopVar + "++) {\n")
+	block.WriteString(body.String())
+	block.WriteString(indent + "}")
+	return []printFprintfCall{
+		{format: `"["`},
+		{raw: block.String()},
+		{format: `"]"`},
+	}, nil, nil
+}
+
 // buildTuplePrintValueExpr builds the C expression naming one tuple-typed print
 // operand's value, of the shapes real source produces (all built by the same
 // machinery a tuple-typed call argument uses): a reference to a tuple-typed
@@ -3329,6 +3477,46 @@ func buildArrayPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
 	}
 	return "", fmt.Errorf("%s print operand is a %s of array type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
+}
+
+// buildSlicePrintValueExpr builds the C expression naming one slice-typed print
+// operand's value, of the shapes real source produces (all built by the same
+// machinery a slice-typed call argument or slice local declaration uses): a
+// reference to a slice-typed local (a SymbolValue, emitted as its
+// pebble_local_<id> C name), a whole-slice read (a Load of a slice-typed
+// place, emitted as the place's lvalue), a call to a slice-returning helper (a
+// DirectCall/MethodCall, emitted as the call expression), or a raw-pointer-
+// backed slice (a SliceFromRaw, emitted as its construction expression). A
+// fresh slice construction (a CheckedSlice — `print arr[:];`) is handled by
+// the caller instead, buildSlicePrintOperand, because its checked-start temp
+// statement needs the statement indent this builder does not receive. Any
+// other shape is a clean rejection, never a guessed lowering.
+func buildSlicePrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	switch child.Kind {
+	case tir.SymbolValue:
+		info, ok := scope[child.Symbol]
+		if !ok || info.sliceType != child.Type {
+			return "", fmt.Errorf("%s print operand references symbol %d, which is not a slice-typed local of type %s in scope", context, child.Symbol, sliceTypeName(child.Type))
+		}
+		return fmt.Sprintf("pebble_local_%d", child.Symbol), nil
+	case tir.Load:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isSlice(snapshot, placeType) {
+			return "", fmt.Errorf("%s print operand is a Load of a place of type %s, want a slice-typed place", context, describeType(snapshot, placeType))
+		}
+		return lvalue, nil
+	case tir.DirectCall, tir.MethodCall:
+		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
+	case tir.SliceFromRaw:
+		return buildRawSliceConstruction(st, unit, snapshot, fileSet, child, scope, width, context)
+	}
+	return "", fmt.Errorf("%s print operand is a %s of slice type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
 }
 
 // buildStructPrintValueExpr builds the C expression naming one struct-typed

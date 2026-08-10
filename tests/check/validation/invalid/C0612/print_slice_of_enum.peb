@@ -1,0 +1,7 @@
+type Color = enum { red, blue };
+
+fn f() void {
+    var arr [2]Color = [Color.red, Color.blue];
+    let s []Color = arr[:];
+    print s;
+}
