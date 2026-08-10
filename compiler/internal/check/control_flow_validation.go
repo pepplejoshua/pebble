@@ -125,15 +125,19 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	}
 	// valuePrintable is the print operand gate: a scalar builtin (bool, char,
 	// str, any integer width, any float width), or — composite print slice 1 —
-	// a struct value whose fields are ALL such scalars. A struct with any
-	// non-scalar field (a nested struct, an array, a slice, an enum, ...) stays
-	// rejected: composite recursion into non-scalar fields is a separate, later
-	// slice, and accepting it here would promise output the backend does not
-	// yet emit. Plain enums and tagged unions are also still rejected; they are
-	// their own later slices. A member whose type is not a concrete known scalar
-	// (a generic struct's parameter-typed field, which resolves only against a
-	// specific instantiation's type arguments) is not provably printable at the
-	// declaration level, so such a struct rejects too.
+	// a struct value whose fields are ALL such scalars, or — composite print
+	// slice 2 — a tuple or fixed array whose elements are ALL such scalars. A
+	// struct with any non-scalar field (a nested struct, an array, a slice, an
+	// enum, ...) stays rejected: composite recursion into non-scalar fields is a
+	// separate, later slice, and accepting it here would promise output the
+	// backend does not yet emit. A tuple/array with any non-scalar element (a
+	// struct, a nested tuple, a nested array, ...) stays rejected for the same
+	// reason — nested aggregates are slice 3. Plain enums and tagged unions are
+	// also still rejected; they are their own later slices. A member whose type
+	// is not a concrete known scalar (a generic struct's parameter-typed field,
+	// which resolves only against a specific instantiation's type arguments) is
+	// not provably printable at the declaration level, so such a struct rejects
+	// too.
 	valuePrintable := func(value valueID) bool {
 		resolved, ok := records.Root(value)
 		if !ok || resolved.State != infer.TypeFinal {
@@ -146,7 +150,23 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		if !ok {
 			return false
 		}
-		if key.Kind() != types.Nominal {
+		switch key.Kind() {
+		case types.Tuple:
+			elements, ok := key.Elements()
+			if !ok {
+				return false
+			}
+			for _, element := range elements {
+				if !scalarPrintable(element) {
+					return false
+				}
+			}
+			return true
+		case types.Array:
+			_, element, ok := key.Array()
+			return ok && scalarPrintable(element)
+		case types.Nominal:
+		default:
 			return false
 		}
 		decl, _, ok := key.Nominal()

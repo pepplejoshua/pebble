@@ -165,13 +165,18 @@ func collectArrayTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 // collectArrayTypesWalk appends every array type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. One node shape carries
-// an array type the emitted C actually references a typedef for: a SizeofType
+// region of the node graph the body builders consume. Two node shapes carry an
+// array type the emitted C actually references a typedef for: a SizeofType
 // node whose TypeArg is an array type — a bare `sizeof [N]T` references the
 // array's pebble_array_<typeID>_t typedef even though nothing else in the
 // program may construct or pass an array of that type, so only the SizeofType
 // node carries it (the same SizeofType collection gap collectUnionTypesWalk
-// closes for union enums).
+// closes for union enums) — and a print statement operand of array type
+// (composite print slice 2), whose direct-sequential-fprintf lowering
+// materializes the value into a pebble_array_<typeID>_t temp that also
+// references the typedef. An ordinary array-typed local, by contrast, is
+// deliberately NOT collected: it emits as a raw C array (`int32_t
+// pebble_local_<sym>[N]`) that never references the typedef.
 func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
@@ -184,6 +189,21 @@ func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 		// or the lowered sizeof(pebble_array_<typeID>_t) names an undeclared C
 		// type (see sizeofCTypeName).
 		*out = append(*out, node.TypeArg)
+	}
+	if node.Kind == tir.Print {
+		// A print operand of array type: the print's direct-sequential-fprintf
+		// lowering materializes the operand into a per-operand
+		// pebble_array_<typeID>_t temp (see buildArrayPrintOperand), so the
+		// array's typedef must be collected and emitted or the temp's
+		// declaration names an undeclared C type. Every reachable print
+		// operand node (a SymbolValue, an ArrayValue, a DirectCall, a Load,
+		// or a SourceAlias wrapping one) carries the array Type on the operand
+		// node itself, so checking the child's Type is sufficient.
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isArray(snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+		}
 	}
 	for _, childID := range node.Children {
 		if err := collectArrayTypesWalk(unit, snapshot, childID, out); err != nil {

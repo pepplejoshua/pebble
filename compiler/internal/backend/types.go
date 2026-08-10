@@ -499,6 +499,9 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	if isChar(snapshot, id) {
 		return "int32_t", nil
 	}
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
+	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil
 	}
@@ -1254,16 +1257,26 @@ func enumVariantName(member symbol.SymbolID) string {
 }
 
 // tupleElementCType is the C field type a tuple element of the given type is
-// declared with in its tuple's struct typedef: int32_t / int64_t for an
-// element of the entry's resolved width, bool for a bool element. Any other
-// element type is a clean rejection naming what was found, since this backend
-// emits exactly those two C types as tuple fields.
+// declared with in its tuple's struct typedef: any fixed-width integer builtin
+// (the entry's resolved width, uint, u64, or any other fixed-width integer,
+// each resolved to its OWN width by the generic resolvedBuiltin/cType pattern
+// — the same generalization structFieldCType and arrayElementCType make),
+// bool as bool, char as the fixed int32_t, str as PebbleStr, f32 as float, f64
+// as double, and a tuple/optional/struct element as its own typedef name (the
+// same element resolution arrayElementCType makes for a nested aggregate
+// element). Any other element type is a clean rejection naming what was found.
 func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
-	if isWidth(snapshot, width, id) {
-		return cType(width), nil
+	if isStr(snapshot, id) {
+		return "PebbleStr", nil
+	}
+	if isChar(snapshot, id) {
+		return "int32_t", nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
+	}
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
 	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil
@@ -1277,12 +1290,15 @@ func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		}
 		return structTypeName(id), nil
 	}
+	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
+		return cType(elementWidth), nil
+	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("element type %s is not supported, want %s or bool", name, wantName(width))
+			return "", fmt.Errorf("element type %s is not supported, want %s, bool, char, str, f32, f64, or a tuple/struct type", name, wantName(width))
 		}
 	}
-	return "", fmt.Errorf("element type %s is not supported, want %s or bool", describeType(snapshot, id), wantName(width))
+	return "", fmt.Errorf("element type %s is not supported, want %s, bool, char, str, f32, f64, or a tuple/struct type", describeType(snapshot, id), wantName(width))
 }
 
 // structFieldCType is the C field type a struct field of the given type is

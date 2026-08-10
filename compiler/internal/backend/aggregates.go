@@ -315,18 +315,22 @@ func buildRuntimeAllocatorRecordDeclaration(unit *tir.Unit, snapshot *types.Snap
 
 // buildTupleBraceList validates one TupleValue node's element list and builds
 // its brace-list content, `{ <e0>, <e1>, ... }`, with each element expression
-// built by the grammar its own element type selects — buildExpr for an element
-// of the entry's width, buildBoolExpr for a bool element. Every element type
-// must be exactly the entry's width or bool; anything else (a str element, a
-// nested tuple element) is a clean rejection naming the element position,
-// since this backend emits exactly those two C field types. context names the
+// built by the grammar its own element type selects — buildExpr at the
+// element's OWN resolved integer width for an integer element (any fixed-width
+// integer, mirroring buildArrayBraceElements), buildBoolExpr for a bool
+// element, buildCharOperand for a char element, buildStrOperand for a str
+// element, buildFloatExpr at the element's own float kind for an f32/f64
+// element, and buildNestedAggregateValue for a tuple/struct/optional element.
+// Every element type must be one of those — anything else (an enum, a
+// pointer, a slice, a function type) is a clean rejection naming the element
+// position, matching the tuple typedef's own element gate. context names the
 // enclosing construct in error messages. The function is shared by the two
 // places a TupleValue's elements are built (10.25): a tuple-typed local's
 // declaration initializer (buildTupleLocalDeclaration embeds the returned
 // brace list in the declaration statement) and a freshly-constructed tuple
 // built inline as a call argument (buildTupleValueExpr wraps the same brace
 // list in a compound-literal cast), so element-type validation and the
-// buildExpr/buildBoolExpr dispatch live in exactly one place.
+// per-element-type build dispatch live in exactly one place.
 func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
@@ -341,40 +345,32 @@ func buildTupleBraceList(unit *tir.Unit, snapshot *types.Snapshot, fileSet *sour
 	}
 	exprs := make([]string, len(elements))
 	for i, elementType := range elements {
+		var elementExpr string
+		var err error
 		switch {
-		case isWidth(snapshot, width, elementType):
-			elementExpr, err := buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = elementExpr
 		case isBool(snapshot, elementType):
-			elementExpr, err := buildBoolExpr(unit, snapshot, fileSet, node.Children[i], scope, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = elementExpr
-		case isTuple(snapshot, elementType):
-			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = elementExpr
-		case isStruct(snapshot, elementType):
-			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = elementExpr
-		case isOptional(snapshot, elementType):
-			elementExpr, err := buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
-			if err != nil {
-				return "", err
-			}
-			exprs[i] = elementExpr
+			elementExpr, err = buildBoolExpr(unit, snapshot, fileSet, node.Children[i], scope, width)
+		case isChar(snapshot, elementType):
+			elementExpr, err = buildCharOperand(unit, snapshot, fileSet, node.Children[i], scope, width)
+		case isStr(snapshot, elementType):
+			elementExpr, err = buildStrOperand(unit, snapshot, fileSet, node.Children[i], scope, width)
+		case isFloat(snapshot, elementType):
+			elementExpr, err = buildFloatExpr(unit, snapshot, fileSet, node.Children[i], scope, resolvedFloatKind(snapshot, elementType))
+		case isTuple(snapshot, elementType), isStruct(snapshot, elementType), isOptional(snapshot, elementType):
+			elementExpr, err = buildNestedAggregateValue(unit, snapshot, fileSet, node.Children[i], scope, elementType, context, width)
+		case isAbstractInt(snapshot, elementType):
+			elementExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[i], scope, width, width)
 		default:
-			return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want %s or bool", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType), wantName(width))
+			if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
+				elementExpr, err = buildExpr(unit, snapshot, fileSet, node.Children[i], scope, elementWidth, width)
+			} else {
+				return "", fmt.Errorf("%s contains a tuple value of type %s whose element %d is %s, want a fixed-width integer, bool, char, str, f32, f64, or a tuple/struct type", context, tupleTypeName(node.Type), i, describeType(snapshot, elementType))
+			}
 		}
+		if err != nil {
+			return "", err
+		}
+		exprs[i] = elementExpr
 	}
 	return "{ " + strings.Join(exprs, ", ") + " }", nil
 }

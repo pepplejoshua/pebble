@@ -322,14 +322,18 @@ func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want 2")
 }
 
-func TestEmitRejectsTupleWithUnsupportedElementType(t *testing.T) {
-	// A tuple whose element type is neither the entry's width nor bool — here
-	// a str element — is reachable from real source (the checker builds the
-	// declaration fine), so this is a genuine backend-scope rejection. The
-	// tuple typedef pass inspects the element types first and rejects the str
-	// field with a clear error naming the wanted types, so no C is written.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32 or bool")
+func TestEmitTupleWithStrElementCompilesAndRuns(t *testing.T) {
+	// A tuple whose element type is a scalar builtin beyond the original
+	// entry-width/bool pair — here a str element — is reachable from real
+	// source (the checker builds the declaration fine), and since composite
+	// print slice 2's tuple-of-scalars scope this backend emits it: the tuple
+	// typedef's element C type is PebbleStr and the element expression is
+	// built by buildStrOperand. The program constructs the tuple and prints
+	// it, exercising the whole tuple-typedef + brace-list path.
+	out := emitAndRunCapture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); print t; return 0; }", false, 0, false)
+	if want := "(1, hi)\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
 }
 
 func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {

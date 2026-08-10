@@ -104,8 +104,8 @@ func buildArrayLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, fileSe
 	if isEnumType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
 	}
-	if !isStr(snapshot, elementType) && !isSupportedSliceElementType(unit, snapshot, elementType) {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
+	if !isStr(snapshot, elementType) && !isSupportedSliceElementType(unit, snapshot, elementType) && !isFloat(snapshot, elementType) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, f32, f64, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
 	}
 	if initValue.Kind == tir.ArrayRepeat && isStr(snapshot, elementType) {
 		return "", fmt.Errorf("%s declares a str array local from an ArrayRepeat, want an ArrayValue (an array literal)", context)
@@ -143,6 +143,8 @@ func buildArrayBraceElements(unit *tir.Unit, snapshot *types.Snapshot, fileSet *
 			expr, err = buildBoolExpr(unit, snapshot, fileSet, child, scope, width)
 		} else if isChar(snapshot, elementType) {
 			expr, err = buildCharOperand(unit, snapshot, fileSet, child, scope, width)
+		} else if isFloat(snapshot, elementType) {
+			expr, err = buildFloatExpr(unit, snapshot, fileSet, child, scope, resolvedFloatKind(snapshot, elementType))
 		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			// An integer element of any fixed-width builtin, not just the
 			// entry's own: each element is built at the element's OWN resolved
@@ -233,6 +235,8 @@ func buildArrayRepeatLocalDeclaration(unit *tir.Unit, snapshot *types.Snapshot, 
 		valueExpr, err = buildBoolExpr(unit, snapshot, fileSet, initValue.Children[0], scope, width)
 	} else if isChar(snapshot, elementType) {
 		valueExpr, err = buildCharOperand(unit, snapshot, fileSet, initValue.Children[0], scope, width)
+	} else if isFloat(snapshot, elementType) {
+		valueExpr, err = buildFloatExpr(unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType))
 	} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 		valueExpr, err = buildExpr(unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
 	} else {
