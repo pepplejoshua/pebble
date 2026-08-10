@@ -149,12 +149,23 @@ investigation's own session ran out of budget before writing this part):**
    declaration literally named `Allocator` — itself one of the exact
    sites slice 3 removes). A real program's existing use of `Allocator`
    confirmed completely unaffected. Purely additive; full suite passes.
-3. **Slice 3 — the cutover.** Delete `installPrelude`'s Allocator/Context
-   registration and the other four "delete" sites from the Q2 table;
-   confirm the backend's ctx-threading is untouched (Q3 says it should be)
-   and the ABI-shape sites in `aggregates.go`/`collect.go`/`types.go`/
-   `locals.go` still work against the now-ordinary struct declarations,
-   shrinking them to the minimum genuinely-special logic.
+3. ~~**Slice 3 — the cutover.**~~ **RESOLVED (`a404f14`).** The embedded
+   prelude (`go:embed`) is now the default source of `Allocator`/`Context`
+   for every compilation; `installPrelude`'s synthesis, `resolveRecord`'s
+   runtime-member branch, and `templateForSymbol`'s special-casing are
+   deleted; `runtime_prelude.go` is reduced to reading the already-
+   prepared parsed declaration instead of hand-synthesizing one;
+   `check/buildUnit`'s extraction correctly kept (Part D's still-
+   necessary marker). The backend ABI sites needed zero structural
+   changes (confirmed: they route through `unit.Runtime()`, not
+   identity checks) — but independent verification found and fixed a
+   real bug the implementation's own tests missed: constructing an
+   Allocator in a value position (return/argument/nested field, not
+   just a local declaration) emitted an invalid cast to a
+   nonexistent typedef. Every pre-existing test whose assumptions this
+   intentionally changed was updated to assert the new correct
+   behavior, not silenced. Full suite passes; the exact original C
+   compile failure was causation-checked to confirm the fix is real.
 4. **Slice 4 — verification.** Tracker item 1's original reproduction
    (a constructed `Allocator` crossing a function boundary — argument,
    return, and struct-field assignment) passes end-to-end; `arena.peb`
