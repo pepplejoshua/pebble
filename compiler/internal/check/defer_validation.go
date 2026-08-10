@@ -27,29 +27,6 @@ func validateDefers(handoff *solveHandoff, records *solvedRecords, diagnostics *
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
 	failed := false
 	retained := handoff.Records.Records()
-	for _, record := range retained {
-		if record.Defer == nil || !activeOperatorRecord(handoff, record.Header) {
-			continue
-		}
-		for _, candidate := range retained {
-			if !activeOperatorRecord(handoff, candidate.Header) || candidate.Header.Syntax != record.Defer.Statement {
-				continue
-			}
-			forbidden := candidate.Control != nil && (candidate.Control.Kind == controlReturn || candidate.Control.Kind == controlBreak || candidate.Control.Kind == controlContinue)
-			forbidden = forbidden || candidate.Defer != nil
-			if forbidden {
-				reporter.add(diagnostic.Diagnostic{
-					Severity: diagnostic.Error,
-					Code:     CodeInvalidDefer,
-					Message:  "deferred return, break, continue, or defer is invalid",
-					Primary:  diagnostic.Label{Span: record.Defer.Header.Span},
-				})
-				failed = true
-				break
-			}
-		}
-	}
-
 	controls := handoff.Records.Controls()
 	deferByRegion := make(map[controlID][]deferRecord)
 	byRegion := make(map[controlID][]*controlRecord)
@@ -70,6 +47,98 @@ func validateDefers(handoff *solveHandoff, records *solvedRecords, diagnostics *
 		bySyntax[record.Control.Header.Syntax] = record.Control
 		if regionOwningControl(record.Control.Kind) {
 			owner[record.Control.Region] = record.Control
+		}
+	}
+
+	// descendant reports whether child lies within the region subtree rooted at
+	// root, root itself included. A jump reachable inside a deferred compound
+	// statement is contained exactly when its target is within the deferred
+	// statement's own region subtree; any other target (an enclosing loop or
+	// switch, a sibling region, the function root) exits past the deferred
+	// statement's boundary. The IR builder cannot terminate on such an exit: its
+	// defer chain walks the crossed regions up to the deferred statement's
+	// registered region and rebuilds the deferred statement itself (see
+	// deferChainFor in ir_builder_control.go), so the checker rejects it here as
+	// C0613 instead of letting construction recurse.
+	descendant := func(root, child controlID) bool {
+		for current := child; current != 0; {
+			if uint64(current) > uint64(len(controls)) {
+				return false
+			}
+			if current == root {
+				return true
+			}
+			current = controls[current-1].Parent
+		}
+		return false
+	}
+	// deferredExitForbidden reports whether the statement directly deferred by
+	// record is itself an exit (return/break/continue/nested defer): the
+	// statement-level C0613 shape.
+	deferredExitForbidden := func(statement *controlRecord) bool {
+		if statement == nil {
+			return false
+		}
+		switch statement.Kind {
+		case controlReturn, controlBreak, controlContinue, controlDefer:
+			return true
+		}
+		return false
+	}
+	// regionHasEscapingExit reports whether the region subtree rooted at region
+	// contains an exit that crosses the deferred statement's own region boundary:
+	// a return, a break/continue whose target is not within the boundary subtree,
+	// or a nested defer. skip names the deferred statement's own record, which
+	// owns the walk's root region and must not be treated as an exit.
+	var regionHasEscapingExit func(controlID, controlID, *controlRecord) bool
+	regionHasEscapingExit = func(region, boundary controlID, skip *controlRecord) bool {
+		if uint64(region) > uint64(len(controls)) {
+			return false
+		}
+		for _, ctrl := range byRegion[region] {
+			if ctrl == skip || !activeOperatorRecord(handoff, ctrl.Header) {
+				continue
+			}
+			switch ctrl.Kind {
+			case controlReturn:
+				return true
+			case controlBreak, controlContinue:
+				if ctrl.Target != 0 && !descendant(boundary, ctrl.Target) {
+					return true
+				}
+			case controlDefer:
+				// A defer registered inside a deferred statement runs only when
+				// the outer defer fires and has no region of its own to exit, so
+				// it is a deferred nested defer (C0613).
+				return true
+			}
+		}
+		if uint64(region) <= uint64(len(controls)) {
+			for _, child := range controls[region-1].Children {
+				if regionHasEscapingExit(child, boundary, nil) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, record := range retained {
+		if record.Defer == nil || !activeOperatorRecord(handoff, record.Header) {
+			continue
+		}
+		statement := bySyntax[record.Defer.Statement]
+		forbidden := deferredExitForbidden(statement)
+		if !forbidden && statement != nil && regionOwningControl(statement.Kind) {
+			forbidden = regionHasEscapingExit(statement.Region, statement.Region, statement)
+		}
+		if forbidden {
+			reporter.add(diagnostic.Diagnostic{
+				Severity: diagnostic.Error,
+				Code:     CodeInvalidDefer,
+				Message:  "deferred return, break, continue, or defer is invalid",
+				Primary:  diagnostic.Label{Span: record.Defer.Header.Span},
+			})
+			failed = true
 		}
 	}
 

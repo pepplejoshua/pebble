@@ -29,6 +29,10 @@ func TestValidateDefersRejectsDeferredControlStatements(t *testing.T) {
 		{name: "return", source: `fn f() void { defer return; }`, code: CodeInvalidDefer},
 		{name: "jumps", source: `fn f(flag bool) void { while flag { defer break; defer continue; } }`, code: CodeInvalidDefer},
 		{name: "nested", source: `fn f() void { defer defer print 1; }`, code: CodeInvalidDefer},
+		{name: "return inside deferred block", source: `fn f() int { defer { return 1; } return 0; }`, code: CodeInvalidDefer},
+		{name: "break inside deferred block escapes enclosing loop", source: `fn f() void { var i int = 0; while i < 3 { defer { break; } i = i + 1; } }`, code: CodeInvalidDefer},
+		{name: "return inside deferred if", source: `fn f() int { defer if true { return 1; } return 0; }`, code: CodeInvalidDefer},
+		{name: "nested defer inside deferred block", source: `fn f() void { defer { defer print 1; } }`, code: CodeInvalidDefer},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +59,30 @@ fn f(flag bool, x i32) void {
 `, Config{})
 	if !valid || hasControlDiagnostic(diagnostics, CodeInvalidDefer) || hasControlDiagnostic(diagnostics, CodeGeneration) {
 		t.Fatalf("valid defers rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateDefersAllowsContainedExitInsideDeferredBlock verifies that a
+// break/continue whose target loop is itself entirely inside the deferred
+// statement is not rejected — only an exit whose target lies OUTSIDE the
+// deferred statement's own region is C0613. The IR builder can terminate on
+// a contained exit (its defer-chain walk never crosses the deferred
+// statement's registered region), unlike an escaping exit, which is what
+// crashed the compiler before this fix.
+func TestValidateDefersAllowsContainedExitInsideDeferredBlock(t *testing.T) {
+	diagnostics, valid := validateDeferFixture(t, `
+fn f() void {
+    defer {
+        var i int = 0;
+        while i < 3 {
+            i = i + 1;
+            break;
+        }
+    }
+}
+`, Config{})
+	if !valid || hasControlDiagnostic(diagnostics, CodeInvalidDefer) || hasControlDiagnostic(diagnostics, CodeGeneration) {
+		t.Fatalf("a break contained within a loop fully inside a deferred block was wrongly rejected: %+v", diagnostics.Items())
 	}
 }
 
