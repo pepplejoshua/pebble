@@ -399,7 +399,20 @@ copy their full reproduction or plan.
    any `*SomeUnion`-typed pointer receiver/parameter emitted a bogus C
    type name — now fixed as `pointerTypeNameForUnit`, used at every
    `pointerTypeName` call site.
-4. Qualified static methods are unsupported.
+4. ~~Qualified static methods are unsupported.~~ **RESOLVED (`e22f185`).**
+   A self-less method inside a struct/enum/union body is now callable
+   qualified on the bare type name (`Point.origin()`). Root cause:
+   `staticTarget` (call_facts.go) already handled a bare type name
+   resolving to a plain function (`callDirect`) or a union variant
+   (`callVariant`), but had no `SymbolMethod` case, so a self-less
+   method fell through to the opaque `C0619` semantic-record rejection.
+   Added a case recognizing a method whose first parameter is not named
+   `self` as a static call — the backend needed no changes, since
+   `callDirect` already lowers correctly. Verified with and without
+   arguments; instance methods, struct literals, and variant
+   constructors unaffected; a negative test confirms a self-less method
+   invoked with instance syntax (`p.origin()`) still cleanly rejects.
+   Causation-checked.
 5. ~~`main(argv []str)` cannot receive C process arguments.~~ RESOLVED (`fb94640`).
 6. Inline slice construction fails in pure nested expression positions.
 7. A non-primitive array literal cannot directly initialize a slice local.
