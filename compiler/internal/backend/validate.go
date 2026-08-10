@@ -196,8 +196,17 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// builtins sharing int32_t) is admitted too; helperSignature declares
 		// it at that shared C type and buildCallArgument builds its call-site
 		// argument at the parameter's own width, so no cast is ever needed.
-		if !isWidth(snapshot, width, param.Type) && !isCompatibleIntegerWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
-			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type (a parameter may be the entry's integer width, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+		// Since the fixed-width-integer widening, a parameter of ANY concrete
+		// fixed-width integer builtin (isFixedWidthInteger — a u8, i16, u32,
+		// ... parameter in an int/i32/i64 entry, or an i64 parameter in an
+		// i32 entry) is admitted the same way: helperSignature declares it at
+		// the parameter's OWN C type (uint8_t for u8, int16_t for i16, and so
+		// on), seeds it into the callee's scope at its own width, and
+		// buildCallArgument builds its call-site argument at that same width,
+		// so the body reads and the call passes the parameter at its own width
+		// with no cast ever needed.
+		if !isWidth(snapshot, width, param.Type) && !isCompatibleIntegerWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isFixedWidthInteger(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
+			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want a fixed-width integer (%s, uint, or u64), bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type (a parameter may be any fixed-width integer, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {
 			if err := validateSliceElementType(unit, snapshot, width, param.Type); err != nil {

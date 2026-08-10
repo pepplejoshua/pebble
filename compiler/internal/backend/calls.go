@@ -148,6 +148,32 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// trivially valid C.
 			params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: types.U64}
+		case isFixedWidthInteger(snapshot, param.Type):
+			// A parameter of ANY other concrete fixed-width integer
+			// builtin — a u8, i8, u16, i16, u32, or i32/i64 that is
+			// neither the entry's own width nor a C-compatible sibling —
+			// seeds the callee's locals scope as a local of that exact
+			// width (localInfo{kind: paramWidth}, exactly as a local
+			// declared at that width is seeded by
+			// buildScalarInitializeCore), so a reference to the parameter
+			// inside the body resolves through the existing buildExpr
+			// machinery at the parameter's OWN width unchanged (buildExpr's
+			// width gate admits a node of any fixed-width integer type at
+			// that width — the same per-operand width resolution the
+			// switch-subject fix and struct-field reads use). The C
+			// parameter is declared at the parameter's own C type
+			// (cType(paramWidth) — uint8_t for a u8 parameter, int16_t for
+			// an i16 one, and so on), the same C type a local of that
+			// width is declared with, and a call site's argument — built by
+			// buildCallArgument at that same parameter width — passes an
+			// identically-typed C value. The abstract `int` and word-sized
+			// `uint` builtins are excluded by the predicate and keep their
+			// dedicated handling above (isWidth/isCompatibleIntegerWidth
+			// for an `int`-declared entry, isUint for uint); u64 is also
+			// covered but the isU64 case above takes precedence.
+			paramWidth, _ := resolvedBuiltin(snapshot, param.Type)
+			params = append(params, cType(paramWidth)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: paramWidth}
 		case isBool(snapshot, param.Type):
 			params = append(params, fmt.Sprintf("bool pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: types.Bool}
@@ -312,7 +338,7 @@ func helperSignature(unit *tir.Unit, snapshot *types.Snapshot, helper helperInfo
 			// validateHelperSignature rules any unsupported parameter out
 			// before a reachable helper is ever built, so this branch is
 			// defense for hand-built IR only.
-			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want %s, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
+			return nil, nil, 0, "", resultInfo{}, fmt.Errorf("called function symbol %d parameter (symbol %d) has type %s, want a fixed-width integer (%s, uint, or u64), bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, or a function type", helper.decl.Symbol, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 	}
 	bodyWidth = width

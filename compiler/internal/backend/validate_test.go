@@ -8,14 +8,18 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 )
 
-// TestEmitRejectsGenericHelperSpecializedAtMismatchedConcreteWidth is the
-// regression guard for the widening: only a concrete width that SHARES the
-// entry's C representation is admitted. An i64 specialization called from an
-// int-declared entry (i64 has no int32_t representation, so
-// isCompatibleIntegerWidth is false and isWidth is too) must still be a clean
-// rejection naming the found type, never silently emitted at a guessed width.
-func TestEmitRejectsGenericHelperSpecializedAtMismatchedConcreteWidth(t *testing.T) {
-	emitAndRunRejects(t, `fn identity[T](x T) T { return x; } fn main() int { var a i64 = 5; var r i64 = identity(a); return 0; }`, "called function symbol 24 parameter 0 (symbol 26) has type i64, want int")
+// TestEmitGenericHelperSpecializedAtNonEntryWidthCompilesAndRuns is the
+// widened counterpart of the old rejection: a generic helper specialized at a
+// concrete fixed-width integer that does NOT share the entry's C
+// representation — identity[i64] called from an int-declared entry (i64 has no
+// int32_t representation, so isCompatibleIntegerWidth is false and isWidth is
+// too) — is now admitted by the fixed-width-integer parameter gate: the i64
+// parameter is declared int64_t in the C signature, the body reads it at the
+// i64 width, and identity(a) returns the caller's i64 value 5, which main
+// casts back to int. Before the widening this was a clean rejection naming the
+// found type; now it compiles and runs.
+func TestEmitGenericHelperSpecializedAtNonEntryWidthCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "fn identity[T](x T) T { return x; } fn main() int { var a i64 = 5; var r i64 = identity(a); return r as int; }", false, 5, false)
 }
 
 func TestEmitRejectsIfWithoutElse(t *testing.T) {
@@ -295,12 +299,17 @@ func TestEmitRejectsEntryReachedByHelperCycle(t *testing.T) {
 }
 
 func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
-	// A parameter of the other integer width follows the same width-consistency
-	// rule 10.13 established for locals: an i64 parameter in an i32 entry (and
-	// its result, here also i64) must be a clean rejection naming the width,
-	// never a coercion. The parameter check fires before the result check.
+	// The i64 PARAMETER of this fixture is now accepted — the fixed-width-
+	// integer widening admits an i64 parameter in an i32 entry (declared
+	// int64_t in the C signature) — but the PROGRAM is still genuinely
+	// width-mismatched: main, declared i32, returns f(0), whose i64 result is
+	// consumed where the entry's i32 is expected with no cast. That mismatch
+	// is a clean rejection at the call-result width gate (buildExpr's
+	// DirectCall case), naming the mismatched width, never a coercion. This is
+	// the same width-consistency rule, now applied to the call's RESULT rather
+	// than its parameter.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "has type i64, want i32, bool, char, str, f32, f64")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DirectCall of type i64, want i32")
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {

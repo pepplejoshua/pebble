@@ -637,6 +637,25 @@ func isU64(snapshot *types.Snapshot, id types.TypeID) bool {
 	return snapshot != nil && id == snapshot.Builtins().U64
 }
 
+// isFixedWidthInteger reports whether id is any concrete fixed-width integer
+// builtin — i8, i16, i32, i64, u8, u16, u32, or u64 — the builtins with a
+// fixed-width C representation (cType). It is deliberately the complement of
+// the abstract builtins: the unanchored `int` (types.Int) and the word-sized
+// `uint` (types.Uint), each of which keeps its own dedicated handling
+// (isAbstractInt / isUint and the buildUintExpr path), are excluded even
+// though both have a cType. This is the parameter-gate twin of the
+// resolvedBuiltin/cType subject widening the switch-subject fix (2b3d684)
+// applied in buildSwitchStatement: any fixed-width integer is admitted at its
+// OWN resolved width, not just the entry's, and a caller that wants the
+// entry-width/compatible-width/uint/u64 subtleties must check those narrower
+// predicates separately (helperSignature does, in this order). The entry's
+// own width, uint, and u64 are all also covered by this predicate, so callers
+// must not rely on it to exclude them.
+func isFixedWidthInteger(snapshot *types.Snapshot, id types.TypeID) bool {
+	builtin, ok := resolvedBuiltin(snapshot, id)
+	return ok && cType(builtin) != "" && !isUint(snapshot, id) && !isAbstractInt(snapshot, id)
+}
+
 // isBool reports whether id is the snapshot's bool builtin. It is the bool
 // twin of isWidth: every node in an accepted bool expression tree must carry
 // exactly the bool builtin, since this backend has no cast/coercion lowering

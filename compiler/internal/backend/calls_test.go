@@ -848,6 +848,85 @@ func TestEmitI64ParameterizedHelperCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn add(a i64, b i64) i64 { return a + b; } fn main() i64 { return add(20, 22); }", false, 42, false)
 }
 
+func TestEmitU8ParameterCompilesAndRuns(t *testing.T) {
+	// The exact reproduction from proposal 13's active defect: a helper whose
+	// only parameter is u8 — a fixed-width integer that is neither the entry's
+	// width (int) nor a C-compatible sibling — previously rejected at emission
+	// ("has type u8, want int, ..."). The parameter is now declared uint8_t in
+	// the C signature, seeded into the callee's scope at the u8 width, and the
+	// body's `x as int` cast reads it and widens it to the entry's int. main
+	// passes its own u8 local x = 5 through and returns 5, the process exit
+	// code, proving the parameter's actual value was received end-to-end.
+	emitAndRun(t, "fn take(x u8) int { return x as int; } fn main() int { let x u8 = 5; return take(x); }", false, 5, false)
+}
+
+func TestEmitU8ParameterCompilesAndRunsWithValue(t *testing.T) {
+	// A second u8-parameter fixture with a non-trivial value: take(200) must
+	// return 200 (the parameter's actual received value, not zero or garbage).
+	// 200 is well within u8's range and distinct from any default, so an exit
+	// code of 200 proves the uint8_t parameter carried the caller's value.
+	emitAndRun(t, "fn take(x u8) int { return x as int; } fn main() int { return take(200); }", false, 200, false)
+}
+
+func TestEmitI16ParameterCompilesAndRunsWithValue(t *testing.T) {
+	// An i16-typed parameter, a signed non-entry-width integer: take(300)
+	// compares its parameter against 300 (a value that exceeds u8's range, so
+	// the check can only pass if the int16_t parameter genuinely received the
+	// full 300) and returns 1 when equal. Exit code 1 proves the comparison —
+	// built at the parameter's own i16 width — saw the caller's value.
+	emitAndRun(t, "fn take(x i16) int { if x == 300 { return 1; } return 0; } fn main() int { return take(300); }", false, 1, false)
+}
+
+func TestEmitU32ParameterCompilesAndRunsWithValue(t *testing.T) {
+	// A u32-typed parameter, a wider unsigned non-entry-width integer:
+	// take(70000) — a value that exceeds u16's range, so the check can only
+	// pass if the uint32_t parameter genuinely received the full 70000 —
+	// compares its parameter against 70000 and returns 1 when equal. The
+	// argument is passed as a u32-typed local, exercising the call-argument
+	// side for a non-entry-width integer too. Exit code 1 proves the
+	// parameter's value was received correctly.
+	emitAndRun(t, "fn take(x u32) int { if x == 70000 { return 1; } return 0; } fn main() int { let v u32 = 70000; return take(v); }", false, 1, false)
+}
+
+func TestEmitI32ParameterI64EntryCompilesAndRuns(t *testing.T) {
+	// A concrete fixed-width integer parameter in an i64 entry: an i32-typed
+	// parameter is neither the entry's width (i64) nor a C-compatible sibling
+	// (int32_t vs int64_t), so it exercises the same widened gate for an
+	// entry whose own width is not the abstract `int`. toI64(5) receives the
+	// i32 value 5 at its own int32_t C type, casts it to the i64 result, and
+	// main returns 5 — proving the entry-width and non-entry-width integer
+	// parameters coexist in one program.
+	emitAndRun(t, "fn toI64(x i32) i64 { return x as i64; } fn main() i64 { let v i32 = 5; return toI64(v); }", false, 5, false)
+}
+
+func TestEmitU8ParameterWritesC(t *testing.T) {
+	// The emitted C for the exact reproduction: the helper's prototype AND
+	// definition both declare the u8 parameter at its own C type
+	// (uint8_t pebble_local_25), the body reads it at that width and casts it
+	// to the entry's int, and the call site passes main's u8 local
+	// (uint8_t pebble_local_29 = 5u). Symbols come from the real fixture dump
+	// (take=24, its parameter x=25, main's local x=29).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn take(x u8) int { return x as int; } fn main() int { let x u8 = 5; return take(x); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25);",
+		"static int32_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25) {",
+		"    (void)pebble_local_25;",
+		"    return (int32_t)(pebble_local_25);",
+		"uint8_t pebble_local_29 = 5u;",
+		"return pebble_fn_24(ctx, pebble_local_29);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 5, false)
+}
+
 func TestEmitInlineAggregateArgumentWritesC(t *testing.T) {
 	// The emitted C for inline construction at a call site: each argument must
 	// be the C99 compound-literal expression — not a local reference and not a
