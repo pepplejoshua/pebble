@@ -44,5 +44,95 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-_(empty — pick the next item from proposal 14 to begin)_
+**Item: a generic struct method's parameter/return type cannot be the owner's type parameter directly (unwrapped).**
+
+Batch item 6 of the current batch of 7. Real generic-specialization
+substitution gap, architecturally related to the earlier "apply
+generic-struct-field substitution" fix — that fix covered FIELD types;
+this one is METHOD parameter/return types.
+
+**Reproduction 1 — return type** (confirmed against current HEAD):
+
+```
+type Box[T] = struct {
+    value T;
+
+    fn get(self Box[T]) T {
+        return self.value;
+    }
+};
+
+fn main() int {
+    let b = Box[int].{ value = 42 };
+    return b.get();
+}
+```
+
+Failure:
+
+```
+pebc: emission failed: called function symbol 27 has result type
+type-parameter(symbol 25), want its own integer width, bool, char,
+str, f32, f64, a tuple/struct result type, a slice result type, a
+pointer result type, an optional result type, a function result type,
+or void
+```
+
+**Reproduction 2 — parameter type** (also confirmed):
+
+```
+type Box[T] = struct {
+    value T;
+
+    fn set(self *Box[T], v T) void {
+        self.value = v;
+    }
+};
+
+fn main() int {
+    var b = Box[int].{ value = 1 };
+    b.set(42);
+    return b.value;
+}
+```
+
+Failure:
+
+```
+pebc: emission failed: called function symbol 27 parameter 1 (symbol
+29) has type type-parameter(symbol 25), want a fixed-width integer
+(int, uint, or u64), bool, char, str, f32, f64, a tuple/struct type, a
+slice type, a pointer type, an optional type, a function type, or an
+enum/union type
+```
+
+**Known cause (not yet fully root-caused):** for a concrete
+instantiation like `Box[int]`, the backend already correctly
+substitutes `T` for `int` in the struct's FIELD types (`value T` becomes
+`value int`), and generic struct method CALLS already work in general
+(per earlier session work). But when a method's own declared parameter
+or return type is the owner's type parameter DIRECTLY (not wrapped
+inside e.g. a slice or another generic), that substitution apparently
+isn't applied to the method's signature — the type parameter symbol
+reaches the backend completely unresolved. Needs investigation: find
+where field-type substitution for a concrete instantiation happens and
+why the equivalent substitution isn't also applied to a method's own
+parameter/return types.
+
+**Scope for this item:**
+1. Investigate: find where generic struct field types get substituted
+   for a concrete instantiation (the earlier field-substitution fix is
+   the closest working precedent), and trace why a method's own
+   parameter/return type — when it's directly the owner's type
+   parameter — isn't substituted the same way.
+2. Implement the substitution for method parameter/return types,
+   reusing the existing field-substitution mechanism if at all possible
+   rather than inventing a parallel one.
+3. Verify both reproductions above compile and run correctly (repro 1
+   returns 42, repro 2 returns 42).
+4. Confirm existing generic struct method calls (where the
+   parameter/return type is NOT directly the type parameter — e.g. a
+   fixed concrete type, or the type parameter wrapped in something else)
+   are unaffected.
+5. Write tests for both reproduction shapes.
 
