@@ -493,6 +493,11 @@ type emitState struct {
 	globals           map[symbol.SymbolID]globalInfo
 	externData        map[symbol.SymbolID]externDataInfo
 	allocatorAdapters map[string]runtimeAllocatorAdapter
+	// hasArrayStore records whether any whole-array reassignment (a
+	// buildStoreCore array branch emitting a memcpy) was emitted for the
+	// entry/helpers, so emitEntryC includes <string.h> (memcpy's declaration)
+	// in the preamble exactly when the emitted C calls it.
+	hasArrayStore bool
 }
 
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
@@ -541,9 +546,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			return err
 		}
 		if argvParam != nil {
-			return emitEntryC(w, "", "", "", "", fmt.Sprintf(voidEntryUserMainArgv, argvParam.Symbol, argvParam.Symbol), fmt.Sprintf(voidEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+			return emitEntryC(w, "", "", "", "", fmt.Sprintf(voidEntryUserMainArgv, argvParam.Symbol, argvParam.Symbol), fmt.Sprintf(voidEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true, false)
 		}
-		return emitEntryC(w, "", "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false)
+		return emitEntryC(w, "", "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false, false)
 	}
 	helpers, err := discoverReachableHelpers(st, unit, snapshot, decl, blockID, result)
 	if err != nil {
@@ -850,9 +855,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		helpersText += "\n" + strings.Join(adapterDefinitions, "\n")
 	}
 	if argvParam != nil {
-		return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true)
+		return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMainArgv, entryReturnType(result), argvParam.Symbol, argvParam.Symbol, statements), fmt.Sprintf(integerEntryMainBodyArgv, argvParam.Symbol, argvParam.Symbol), hasCExterns(unit), true, st.hasArrayStore)
 	}
-	return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false)
+	return emitEntryC(w, typedefs, fileScope, helperPrototypes, helpersText, fmt.Sprintf(integerEntryUserMain, entryReturnType(result), statements), integerEntryMainBody, hasCExterns(unit), false, st.hasArrayStore)
 }
 
 // hasCExterns reports whether the unit declares at least one C-convention
@@ -1789,7 +1794,7 @@ func entryReturnType(width types.BuiltinKind) string {
 // <inttypes.h> PRI* macros for its fixed-width integer specifiers, so both
 // headers are needed the moment any print is emitted, and adding them for
 // programs with no print at all is harmless.
-func emitEntryC(w io.Writer, typedefs, globals, prototypes, helpers, userMain, mainBody string, hasExterns, hasArgv bool) error {
+func emitEntryC(w io.Writer, typedefs, globals, prototypes, helpers, userMain, mainBody string, hasExterns, hasArgv, hasArrayStore bool) error {
 	if _, err := fmt.Fprint(w, `#include "pebble_rt.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -1806,6 +1811,18 @@ func emitEntryC(w io.Writer, typedefs, globals, prototypes, helpers, userMain, m
 		if _, err := fmt.Fprint(w, `#include <stdlib.h>
 #include <string.h>
 #include <math.h>
+`); err != nil {
+			return err
+		}
+	}
+	if hasArrayStore {
+		// A whole-array reassignment (a buildStoreCore array branch) emits a
+		// memcpy call, whose declaration lives in <string.h> — a header the
+		// preamble otherwise only includes for a C-extern unit. Emitted alone
+		// (no externs, e.g. `a = b;` for two plain array locals), memcpy must
+		// still be declared to survive the mandated -Wall -Wextra -Werror
+		// build, so the single standard header is added on its own.
+		if _, err := fmt.Fprint(w, `#include <string.h>
 `); err != nil {
 			return err
 		}

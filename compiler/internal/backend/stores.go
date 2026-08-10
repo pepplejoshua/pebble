@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -364,6 +365,26 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			}
 			return store(storeValue), nil
 		}
+		if isArray(snapshot, elementType) {
+			// A whole-array-typed place write through a struct field access
+			// (`self.data = other;` on a pointer receiver, or
+			// `h.values = arr;` on a value) — the reproduction's reset shape:
+			// the target lvalue is the field's raw C array (`X.pebble_field_
+			// <m>.data`, the `.data` projection buildPlaceLValue applies to
+			// the array typedef), which C cannot assign with `=`, so the store
+			// is a byte-for-byte memcpy of the whole-array C value built by
+			// buildArrayStoreValue (a reference to an in-scope array-typed
+			// local of the matching type, or a fresh ArrayValue compound
+			// literal) into the lvalue, sized by the lvalue's own storage —
+			// the same whole-array by-value copy convention array call
+			// arguments already use (see buildArrayArgument).
+			storeValue, err := buildArrayStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			st.hasArrayStore = true
+			return fmt.Sprintf("memcpy(%s, %s, sizeof(%s))", lvalue, storeValue, lvalue), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]
@@ -547,7 +568,23 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.array != 0 {
-			return "", fmt.Errorf("%s reassigns symbol %d, an array-typed local of type %s; reassigning a whole array is not supported yet", context, place.Symbol, describeType(snapshot, targetInfo.array))
+			// A Store whose place names an array-typed local is a whole-array
+			// reassignment — `a = b;` or `a = [7, 8, 9];` — whose new value is
+			// a whole-array C value built by buildArrayStoreValue (a reference
+			// to an in-scope array-typed local of the matching type, or a
+			// fresh ArrayValue compound literal). The standalone array local
+			// is a RAW C array (`int32_t pebble_local_<sym>[<len>] = { ... };`,
+			// see buildArrayLocalDeclaration), which C cannot assign with `=`
+			// (an array decays to a pointer), so the store is a byte-for-byte
+			// `memcpy(pebble_local_<sym>, <value>, sizeof(pebble_local_<sym>))`
+			// — the same whole-array by-value copy convention array call
+			// arguments already use (see buildArrayArgument).
+			storeValue, err := buildArrayStoreValue(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.array, context, width)
+			if err != nil {
+				return "", err
+			}
+			st.hasArrayStore = true
+			return fmt.Sprintf("memcpy(%s, %s, sizeof(%s))", lvalue, storeValue, lvalue), nil
 		}
 		if targetInfo.optional != 0 {
 			// A Store whose place names an optional-typed local is a
@@ -724,6 +761,83 @@ func buildTupleStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from symbol %d, which is not a tuple-typed local in scope of that type", context, tupleTypeName(wantType), valueNode.Symbol)
 	}
 	return fmt.Sprintf("pebble_local_%d", valueNode.Symbol), nil
+}
+
+// buildArrayStoreValue builds the memcpy SOURCE argument text for a whole-array
+// reassignment whose place resolves to the array type wantType, shared by
+// buildStoreCore's two array-reassignment paths (the plain-local path and the
+// pointer-deref/field/indexed-element path). The place's lvalue is a RAW C
+// array — `int32_t pebble_local_<sym>[<len>]` for a standalone array local, or
+// a struct field's `.data` member — which C cannot assign with `=`, so each
+// call site wraps the built source in a byte-for-byte copy:
+// `memcpy(<lvalue>, <source>, sizeof(<lvalue>))`. Two value shapes are
+// supported, mirroring buildStructArrayFieldValue's array value shapes: a plain
+// SymbolValue naming an already-declared array-typed local in scope whose
+// declared type is exactly wantType, emitted as `&pebble_local_<symbol>` — the
+// address-of of the local's own C storage (whether the raw `elem[<len>]` array
+// or the pebble_array_<typeID>_t wrapper struct, the bytes are exactly
+// wantType's bytes, so memcpy is a direct, correct copy regardless of
+// representation); or a freshly-constructed ArrayValue of exactly wantType,
+// emitted as `&(pebble_array_<typeID>_t){ .data = { <elements> } }`, the same
+// C99 compound literal buildStructArrayFieldValue constructs — the wrapper
+// typedef's layout is exactly `elem data[<len>]`, so the compound literal's
+// bytes are the array's bytes and the memcpy is byte-for-byte. Any other value
+// shape — a call to an array-returning helper (a DirectCall, deliberately out
+// of scope this slice), a local that is not array-typed of that type, or any
+// other node kind — is a clean rejection naming what was found, matching
+// buildStructArrayFieldValue's own discipline. width is the entry's resolved
+// integer width, threaded through to the inline element builder so each element
+// is built at the width the array type's own storage uses.
+func buildArrayStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(wantType)
+	if !ok {
+		return "", fmt.Errorf("%s array-typed place type %s is not in the type snapshot", context, describeType(snapshot, wantType))
+	}
+	length, elementType, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("%s array-typed place type %s has no length and element type", context, describeType(snapshot, wantType))
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	valueNode, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s reassignment references invalid value node %d", context, id)
+	}
+	if valueNode.Kind == tir.ArrayValue {
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns an array-typed place of type %s from an ArrayValue of type %s", context, arrayTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		if uint64(len(valueNode.Children)) != length {
+			return "", fmt.Errorf("%s reassigns an array-typed place of type %s from an ArrayValue with %d element(s), want %d", context, arrayTypeName(wantType), len(valueNode.Children), length)
+		}
+		elementExprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, valueNode, scope, context, width, elementType)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("&(%s){ .data = { %s } }", arrayTypeName(wantType), strings.Join(elementExprs, ", ")), nil
+	}
+	if valueNode.Kind == tir.DirectCall {
+		// A reassignment from a call to an array-returning helper —
+		// `a = make_arr();` — is reachable from real source but out of scope
+		// this slice: the supported new-value shapes are a reference to an
+		// in-scope array-typed local or an array literal (an ArrayValue),
+		// mirroring buildStructArrayFieldValue's array value shapes and the
+		// struct reassignment's own DirectCall deferral. A DirectCall value
+		// reaches buildStoreCore's array branch and is a clean rejection
+		// naming the unsupported shape, never a guessed lowering — the
+		// deliberate deferral mirroring how buildStructStoreValue's DirectCall
+		// shape landed only in a follow-up commit.
+		return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a call to an array-returning helper; reassigning a whole array from a call is not supported yet", context, arrayTypeName(wantType))
+	}
+	if valueNode.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a %s, want a reference to an array-typed local in scope or an array literal (an ArrayValue)", context, arrayTypeName(wantType), valueNode.Kind)
+	}
+	valueInfo, declared := scope[valueNode.Symbol]
+	if !declared || valueInfo.array != wantType {
+		return "", fmt.Errorf("%s reassigns an array-typed place of type %s from symbol %d, which is not an array-typed local in scope of that type", context, arrayTypeName(wantType), valueNode.Symbol)
+	}
+	return fmt.Sprintf("&pebble_local_%d", valueNode.Symbol), nil
 }
 
 // buildCompoundStore builds the value text for a compound assignment — a

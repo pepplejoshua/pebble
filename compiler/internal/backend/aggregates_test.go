@@ -1200,6 +1200,106 @@ func TestEmitTupleWholeReassignmentWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitArrayWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole array-typed local from another array-typed local
+	// (`a = b;`), the plain-local shape: the Store's place names an
+	// array-typed local and the new value is a reference to an in-scope
+	// array-typed local of the same type. The standalone array local is a RAW
+	// C array (`int32_t pebble_local_<sym>[<len>]`), which C cannot assign
+	// with `=`, so the store lowers to a byte-for-byte memcpy of b's storage
+	// into a's, sized by a's own storage. The reassigned local's element must
+	// reflect b's value (4), not the original a's (1).
+	emitAndRun(t, "fn main() int { var a [3]int = [1, 2, 3]; var b [3]int = [4, 5, 6]; a = b; return a[0]; }", false, 4, false)
+}
+
+func TestEmitArrayWholeReassignmentFromLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole array-typed local from a fresh array literal
+	// (`a = [7, 8, 9];`): the Store's new value is an ArrayValue, emitted as
+	// the same C99 compound literal buildArrayBraceElements builds inside the
+	// array's own pebble_array_<typeID>_t wrapper, so
+	// `memcpy(a, &(pebble_array_<id>_t){ .data = { 7, 8, 9 } }, sizeof(a))`
+	// replaces the whole value. The literal's array type must be collected for
+	// its typedef to be emitted — the standalone raw-array local never carries
+	// one (see collectArrayTypesWalk's Store case).
+	emitAndRun(t, "fn main() int { var a [3]int = [1, 2, 3]; a = [7, 8, 9]; return a[0]; }", false, 7, false)
+}
+
+func TestEmitArrayPointerDerefWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole array through a pointer deref (`self.data = other;`),
+	// the reset shape: the Store's place is a FieldPlace whose resolved
+	// element type is the array type — a struct field access through the
+	// pointer receiver — and the new value is a reference to the array-typed
+	// parameter, emitted as a byte-for-byte memcpy into the field's raw C
+	// array `.data` member. A direct `*p = other` pointer-to-array deref is
+	// not reachable in this backend (pointer-to-array pointees are unsupported
+	// at helper-signature discovery), so the struct-field-through-pointer
+	// access is the deref path's reachable shape. The reassigned field's
+	// element must reflect the value written through the pointer (7), not the
+	// original (1).
+	emitAndRun(t, "type Box = struct { data [3]int; };\nfn reset(self *Box, other [3]int) void { self.data = other; }\nfn main() int { var b Box = Box.{ data = [1, 2, 3] }; let q [3]int = [7, 8, 9]; reset(&b, q); return b.data[0]; }", false, 7, false)
+}
+
+func TestEmitFiveElementArrayWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 5-element array reassignment proves buildArrayStoreValue's element
+	// construction and the memcpy size aren't hardcoded to 3 elements.
+	emitAndRun(t, "fn main() int { var a [5]int = [1, 2, 3, 4, 5]; a = [6, 7, 8, 9, 10]; return a[4]; }", false, 10, false)
+}
+
+func TestEmitBoolElementArrayWholeReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A bool-element array reassignment proves buildArrayStoreValue composes
+	// with a non-integer element type, not just uniform int arrays.
+	emitAndRun(t, `fn main() int { var a [2]bool = [true, false]; a = [false, true]; if a[0] != false { return 1; } if a[1] != true { return 2; } return 0; }`, false, 0, false)
+}
+
+func TestEmitArrayWholeReassignmentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local whole-array reassignment: the store
+	// lowers to a byte-for-byte `memcpy(pebble_local_<a>, &pebble_local_<b>,
+	// sizeof(pebble_local_<a>))` — the standalone array local is a raw C
+	// array that C cannot assign with `=`, so no plain assignment is possible
+	// (unlike a struct/tuple, whose own typedef makes `=` trivially valid).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var a [3]int = [1, 2, 3]; var b [3]int = [4, 5, 6]; a = b; return a[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`memcpy\(pebble_local_\d+, &pebble_local_\d+, sizeof\(pebble_local_\d+\)\)`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-array memcpy copy %q:\n%s", copyRE, out)
+	}
+}
+
+func TestEmitArrayLiteralReassignmentEmitsTypedefBeforeUse(t *testing.T) {
+	t.Parallel()
+	// The literal-reassignment C shape: the store is a memcpy FROM a
+	// pebble_array_<typeID>_t compound literal, so the array's wrapper typedef
+	// must be emitted — the standalone raw-array local carries none — and
+	// declared before the memcpy that uses it. This is the exact typedef
+	// collection gap the literal reassignment opens (see collectArrayTypesWalk's
+	// Store case); without it the emitted C names an undeclared type.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var a [3]int = [1, 2, 3]; a = [7, 8, 9]; return a[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	typedefRE := regexp.MustCompile(`typedef struct \{\n    int32_t data\[3\];\n\} (pebble_array_\d+_t);`)
+	m := typedefRE.FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("emitted C contains no array typedef:\n%s", out)
+	}
+	typename := m[1]
+	if idx := strings.Index(out, typename); idx < 0 || strings.Index(out, "memcpy") < idx {
+		t.Errorf("emitted C uses %s in a memcpy before its typedef is declared:\n%s", typename, out)
+	}
+}
+
 func TestEmitArrayElementReadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let a [3]i32 = [10, 20, 30]; return a[1]; }", false, 20, false)

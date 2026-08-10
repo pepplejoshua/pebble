@@ -205,6 +205,26 @@ func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 			}
 		}
 	}
+	if node.Kind == tir.Store {
+		// A whole-array reassignment from a fresh array literal (`a = [7, 8,
+		// 9];`, or `self.data = [7, 8, 9];` through a struct field): the
+		// store's ArrayValue RHS lowers to a memcpy from a
+		// pebble_array_<typeID>_t compound literal (see buildArrayStoreValue),
+		// whose typedef the standalone array local never carries — the
+		// assignment target is a raw C array (see buildArrayLocalDeclaration),
+		// not its wrapper typedef. The ArrayValue child's own Type is the
+		// array type (buildArrayStoreValue requires it to equal the place's
+		// resolved array type), so the walk must collect it exactly like a
+		// sizeof/print reference or the lowered memcpy names an undeclared C
+		// type. A store whose RHS is anything else (a SymbolValue naming an
+		// array-typed local, a scalar) never constructs the compound literal,
+		// so no array type is collected for those.
+		if len(node.Children) == 2 {
+			if value, ok := unit.Node(node.Children[1]); ok && value.Kind == tir.ArrayValue && isArray(snapshot, value.Type) {
+				*out = append(*out, value.Type)
+			}
+		}
+	}
 	for _, childID := range node.Children {
 		if err := collectArrayTypesWalk(unit, snapshot, childID, out); err != nil {
 			return err
