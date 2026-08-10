@@ -433,7 +433,24 @@ copy their full reproduction or plan.
    nested-call reproduction returns 6), emitted C inspected directly and
    confirmed to compile/run via `cc`, existing simple case unaffected,
    causation-checked.
-7. A non-primitive array literal cannot directly initialize a slice local.
+7. ~~A non-primitive array literal cannot directly initialize a slice local.~~
+   **RESOLVED (`f4c3970`).** Confirmed general (not specific to non-
+   primitive elements as originally logged) — both a primitive and a
+   struct-element reproduction were broken identically. Checker's
+   `implicitArrayToSlice` narrowly recognizes an authored array-literal
+   expression directly initializing a slice-typed BINDING (never a
+   plain reassignment or any other array→slice position, which keep
+   their existing `C0601`), lowered to a `CheckedSlice` wrapping the
+   array literal — mirroring exactly what the existing two-step
+   workaround already compiles to. Backend's `buildSliceConstruction`
+   gains a third accepted base shape (an `ArrayValue` literal),
+   constructing a hidden backing array and slicing it, reusing the
+   existing array-literal element-building machinery
+   (`buildArrayBraceElements`, extracted from the pre-existing
+   array-local path). Verified both reproductions end-to-end; confirmed
+   array-typed-local literals, the two-step workaround, array literals
+   as call arguments, and plain slice reassignment are all unaffected
+   or still correctly rejected. Causation-checked.
 8. A generic struct method cannot inherit its owner type parameter.
 9. A whole dereferenced struct cannot become a value.
 10. ~~`emit.go` and `emit_test.go` need a behavior-preserving file split.~~
