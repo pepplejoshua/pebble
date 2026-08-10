@@ -181,9 +181,16 @@ and a runtime switch only for an enum/union discriminant.
    comma (`(5,)`). Companion widening: tuple/array element builders
    previously only supported the entry width and bool; widened to str,
    char, float, and any fixed-width integer. Verified, causation-checked.
-3. **Nested aggregates** — structs containing structs/tuples/arrays/
-   optionals; the print expression must be materialized once so an
-   operand with side effects isn't evaluated twice.
+3. ~~**Nested aggregates**~~ **RESOLVED (`b80fbc4`).** `printableType`
+   is a recursive checker closure; backend's `buildPrintValueCalls` is
+   one shared recursive dispatcher all three top-level operand builders
+   route through, at any nesting depth, with the outer operand still
+   materialized exactly once. New finding surfaced while verifying:
+   struct-of-array could not be tested — array-typed struct fields are
+   unsupported in this backend entirely (even without print), a
+   separate pre-existing gap, logged in proposal 14. Verified, causation-
+   checked; a stale slice-1 negative fixture was found and moved to
+   valid/.
 4. **Slices** — dynamic runtime loop; scalar slices first, then slices
    of structs/tuples.
 5. **Plain enums** — variant-name generation with an invalid-discriminant
