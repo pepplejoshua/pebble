@@ -176,8 +176,11 @@ and a runtime switch only for an enum/union discriminant.
    `fprintf` calls, real source field/type names, materialized once to
    avoid double-evaluating a struct-returning call operand. Verified,
    causation-checked.
-2. **Tuples and fixed arrays** — positional recursion, compile-time
-   unrolled (array length is part of the type).
+2. ~~**Tuples and fixed arrays**~~ **RESOLVED (`5e6e786`).** Positional
+   recursion, compile-time unrolled. One-element tuple gets a trailing
+   comma (`(5,)`). Companion widening: tuple/array element builders
+   previously only supported the entry width and bool; widened to str,
+   char, float, and any fixed-width integer. Verified, causation-checked.
 3. **Nested aggregates** — structs containing structs/tuples/arrays/
    optionals; the print expression must be materialized once so an
    operand with side effects isn't evaluated twice.

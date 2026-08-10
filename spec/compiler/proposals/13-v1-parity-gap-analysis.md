@@ -44,47 +44,5 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: composite print slice 2 — tuples and fixed arrays of scalars.**
-
-Sourced from proposal 17 (composite print design), slice 2 of 9. Slice 1
-(struct-of-scalars) landed in `c182e73`.
-
-**Reproduction** (confirmed against current HEAD):
-
-```
-fn main() int {
-    let t = (1, true, "hi");
-    let a = [10, 20, 30];
-    print t;
-    print a;
-    return 0;
-}
-```
-
-Both fail with `error[C0612]: print operand is not printable`.
-
-**Scope for this slice:** per proposal 17's design —
-- Tuple: `(1, true, hi)`; a one-element tuple uses a trailing comma,
-  `(1,)`, to avoid ambiguity with a parenthesized expression.
-- Fixed array: `[10, 20, 30]`, compile-time unrolled (length is part of
-  the type).
-- Elements are scalar only at this slice (bool, char, str, integer,
-  float) — a tuple/array containing a struct, another tuple, another
-  array, etc. is a LATER slice (slice 3, nested aggregates); stays
-  rejected for now.
-- Reuse `buildScalarPrintParts` (introduced in slice 1) for every element
-  value — do not reimplement scalar formatting.
-- Reuse the direct-sequential-fprintf emission shape slice 1 established
-  (`printFprintfCall`, `buildSequentialPrint`) — a tuple/array operand
-  should plug into the same dispatch a struct operand uses, not a
-  separate mechanism.
-- Verify both reproductions print exactly `(1, true, hi)` and
-  `[10, 20, 30]`.
-- Confirm slice 1 (struct print) and existing scalar prints are
-  unaffected.
-- Write tests: checker acceptance for tuple-of-scalars and array-of-
-  scalars, checker rejection still holds for a tuple/array containing a
-  non-scalar element, and backend compile-run tests asserting exact
-  printed output for both shapes plus the one-element-tuple trailing-
-  comma case.
+_(empty — pick the next item from proposal 14 to begin)_
 
