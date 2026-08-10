@@ -399,3 +399,76 @@ fn f() void {
 		t.Fatalf("variant member records = %d", variants)
 	}
 }
+
+// TestCallFactsQualifiedSelflessMethodClassifiesAsStaticDirect pins the static
+// method feature: `Point.origin()` where origin is a method declared inside
+// the struct body with no self parameter must resolve as a plain direct call to
+// origin's own function symbol, with no implicit receiver and the authored
+// arguments exactly as written. Before the fix, staticTarget had no SymbolMethod
+// case, so the call was misclassified as callMethod with no receiver and the
+// call record was rejected by the C0619 semantic-record gate.
+func TestCallFactsQualifiedSelflessMethodClassifiesAsStaticDirect(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Point = struct {
+    x i32;
+    fn origin(offset i32) Point { return Point.{ x = offset }; }
+};
+fn use() i32 { let p = Point.origin(1); return p.x; }
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("qualified self-less method call did not solve: %+v", diagnostics.Items())
+	}
+	originID := symbol.SymbolID(0)
+	for _, sym := range inputs.Resolution.Symbols.All() {
+		if sym.Kind == symbol.SymbolMethod && sym.Name == "origin" {
+			originID = sym.ID
+		}
+	}
+	if originID == 0 {
+		t.Fatal("origin method symbol was not collected")
+	}
+	staticCalls, methodCalls := 0, 0
+	for _, retained := range facts.Generation.records.values {
+		if retained.Call == nil {
+			continue
+		}
+		if retained.Call.Target.Kind == callMethod {
+			methodCalls++
+		}
+		if retained.Call.Target.Kind != callDirect || retained.Call.Target.Symbol != originID {
+			continue
+		}
+		staticCalls++
+		if retained.Call.Receiver != 0 {
+			t.Fatalf("static call must have no receiver: %+v", retained.Call)
+		}
+		if len(retained.Call.Arguments) != 1 || retained.Call.Arguments[0].Ordinal != 0 {
+			t.Fatalf("static call must carry the authored argument exactly as written: %+v", retained.Call)
+		}
+	}
+	if staticCalls != 1 || methodCalls != 0 {
+		t.Fatalf("static direct calls = %d, method calls = %d, want 1 and 0", staticCalls, methodCalls)
+	}
+}
+
+// TestCallFactsSelflessMethodInvokedOnInstanceRejects pins the rejection side:
+// a self-less static method called with ordinary instance-method syntax on a
+// value (`p.origin()`) must still be rejected — the method selection path
+// demands a self-typed first parameter, so the mismatch fails the solve
+// (T0505) rather than silently invoking the static function on the receiver.
+func TestCallFactsSelflessMethodInvokedOnInstanceRejects(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+type Point = struct {
+    x i32;
+    fn origin() Point { return Point.{ x = 0 }; }
+};
+fn use() i32 { let p = Point.{ x = 1 }; let q = p.origin(); return q.x; }
+`)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if solution.Successful() && !diagnostics.HasErrors() {
+		t.Fatal("self-less static method invoked as an instance method was accepted")
+	}
+}

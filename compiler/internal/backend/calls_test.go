@@ -177,6 +177,20 @@ func TestEmitValueMethodCallReadsReceiverField(t *testing.T) {
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn main() i32 { let p Point = Point.{ x = 41 }; return p.get(); }`, false, 41, false)
 }
 
+func TestEmitQualifiedStaticMethodCallCompilesAndRuns(t *testing.T) {
+	// A method declared inside a nominal type body with no self parameter is a
+	// static method, callable on the bare type name. Its lowering must be a
+	// plain direct call to the method's own C function — no receiver argument
+	// prepended — so the struct it constructs flows back out of origin() intact.
+	emitAndRun(t, `type Point = struct { x i32; y i32; fn origin() Point { return Point.{ x = 40, y = 2 }; } }; fn main() i32 { let p Point = Point.origin(); return p.x + p.y; }`, false, 42, false)
+}
+
+func TestEmitQualifiedStaticMethodWithArgumentsCompilesAndRuns(t *testing.T) {
+	// The static call's authored arguments must arrive at the method exactly as
+	// written: origin(2) below multiplies its argument through to the exit code.
+	emitAndRun(t, `type Point = struct { x i32; fn origin(scale i32) Point { return Point.{ x = scale }; } }; fn main() i32 { let p Point = Point.origin(42); return p.x; }`, false, 42, false)
+}
+
 func TestEmitIndirectlyReachedMethodCall(t *testing.T) {
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn read(p Point) i32 { return p.get(); } fn main() i32 { let p Point = Point.{ x = 42 }; return read(p); }`, false, 42, false)
 }

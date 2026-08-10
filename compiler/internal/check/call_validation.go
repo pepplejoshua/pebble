@@ -184,18 +184,25 @@ func validateCallableRecords(handoff *solveHandoff, records *solvedRecords, diag
 		}
 
 		if callable.Kind == callableMethod && len(callable.Parameters) != 0 {
-			self, ok := records.Root(callable.Parameters[0])
-			if ok && self.State == infer.TypeFinal {
-				selfKey, keyOK := typeSnapshot.Key(self.Type)
-				method, methodOK := resolution.Symbols.Symbol(callable.Symbol)
-				declaration, declarationOK := handoff.Semantics.TypeDeclaration(method.Containing)
-				if keyOK && methodOK && declarationOK && declaration.Concrete != 0 {
-					selfType := self.Type
-					if selfKey.Kind() == types.Pointer {
-						selfType, keyOK = selfKey.Child()
-					}
-					if keyOK && selfType != declaration.Concrete {
-						report(CodeCall, callable.Header, "method self parameter is invalid")
+			// A method whose first parameter is not named "self" is a static
+			// method (associated function) whose parameters are ordinary
+			// arguments; only an instance method's self parameter must be typed
+			// as its containing nominal.
+			signature, signatureOK := handoff.Semantics.Signature(callable.Symbol)
+			if signatureOK && signature.State == infer.DeclarationReady && methodHasSelf(signature, resolution) {
+				self, ok := records.Root(callable.Parameters[0])
+				if ok && self.State == infer.TypeFinal {
+					selfKey, keyOK := typeSnapshot.Key(self.Type)
+					method, methodOK := resolution.Symbols.Symbol(callable.Symbol)
+					declaration, declarationOK := handoff.Semantics.TypeDeclaration(method.Containing)
+					if keyOK && methodOK && declarationOK && declaration.Concrete != 0 {
+						selfType := self.Type
+						if selfKey.Kind() == types.Pointer {
+							selfType, keyOK = selfKey.Child()
+						}
+						if keyOK && selfType != declaration.Concrete {
+							report(CodeCall, callable.Header, "method self parameter is invalid")
+						}
 					}
 				}
 			}

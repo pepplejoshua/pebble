@@ -196,8 +196,35 @@ func (w *walker) staticTarget(ref symbol.SyntaxRef, tree *syntax.Tree) (symbol.S
 		return s.ID, callDirect, site, true
 	case symbol.SymbolVariant:
 		return s.ID, callVariant, site, true
+	case symbol.SymbolMethod:
+		// A method declared inside a nominal type body is a STATIC method
+		// (callable on the bare type name) exactly when its first parameter is
+		// not named "self" — the receiver parameter of an instance method. Its
+		// qualified call lowers to a plain direct call to the method's own
+		// function symbol with the authored arguments exactly as written, no
+		// implicit self argument. An instance method (first parameter named
+		// self) cannot be invoked through the type name; leaving it to the
+		// ordinary member-call path rejects it for want of a receiver.
+		signature, ok := w.program.Signature(s.ID)
+		if !ok || signature.State != infer.DeclarationReady || methodHasSelf(signature, w.generation.inputs.Resolution) {
+			return 0, 0, site, false
+		}
+		return s.ID, callDirect, site, true
 	}
 	return 0, 0, site, false
+}
+
+// methodHasSelf reports whether a method signature's first parameter is the
+// authored receiver parameter named "self". A method whose first parameter is
+// named self is an instance method; any other method — zero parameters or a
+// first parameter carrying a different name — is a static method (an
+// associated function) that takes its call-site arguments directly.
+func methodHasSelf(signature infer.Signature, resolution *symbol.Result) bool {
+	if len(signature.Parameters) == 0 {
+		return false
+	}
+	parameter, ok := resolution.Symbols.Symbol(signature.Parameters[0])
+	return ok && parameter.Name == "self"
 }
 func (w *walker) freshDestinations(refs []symbol.SyntaxRef, ctx walkContext) []typedValue {
 	out := make([]typedValue, len(refs))
