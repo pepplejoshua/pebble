@@ -451,7 +451,28 @@ copy their full reproduction or plan.
    array-typed-local literals, the two-step workaround, array literals
    as call arguments, and plain slice reassignment are all unaffected
    or still correctly rejected. Causation-checked.
-8. A generic struct method cannot inherit its owner type parameter.
+8. ~~A generic struct method cannot inherit its owner type parameter.~~
+   **RESOLVED (`ddbe454`).** A non-generic method on a generic struct
+   whose own parameter/return type is directly the owner's type
+   parameter (`fn get(self Box[T]) T`) reached the backend unresolved,
+   even though field-type substitution and general generic-method calls
+   already worked — confirmed by TIR dump that the checker already
+   resolves the CALL SITE's result type correctly, but the shared
+   symbolic `FunctionDeclaration` itself was never substituted.
+   `genericStructMethodSubstitutions` recovers the concrete
+   instantiation from the call's receiver and reuses the exact
+   `structSubstitutions` map the field machinery already computes (no
+   parallel mechanism); `substituteDeclarationSignature` builds the
+   monomorphized signature; `discoverReachableHelpers`'s walk is rekeyed
+   from plain `FunctionID` to a new `helperKey` (FunctionID +
+   substitution identity) so two instantiations of the same shared
+   declaration (`Box[int].get()` and `Box[bool].get()`) each get their
+   own distinct emitted C function — a real correctness bug (one
+   instantiation's signature silently winning for both) explicitly
+   avoided and tested. Verified all three shapes (return-position,
+   parameter-position, two-instantiation) end-to-end; existing
+   already-concrete generic-struct methods unaffected; causation-
+   checked.
 9. A whole dereferenced struct cannot become a value.
 10. ~~`emit.go` and `emit_test.go` need a behavior-preserving file split.~~
     **RESOLVED (`bf16ffe`).** Split into 12 production files + 13 test files
