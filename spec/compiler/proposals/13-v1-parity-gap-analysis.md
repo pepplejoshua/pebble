@@ -44,9 +44,57 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #47 (three-level aggregate dependency rejection) closed
-in `e649476`. 15 P1s and P0s resolved this window: tasks #33-47. Next
-up: #48, direct array-literal return.)*
+**Item: a fixed-array-returning function cannot return an array
+literal or repeat expression directly.**
+
+Sourced from proposal 14's backend gap matrix (`Fixed-array literal
+returned directly`, line 329), P1. Independently reproduced and
+root-caused before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn make() [3]int {
+    return [1, 2, 3];
+}
+fn main() int {
+    let a = make();
+    return a[0] + a[1] + a[2];
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with: `array return is a
+ArrayValue, want an array local or array-returning call`.
+
+**Root cause.** `buildArrayReturnValue`
+(`compiler/internal/backend/calls.go:1808-1842`) only handles
+`tir.DirectCall` (delegating to `buildDirectCall`) and
+`tir.SymbolValue` (an existing array local) as the tail-position return
+node; anything else — including a direct `ArrayValue` (`[1, 2, 3]`)
+or `ArrayRepeat` (`[v; N]`) literal — is rejected outright. The element
+brace-building logic already exists and is shared elsewhere:
+`buildArrayBraceElements` (`compiler/internal/backend/locals.go:270`)
+builds the per-element C expressions for an `ArrayValue`, and a
+similar `ArrayRepeat` builder exists for
+`buildArrayRepeatLocalDeclaration` (`locals.go:317+` — read it to find
+the exact repeat-element expression it builds). This is the same shape
+of gap as the local-copy-initialization family (tasks #40-45): a value
+shape the backend already knows how to build in one context (a local
+declaration) isn't yet wired into a sibling context (a return
+statement).
+
+**Scope:** add `tir.ArrayValue` and `tir.ArrayRepeat` cases to
+`buildArrayReturnValue`, reusing `buildArrayBraceElements` (and the
+equivalent single-value-repeated builder for `ArrayRepeat`) to build
+the element expressions, then emit the same
+`(%s){ .data = { %s } }` brace-list shape the existing tail return
+already produces for a `SymbolValue` array local. Verify: the
+reproduction above compiles and runs, returning 6; an `ArrayRepeat`
+direct return (`return [7; 3];`) compiles and runs, returning 21; the
+existing `DirectCall` and `SymbolValue` return paths are unaffected;
+an array of a non-trivial element type (struct or tuple element, if
+practical) returned directly also works, mirroring what
+`buildArrayBraceElements` already supports for locals.
 
 <!-- Previous item, resolved 2026-08-11:
 
