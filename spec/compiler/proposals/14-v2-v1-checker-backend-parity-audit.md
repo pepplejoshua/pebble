@@ -1,6 +1,7 @@
 # V1 checker and backend parity audit for compiler v2
 
-**Status:** in progress; third serious source pass complete on 2026-08-08
+**Status:** in progress; fourth serious source-and-runtime pass complete on
+2026-08-10
 
 This document is the complete V1 feature ledger. It is not the issue tracker.
 The only issue tracker is
@@ -47,32 +48,70 @@ using one broad row:
 - scalar, aggregate, optional, enum, union, slice, string, and function-value
   C shapes.
 
+## Fourth serious pass: current confirmed gaps
+
+The fourth pass started from commit `8fa6d97`, re-read the V1 and V2 control,
+type, value, and ABI paths, and ran focused programs through the current
+`pebc -run` path. A separate read-only Orc review rebuilt and ran both V1 and
+V2 for the control-flow cases. No compiler implementation changed during the
+pass.
+
+The following failures are current and independently reproduced:
+
+| Current gap | Exact observed behavior | Class |
+|---|---|---|
+| Call-valued `str` switch subject | `switch choose()` with two case comparisons calls `choose` twice. V1 stores the subject once before its `strcmp` chain. V2 splices the raw call into every `pebble_rt_str_eq` in `buildStrSwitchStatement`. | **Silent semantic defect** |
+| Runtime or negative descending range | `loop start()..finish()` with `3` and `0`, and `loop 0..-5`, both execute zero iterations. V1 evaluates both bounds once and chooses the step at runtime. V2 chooses descending mode only when both emitted bounds are plain positive decimal text. | **Silent semantic defect** |
+| Range-bound evaluation order | Side-effecting bounds record `21` in V2: end runs before start. V1 records `12`: start runs before end. `buildRangeLoop` writes the end temporary before the C `for` initializer evaluates the start. | **Observable semantic defect** |
+| Non-literal bool switch | A helper that switches on a bool parameter reaches C, then fails under the required `-Wswitch-bool -Werror`. Existing proof covered only a literal bool subject. | **Checker/backend/C contract defect** |
+| Unbound range loop | `loop 0..3 { ... }` is accepted by parser, checker, and TIR, then rejected because `RangeLoop.Symbol == 0`. V1 exposes the implicit iterator as `iter`. If V2 keeps the explicit-name rule, the checker must reject the source form. | **Checker/backend contract defect** |
+| Local copy initialization | `let second T = first` is backend-rejected for tuple, array, struct, enum, `str`, and slice values. Reassignment support that landed earlier does not cover declaration initialization. | **V1 value-copy gap** |
+| Tuple coercion | `let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b);` reaches `TupleCoerce`, then the tuple-local builder rejects it. | **Checker/backend contract defect** |
+| More than one aggregate dependency level | A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”. V1 recursively orders the complete dependency graph. | **C-shape gap** |
+| Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
+| Slice field as call argument | `sum(holder.values)` is rejected because the slice argument builder accepts only a slice local or parameter, not `Load(FieldPlace)`. | **Value-source gap** |
+| Existing slice as one variadic tail | `sum(values)` for `fn sum(...values []int)` is rejected as an element conversion. V1 passes the matching slice directly. | **V1 call gap** |
+| Direct cast of `sizeof` | `return (sizeof int) as int;` is rejected because the integer-cast child builder has no `SizeofType` case. | **Value-source gap** |
+| `sizeof [N]Struct` | The type resolver now accepts the fixed array, but emitted C can reference the array typedef before the struct element typedef exists. A `[2]Point` reproduction fails in `cc` with unknown `pebble_struct_*_t`. | **C typedef-order gap** |
+| Narrow checked arithmetic | `u8 + u8` and `u8 / u8` emit calls named `pebble_rt_checked_add_` / `pebble_rt_checked_div_`, then fail in `cc`. Narrow signed negation and `u64` divide/shift reject earlier. | **Runtime-helper contract defect** |
+| Narrow optional unwrap | `?u8` storage and `some` construction work, but `value!` rejects because no narrow unwrap helper exists. | **Runtime-helper coverage gap** |
+| Ordinary optional enum construction | `let value ?Color = some Color.blue;` rejects. The backend supports the separate integer-to-optional-enum cast path, but not an ordinary enum payload. | **Value-source gap** |
+| First-class narrow integer function signature | `fn(u8) int` passes signature validation, then its C typedef builder rejects the `u8` parameter. `fn() u8` is rejected by validation. | **Backend signature-matrix gap** |
+| V1-recursive C shapes | Confirmed clean rejections remain for a `char` struct field, `char` optional payload, `char` tagged-union payload, `f32` slice element, and enum tuple element. | **C-shape matrix gaps** |
+| General interpolated-string value | A local `str` initialized from an interpolated string reaches `InterpolatedString`, then the str-local builder rejects it. | **V1 expression gap** |
+| Deferred statement families | Deferred local declaration, block, if, while, range, classic-for, and switch all pass the checker and fail in `buildDeferredStatements`. The bare deferred-local scope leak is also still present. | **Checker/backend contract defects** |
+
+The import-only standard-library sweep now passes for `std:func`, `hash`,
+`hmap`, `io`, `libc`, `math`, `mem`, `result`, `set`, `string`, and `vec`.
+`std:mem/arena` still fails only on its old pointer-arithmetic expressions;
+the Allocator/Context and generic-Result failures no longer appear.
+
 ## Declaration and module ledger
 
 | V1 behavior | V1 source | V2 behavior | Status |
 |---|---|---|---|
 | Pebble function declaration with parameters, result, body, and hidden context | `checker.c` function passes; `codegen.c` prototypes and bodies | `FunctionDeclaration`, reachability walk, helper prototypes, definitions, and context actions | **Implemented, proof needed** for the full parameter/result matrix |
 | Direct and mutual helper recursion | V1 emits prototypes before bodies | V2 emits helper prototypes and has direct and mutual recursion run tests near `emit_test.go:6155` | **Verified** |
-| A recursion cycle through `main` | V1 gives the source entry an internal callable symbol and emits prototypes | V2 rejects the cycle in `emit.go:976-1030`; focused rejection test at `emit_test.go:6329` | **Absent** |
+| A recursion cycle through `main` | V1 gives the source entry an internal callable symbol and emits prototypes | V2 rejects any call to `main`; the entry is not an ordinary helper | **Intentional difference**, decided 2026-08-09 |
 | Extern C function | V1 emits `extern` declarations and calls the registered C name | V2 validates C signatures and emits extern calls | **Implemented, proof needed** for all accepted parameter/result types |
-| Library-named extern block | V1 stores and emits the library name as a C comment/declaration group | V2 syntax and symbols exist | **Implemented, proof needed**; tracker verification queue item |
-| Opaque extern type | V1 resolves and emits an incomplete C type | V2 extern type paths exist | **Implemented, proof needed**; tracker verification queue item |
-| Extern variable and extern constant | `codegen.c:509-620` emits C data declarations | V2 has no extern-data TIR or emission path. `ExternDeclaration` is function-shaped and the backend treats it only as callable | **Absent** |
-| Module-level mutable variable storage | V1 emits declarations, definitions, reads, and writes | V2 creates `GlobalDeclaration`, but the backend emits no global storage. The IR comment at `check/ir_builder.go:482-491` confirms that no storage scheme exists | **Absent** |
+| Library-named extern block | V1 stores and emits the library name as a C comment/declaration group | V2 accepts a named block and emits/calls its declarations | **Verified** with `extern "C" { fn abs(...) }` compile-link-run |
+| Opaque extern type | V1 resolves and emits an incomplete C type | V2 emits an incomplete C type and permits supported pointer use | **Verified** with real `tmpfile`/`fclose` compile-link-run |
+| Extern variable and extern constant | `codegen.c:509-620` emits C data declarations | V2 emits real-name `extern` data declarations and supports reads/writes | **Resolved (`1372734`)** |
+| Module-level mutable variable storage | V1 emits declarations, definitions, reads, and writes | V2 emits storage and supports scalar reads and writes across functions | **Resolved (`14739f3`)**; aggregate global shapes remain limited |
 | Module-level immutable constant | V1 emits global C storage; initializer is limited to a simple literal | V2 inlines immutable global values at each use and has a richer constant evaluator | **Partial**, with a V2 extension; prove every supported constant value shape |
 | Uninitialized local or global variable with an explicit type | V1 accepts it and C zero-initializes the object | V2 requires an initializer for each non-extern `let` or `var` | **Intentional difference** |
 | Constant declaration | V1 requires an initializer and limits global initialization to literals | V2 constant evaluation supports references, unary and binary expressions, enums, cycle checks, and budgets | **Verified V2 extension** for the evaluator; backend value-shape proof is still needed |
 | Import and qualified module value/function/type paths | V1 module member lookup and registered names | V2 module builder, `Path`, and symbol resolution | **Implemented, proof needed** by symbol category |
 | Type declaration | V1 registers struct, union, tagged union, enum, alias, and generic declarations | V2 type declaration facts and specialized nominal types | **Partial**; see the type ledger |
 | Instance method | V1 resolves a receiver and emits it as the first call argument | V2 `MethodCall` and receiver validation | **Implemented, proof needed** for all owner/value shapes |
-| Associated function selected as `Type.method(...)` | V1 distinguishes methods and associated functions | V2 has no receiver value for a qualified type path and rejects the call | **Absent**; tracker item 4 |
+| Associated function selected as `Type.method(...)` | V1 distinguishes methods and associated functions | V2 recognizes a self-less nominal method as a qualified direct call | **Resolved (`e22f185`)** |
 | Calling-convention annotation | V1 supports Pebble and C conventions, including a C-convention function body | V2 accepts bodies only for the Pebble convention. C convention is an extern boundary | **Intentional difference** |
 | `inline` function annotation | V1 writes the C `inline` keyword | V2 keeps `Inline` in TIR as an optimization request, but the backend does not write a C keyword | **Intentional difference**; no language semantic is missing |
 | Anonymous non-capturing function | V1 hoists it to module scope and cannot capture a local | V2 `HoistedFunctionValue` does the same | **Implemented, proof needed** |
 | Capturing closure | V1 anonymous functions use module scope as parent and cannot capture a local | V2 reports C0617 for a capture | **Intentional difference from closure languages; parity with V1** |
 | Generic anonymous function | V1 rejects it | V2 reports C0608 | **Intentional difference from generic named functions; parity with V1** |
 | Entry with no parameters | V1 and V2 emit a C bridge | V2 has focused backend tests | **Verified** |
-| ~~Entry with one `[]str` parameter~~ | V1 builds an argument slice | **RESOLVED (`fb94640`).** The C bridge now builds the `[]str` via a pre-existing, previously-unused runtime helper (`pebble_rt_args_from_argv`) instead of discarding `argc`/`argv`. `argv[0]` (program name) included, matching both V1 and that helper's own convention. Independently verified with a real compiled binary run against actual OS argv, causation-checked. | ~~**Absent**; tracker item 5~~ |
+| Entry with one `[]str` parameter | V1 builds an argument slice | V2 builds the slice through `pebble_rt_args_from_argv`, including `argv[0]` | **Resolved (`fb94640`)** and independently compile-run verified |
 | Entry with `argc` and `argv` parameters | V1 accepts the old two-parameter form | V2 rejects it | **Intentional difference** |
 
 ## Type and member ledger
@@ -80,28 +119,28 @@ using one broad row:
 | V1 type or member | V2 behavior | Status |
 |---|---|---|
 | `int`/V1 `isize`, `uint`/V1 `usize`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `char`, `void` | All exist in V2; V2 uses `int` and `uint` as the pointer-width signed and unsigned names | **Implemented, proof needed** for each operation and ABI width |
-| Pointer `*T`, address-of, dereference, `nil` | V2 has `AddressOf`, `DereferencePlace`, `Load`, and pointer conversions | **Partial**; whole dereferenced aggregates remain absent |
-| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Mostly resolved.** Struct-field arrays (`9dfa4e1`), whole-value reassignment for a local/literal (`aef808e`), and enum-element arrays (`94a2a39`) all landed 2026-08-10. Remaining: a bare `sizeof [N]StructType`, and a whole-array reassignment from an array-returning call (deliberately deferred, currently unreachable anyway since returning an array literal isn't supported at all yet). |
+| Pointer `*T`, address-of, dereference, `nil` | V2 has `AddressOf`, `DereferencePlace`, `Load`, and pointer conversions | **Partial**; whole dereferenced structs are resolved (`a242181`), but other aggregate shapes remain position-specific |
+| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Partial.** Struct fields (`9dfa4e1`), local/literal reassignment (`aef808e`), enum elements (`94a2a39`), and ordinary `sizeof` landed. Direct array-literal return still rejects; `sizeof [N]Struct` still emits typedefs in the wrong order. |
 | Slice `[]T` | V2 has slice types, `.len`, `.data`, checked index/slice, and `SliceFromRaw` | **Partial** by source position and element type |
 | V1 pointer slice `ptr[start:end]` | V2 rejects pointer slicing and provides std-only `slice ptr, count` | **Intentional difference** under the pointer-safety design |
-| Struct | V2 record construction, fields, methods, parameters, results, and C typedefs exist | **Partial**; runtime nominals and whole-value paths are incomplete |
-| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Mostly resolved.** Whole-value reassignment for a local/literal landed `d1b05be` (2026-08-10); a call-value right-hand side stays a deliberate, deferred rejection. `TupleCoerce` backend-reachability proof is still an open small investigation (tracker verification queue). |
+| Struct | V2 record construction, fields, methods, parameters, results, runtime nominals, and C typedefs exist | **Partial**; local copy initialization and deep aggregate dependencies still reject |
+| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Partial.** Whole-value reassignment for a local/literal landed `d1b05be`; local copy initialization still rejects, and a real `TupleCoerce` reaches the backend and rejects. |
 | Optional `?T`, `some`, `none`, force unwrap | V2 has optional construction, injection, and checked unwrap | **Partial** by payload type |
-| Enum | V2 construction, switch labels, and integer conversions exist | **Verified** for enum-to-integer and integer-to-enum. Enum-element arrays and slices resolved `94a2a39` (2026-08-10). Remaining: enum-typed optional payloads. |
-| Tagged union | V2 construction and ordinary switch narrowing exist | **Partial**; generic-self narrowing is tracker item 3 |
+| Enum | V2 construction, switch labels, and integer conversions exist | **Verified** for enum-to-integer and integer-to-enum. Enum-element arrays and slices resolved `94a2a39`. Remaining: ordinary `some Color.red` optional initialization, enum tuple elements, and local copy initialization. |
+| Tagged union | V2 construction, ordinary switch narrowing, generic-self read/write narrowing, and helper results exist | **Partial** by payload and container C shape; generic-self narrowing resolved in `7b7eee0`/`7e7163e` |
 | Untagged union | V1 emits a C union and permits construction and member access | V2 rejects construction, read, and write because no safety rule is accepted | **Decision needed** |
 | Function type and function value | V2 supports Pebble-convention, non-variadic function values for a limited C-representable signature set | **Partial**; V1 supports a wider convention and signature surface |
-| Opaque extern type | V2 represents it and rejects invalid `sizeof` use | **Implemented, proof needed** |
-| Generic type and specialization | V2 supports generic nominal types and specialization | **Partial**; owner type-parameter inheritance is tracker item 8 |
-| Recursive nominal type | V2 collection has dependency ordering and recursion paths | **Partial**; a self-reference plus slice field currently breaks C typedef identities in tracker item 2 |
+| Opaque extern type | V2 represents it, emits incomplete C declarations, permits pointer use, and rejects invalid `sizeof` use | **Verified** |
+| Generic type and specialization | V2 supports generic nominal types, specialization, and owner type-parameter inheritance | **Partial** by deep aggregate and value-source shape; owner inheritance resolved in `ddbe454` |
+| Recursive nominal type | V2 collection has dependency ordering and recursion paths | **Partial**; even a non-recursive plain three-level aggregate dependency chain is still rejected |
 | Tuple member `.0`, `.1`, and so on | V1 and V2 resolve tuple ordinals | **Implemented, proof needed** |
 | Array `.len` | V1 and V2 support it | **Implemented, proof needed** |
 | Slice `.len` and `.data` | V1 and V2 support both | **Implemented, proof needed** |
 | String `.len` | V1 string code uses `strlen` but has no structural member | V2 exposes byte length as `.len` | **Verified V2 extension** in real string consumers |
 | Optional presence member | V1 spells it `.is_some` | V2 spells it `.has_value` | **Intentional rename** |
-| Struct field and instance method selection | Both compilers support it | **Partial** by generic and runtime owner shape |
-| Enum and union variant selection | Both compilers support it | **Partial** for generic receivers and untagged unions |
-| Static member call through a type | V1 supports associated functions | V2 member and call records cannot represent the call without a receiver value | **Absent** |
+| Struct field and instance method selection | Both compilers support it | **Partial** by value-source shape; generic and runtime-owner gaps listed here are resolved |
+| Enum and union variant selection | Both compilers support it | **Partial** for untagged unions and unsupported payload/container shapes; generic-self selection is resolved |
+| Static member call through a type | V1 supports associated functions | V2 supports a self-less method called through its nominal type | **Resolved (`e22f185`)** |
 
 ## Literal, expression, and operator ledger
 
@@ -124,12 +163,12 @@ using one broad row:
 | Generic call | V2 specializes named generic functions | **Implemented, proof needed** for nested type arguments |
 | Index | V1 checks array, slice, string, and pointer indexing; V2 checks array, slice, and string and uses Unicode decode for string reads | **Intentional string change** and **partial** aggregate proof |
 | String index result | V1 returns one byte; V2 stores bytes but walks UTF-8 from the start and returns the scalar at the requested code-point index | **Verified V2 semantic change** |
-| Slice expression | V2 checked slices work when the builder can carry required pre-statements | **Partial**; pure nested expression positions are tracker item 6 |
+| Slice expression | V2 checked slices work in ordinary and nested expression positions, including GNU statement-expression lowering where a temporary is required | **Partial**; struct-literal slice fields and other value-source positions remain separate gaps (`836fbea`) |
 | Tuple literal | V2 `TupleValue` | **Implemented**, but whole-value copy paths are partial |
 | Array literal and repeat | V2 `ArrayValue` and `ArrayRepeat` | **Partial** by element and destination shape |
-| Struct literal | V2 `RecordConstruct` | **Partial** for runtime nominal and nested aggregate shapes |
-| Tagged-union variant literal | V2 `VariantConstruct` | **Partial** for generic narrowing and payload shape |
-| `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 checker rejects function, void, and opaque extern types. The backend also rejects fixed arrays and all other C-unspelled types, although the checker accepts arrays | **Partial; checker/backend contract defect for fixed arrays** |
+| Struct literal | V2 `RecordConstruct` | **Partial** for deep nested aggregates; runtime Allocator/Context construction is resolved |
+| Tagged-union variant literal | V2 `VariantConstruct` | **Partial** by payload C shape; generic narrowing is resolved |
+| `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 supports scalar, struct, enum, union, tuple, optional, slice, pointer, runtime, and fixed-array types. `sizeof [N]Struct` still has typedef ordering failure, and a direct cast of `sizeof` is a separate value-source rejection. | **Partial** |
 | Force unwrap | V2 checked optional unwrap | **Partial** by payload type |
 | Postfix `++` and `--` as a value expression | V1 uses C postfix semantics and returns the old value | V2 defines them as void updates that are legal only as statements or for updates | **Intentional difference** |
 | Arithmetic `+ - * / %` | V1 emits raw C arithmetic for all numeric types | V2 uses checked helpers for integers and direct C for floats | **Partial**; helper-width matrix is incomplete |
@@ -166,8 +205,8 @@ in `checker.c:2437-2529`. V2 classification is in
 | Pointer to integer | explicit | explicit | **Implemented, proof needed** by width |
 | Integer to pointer | explicit | forbidden | **Intentional difference** |
 | V1 `str` to/from `*void`, `*u8`, or `*char` | explicit or implicit, because V1 `str` is a C pointer | absent for V2 `PebbleStr` | **Intentional ABI difference**; use explicit library adapters if accepted later |
-| Fixed array to slice | implicit | dedicated checked slice shape, not general compatibility | **Partial**; direct non-primitive literal-to-slice is tracker item 7 |
-| Tuple literal element conversion | implicit, equal tuple length | `TupleCoerce`, equal length and per-element compatibility | **Implemented, proof needed** |
+| Fixed array to slice | implicit | dedicated checked slice shape, including direct array-literal initialization of a slice binding | **Partial by source position**; binding form resolved in `f4c3970` |
+| Tuple literal element conversion | implicit, equal tuple length | checker builds `TupleCoerce`, but the tuple-local backend builder rejects that node | **Confirmed checker/backend defect** |
 | Explicit tuple prefix cast | source can have more elements than destination | V2 requires equal length | **Absent** unless the narrower V2 rule is accepted |
 | Array literal element conversion | implicit for equal length | no general structural conversion class | **Partial/absent**; isolate by destination shape |
 | Struct literal field conversion | implicit for equal field count and matching names | no structural struct conversion class | **Absent** |
@@ -181,17 +220,20 @@ in `checker.c:2437-2529`. V2 classification is in
 V1 `get_format_specifier`, `build_composite_format_string`, and
 `build_composite_args` are at `codegen.c:1754-1867`. V1 recursively prints
 structs, tuples, arrays, nested composites, and enum variant names. V2
-`valuePrintable` at `check/control_flow_validation.go:111` and `buildPrint`
-at `backend/emit.go:6503` accept only scalar values.
+now has recursive checker and backend print paths for structs, tuples, fixed
+arrays, slices, plain enums, and tagged unions. Proposal 17 records the exact
+slices. Optionals, pointers, and function values remain open.
 
 | Printed value | V1 | V2 | Status |
 |---|---|---|---|
 | Integer, float, bool, string | supported | supported | **Verified** for common widths; complete width proof needed |
 | ASCII character | supported | supported | **Verified** |
 | Multi-byte Unicode character | V1 C `%c` is byte-limited | V2 uses `pebble_rt_char_to_utf8` and has `é`, emoji, mixed, and deferred-print run tests | **Verified V2 fix/extension** |
-| Enum name | supported | rejected by V2 checker | **Intentional difference** in tracker decisions |
-| Struct, tuple, and fixed array | recursively formatted | rejected by V2 checker | **Decision needed** for V1 parity |
-| Nested composite | recursively formatted | rejected | **Decision needed** |
+| Enum name | supported | prints `Type.variant` with invalid-tag fallback | **Resolved (`c1bf23b`)** |
+| Struct, tuple, and fixed array | recursively formatted | recursively formatted with declared names/order | **Resolved (`c182e73`, `5e6e786`)** |
+| Nested composite and slice | recursively formatted | recursive compile-time formatting plus a runtime slice loop | **Resolved (`b80fbc4`, `21e54ec`)** |
+| Tagged union | V1 formats tagged union values | prints variant name and recursively prints payload | **Resolved (`9a0f27d`)** |
+| Optional, pointer, function value | V1 has format paths for its supported value forms | V2 checker still rejects them | **Absent; proposal 17 slices 7-9** |
 | Interpolation | V1 formats string, bool, integer, float, char, enum, struct, and tuple parts and produces a string value | V2 supports only bool value parts and only when the interpolation is a direct `print` operand | **Absent except for the verified bool-print form** |
 
 The earlier audit claim that multi-byte `%c` remained open was stale. The
@@ -208,9 +250,9 @@ runtime helper is in `runtime/src/str.c:141`, its ABI is in
 | If/else and terminal-path analysis | V2 validates and emits nested arms | **Verified** for ordinary scalar and aggregate paths; value-shape limits remain |
 | While and infinite `loop` | V2 emits while loops and accepts exhaustive terminal loops | **Verified** for ordinary paths |
 | Range loop, exclusive and inclusive | Both compilers support both end rules | **Partial** |
-| Range-bound evaluation count | V1 stores both start and end before the C loop and evaluates each once | V2 evaluates the start once in the C initializer, but writes the end expression directly in the loop condition, so a call or mutable read can be evaluated on every iteration | **Absent V1 semantics; backend defect** |
-| Descending range | V1 evaluates both bounds once, chooses step `1` or `-1`, and runs in either direction at `codegen.c:2568` | V2 always writes `<`/`<=` and `iterator++` at `emit.go:4605-4659`; a descending range runs zero times | **Absent** |
-| Implicit range iterator named `iter` | V1 creates it when no name is present | V2 requires an explicit iterator name | **Intentional difference** |
+| Range-bound evaluation count and order | V1 stores start, then end, and evaluates each once | V2 now evaluates each once (`e111c37`), but emits the end temporary before the start expression in the C `for` initializer | **Partial; observable order defect** |
+| Descending range | V1 evaluates both bounds once and chooses step `1` or `-1` at runtime | V2 handles two plain positive decimal bounds (`8baeb8e`), but call-valued/mutable bounds and negative literal bounds stay ascending and can run zero iterations | **Partial; silent semantic defect** |
+| Implicit range iterator named `iter` | V1 creates it when no name is present | V2 policy requires an explicit iterator name, but parser/checker/TIR still accept the unbound form and only the backend rejects it | **Intentional surface difference with a checker/backend contract defect** |
 | Range iterator type | V1 registers and emits the iterator as `int` | V2 gives the iterator the exact shared bound type | **V2 extension/correction** |
 | Classic `for` with declaration initializer | Both compilers support it | **Verified** for current V2 scalar forms |
 | Classic `for` with assignment initializer | V1 accepts and emits it | **RESOLVED (`e3ec6bc`, 2026-08-10).** Decided: implement, don't reject earlier — V1 parity, checker already accepted it, an ordinary for-loop pattern. `buildForInitClause` now accepts a Store (reassigning an already-declared local) alongside the existing Initialize (declaring a fresh one); the no-condition two-clause shape widened the same way. | — |
@@ -220,7 +262,7 @@ runtime helper is in `runtime/src/str.c:141`, its ABI is in
 | Break that targets a switch | V1 permits break only in a loop | V2 control regions permit switch break | **V2 extension** |
 | Defer LIFO and cleanup on return, break, and continue | V1 emits deferred statements at exits | V2 has focused compile-run tests for LIFO, nested scopes, helper calls, return, break, continue, compound store, and Unicode print at `emit_test.go:9602-9763` | **Verified for the supported deferred statement kinds** |
 | Deferred reassignment, compound assignment/postfix update, print, or void call | V1 accepts and emits each as an ordinary deferred statement | V2 `buildDeferredStatements` supports `Store`, `CompoundStore`, `Print`, and a void-call `ExpressionStatement` | **Verified** |
-| Deferred local declaration | V1 accepts it and emits it in a defer-local C block | V2 checker permits deferred bindings, but `emit.go:6104` explicitly rejects `Initialize` | **Absent; checker/backend contract defect** |
+| Deferred local declaration | V1 accepts it and emits it in a defer-local C block | V2 checker permits deferred bindings, but `buildDeferredStatements` rejects `Initialize`; bare deferred locals also leak into the enclosing checker scope | **Absent; checker/backend contract defect** |
 | Deferred block, conditional, loop, or switch | V1 checker recursively accepts any statement except return, and codegen calls the normal statement emitter at the exit | V2 validation specification permits these statements, but `buildDeferredStatements` has no builder case for their TIR nodes | **Absent; checker/backend contract defect** |
 | Return inside defer | V1 rejects it | V2 rejects it | **Parity** |
 | Break, continue, or nested defer inside defer | V1 does not apply all V2 restrictions | V2 rejects these forms to keep cleanup control explicit | **Intentional stricter rule** |
@@ -235,12 +277,12 @@ is at `backend/emit.go:4140-4405`.
 | Switch subject | V1 checker/backend | V2 checker/backend | Status |
 |---|---|---|---|
 | Integer | accepted and emitted as C switch | accepted and emitted | **Implemented, proof needed** by width |
-| `u8` or `i8` with all 256 values | V1 treats it as exhaustive | V2 does not enumerate integer domains | **Absent** |
-| Character | accepted and emitted as C switch | checker accepts it; backend case labels accept only integer, bool, or enum | **Confirmed checker/backend defect** |
-| String | accepted and emitted as `strcmp` if/else chain | checker accepts it; backend has no string-switch path | **Confirmed checker/backend defect** |
-| Boolean | V1 rejects it | V2 accepts it and proves `true` plus `false` exhaustive | **Verified V2 extension** |
+| `u8` or `i8` with all 256 values | V1 treats it as exhaustive | V2 enumerates the full domain | **Resolved (`4817dae`)** |
+| Character | accepted and emitted as C switch | accepted and emitted with Unicode-scalar labels | **Resolved (`72f0207`)** |
+| String | accepted and emitted as `strcmp` if/else chain with a subject temporary | V2 emits a `pebble_rt_str_eq` if/else chain, but repeats a call-valued subject in every comparison | **Partial (`49d0f23`); silent repeated-evaluation defect** |
+| Boolean | V1 rejects it | V2 accepts it and proves `true` plus `false` exhaustive, but a non-literal bool subject emits `switch(bool)` and fails under `-Wswitch-bool -Werror` | **Broken V2 extension** |
 | Enum | accepted, duplicate-checked, exhaustive, emitted | V2 supports it | **Verified** for ordinary enums |
-| Tagged union | accepted, narrowed, exhaustive, emitted by tag | V2 supports ordinary unions | **Partial** for generic-self narrowing |
+| Tagged union | accepted, narrowed, exhaustive, emitted by tag | V2 supports local, variant, and call-valued subjects; generic-self narrowing is resolved | **Verified for current subject forms**, payload C-shape limits remain |
 | Default `else` | supported | supported | **Implemented, proof needed** for each subject kind |
 | Multiple labels on one case | supported | supported | **Implemented, proof needed** by kind |
 | Duplicate constant labels | rejected | rejected | **Verified** for scalar and nominal cases |
@@ -251,13 +293,13 @@ is at `backend/emit.go:4140-4405`.
 |---|---|---|
 | Fixed Pebble parameters | supported | supported | **Implemented, proof needed** by value shape |
 | Trailing Pebble slice parameter marked variadic | V1 collects zero or more tail elements | V2 collects zero or more tail elements into a temporary slice | **Verified** for int, bool, zero tail, and fixed-prefix tests near `emit_test.go:12762` |
-| One existing slice as the sole variadic tail | V1 detects the matching slice and passes it directly at `codegen.c:4000-4068` | V2 validates every tail argument as one element and always builds a new slice | **Absent**; focused reproduction needed before tracker entry |
+| One existing slice as the sole variadic tail | V1 detects the matching slice and passes it directly at `codegen.c:4000-4068` | V2 validates the slice as one element and reports C0601 | **Confirmed absent** with `sum(values)` reproduction |
 | C variadic extern call | V1 permits primitive C variadic use | V2 reports C0604 | **Decision needed**; do not infer a target from V1 alone |
 | Aggregate argument, result, and receiver | V1 C value passing handles ordinary C-representable aggregate values | V2 has many implemented paths, but each type and source expression has a separate builder | **Partial**; see the backend shape table |
 
 ## Backend whole-value and aggregate-shape ledger
 
-These are live explicit rejection branches in `backend/emit.go`. V1 usually
+These are live explicit rejection branches in the V2 backend package. V1 usually
 gets these operations from ordinary C value copy. A source-level rejection is
 strong evidence of missing backend capability, but each row still needs one
 small source reproduction before it moves to the issue tracker.
@@ -267,22 +309,25 @@ small source reproduction before it moves to the issue tracker.
 | Reassign a whole tuple local | `buildTupleStoreValue`, `stores.go` | **RESOLVED** (`d1b05be`, local/literal; a call value stays deferred) |
 | Reassign a whole fixed-array local | `buildArrayStoreValue`, `stores.go` | **RESOLVED** (`aef808e`, local/literal via `memcpy`; a call value stays deferred) |
 | Reassign a whole struct local | `buildStructStoreValue`, `stores.go` | **RESOLVED** (`9df0351`/`5ef060a`, local/literal/call value all supported) |
-| Reassign a `str` local from another string value | `emit.go:5474` accepts only a string literal | **Partial** |
-| Initialize a tuple local from another tuple value | `emit.go:7190` accepts only a tuple literal or helper result | **Partial** |
-| Initialize an array local from another array value | `emit.go:7418` accepts only a literal or repeat | **Partial** |
-| Initialize a struct local from another struct value | `emit.go:8474` accepts only record construction or helper result, with a few special indexed paths elsewhere | **Partial** |
-| Initialize an enum local from another enum value | `emit.go:8826` accepts only a variant literal or integer cast | **Partial** |
-| Initialize a `str` local from another `str` value | `emit.go:9290` accepts a limited literal/call grammar | **Partial** |
+| Reassign a `str` local from another string value | `buildStrStoreValue` accepts only a string literal | **Confirmed partial** |
+| Initialize a tuple local from another tuple value | `buildTupleLocalDeclaration` rejects `SymbolValue`; it also rejects a real `TupleCoerce` | **Confirmed absent source shapes** |
+| Initialize an array local from another array value | `buildArrayLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a struct local from another struct value | `buildStructLocalDeclaration` rejects a plain struct `SymbolValue` | **Confirmed absent source shape** |
+| Initialize an enum local from another enum value | `buildEnumLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a `str` local from another `str` value | `buildStrLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a slice local from another slice value | the slice local path treats the initializer as a new `CheckedSlice` and rejects `SymbolValue` | **Confirmed absent source shape** |
 | Materialize an interpolated string as a local, argument, result, or ordinary value | `InterpolatedString` is handled only inside `buildPrint`; general string builders reject it | **Absent** |
 | Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Ordinary `some Color.red` optional enum payload | `emit.go:8270` accepts only the integer-to-optional-enum cast path | **Partial** |
-| Aggregate nesting deeper than one dependency level | `emit.go:2026` rejects it | **Absent**; the accepted C-layout graph needs investigation |
-| Whole dereferenced struct as a value | explicit checker/backend boundary gap | **Absent**; tracker item 9 |
+| Aggregate nesting deeper than one dependency level | aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain | **Confirmed absent**, not limited to generics or recursion |
+| Whole dereferenced struct as a value | local-initializer and argument paths | **Resolved (`a242181`)** |
 | Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
-| Array literal of non-primitive values directly assigned to a slice local | checker reports C0601 | **Absent**; tracker item 7 |
-| Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Absent**; recorded under tracker item 2 |
-| Inline checked slice inside a nested pure expression | required pre-statement cannot travel through all expression builders | **Absent**; tracker item 6 |
+| Array literal directly assigned to a slice local | checker and backend lower it through a hidden backing array | **Resolved (`f4c3970`)** |
+| Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Confirmed absent**; listed in the fourth-pass gap table |
+| Inline checked slice inside a nested pure expression | GNU statement-expression carries its required temporary | **Resolved (`836fbea`)** except a slice-typed struct-literal field |
+| Fixed-array literal returned directly | fixed-array return builder accepts a local or call, not `ArrayValue`/`ArrayRepeat` | **Confirmed absent** |
+| Direct cast of `sizeof` | integer cast child builder rejects `SizeofType` | **Confirmed absent source shape** |
 | Function value with C convention, variadic signature, or unsupported aggregate result | `validateFunctionTypeSignature` near `emit.go:3069` restricts the signature | **Partial** |
 
 ## Backend C-shape capability matrix
@@ -295,29 +340,21 @@ they do not accept the same child types.
 
 | V2 C position | Accepted by the backend | Rejected or defective V1 shapes |
 |---|---|---|
-| Fixed-array element | any C-spellable integer, `bool`, `char`, `str`, tuple, optional, or non-enum nominal struct | enum, tagged union, float, pointer, array, slice, and function value |
-| Slice element | any C-spellable integer, `bool`, `char`, tuple, optional, or non-enum nominal struct | `str`, enum, tagged union, float, pointer, array, nested slice, and function value |
-| Tuple element | only the enclosing entry width, `bool`, tuple, optional, or non-enum nominal struct | other integer widths, `char`, `str`, float, enum, tagged union, pointer, array, slice, and function value |
-| Optional payload storage | any C-spellable integer, `bool`, tuple, nominal struct or enum, and a C-spellable pointer | `char`, `str`, float, array, slice, optional, and function value. A tagged-union payload is classified as an enum and receives the tag-only enum C name instead of the union C name |
-| Struct field | any C-spellable integer, `bool`, `str`, tuple, optional, runtime nominal, nominal struct or enum, C-spellable pointer, slice, or admitted function value | `char`, float, array, and nested forms rejected by their own gates. A tagged-union field is classified as an enum and receives the tag-only enum C name instead of the union C name |
+| Fixed-array element | any C-spellable integer, `bool`, `char`, `str`, float, tuple, optional, plain enum, or nominal struct | tagged union, pointer, array, slice, and function value |
+| Slice element | any C-spellable integer, `bool`, `char`, tuple, optional, plain enum, or nominal struct | `str`, tagged union, float, pointer, array, nested slice, and function value |
+| Tuple element | any C-spellable integer, `bool`, `char`, `str`, float, tuple, optional, or nominal struct | enum, tagged union, pointer, array, slice, and function value |
+| Optional payload storage | any C-spellable integer, `bool`, tuple, nominal struct, plain enum, tagged union, or C-spellable pointer | `char`, `str`, float, array, slice, optional, and function value. Ordinary `some Enum.variant` initialization is a separate value-source gap |
+| Struct field | any C-spellable integer, `bool`, `str`, tuple, optional, runtime nominal, nominal struct, plain enum, tagged union, C-spellable pointer, slice, fixed array, or admitted function value | `char`, float, and nested forms rejected by their own gates |
 | Tagged-union variant payload | only the enclosing entry width, `bool`, or `str` | all other integer widths, `char`, float, tuple, struct, enum, union, pointer, array, slice, optional, and function value |
-| First-class function parameter | any C-spellable integer, `bool`, `char`, `str`, or C-spellable pointer | float and every aggregate, enum, union, optional, slice, array, or function value |
+| First-class function parameter | entry-width integer, `uint`, `u64`, `bool`, `char`, `str`, or C-spellable pointer | Other fixed-width integers pass validation but fail typedef emission. Float and every aggregate, enum, union, optional, slice, array, or function value reject |
 | First-class function result | enclosing entry width, `u64`, `bool`, `char`, `void`, or C-spellable pointer | `uint` when it is not the entry width, other integer widths, `str`, float, and every aggregate, enum, union, optional, slice, array, or function value |
 | C extern parameter/result | C-spellable integer, `bool`, `char`, `str` as `const char *`, float, C-spellable pointer, and `void` result | aggregate, enum, union, optional, slice, array, function value, or opaque value by copy |
-| `sizeof` type | C-spellable integer, `bool`, `char`, `str`, runtime nominal, tuple, optional, slice, plain enum, struct, or C-spellable pointer | fixed array, function type, `void`, and opaque extern nominal. The fixed-array rejection is later than the checker. A tagged union is classified as an enum, so the backend selects the tag enum size instead of the full tagged-union storage size |
+| `sizeof` type | C-spellable integer, `bool`, `char`, `str`, runtime nominal, tuple, optional, slice, fixed array, plain enum, tagged union, struct, or C-spellable pointer | function type, `void`, and opaque extern nominal. An array whose element is a struct has a separate typedef-order defect |
 
-The tagged-union field and optional-payload rows are stronger than a missing
-feature. `isStruct` treats every nominal as a struct, and `isEnumType` treats
-plain enums and tagged unions as enum-shaped. `structFieldCType` and
-`optionalPayloadCType` then select `enumTypeName`, while a payload-carrying
-tagged union needs `unionTypeName`. A focused reproduction must prove whether
-this produces a clean emitter error or invalid/truncated C storage.
-
-The ordinary helper-result switch has a related defect. It has no enum or
-tagged-union result branch. Its `isStruct` branch catches every nominal first,
-uses `structTypeName`, and records struct return rules. Plain-enum and tagged-
-union helper results therefore need separate reproductions. V1 passes both by
-their real C value type.
+Tagged-union fields and optional payloads now select the full tagged-union C
+type (`4d1ef51`). Plain-enum and tagged-union helper results also select their
+correct C value types (`4475579`), and direct calls in ordinary enum and union
+value positions are covered by `2978280`.
 
 ## Backend value-source position matrix
 
@@ -328,8 +365,8 @@ for damaged hand-written TIR.
 
 | Position | V2 accepted source shapes | Missing source shapes |
 |---|---|---|
-| Slice call argument | a matching slice local or parameter; a fresh checked slice when the enclosing call position can carry its leading temporary | slice field, slice-returning call, raw slice construction, and fresh checked slice in a pure nested expression position |
-| Enum or tagged-union call argument | a matching local or parameter | inline enum variant, inline tagged-union variant, field value, and helper result |
+| Slice call argument | a matching slice local or parameter; a fresh checked slice, including a nested pure expression that carries its leading temporary | slice field, slice-returning call, and raw slice construction |
+| Enum or tagged-union call argument | a matching local or parameter, and a supported direct helper result | inline enum variant, inline tagged-union variant, and field value |
 | Tuple call argument | matching local or inline tuple literal | tuple-returning call and general tuple-valued expression |
 | Struct call argument | matching local or inline record literal | struct field value and other general struct-valued expressions; call forwarding is position-specific |
 | Fixed-array call argument | matching local, inline array literal, or array-returning call | repeat expression and other array-valued expressions |
@@ -340,7 +377,7 @@ for damaged hand-written TIR.
 | Optional argument/return | matching local, `some`, `none`, optional injection, optional-returning call, or limited bare payload injection | other optional-valued expressions; bare implicit injection supports integers, `bool`, and pointer only |
 | Array or slice index base | addressable array/slice place; for a non-addressable slice value, a slice local/place, slice-returning call, or slice field of a call result | array literal and array-returning call as non-addressable bases |
 | Tuple projection base | matching tuple local/place | direct tuple literal and other non-addressable tuple value |
-| Grouped value (`SourceAlias`) | unwrapped by some type-specific builders | the general integer-expression builder still rejects it in uncovered positions, so parentheses are not uniformly transparent in the backend |
+| Grouped value (`SourceAlias`) | transparent in the current scalar, place, and print builders | no current failure reproduced; keep it as a regression-check shape, not an open defect |
 | Function-typed struct-field value | field of an addressable struct local or pointer-to-struct local | field of a temporary/call-result receiver and other non-addressable receivers |
 
 Each row must be split by one destination position and one source shape when
@@ -355,10 +392,10 @@ width needs a real helper or valid direct lowering.
 
 | Operation | V2 helper coverage | Gap |
 |---|---|---|
-| Checked add, subtract, multiply | `i32`, `i64`, `u64` | no helper suffix for `int`, `uint`, `i8/i16`, or `u8/u16/u32`; exact treatment of `int` depends on its resolved width |
-| Checked divide and modulo | `i32`, `i64` | no `u64`, `uint`, or narrow-width helper |
+| Checked add, subtract, multiply | `i32`, `i64`, `u64`; source `int` resolves to the entry signed width | `uint` and narrow widths have no valid helper suffix. A checked `u8` operation currently emits an invalid empty-suffix helper call instead of rejecting cleanly |
+| Checked divide and modulo | `i32`, `i64`; source `int` resolves to the entry signed width | no `u64`, `uint`, or narrow-width helper. A checked `u8` operation reaches invalid C; `u64` rejects earlier |
 | Checked shift left and right | `i32`, `i64`, `i8/i16`, `u8/u16/u32` | no `uint` or `u64` helper |
-| Checked integer negation | fixed signed widths supported through dedicated paths | prove `int` resolution and narrow signed widths |
+| Checked integer negation | `i32` and `i64`; a negative narrow literal can be folded | a non-literal narrow signed value has no helper and rejects |
 | Float-to-integer checked conversion | helper family is limited to `i32` and `i64` destinations | no full integer destination matrix |
 | Optional unwrap payload | scalar helper family covers `i32`, `i64`, `u64`, bool, and pointer paths | narrow integer payload matrix is incomplete |
 | Explicit wrapping multiplication and addition | `wrapping_mul_u64` and `wrapping_add_u64` lower to runtime helpers | **Verified** in SAFE and RELEASE runtime tests and backend run tests |
@@ -368,14 +405,15 @@ stale. The helpers are in `runtime/src/arith.c:425-431`, their ABI is in
 `runtime/include/pebble_rt.h:182-191`, and backend tests are near
 `emit_test.go:11000`.
 
-Tracker item 2 records the missing helper suffixes and missing `uint`/`u64`
-shift helpers, but it does not yet state the complete width-by-operation
-matrix above.
+Proposal 13 currently has no active defect. Before an integer task starts,
+one row from this matrix must move there with one exact reproduction and one
+small operation-by-width slice.
 
-## Confirmed open tracker items
+## Historical proposal 13 snapshot
 
-This section mirrors only the current open items in proposal 13. It does not
-copy their full reproduction or plan.
+This section records the old ten-item proposal 13 backlog. It is not a live
+task list. Proposal 13 is now empty and holds only one active defect at a
+time.
 
 1. ~~`Allocator`/`Context` values cannot cross function boundaries.~~
    **RESOLVED (proposal 15, all 4 slices,
@@ -527,19 +565,18 @@ near `emit_test.go:7828-7868`. Generic-self narrowing can still block this
 path before the backend receives TIR, but the stated missing backend case no
 longer exists and must be removed or replaced after a real `Result` test.
 
-## Tracker verification queue mirror
+## Verification queue result
 
-These are not confirmed failures. They remain small read-only or test-only
-investigations in proposal 13:
+The fourth pass completed the old read-only queue:
 
-1. Library-named extern blocks.
-2. Opaque extern types.
-3. Three-level nested generic types.
-4. `TupleCoerce` backend reachability and emission.
-5. Confirmation that `TypeUse` is compile-time-only and needs no backend
-   node.
-6. A fresh audit of `open-language-decisions.md`, because some old status
-   text is known to be stale.
+- library-named extern blocks compile, link, and run;
+- opaque extern types compile, link, and run through real `FILE *` use;
+- a plain three-level aggregate dependency is a confirmed backend defect, so
+  the problem is broader than nested generic types;
+- `TupleCoerce` is reachable from ordinary source and is a confirmed backend
+  defect;
+- `TypeUse` is compile-time metadata and needs no runtime backend node;
+- the open-language decision document still contains the drift listed below.
 
 ## Open-language decision document drift
 
@@ -565,41 +602,41 @@ pointer mutability and ownership distinctions; named constraints and public
 structural traits; bound-method values; explicit enum values; and enum-name
 reflection/printing.
 
-## New findings that proposal 13 must reconcile
+## Implementation slicing notes
 
-No production work must start from this list. Each source-only finding needs
-one small reproduction. Then proposal 13 must receive the reproduction and
-root cause before an Orc implementation task starts.
+This is historical investigation detail plus the remaining slice boundaries.
+Closed rows remain as audit evidence. A production task must first copy one
+current defect to proposal 13 with its exact reproduction and root cause.
 
 | Finding | Confidence | Next small slice |
 |---|---|---|
 | **RESOLVED (`9dfa4e1`, 2026-08-10).** A fixed-array-typed struct field was rejected entirely by the backend. `structFieldCType` now accepts an array field (declared with its own `pebble_array_<id>_t` typedef, mirroring a slice field). Two compounding gaps fixed alongside it: the typedef was never collected when an array only appeared as a struct field, and once collected needed to be emitted BEFORE the referencing aggregate block (an inline `elem data[length]` needs the complete typedef, unlike a slice's pointer); an array-typed field's lvalue needed a `.data` projection for element reads/writes. Verified end-to-end: construction from a literal/local/call, index reads/writes, a bool-element array, and a mixed-field struct alongside a standalone array. Causation-checked. | — |
 | ~~V2 checker accepts character switch, but backend rejects it~~ | **RESOLVED (`72f0207`).** Added an `isChar` branch to the switch-subject builder (reusing `buildCharOperand`) and a char-literal branch to `buildCaseLabel`. 6 new tests including a non-ASCII scalar case. Independently verified, causation-checked. | — |
-| ~~V2 checker accepts string switch, but backend has no lowering~~ | **RESOLVED (`49d0f23`).** Different shape than the char fix — C switch can't take non-integer labels, so this lowers to an if/else-chain via the existing `pebble_rt_str_eq` helper instead of a native switch. `break` targeting the switch is handled via a `do{}while(0)` wrapper; documented accepted limitation where that wrapper would incorrectly intercept a `continue` to an enclosing loop in the rare case both are present together. 3 new tests, independently verified, causation-checked. | — |
+| ~~V2 checker accepts string switch, but backend has no lowering~~ | **RESOLVED (`49d0f23`).** String switch lowers to an if/else chain through `pebble_rt_str_eq`. A fourth-pass reproduction disproved the earlier `continue` concern. The current defect is different: a call-valued subject is evaluated once per tested case instead of once for the switch. | — |
 | ~~V2 does not prove a complete `u8` or `i8` switch exhaustive~~ | **RESOLVED (`4817dae`).** Added covered-integer-value tracking plus a full-range check for `u8`/`i8` specifically (256-value domains, small enough to enumerate) — wider widths are explicitly unaffected, still always require a fallback. 5 new tests, independently verified at the checker level, causation-checked. | — |
 | ~~`u8` (and presumably other non-entry-width integers) is not accepted as a switch subject type by the *backend* at all~~ | **RESOLVED (`2b3d684`).** `buildSwitchStatement` now accepts any concrete fixed-width integer builtin as a switch subject (u8/i8/u16/i16/u32/i32/u64/i64), lowering the subject at its own width and threading that width into `buildCaseLabel` so case constants match the subject's C type. Verified u8 and i16. **Deliberately excluded, still open:** the abstract `uint` builtin (word-sized unsigned) — still fails with the same rejection; this was never accepted even before this fix (not a regression), just not covered by this slice. 2+ new tests, causation-checked. | — |
 | ~~a negative integer literal in a switch case label (`case -5:`) is rejected outright for a signed subject type~~ | **RESOLVED (`8f643cd`).** `buildCaseLabel` gained an `isNegativeDecimal` path: accepted on a signed subject at its own width, cleanly rejected on unsigned (confirmed the checker already independently enforces this via `T0508`, so the backend guard is defense-in-depth). Also found and fixed a related, more severe pre-existing bug surfaced while building the reproduction: `CheckedNegate` at a narrow width (e.g. i16) has no `pebble_rt_checked_neg_*` runtime helper, so a negative-literal initializer would have emitted a call to a nonexistent function — fixed via literal-only constant folding (`checkedNegateLiteral`). Causation-checked. | — |
 | ~~the abstract `uint` builtin is still rejected as a switch subject at the backend~~ | **RESOLVED (`f44133d`).** `buildSwitchStatement` gained a dedicated `isUint` branch calling `buildUintExpr` — the same builder every other uint value position (parameters, locals, globals) already uses — since uint doesn't fit the fixed-width-integer predicate `2b3d684` added. Case labels spelled at uint's own width. Verified; u8/entry-width int subjects unaffected; causation-checked. | — |
 | ~~`u8` (and presumably other non-entry-width integers) is not accepted as a function *parameter* type at all~~ | **RESOLVED (`c39416b`).** New `isFixedWidthInteger` predicate plus a matching case in `helperSignature` and `validateHelperSignature` — a u8/i16/u32/... parameter is now declared at its own C type and seeds the callee's scope at its own width, mirroring the switch-subject widening (`2b3d684`). Verified: a helper taking a `u8` parameter, called with a `u8` argument, compiles and runs (returns 5). Entry-width/uint/u64 parameters unaffected. Causation-checked. | — |
-| ~~Descending range loops execute zero iterations~~ | **RESOLVED (`8baeb8e`).** Fixed for the literal-bound case (direction known statically); non-literal bounds are unchanged (always ascending in the current grammar — not yet independently confirmed whether the grammar actually forbids a descending non-literal-bound range or just doesn't need to distinguish it, worth a follow-up check if that syntax is ever used). 4 new tests; independently verified descending now runs the correct count, ascending/zero-length unregressed, causation-checked by reverting and reproducing. | — |
-| ~~A nontrivial range end is evaluated on every loop test instead of once~~ | **RESOLVED (`e111c37`).** Non-literal end bounds now evaluated once into a C temp before the loop; literal bounds unchanged. Composes correctly with the descending-range fix in the same function. 3 new tests; independently verified a side-effecting bound now called exactly once (was 4x for a 3-iteration loop), causation-checked. | — |
+| ~~Literal descending range loops execute zero iterations~~ | **RESOLVED (`8baeb8e`)** for plain positive literal bounds. The fourth pass confirms that runtime descending bounds and negative-literal bounds still silently execute zero iterations. | — |
+| ~~A nontrivial range end is evaluated on every loop test instead of once~~ | **RESOLVED (`e111c37`).** Each bound now evaluates once. The fourth pass found a separate order defect: V2 evaluates end before start, while V1 and source order evaluate start before end. | — |
 | ~~Mutable globals have no backend storage~~ | **RESOLVED (`14739f3`).** Real backend storage for both read and write, supporting integer/uint/bool/char/float/str/plain-enum globals. Required a small necessary checker/TIR companion (`bindingGlobalVar`'s initializer is now recorded as a real TIR node, not just validated and discarded). 13 new tests; independently verified with real cross-function/in-loop mutation, causation-checked across all 10 touched files. | — |
 | ~~a global's constant initializer that isn't a literal leaf (e.g. `var x int = 1 + 2;`) is cleanly rejected as not C-static-initializable~~ | **RESOLVED (`9e547fa`), scoped to integer-literal-only arithmetic.** Backend-side folding (`foldConstantIntegerTree`, `math/big`) for a `CheckedArithmetic` tree (+, -, *, /, %) whose operands are, recursively, all integer literals — folds to a plain C literal, range-checked against the global's declared type before narrowing (distinct overflow error, not a silent wrap or Go panic). A checker-accepted but non-foldable shape (a `CheckedNegate`, e.g. `var x int = -5;`) still gets the exact original rejection, confirmed by test — not general constant-expression evaluation (no locals, no calls, no floats). 4 new tests, causation-checked. | — |
 | ~~Extern variables and constants have no backend declaration/use path~~ | **RESOLVED (`1372734`).** Reuses the mutable-globals fix's pattern (`14739f3`), but emits a forward `extern <ctype> <realCName>;` declaration instead of synthesized storage. Both read and write supported (checker already enforces extern-`let` immutability, so no backend-side mutability distinction needed). Real platform caveat found and documented: `errno` is a macOS header macro, not a linkable symbol, so runtime correctness is proven against a hand-written C shim instead. 9 new tests, independently verified against real hand-written shims (not just the test harness), causation-checked. | — |
-| Composite print from V1 is absent | certain, but policy is undecided | ask whether V1 debug formatting remains a language feature |
-| Existing-slice variadic pass-through is absent | medium-high from checker and builder structure | one call reproduction |
-| General interpolated-string values are absent; only direct bool interpolation in `print` lowers | high from V1 expression code and V2 `buildPrint` special case | one local-value and one multi-type interpolation reproduction |
+| Composite print still lacks optional, pointer, and function-value shapes | confirmed from the current print matrix | decide and implement one value family per task |
+| Existing-slice variadic pass-through is absent | confirmed by a compile-run reproduction | one checker/call-lowering slice |
+| General interpolated-string values are absent; only a narrow direct-print form lowers | confirmed by a local-value reproduction | first materialize one scalar interpolated-string local; widen value-part types separately |
 | ~~V2 checker accepts string `+`, but backend cannot materialize its `BinaryValue` result~~ | **DECIDED + RESOLVED (`f4f2412`, 2026-08-09, direct instruction).** `str + str` (and any `+` with a `str` operand) is now a checker-level type error (`C0603`), not implemented — plain `str` is an immutable view, and real concatenation already has a first-class path via `String.push_str` (`std/string.peb`) with an explicit allocator; implementing `+` would need an implicit one, entangling with the deferred Allocator/Context redesign (proposal 15). Other `+` operand types (int, uint, float, ...) confirmed unaffected. The backend's own defense-in-depth rejection test for this shape is preserved via hand-built TIR, since real source can no longer reach it past the checker. | — |
-| Deferred declaration, block, conditional, loop, and switch forms pass V2 validation policy but have no backend lowering | **Confirmed and scoped (2026-08-10, read-only investigation).** Deferred `Store`/`CompoundStore`/`Print`/void-call already work today — the original "only bare calls work" premise was stale. Exactly 6 families remain unsupported: local declaration, block, if, while, range-loop, classic-for, switch (`buildDeferredStatements`, `compiler/internal/backend/statements.go:2084`, rejection at 2151-2157). Each family can reuse its existing non-deferred builder (`buildWhile`, `buildRangeLoop`, `buildFor`, `buildLoopIf`/`buildLeadingIf`, `buildLoopSwitch`, `buildFallthroughBody` for Block) — confirmed no new statement logic needed, only plumbing (`buildDeferredStatements` needs a `depth` parameter threaded through 5 call sites) plus, for the local-declaration family specifically, C `{ }` scope-wrapping. A separate, smaller bug found in the same investigation: a bare (non-block) `defer var x = 5;` currently leaks `x` into the enclosing scope at the checker level, inconsistent with the block form and with Zig/Swift's model — should be fixed to self-scope as part of implementing that family. | one source reproduction per deferred statement family; implement one family per task, reusing the existing non-deferred builder identified above |
+| Deferred declaration, block, conditional, loop, and switch forms pass V2 validation policy but have no backend lowering | **Confirmed and scoped (2026-08-10).** Deferred `Store`/`CompoundStore`/`Print`/void-call work. Seven families remain unsupported: local declaration, block, if, while, range-loop, classic-for, and switch. Each can reuse its non-deferred builder. A bare deferred local also leaks into the enclosing checker scope. | one family per task; fix deferred-local scope as its own checker slice before its backend slice |
 | **RESOLVED (`9e04364`, 2026-08-10).** A companion crash was found during the same investigation, more serious than the missing-lowering gap above: `defer { return 1; }`, `defer { break; }` (targeting a loop outside the deferred block), and `defer if x { return 1; }` all crashed the compiler with a stack overflow — `C0613` only checked whether the deferred statement itself was directly `return`/`break`/`continue`/`defer`, not whether one was reachable nested inside a deferred block/if/loop; the IR builder's defer-chain walk then re-registered the same defer infinitely. Fixed at the checker level: `validateDefers` now walks the deferred statement's region subtree and rejects any exit whose target lies outside it as `C0613`, while correctly leaving alone a break/continue whose target loop is itself entirely inside the deferred block. Verified all three crash reproductions now reject cleanly; the contained-exit case still passes the checker; causation-checked by reverting and reproducing the exact stack overflow. This had to land before any of the 6 families above are implemented, since implementing deferred blocks/loops without this guard would only widen the crash surface. | — |
 | ~~Assignment-form classic-for initializer reaches TIR but backend rejects it~~ | **RESOLVED (`e3ec6bc`, 2026-08-10).** Decision made: grammar acceptance is intentional (V1 parity, an ordinary for-loop pattern) — implemented rather than rejected earlier. Verified: local-to-local reassignment as the initializer, a bool-typed initializer, the no-condition variant, and a value-computed initializer; the declaration-form initializer and initializer-only/condition-only/update-only variants confirmed unaffected. An obsolete rejection test was found and removed. Causation-checked. | — |
-| Whole tuple, array, struct, enum, and string copy/reassignment paths are incomplete | high from explicit backend errors | one type and one operation per investigation; do not combine them |
+| Whole tuple, array, struct, enum, string, and slice copy initialization is incomplete | confirmed by six focused local-initializer reproductions; many reassignment paths are now resolved | one type and declaration-initialization operation per task; do not combine them |
 | — struct: **RESOLVED (`9df0351` local/literal, `5ef060a` call value).** Whole struct-local reassignment now works for a pointer-deref/field write and a plain local, with the new value an in-scope struct-typed local, a fresh struct literal, OR a call to a struct-returning helper (`p = make_point();` / `*self = make_point();`) — all reproductions independently verified end-to-end (exit 9, causation-checked). | — |
 | — tuple: **RESOLVED (`d1b05be`, local/literal only, 2026-08-10).** Whole tuple-local reassignment now works for a pointer-deref write and a plain local, with the new value an in-scope tuple-typed local or a fresh tuple literal (`buildTupleStoreValue`, mirroring the struct fix). A call to a tuple-returning helper on the right-hand side stays a deliberate, clean rejection (out of scope, same staged approach the struct fix used). Verified: local-to-local, pointer-deref, fresh-literal, a 3-element tuple, and a mixed-type `(int, str)` tuple. A stale test asserting the old blanket rejection was found and replaced. Causation-checked. | — |
 | — array: **RESOLVED (`aef808e`, local/literal only, 2026-08-10).** Whole-array reassignment now works for a plain local and a struct-field-through-pointer-deref write. A standalone array local is a raw C array (not a wrapper-struct typedef like struct/tuple), so C cannot assign it with `=`; the store lowers to a `memcpy` instead. A real compounding typedef-collection bug (the array-literal case's compound literal needs a `pebble_array_<id>_t` typedef nothing was collecting) was found during independent verification, after an initial dispatch's own self-report claimed success without actually testing the literal-reassignment path — and fixed in the same change. An array-returning call on the right-hand side stays a clean rejection, confirmed unreachable from real source today anyway (returning an array literal isn't supported at all yet — separate, pre-existing gap). Verified: local-to-local, literal (5-element, bool-element), and pointer-deref-through-struct-field. Causation-checked. Enum and string reassignment remain untouched. | — |
 | — enum-typed array/slice elements: **RESOLVED (`94a2a39`, 2026-08-10).** Both array and slice elements of a plain enum type now work (the task's assumed premise that arrays already supported this was wrong — arrays needed the same widening as slices). Plain enum uses `isDefinitelyEnumType` (positive-evidence form, avoiding a false-positive exclusion of a real struct); a tagged union element stays correctly rejected. A tagged forward-declaration mechanism (mirroring `ffa50d1`'s struct/tuple/optional support) lets the slice typedef block, emitted before the enum block, safely name the element's incomplete enum typedef. Two unrelated latent bugs found and fixed alongside it: `pointerTypeNameForUnit` had no enum-pointee case, and `buildEnumLocalDeclaration` lacked a `Load(CheckedIndexPlace)` initializer case. Verified: construction, multi-variant round-tripping, a `SliceFromRaw` enum-element slice in std. Causation-checked. Ordinary optional enum payloads remain a separate, still-open shape. | — |
 | ~~Entry-function recursion cycle is rejected~~ | **DECIDED (2026-08-09, direct instruction):** current V2 behavior (rejecting a call cycle through `main`) is correct and intentional — `main` is the entry point, it should not be callable from anywhere. Move to "Accepted V2 differences" below; not a defect. | — |
-| Checked numeric helper coverage is incomplete beyond the two symptoms in tracker item 2 | high from helper tables and suffix functions | build a checker-accepted width/operation matrix, then fix one family per task |
+| Checked numeric helper coverage is incomplete | confirmed by the width-by-operation matrix and real `u8` invalid-C reproductions | fix one operation family and one width family per task |
 | Each aggregate/container C position accepts a different child-type set | high from the dedicated array, slice, tuple, optional, struct, union, and function-type C-name gates | reproduce one container plus one rejected child type per slice; do not dispatch a general container task |
 | ~~A tagged union used as a struct field or optional payload receives the plain-enum C type name~~ | **RESOLVED (`4d1ef51`).** Reproduced two stacked bugs: a typedef-ordering defect (union typedef emitted after first use, hard `cc` failure) and the predicted wrong-type-selection bug underneath it (confirmed real, but caught by `-Werror` as a hard error, not silent). Both fixed in `emit.go`; `structFieldCType`/`optionalPayloadCType` now use the existing `isTaggedUnionType` distinction. 5 new compile-run tests; construct-store-read-back round-trip and panic-on-none independently verified, not just clean compilation. | — |
 | ~~`sizeof` a fixed array passes validation but the backend rejects it~~ | **RESOLVED (`cacaa28`).** Added the missing `isArray` branch to `sizeofCTypeName`, plus the same compounding typedef-collection gap as the union fix (`collectHelperArrayTypes` replaced with `collectArrayTypes`, now walking entry/helper bodies for `SizeofType` array references). A bare `sizeof [N]StructType` still fails due to the separate bare-sizeof-of-struct/enum gap logged above — intentionally not expanded here. Independently verified: exact repro compiles/runs (prints 16), causation-checked. | — |
@@ -616,13 +653,13 @@ root cause before an Orc implementation task starts.
 
 These items must not return as parity defects without a new language decision:
 
-- explicit loop iterator names;
+- explicit loop iterator names; the checker must reject the currently
+  accepted unbound form if this rule stays;
 - no pointer arithmetic;
 - no integer-to-pointer conversion;
 - no integer-to-character conversion;
 - byte-length `PebbleStr` with UTF-8 scalar decode on indexed reads;
 - checked integer arithmetic by default, with explicit wrapping builtins;
-- no enum name in plain `print`;
 - no untagged-union operations before a safety design;
 - no old two-parameter entry form;
 - postfix increment and decrement are void updates, not value expressions;
@@ -647,7 +684,7 @@ their command-line selection belongs to the driver.
 | No-main/library output | V1 checker can skip entry validation and codegen can omit hosted `main` | V2 checker has `EntryNone`, but backend `Emit` requires one entry symbol and always writes hosted `main` | **Partial/absent backend mode**; driver decision remains open |
 | Custom non-`main` entry | V1 accepts a configured zero-parameter, void, C-convention entry | V2 checker can validate a configured symbol, but backend always emits its fixed hosted `main` bridge around that entry | **Partial**; exact desired mode is undecided |
 | Hidden Pebble context forwarding | V1 adds context to Pebble-convention calls | V2 records `ContextForward`, `ContextExpr`, and `ContextIndirect` and writes `PebbleContext *ctx` | **Implemented, proof needed** for indirect and nested call chains |
-| Allocator callback ABI bridge | V1 runtime context stores alloc/realloc/free callbacks | V2 emits file-scope adapters for source functions stored in `Allocator` callback fields | **Verified** for construction and invocation, but ordinary `Allocator` value movement is tracker item 1 |
+| Allocator callback ABI bridge | V1 runtime context stores alloc/realloc/free callbacks | V2 emits file-scope adapters for source functions stored in `Allocator` callback fields | **Verified** for construction, invocation, argument passing, return, local initialization, and field storage |
 | C headers for extern functions | V1 emits configured headers/library data | V2 includes a fixed broad libc header set when any C extern exists | **Partial/intentional simplification**; custom header and library selection is driver work |
 
 ## Exact V1 AST coverage index
@@ -663,8 +700,8 @@ behavior and status are in the ledger named in the last column.
 | `AST_DECL_EXTERN_FUNC` | function-shaped `ExternDeclaration` | Declaration and module ledger |
 | `AST_DECL_EXTERN_TYPE` | extern nominal/type symbol | Declaration and module ledger |
 | `AST_DECL_EXTERN_BLOCK` | flattened extern declarations | Declaration and module ledger |
-| `AST_DECL_EXTERN_VARIABLE` | no matching data-emission node | Declaration and module ledger; **Absent** |
-| `AST_DECL_EXTERN_CONSTANT` | no matching data-emission node | Declaration and module ledger; **Absent** |
+| `AST_DECL_EXTERN_VARIABLE` | data-shaped `ExternDeclaration` | Declaration and module ledger; **Resolved (`1372734`)** |
+| `AST_DECL_EXTERN_CONSTANT` | data-shaped `ExternDeclaration` | Declaration and module ledger; **Resolved (`1372734`)** |
 | `AST_DECL_VARIABLE` | local `Initialize` or `GlobalDeclaration` | Declaration and module ledger |
 | `AST_DECL_CONSTANT` | local/global binding plus constant value | Declaration and module ledger |
 | `AST_DECL_TYPE` | `TypeDeclaration` and member declarations | Type and member ledger |
@@ -796,7 +833,7 @@ behavior and status are in the ledger named in the last column.
 | `UNOP_NEG` | unary `-` | checked integer and direct float paths; width proof is partial |
 | `UNOP_NOT` | `!` | supported for bool; optional force unwrap is a separate postfix node |
 | `UNOP_ADDR` | `&` | supported through the place model; aggregate cases are partial |
-| `UNOP_DEREF` | unary `*` | supported through dereference places; whole aggregates are absent |
+| `UNOP_DEREF` | unary `*` | supported through dereference places; whole structs work, while other aggregate value positions remain partial |
 | `UNOP_BIT_NOT` | `~` | checker support exists; backend width matrix is partial |
 
 V1 compound assignment supports `+=`, `-=`, `*=`, `/=`, and `%=`. V2
@@ -807,8 +844,8 @@ helper-width gaps apply. Float `%=` is correctly rejected.
 
 ## Completion gate
 
-This audit is not complete. The third serious source pass removed stale
-claims and exposed new gaps, but a complete parity claim needs all of these
+This audit is not complete. The fourth serious source and runtime pass removed
+stale claims and exposed new gaps, but a complete parity claim needs all of these
 conditions:
 
 1. Every V1 AST kind in `src/ast.h` has a row above.
@@ -818,9 +855,9 @@ conditions:
    language restriction or a focused reproduction.
 5. Each **Implemented, proof needed** row has a compile-link-run test for its
    meaningful type and value-shape matrix.
-6. Each confirmed failure is copied to proposal 13 with its exact source,
+6. The next selected failure is copied to proposal 13 with its exact source,
    error, cause, priority, and one small investigation or implementation
-   slice.
+   slice. The remaining failures stay in this ledger.
 7. The audit file receives a non-colliding proposal number. Proposal number
    14 is also used by `14-pointer-arithmetic.md`.
 

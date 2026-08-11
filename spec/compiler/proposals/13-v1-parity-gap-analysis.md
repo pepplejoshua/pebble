@@ -8,8 +8,8 @@ being reproduced, worked, and closed.
 
 ## Workflow
 
-1. Pick the next unaddressed item from proposal 14 (its "Confirmed open
-   tracker items" list or its "New findings" table).
+1. Pick the next unaddressed item from proposal 14 (its fourth-pass current
+   gap table and implementation slicing notes).
 2. Reproduce it for real. Document the item here, in "Active defect," with
    its exact reproduction, current failure, and known cause — this file must
    never hold an item that hasn't been reproduced.
@@ -29,11 +29,11 @@ being reproduced, worked, and closed.
 - Use one small, decisive Orc slice at a time. Review and verify each slice
   before the next dispatch.
 - Use `opencode-go/deepseek-v4-flash` by default. Do not give it a long,
-  multi-layer task. If flash stalls or fails, escalate to
-  `opencode-go/mimo-v2.5`, then `openai/gpt-5.6-luna` if mimo also fails —
-  and check `orc list` for the user's own concurrent Luna usage before ever
-  escalating to Luna. When escalating a stuck session, prefer resuming the
-  same session with the new `--model` over deleting and dispatching fresh.
+  multi-layer task. `opencode-go/mimo-v2.5` is banned. If flash genuinely
+  stalls or fails, check `orc list` for the user's own concurrent Luna usage,
+  then escalate to `openai/gpt-5.6-luna`. When escalating a stuck session,
+  prefer resuming the same session with the new `--model` over deleting and
+  dispatching fresh.
 - Before each dispatch, require a clean worktree and no active Orc or
   OpenCode worker for this repository.
 - After each dispatch, inspect the diff and check for scratch files, debug
