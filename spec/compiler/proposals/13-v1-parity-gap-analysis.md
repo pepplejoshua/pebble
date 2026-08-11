@@ -44,9 +44,52 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #50 (existing slice as sole variadic tail) closed in
-`94e74f0`, a checker+backend fix. 18 P1s and P0s resolved this window:
-tasks #33-50. Next up: #51, direct cast of `sizeof`.)*
+**Item: a direct cast of a `sizeof` expression is rejected.**
+
+Sourced from proposal 14's backend gap matrix (`Direct cast of
+sizeof`, line 74/330), P1. Independently reproduced and root-caused
+before dispatch. Small, narrow fix — one missing switch case.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    return (sizeof int) as int;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with: `entry function body
+integer cast child: entry function body expression contains a
+SizeofType, want an integer literal, a reference to a local declared
+earlier in the body, checked +, -, *, /, % arithmetic, bitwise &, |,
+^, ~, or a call to another function`.
+
+**Root cause.** `buildExpr` (`compiler/internal/backend/values.go:1547-2220`,
+the general expression dispatcher `IntegerCast`'s child builder calls)
+has NO `case tir.SizeofType:` in its switch — every other integer
+cast child shape is handled, but a bare `sizeof T` used as the cast's
+operand falls through to the default rejection. This exact shape is
+ALREADY supported in the sibling `buildUintExpr`
+(`compiler/internal/backend/values.go:123-190`, its own
+`case tir.SizeofType:` at line 137), since `sizeof T` is itself a
+`uint`-typed expression — `buildUintExpr` resolves the C type name via
+`sizeofCTypeName` and emits `sizeof(<type>)`, and that helper's logic
+does not depend on the `width` parameter at all (only `node.TypeArg`).
+
+**Scope:** add a `case tir.SizeofType:` to `buildExpr`'s switch that
+delegates directly to `buildUintExpr(st, unit, snapshot, fileSet, id,
+locals, width)` (the same node, same width — `buildUintExpr`'s
+`SizeofType` branch ignores `width` entirely, so no width mismatch is
+possible). Verify: the reproduction above compiles and runs (`sizeof
+int` is 4, so the program returns 4 on this platform — confirm the
+actual value the runtime harness expects, don't assume 4 blindly, it
+may differ from other prior sizeof-related fixture expectations).
+Verify a `sizeof` of a wider type (e.g. `sizeof i64 as int`) and a
+`sizeof` of a struct type cast to an integer also work, mirroring what
+`buildUintExpr`'s existing `SizeofType` case already supports for a
+plain (uncast) `sizeof` expression. Verify the existing plain
+`sizeof T` (uncast, used directly as a `uint`-typed value) is
+unaffected.
 
 <!-- Previous item, resolved 2026-08-11:
 
