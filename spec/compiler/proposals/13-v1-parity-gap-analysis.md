@@ -44,9 +44,58 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — tuple local copy initialization landed as `834927e`. 8 of
-19 P1 slices done. Next: array local copy initialization (slice 2 of
-6 in this family), same one-type-per-task discipline.)*
+**Item: an array-typed local cannot be initialized from another array
+value (`let second [3]int = first;`).**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1, second of 6 "local copy initialization" slices. Independently
+reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let first [3]int = [1, 2, 3];
+    let second [3]int = first;
+    return second[0];
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares an array-typed local of type [3]int initialized from a
+SymbolValue, want an ArrayValue (an array literal) or an ArrayRepeat
+(a [v; N] repeat initializer); initializing an array local from
+another value is not supported yet`.
+
+**Known cause and required approach — IMPORTANT, different shape from
+the tuple sibling fix.** `buildArrayLocalDeclaration`
+(`compiler/internal/backend/locals.go:145`) rejects a `SymbolValue`
+initializer. Unlike tuple (a C struct, freely `=`-assignable), a
+standalone array local is a RAW C array
+(`int32_t pebble_local_27[3] = { 1, 2, 3 };`, confirmed earlier
+today). A C declaration CANNOT be initialized from another array
+VARIABLE via `=` either — `int32_t b[3] = a;` is just as invalid as
+`b = a;` (only a brace-enclosed initializer list or another array's
+address is legal). This is the exact representation problem today's
+array REASSIGNMENT fix (`aef808e`,
+`buildArrayStoreValue`/`buildStoreCore`) already solved via `memcpy` —
+this is the sibling case for array local DECLARATION instead of
+reassignment.
+
+**Scope:** widen `buildArrayLocalDeclaration` to accept a `SymbolValue`
+naming an in-scope array-typed local of the exact matching type
+(length AND element type). The emitted C must declare the new local's
+storage first (uninitialized, or however this codebase's convention
+handles a declaration whose initializer isn't a simple expression —
+check how the declaration-then-separate-statement pattern is
+structured elsewhere, e.g. `buildRuntimeLocalDeclaration` or similar
+multi-statement local builders), then `memcpy` the source array's
+bytes into it — mirroring `buildArrayStoreValue`'s exact memcpy
+pattern from `aef808e`. Read `git show aef808e` in full as the
+template. Verify the reproduction above compiles and runs, returning
+1. Also verify: a longer array (5+ elements), a bool-element array,
+and that whole-array REASSIGNMENT (`aef808e`, already working) and
+array element reads/writes are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
