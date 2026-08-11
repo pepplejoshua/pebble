@@ -44,6 +44,13 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — the unbound-range-loop checker gap landed as `87e8c43`. 7 of
+19 P1 slices done. Next: another P1 from proposal 14's fourth-pass gap
+table — the six local-copy-initialization slices (tuple/array/struct/
+enum/string/slice) are next in queue, one type per task.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: an unbound range loop (`loop start..end { ... }`, no `: name`
 iterator) is accepted by the parser, checker, and TIR, then rejected
 only at the backend with an internal-sounding error.**
@@ -105,6 +112,18 @@ pass unchanged. Once the checker rejects it cleanly, the backend's own
 `rangeNode.Symbol == 0` guard becomes defense-in-depth for hand-built
 TIR (matching this codebase's established pattern elsewhere) — leave
 it in place, don't remove it.
+
+**Resolution (`87e8c43`, 2026-08-10).** Added `CodeUnboundRangeIterator`
+(`C0622`), reported in `validateControlFlow`'s `controlRangeLoop` case
+when `ctrl.IteratorSymbol == 0`, at the loop's own span. The backend's
+`Symbol == 0` guard stays as defense-in-depth. A real-source test that
+used to exercise that backend guard could no longer reach it (the
+checker now rejects first) — rewritten to hand-build a Symbol-0
+`RangeLoop` through the IR builder. Verified the repro fails at the
+checker with the correct span; the bound form and existing tests
+unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
