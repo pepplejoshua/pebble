@@ -44,6 +44,18 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #56 (first-class narrow integer function type
+inconsistency) closed in `6fd44d2`. 24 P1s and P0s resolved this
+window: tasks #33-56, the entire queued backlog. No queued item
+remains; the next active defect should come from a fresh audit pass
+or from the follow-up gaps this window surfaced but did NOT open as
+formal items — see the resolution notes for #52 (bare `sizeof
+(T,U)`/`sizeof ?T` with no array wrapper) and #55 (an enum-typed
+struct field's construction fails even without an optional wrapper —
+a `RecordConstruct.Fields` traversal gap in `collectEnumTypesWalk`).)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a first-class function type's narrow-width
 (u8/u16/i8/i16/u32/i64) PARAMETER passes signature validation, then
 its C typedef builder rejects it — a genuine validator/builder
@@ -113,6 +125,22 @@ are completely unaffected. Verify the RESULT side (`fn() u8`) is
 UNCHANGED — still cleanly rejects, do not touch
 `functionTypeResultCType` or `validateFunctionTypeSignature`'s result
 check.
+
+**Resolution (`6fd44d2`, 2026-08-11).** Fixed exactly as scoped:
+`functionTypeParamCType`'s ambient-width-only case replaced with a
+general fallback resolving any fixed-width integer parameter at its
+own width. Verified: the reproduction and each of the other five
+narrow widths (u16, i8, i16, u32, i64) compile and run correctly, each
+with a distinct expected value; the emitted C was inspected directly
+and confirmed the fnptr typedef, the hoisted helper, and the indirect
+call site all agree on the parameter's own C type (`uint8_t` for the
+u8 case); the existing uint/char/str/ambient-width parameter shapes
+are unaffected; the RESULT side (`fn() u8`) is confirmed still
+rejected with its original, unchanged message via a dedicated
+regression test. Full suite (`go test ./... -count=1 -timeout 600s
+-parallel 16`, 11 packages) clean, `gofmt`/`go vet` clean, causation
+check confirmed reverting reproduces the exact original rejection.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
