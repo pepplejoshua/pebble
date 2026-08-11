@@ -44,13 +44,60 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #57 (enum-typed struct field construction) closed in
-`d19717c`. A THIRD related, still-open gap surfaced during
-verification: a tagged-union-typed struct field constructed via
-`VariantConstruct` (`Holder.{ u = Choice.value(5) }`) fails
-identically, independently causation-checked as pre-existing and
-unaffected by this fix — not yet a formal tracker item. Next up: #58,
-bare `sizeof(T,U)`/`sizeof ?T` with no array wrapper.)*
+**Item: a bare `sizeof (T,U)` or `sizeof ?T` (a tuple/optional type
+with NO array wrapper) is rejected — the array-element case was
+fixed (task #52), but the direct case never was.**
+
+Sourced from task #52's own verification notes (2026-08-11), not from
+Sol's audit. Independently reproduced and root-caused before dispatch
+(this session, prior to dispatching this task).
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    return (sizeof (int,int)) as int;
+}
+```
+
+and
+
+```
+fn main() int {
+    return (sizeof ?int) as int;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the C COMPILER stage for
+both: `use of undeclared identifier 'pebble_tuple_23_t'` (tuple case)
+and `use of undeclared identifier 'pebble_optional_23_t'` (optional
+case) — Pebble's own emission succeeds; `pebc` even lowers the
+expression to `(int32_t)(sizeof(pebble_tuple_23_t))`, but the tuple's
+own typedef is never collected/emitted.
+
+**Root cause.** `collectTupleTypesWalk` and `collectOptionalTypesWalk`
+(`compiler/internal/backend/collect.go`) each have EXACTLY ONE
+`SizeofType` case — added in task #52 — that fires only when
+`node.TypeArg` is an ARRAY type whose ELEMENT is a tuple/optional
+(`sizeof [N](int,int)`). Neither has a case for `node.TypeArg` being
+the tuple/optional type DIRECTLY (a bare `sizeof (int,int)` with no
+array wrapper at all, no other reference to that tuple/optional type
+anywhere in the program). This mirrors exactly the pattern
+`collectStructTypesWalk`'s bare-struct `SizeofType` case already
+handles (`isStruct(snapshot, node.TypeArg)`, checked BEFORE the
+array-element case) — that sibling case is the model to follow.
+
+**Scope:** add a direct-match `SizeofType` case to BOTH
+`collectTupleTypesWalk` (`isTuple(snapshot, node.TypeArg)`) and
+`collectOptionalTypesWalk` (`isOptional(snapshot, node.TypeArg)`),
+each appending `node.TypeArg` itself — positioned alongside (not
+replacing) the existing array-element case each function already has
+from task #52. Verify both reproductions above compile and run.
+Verify the existing array-element `sizeof [N](int,int)`/`sizeof
+[N]?int` shapes (task #52) are completely unaffected. Verify a bare
+`sizeof Struct` (the sibling case this mirrors) is unaffected. Verify
+a bare `sizeof T` for a primitive type (already working) is
+unaffected.
 
 <!-- Previous item, resolved 2026-08-11:
 
