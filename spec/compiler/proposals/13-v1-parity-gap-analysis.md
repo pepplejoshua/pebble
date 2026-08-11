@@ -44,10 +44,69 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #48 (direct array-literal return) closed in `7c625ab`
-(plus a follow-up single-evaluation correction in the same commit).
-16 P1s and P0s resolved this window: tasks #33-48. Next up: #49,
-slice struct field as call argument.)*
+**Item: a slice-typed struct field cannot be passed directly as a
+call argument.**
+
+Sourced from proposal 14's backend gap matrix (`Slice field as call
+argument`, line 72), P1. Independently reproduced and root-caused
+before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Holder = struct { values []int; };
+fn sum(v []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < v.len {
+        total = total + v[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var h Holder = Holder.{ values = arr[0:3] };
+    return sum(h.values);
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with: `entry function body
+expression contains a call to symbol 26 whose argument 0 is a Load,
+want a reference to a slice-typed local in scope; only passing an
+already-declared slice-typed local is supported`.
+
+**Root cause.** `buildSliceArgument`
+(`compiler/internal/backend/calls.go:1657-1687`) only handles
+`tir.CheckedSlice` (an inline slice construction) and `tir.SymbolValue`
+(an in-scope slice local) as a call argument's node kind; a
+`tir.Load` reading a slice-typed struct field (`h.values`, lowered by
+the checker to `Load(FieldPlace)`) is rejected outright. This exact
+shape is ALREADY supported for a slice-typed LOCAL's declaration
+initializer: `buildSliceLocalDeclaration`
+(`compiler/internal/backend/locals.go:465-489`) has a `tir.Load` case
+that calls `buildPlaceLValue` to build the field-projection lvalue
+expression directly (`pebble_local_<sym>.pebble_field_<member>`),
+double-checks the resolved element type, and emits a straight
+whole-struct-copy declaration. This is the same shape of gap as the
+local-copy-initialization family (tasks #40-45) and the array-literal
+return gap (task #48): a value shape the backend already knows how to
+build in one context (a local declaration) isn't yet wired into a
+sibling context (a call argument).
+
+**Scope:** add a `tir.Load` case to `buildSliceArgument`, reusing
+`buildPlaceLValue` exactly as `buildSliceLocalDeclaration` already
+does, to build the field-projection C expression and pass it directly
+as the argument (no local temp needed — `buildPlaceLValue`'s output is
+itself a valid C lvalue expression usable inline as a call argument).
+Verify: the reproduction above compiles and runs, returning 6; the
+existing `CheckedSlice` and `SymbolValue` argument paths are
+unaffected; if practical, verify a nested field read (a slice field
+one level deeper than the reproduction, e.g. `outer.inner.values`) and
+a slice field passed to a variadic call's sole tail argument (if that
+shape reaches `buildSliceArgument` rather than
+`buildVariadicSliceArgument` — check which function actually handles
+it and note the answer in the report either way).
 
 <!-- Previous item, resolved 2026-08-11:
 
