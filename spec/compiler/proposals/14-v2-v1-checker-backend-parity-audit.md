@@ -320,11 +320,11 @@ small source reproduction before it moves to the issue tracker.
 | Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Ordinary `some Color.red` optional enum payload | ~~accepts only the integer-to-optional-enum cast path~~ **Resolved (`1bf785d`)** | **Closed** |
-| Aggregate nesting deeper than one dependency level | aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain | **Confirmed absent**, not limited to generics or recursion |
+| Aggregate nesting deeper than one dependency level | ~~aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain~~ **Resolved (`e649476`)** | **Closed** |
 | Whole dereferenced struct as a value | local-initializer and argument paths | **Resolved (`a242181`)** |
 | Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
 | Array literal directly assigned to a slice local | checker and backend lower it through a hidden backing array | **Resolved (`f4c3970`)** |
-| Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Confirmed absent**; listed in the fourth-pass gap table |
+| Slice-typed struct field passed as an argument | ~~backend accepts slice locals but rejects this field source shape~~ **Resolved (`d33060e`)** | **Closed** |
 | Inline checked slice inside a nested pure expression | GNU statement-expression carries its required temporary | **Resolved (`836fbea`)** except a slice-typed struct-literal field |
 | Fixed-array literal returned directly | ~~fixed-array return builder accepts a local or call, not `ArrayValue`/`ArrayRepeat`~~ **Resolved (`7c625ab`).** Both cases now supported; `ArrayRepeat` single-evaluates its value via a threaded pre-return temp. | **Closed** |
 | Direct cast of `sizeof` | ~~integer cast child builder rejects `SizeofType`~~ **Resolved (`634db99`)** | **Closed** |
