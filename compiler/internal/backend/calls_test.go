@@ -1417,6 +1417,48 @@ func TestEmitVariadicCallBoolElementFalseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn allTrue(...values []bool) int { if values[0] && values[1] { return 1; } return 0; } fn main() int { return allTrue(true, false); }", false, 0, false)
 }
 
+func TestEmitVariadicCallSoleSliceTailArgumentForwardsSliceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact reproduction: an existing slice-typed local passed as the SOLE
+	// tail argument to a variadic slice parameter. V1's rule (and codegen
+	// shortcut) forwards the whole slice directly rather than collecting one
+	// element, and this backend must emit the slice local itself as the
+	// argument — `sum(s)` over [1, 2, 3] returns 6. Bounded because of the
+	// while loop.
+	emitAndRunBounded(t, "fn sum(...values []int) int { var total int = 0; var i uint = 0; while i < values.len { total = total + values[i]; i = i + 1; } return total; } fn main() int { var arr [3]int = [1, 2, 3]; var s []int = arr[0:3]; return sum(s); }", false, 6, false)
+}
+
+func TestEmitVariadicCallSoleLiteralTailArgumentStillCollectsOneElement(t *testing.T) {
+	t.Parallel()
+	// A single int literal as the sole tail argument is NOT a slice, so it
+	// must keep working exactly as one collected element: sum(5) == 5.
+	emitAndRunBounded(t, "fn sum(...values []int) int { var total int = 0; var i uint = 0; while i < values.len { total = total + values[i]; i = i + 1; } return total; } fn main() int { return sum(5); }", false, 5, false)
+}
+
+func TestEmitVariadicCallMultipleTailElementsStillCollectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Two or more tail arguments are never slice-forwarded — the collected
+	// array-backed compound literal is still built: sum(1, 2, 3) == 6.
+	emitAndRunBounded(t, "fn sum(...values []int) int { var total int = 0; var i uint = 0; while i < values.len { total = total + values[i]; i = i + 1; } return total; } fn main() int { return sum(1, 2, 3); }", false, 6, false)
+}
+
+func TestEmitVariadicCallFixedParameterWithSoleSliceTailForwardsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A fixed parameter alongside a variadic slice tail whose sole argument is
+	// an existing slice: the fixed param passes normally and the slice is
+	// forwarded whole. 10 + (1+2+3) = 16.
+	emitAndRunBounded(t, "fn tagged(prefix int, ...values []int) int { var total int = prefix; var i uint = 0; while i < values.len { total = total + values[i]; i = i + 1; } return total; } fn main() int { var arr [3]int = [1, 2, 3]; var s []int = arr[0:3]; return tagged(10, s); }", false, 16, false)
+}
+
+func TestEmitGenericVariadicCallSoleSliceTailForwardsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The GENERIC variadic route reaches the same backend forward case by a
+	// different checker path: instantiateSignature already binds the whole
+	// slice to the sole tail argument, so the emitted C must forward the slice
+	// local directly too. head(s) over [1, 2, 3] returns 1.
+	emitAndRun(t, "fn head[T](...values []T) T { return values[0]; } fn main() int { var arr [3]int = [1, 2, 3]; var s []int = arr[0:3]; return head(s); }", false, 1, false)
+}
+
 func TestEmitBoolReturningDirectCallInIfConditionCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The exact repro: a plain bool-returning helper called directly in a bool

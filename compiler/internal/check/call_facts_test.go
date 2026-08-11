@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func TestCallFactsDirectIndirectMethodAndSlots(t *testing.T) {
@@ -470,5 +471,140 @@ fn use() i32 { let p = Point.{ x = 1 }; let q = p.origin(); return q.x; }
 	solution := facts.Session.Solve()
 	if solution.Successful() && !diagnostics.HasErrors() {
 		t.Fatal("self-less static method invoked as an instance method was accepted")
+	}
+}
+
+// TestCallFactsSoleSliceTailArgumentDestinationIsSliceType pins the V1-parity
+// forward case: a variadic call whose tail has exactly ONE argument whose own
+// statically-known declared type equals the variadic parameter's whole slice
+// type binds that argument against the SLICE type (the whole slice is
+// forwarded, matching V1's `arg_count == required_param_count + 1` branch),
+// not against the per-element type. It must resolve to []int, never int.
+func TestCallFactsSoleSliceTailArgumentDestinationIsSliceType(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn sum(...values []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < values.len {
+        total = total + values[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var s []int = arr[0:3];
+    return sum(s);
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid fixture: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	sliceType, err := inputs.Types.Intern(types.SliceKey(inputs.Types.Builtins().Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, retained := range handoff.Records.Records() {
+		if retained.Call == nil {
+			continue
+		}
+		for _, argument := range retained.Call.Arguments {
+			if !argument.Variadic {
+				continue
+			}
+			typ, ok := typeOfValue(records, argument.Destination)
+			if !ok || typ != sliceType {
+				t.Fatalf("sole variadic tail argument destination type = %d, want the whole slice type %d", typ, sliceType)
+			}
+		}
+	}
+}
+
+// TestCallFactsSoleElementTailArgumentDestinationIsElementType pins the
+// untouched single-element side of the same branch: a sole tail argument that
+// is NOT a slice (`sum(5)`) keeps its per-element destination type (int), so a
+// bare int literal remains a one-element variadic call exactly as before.
+func TestCallFactsSoleElementTailArgumentDestinationIsElementType(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn sum(...values []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < values.len {
+        total = total + values[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int { return sum(5); }
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid fixture: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	intType := inputs.Types.Builtins().Int
+	for _, retained := range handoff.Records.Records() {
+		if retained.Call == nil {
+			continue
+		}
+		for _, argument := range retained.Call.Arguments {
+			if !argument.Variadic {
+				continue
+			}
+			typ, ok := typeOfValue(records, argument.Destination)
+			if !ok || typ != intType {
+				t.Fatalf("sole element tail argument destination type = %d, want the element type %d", typ, intType)
+			}
+		}
+	}
+}
+
+// TestCallFactsMultipleTailArgumentsDestinationsAreElementType pins that the
+// forward case applies ONLY to a sole tail argument: two or more tail
+// arguments keep per-element destinations, so `sum(1, 2, 3)` binds each
+// argument against int.
+func TestCallFactsMultipleTailArgumentsDestinationsAreElementType(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn sum(...values []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < values.len {
+        total = total + values[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int { return sum(1, 2, 3); }
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("invalid fixture: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatal(diagnostics.Items())
+	}
+	intType := inputs.Types.Builtins().Int
+	for _, retained := range handoff.Records.Records() {
+		if retained.Call == nil {
+			continue
+		}
+		for _, argument := range retained.Call.Arguments {
+			if !argument.Variadic {
+				continue
+			}
+			typ, ok := typeOfValue(records, argument.Destination)
+			if !ok || typ != intType {
+				t.Fatalf("tail argument %d destination type = %d, want the element type %d", argument.Ordinal, typ, intType)
+			}
+		}
 	}
 }

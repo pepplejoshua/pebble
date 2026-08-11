@@ -1116,7 +1116,7 @@ func buildCallArguments(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		args = append(args, arg)
 	}
 	if variadic {
-		pre, sliceArg, err := buildVariadicSliceArgument(st, unit, snapshot, fileSet, call, callee.Parameters[fixedCount], call.Children[fixedCount:], locals, width)
+		pre, sliceArg, err := buildVariadicSliceArgument(st, unit, snapshot, fileSet, call, callee.Parameters[fixedCount], call.Children[fixedCount:], locals, width, nested)
 		if err != nil {
 			return "", "", err
 		}
@@ -1445,10 +1445,27 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 // -Wall -Wextra -Werror harness (the same shape a SliceFromRaw construction of
 // a nil pointer with count 0, `slice ptr, 0`, already produces — see
 // buildRawSliceConstruction).
-func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, sliceParam tir.Parameter, variadicIDs []tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, error) {
+func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, call tir.Node, sliceParam tir.Parameter, variadicIDs []tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, nested bool) (string, string, error) {
 	sliceType := sliceParam.Type
 	if !isSlice(snapshot, sliceType) {
 		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter %d (symbol %d) has type %s, want a slice type", call.Symbol, len(call.Children)-1, sliceParam.Symbol, describeType(snapshot, sliceType))
+	}
+	firstVariadic := len(call.Children) - len(variadicIDs)
+	// A variadic call whose tail has exactly one argument whose resolved type is
+	// the parameter's whole slice type (not the element type) forwards that
+	// slice directly instead of collecting it into a synthesized array-backed
+	// compound literal — V1's own codegen shortcut (`src/codegen.c`:
+	// `arg_count == fixed_params + 1 && variadic_type->kind == TYPE_SLICE` →
+	// `write_expression(exprs[fixed_params])`). The checker decides this shape
+	// (a sole tail argument whose statically-known type equals the slice
+	// parameter's type), so the argument node's own Type is already the slice
+	// type; delegating to buildSliceArgument handles every value shape that
+	// builder already supports (a slice-typed local reference, an inline slice
+	// construction, or a slice-typed field read).
+	if len(variadicIDs) == 1 {
+		if node, ok := unit.Node(variadicIDs[0]); ok && node.Type == sliceType {
+			return buildSliceArgument(st, unit, snapshot, fileSet, variadicIDs[0], locals, sliceType, call.Symbol, firstVariadic, width, nested)
+		}
 	}
 	key, ok := snapshot.Key(sliceType)
 	if !ok {
@@ -1462,7 +1479,6 @@ func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.S
 	if err != nil {
 		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose variadic parameter has an unsupported slice element type: %v", call.Symbol, err)
 	}
-	firstVariadic := len(call.Children) - len(variadicIDs)
 	elems := make([]string, 0, len(variadicIDs))
 	for j, argID := range variadicIDs {
 		// A C-convention variadic callee is rejected upstream

@@ -293,16 +293,42 @@ func (w *walker) prepareDirect(p *callPlan, ref symbol.SyntaxRef, ctx walkContex
 		}
 		if signature.Variadic {
 			element := w.variadicElement(variadic, origin)
-			for i := int(p.target.FixedCount); i < len(p.arguments); i++ {
-				term := element.Term
-				if element.Known == 0 {
-					term = w.session.Variable(origin)
+			// A variadic call whose tail has exactly one argument forwards the
+			// whole slice directly when that argument's OWN statically-known
+			// type is the variadic parameter's whole slice type (V1 parity:
+			// `sum(s)` passes the slice through instead of collecting one
+			// element). The argument's declared type is peeked BOTTOM-UP —
+			// independently of any per-element expectation — before the
+			// destinations are created, exactly as V1's check_expression
+			// synthesizes the argument's type first and only then decides
+			// between the slice-forwarding and single-element interpretations.
+			// The equality check is deliberately strict: a sole tail argument
+			// whose known type is a DIFFERENT slice (an element type that
+			// happens to be a slice, or a mismatched element) keeps the
+			// ordinary single-element destination, so no currently-accepted
+			// call shape changes meaning.
+			forward := typedValue{}
+			if len(p.arguments) == int(p.target.FixedCount)+1 {
+				if known := w.knownReferenceType(p.arguments[len(p.arguments)-1]); known != 0 && known == variadic.Known {
+					forward, _ = w.newSlotValue(variadic.Term, origin)
+					forward.Known = variadic.Known
+					w.knownValues[forward.ID] = variadic.Known
+					w.rigidValues[forward.ID] = w.isRigidType(variadic.Known)
 				}
-				v, _ := w.newSlotValue(term, origin)
-				if element.Known != 0 {
-					v.Known = element.Known
-					w.knownValues[v.ID] = element.Known
-					w.rigidValues[v.ID] = w.isRigidType(element.Known)
+			}
+			for i := int(p.target.FixedCount); i < len(p.arguments); i++ {
+				v := forward
+				if v.ID == 0 {
+					term := element.Term
+					if element.Known == 0 {
+						term = w.session.Variable(origin)
+					}
+					v, _ = w.newSlotValue(term, origin)
+					if element.Known != 0 {
+						v.Known = element.Known
+						w.knownValues[v.ID] = element.Known
+						w.rigidValues[v.ID] = w.isRigidType(element.Known)
+					}
 				}
 				p.destinations = append(p.destinations, v)
 			}
@@ -338,6 +364,45 @@ func (w *walker) variadicElement(parameter typedValue, origin infer.Origin) type
 		return typedValue{}
 	}
 	return typedValue{Term: w.session.Known(element), Known: element}
+}
+
+// knownReferenceType peeks the statically-known declared type of a simple
+// reference expression — a Name or Path resolving to a binding or parameter
+// whose declared annotation is already concretely known — WITHOUT pushing an
+// expected type down or running any inference. It is the V1
+// check_expression-equivalent "synthesize this expression's own type
+// bottom-up first" operation for the limited shape whose type is already known
+// at walk time: handleBinding and handleNamedCallable populate
+// valuesBySymbol.Known for an annotated binding or a template-known parameter
+// before any call referencing them is walked. It returns 0 for any expression
+// whose type is not statically known (a call, an operator, a field read, a
+// parenthesized expression, an unannotated binding), meaning the caller must
+// fall back to the ordinary expected-type-driven checking.
+func (w *walker) knownReferenceType(ref symbol.SyntaxRef) types.TypeID {
+	node, ok := w.node(ref.Module, ref.Node)
+	if !ok {
+		return 0
+	}
+	switch node.Kind() {
+	case syntax.Name:
+	case syntax.Path:
+		query := ref
+		for i := len(node.Children()) - 1; i >= 0; i-- {
+			child, ok := w.node(ref.Module, node.Children()[i])
+			if ok && child.Kind() == syntax.Name {
+				query.Node = node.Children()[i]
+				break
+			}
+		}
+		ref = query
+	default:
+		return 0
+	}
+	resolution, ok := w.generation.inputs.Resolution.Reference(ref)
+	if !ok || resolution.State != symbol.ResolutionResolved || resolution.Symbol == 0 {
+		return 0
+	}
+	return w.valuesBySymbol[resolution.Symbol].Known
 }
 func (w *walker) prepareVariant(p *callPlan, ref symbol.SyntaxRef, ctx walkContext) {
 	member, ok := w.generation.inputs.Resolution.Symbols.Symbol(p.target.Symbol)
