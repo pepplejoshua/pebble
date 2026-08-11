@@ -66,7 +66,7 @@ The following failures are current and independently reproduced:
 | Non-literal bool switch | A helper that switches on a bool parameter reaches C, then fails under the required `-Wswitch-bool -Werror`. Existing proof covered only a literal bool subject. | **Checker/backend/C contract defect** |
 | Unbound range loop | `loop 0..3 { ... }` is accepted by parser, checker, and TIR, then rejected because `RangeLoop.Symbol == 0`. V1 exposes the implicit iterator as `iter`. If V2 keeps the explicit-name rule, the checker must reject the source form. | **Checker/backend contract defect** |
 | Local copy initialization | **RESOLVED for all 6 types (2026-08-10).** `let second T = first` now works for tuple (`834927e`), array (`8c72f36`), struct (`2179ebf`), enum (`7f1db25`), `str` (`7747aaa`), and slice (`22ceab8`) — each independently verified and causation-checked, one type per task. | — |
-| Tuple coercion | `let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b);` reaches `TupleCoerce`, then the tuple-local builder rejects it. | **Checker/backend contract defect** |
+| Tuple coercion | **RESOLVED (`d905ab6`, 2026-08-10)** — `let value (i64, f64) = (a, b);` now works for the tuple-local declaration path (call-argument and reassignment `TupleCoerce` remain deliberately out of scope), verified for a full and a partial-coercion case, causation-checked | — |
 | More than one aggregate dependency level | A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”. V1 recursively orders the complete dependency graph. | **C-shape gap** |
 | Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
 | Slice field as call argument | `sum(holder.values)` is rejected because the slice argument builder accepts only a slice local or parameter, not `Load(FieldPlace)`. | **Value-source gap** |
@@ -124,7 +124,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Slice `[]T` | V2 has slice types, `.len`, `.data`, checked index/slice, and `SliceFromRaw` | **Partial** by source position and element type |
 | V1 pointer slice `ptr[start:end]` | V2 rejects pointer slicing and provides std-only `slice ptr, count` | **Intentional difference** under the pointer-safety design |
 | Struct | V2 record construction, fields, methods, parameters, results, runtime nominals, and C typedefs exist | **Partial**; local copy initialization and deep aggregate dependencies still reject |
-| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Partial.** Whole-value reassignment for a local/literal landed `d1b05be`; local copy initialization still rejects, and a real `TupleCoerce` reaches the backend and rejects. |
+| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Mostly resolved.** Whole-value reassignment (`d1b05be`), local copy initialization (`834927e`), and `TupleCoerce` in a local declaration (`d905ab6`) all landed 2026-08-10. `TupleCoerce` in a call argument or reassignment remains deliberately out of scope. |
 | Optional `?T`, `some`, `none`, force unwrap | V2 has optional construction, injection, and checked unwrap | **Partial** by payload type |
 | Enum | V2 construction, switch labels, and integer conversions exist | **Verified** for enum-to-integer and integer-to-enum. Enum-element arrays and slices resolved `94a2a39`. Remaining: ordinary `some Color.red` optional initialization, enum tuple elements, and local copy initialization. |
 | Tagged union | V2 construction, ordinary switch narrowing, generic-self read/write narrowing, and helper results exist | **Partial** by payload and container C shape; generic-self narrowing resolved in `7b7eee0`/`7e7163e` |
@@ -206,7 +206,7 @@ in `checker.c:2437-2529`. V2 classification is in
 | Integer to pointer | explicit | forbidden | **Intentional difference** |
 | V1 `str` to/from `*void`, `*u8`, or `*char` | explicit or implicit, because V1 `str` is a C pointer | absent for V2 `PebbleStr` | **Intentional ABI difference**; use explicit library adapters if accepted later |
 | Fixed array to slice | implicit | dedicated checked slice shape, including direct array-literal initialization of a slice binding | **Partial by source position**; binding form resolved in `f4c3970` |
-| Tuple literal element conversion | implicit, equal tuple length | checker builds `TupleCoerce`, but the tuple-local backend builder rejects that node | **Confirmed checker/backend defect** |
+| Tuple literal element conversion | implicit, equal tuple length | **RESOLVED for local declarations (`d905ab6`, 2026-08-10)**; checker builds `TupleCoerce`, backend now accepts it in a local declaration initializer | — |
 | Explicit tuple prefix cast | source can have more elements than destination | V2 requires equal length | **Absent** unless the narrower V2 rule is accepted |
 | Array literal element conversion | implicit for equal length | no general structural conversion class | **Partial/absent**; isolate by destination shape |
 | Struct literal field conversion | implicit for equal field count and matching names | no structural struct conversion class | **Absent** |
@@ -310,7 +310,7 @@ small source reproduction before it moves to the issue tracker.
 | Reassign a whole fixed-array local | `buildArrayStoreValue`, `stores.go` | **RESOLVED** (`aef808e`, local/literal via `memcpy`; a call value stays deferred) |
 | Reassign a whole struct local | `buildStructStoreValue`, `stores.go` | **RESOLVED** (`9df0351`/`5ef060a`, local/literal/call value all supported) |
 | Reassign a `str` local from another string value | `buildStrStoreValue` accepts only a string literal | **Confirmed partial** |
-| Initialize a tuple local from another tuple value | **RESOLVED for `SymbolValue` (`834927e`, 2026-08-10)** — `let second (int, int) = first;` now works, verified for 3-element and mixed-type tuples, causation-checked. `TupleCoerce` still separately rejected (a distinct gap, tracked on its own row below) | — |
+| Initialize a tuple local from another tuple value | **RESOLVED for `SymbolValue` (`834927e`) and `TupleCoerce` (`d905ab6`), both 2026-08-10** — `let second (int, int) = first;` and `let value (i64, f64) = (a, b);` both now work, causation-checked | — |
 | Initialize an array local from another array value | **RESOLVED (`8c72f36`, 2026-08-10)** — `let second [3]int = first;` now works via a bare declaration + `memcpy`, verified for 5-element and bool-element arrays, causation-checked | — |
 | Initialize a struct local from another struct value | **RESOLVED (`2179ebf`, 2026-08-10)** — `let second Point = first;` now works, verified for a 3-field struct and a nested-struct field, causation-checked | — |
 | Initialize an enum local from another enum value | **RESOLVED (`7f1db25`, 2026-08-10)** — `let second Color = first;` now works, verified for a second variant proving tag round-tripping, causation-checked | — |

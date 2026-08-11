@@ -44,6 +44,19 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — TupleCoerce landed as `d905ab6`. 14 of the original 19+11
+P1 items done overnight. This one needed escalation to Luna after two
+flash stalls — flash correctly diagnosed the exact node shape both
+times but never wrote the fix; Luna implemented it cleanly on the
+first attempt, including finding a compounding typedef-collection gap.
+10 items remain: three-level aggregate dependencies, direct array-
+literal return, slice struct field as call argument, existing slice as
+variadic tail, direct cast of sizeof, sizeof [N]Struct typedef
+ordering, narrow checked arithmetic, narrow optional unwrap, ordinary
+optional enum payload, first-class narrow integer function types.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a `TupleCoerce` node (per-element implicit tuple coercion)
 reaches the backend and fails.**
 
@@ -96,6 +109,17 @@ runs, returning 1 (`(i64)1 as i32`). Also verify: a 3-element tuple
 needing coercion on only SOME elements (not all), and that ordinary
 tuple literal initialization (no coercion needed) and tuple local copy
 initialization (`834927e`) are unaffected.
+
+**Resolution (`d905ab6`, 2026-08-10, Luna).** Added a `TupleCoerce`
+case to `buildTupleLocalDeclaration` building a brace list from
+`Children[1:]` against the destination type recovered from `TypeArgs`
+(`TupleCoerce.Type` is the SOURCE type, not the destination — no more
+direct field carries it). Also fixed a compounding typedef-collection
+gap for the destination tuple's typedef. Verified the repro and a
+partial-coercion case; ordinary tuple literal/copy-init unaffected.
+Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
