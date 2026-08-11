@@ -81,8 +81,9 @@ func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 // nested tuple element) is a clean rejection naming the element position, since
 // this backend emits exactly those two C field types. The local's scope entry
 // records its tuple type (a localInfo with tuple set), so a later element read
-// resolves the tuple type being indexed. Three initializer shapes are supported
-// (10.26): a TupleValue (a tuple literal), emitted as a bare brace list; a
+// resolves the tuple type being indexed. TupleValue (a tuple literal) and
+// TupleCoerce (a tuple literal with per-element coercions) are emitted as bare
+// brace lists; a
 // DirectCall to a tuple-returning helper whose result type matches the local's
 // declared type, emitted by the same call-building machinery buildExpr's
 // DirectCall case uses (see buildAggregateCallInitializer); or a SymbolValue
@@ -121,6 +122,32 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		}
 		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
+	if initValue.Kind == tir.TupleCoerce {
+		if len(initValue.Children) < 2 {
+			return "", fmt.Errorf("%s declares a tuple-typed local from a TupleCoerce with %d child(ren), want at least two", context, len(initValue.Children))
+		}
+		destination, err := tupleCoerceDestinationType(snapshot, initValue.TypeArgs)
+		if err != nil {
+			return "", fmt.Errorf("%s declares a tuple-typed local from a TupleCoerce: %v", context, err)
+		}
+		key, ok := snapshot.Key(destination)
+		if !ok {
+			return "", fmt.Errorf("%s declares a tuple-typed local whose destination type %d is not in the type snapshot", context, destination)
+		}
+		elements, ok := key.Elements()
+		if !ok {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s, which has no element list", context, tupleTypeName(destination))
+		}
+		if len(initValue.Children)-1 != len(elements) {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s from a TupleCoerce with %d element expression(s), want %d", context, tupleTypeName(destination), len(initValue.Children)-1, len(elements))
+		}
+		braceList, err := buildTupleBraceElements(st, unit, snapshot, fileSet, destination, elements, initValue.Children[1:], scope, context, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{tuple: destination}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(destination), statement.Symbol, braceList, indent, statement.Symbol), nil
 	}
 	if initValue.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal), a call to a tuple-returning helper, or a reference to a tuple-typed local in scope of that type", context, tupleTypeName(initValue.Type), initValue.Kind)

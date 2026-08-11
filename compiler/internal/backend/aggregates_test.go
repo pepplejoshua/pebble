@@ -1213,6 +1213,21 @@ func TestEmitTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { let first (int, int) = (1, 2); let second (int, int) = first; return second.0; }", false, 1, false)
 }
 
+func TestEmitTupleCoerceLocalInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The tuple literal's source elements are i32, while the declared local's
+	// destination elements are i64 and f64. TupleCoerce.Children[0] is the
+	// preserved source tuple; the declaration must emit Children[1:] only.
+	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b); return value.0 as i32; }", false, 1, false)
+}
+
+func TestEmitPartialTupleCoerceLocalInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Only element 1 needs coercion: elements 0 and 2 remain their raw i32
+	// nodes while the middle child is wrapped as an i64 expression.
+	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let c i32 = 3; let value (i32, i64, i32) = (a, b, c); return value.1 as i32; }", false, 2, false)
+}
+
 func TestEmitThreeElementTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A 3-element tuple copy-initialization proves the SymbolValue initializer

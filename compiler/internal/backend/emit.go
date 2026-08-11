@@ -102,7 +102,8 @@
 //
 // Since 10.19, a local may also be declared as a tuple whose element types are
 // exactly the entry's resolved width and/or bool, initialized from a tuple
-// literal (a tir.TupleValue), with individual elements read back as ordinary
+// literal (a tir.TupleValue or per-element-coerced tir.TupleCoerce), with
+// individual elements read back as ordinary
 // values (a tir.Load of a tir.TuplePlace — the only shape real source produces
 // for reading a tuple-typed local's element; see buildExpr's Load case). A
 // tuple type is emitted as one C struct typedef, named pebble_tuple_<typeID>_t
@@ -114,7 +115,8 @@
 // and every other tuple shape — a nested tuple element, a str element, a whole
 // tuple copied from another value, assigning into or reassigning a tuple
 // local, a tuple parameter or result, a TupleElementValue indexing a tuple
-// literal, or a TupleCoerce — is a clean rejection, never a guessed lowering.
+// literal, or a TupleCoerce outside a tuple-local declaration — is a clean
+// rejection, never a guessed lowering.
 //
 // Since 10.21, a local may also be declared as an optional whose payload type
 // is exactly the entry's resolved width (i32 or i64) or bool, initialized from

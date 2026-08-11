@@ -413,8 +413,10 @@ func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 // collectTupleTypesWalk appends every tuple type encountered in the tree rooted
 // at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Two node shapes carry a
-// tuple type: a TupleValue node's own Type, and an Initialize whose initializer
+// region of the node graph the body builders consume. TupleValue, TupleCoerce,
+// and Initialize nodes carry tuple types: a TupleValue node's own Type, a
+// TupleCoerce's destination tuple type recovered from TypeArgs, and an
+// Initialize whose initializer
 // value carries a tuple type (a tuple-typed local declaration — the local's
 // type is recorded on the initializer value node, not on the Initialize node
 // itself, confirmed against a real fixture). A tuple initializer that is not a
@@ -428,6 +430,13 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 	}
 	if node.Kind == tir.TupleValue {
 		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.TupleCoerce {
+		destination, err := tupleCoerceDestinationType(snapshot, node.TypeArgs)
+		if err != nil {
+			return fmt.Errorf("tuple-type walk on a TupleCoerce: %v", err)
+		}
+		*out = append(*out, destination)
 	}
 	if node.Kind == tir.Initialize {
 		for _, childID := range node.Children {
