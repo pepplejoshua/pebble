@@ -3102,3 +3102,95 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 		}
 	}
 }
+
+func TestEmitBlockBodyExplicitReturnResultShapesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The row's block-body proof by result/value shape: a helper with a plain
+	// block body and an explicit `return` for each of int, bool, str, a
+	// struct, and void. Every helper is called from one entry and each value
+	// shape is read back and asserted together, so one compile-link-run proves
+	// all five result shapes route through the plain-block + explicit-return
+	// lowering. The void helper (which falls off the end of its block, the
+	// ImplicitReturn tail) is also invoked as an expression statement.
+	emitAndRun(t, `type Point = struct { x int; y int; };
+fn int_id() int { return 7; }
+fn bool_id() bool { return true; }
+fn str_id() str { return "hi"; }
+fn point_id() Point { return Point.{ x = 3, y = 4 }; }
+fn void_helper() void { }
+fn main() int {
+  var a int = int_id();
+  var b bool = bool_id();
+  var c str = str_id();
+  var p Point = point_id();
+  void_helper();
+  if a == 7 && b && c == "hi" && p.x == 3 && p.y == 4 { return 42; }
+  return 1;
+}`, false, 42, false)
+}
+
+func TestEmitExpressionBodyReturnResultShapesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The row's expression-body ("tail expression is the return value") proof:
+	// `=> expr` bodies for int, bool, char, f64, str, and a struct result.
+	// The expression body synthesizes a real Return node (spec 06a:
+	// "an expression body is visited once with the declared result expectation
+	// and retains a return record"), so it is the language's closest analogue
+	// of a last-expression implicit return. The str helper forwards a
+	// parameter and the struct helper constructs a literal, because a BARE
+	// string-literal `=> "literal"` body is a separate NEW FINDING (recorded
+	// in the worklog), not something this proof can rely on.
+	emitAndRun(t, `type Point = struct { x int; y int; };
+fn pick_int(flag bool) int => 42;
+fn pick_bool(flag bool) bool => true;
+fn pick_char(flag bool) char => 'a';
+fn pick_f64(flag bool) f64 => 1.5;
+fn pick_str(s str) str => s;
+fn pick_point() Point => Point.{ x = 3, y = 4 };
+fn main() int {
+  var a int = pick_int(true);
+  var b bool = pick_bool(true);
+  var c char = pick_char(true);
+  var d f64 = pick_f64(true);
+  var s str = pick_str("hi");
+  var p Point = pick_point();
+  if a == 42 && b && c == 'a' && d == 1.5 && s == "hi" && p.x == 3 && p.y == 4 { return 42; }
+  return 1;
+}`, false, 42, false)
+}
+
+func TestEmitIfElseArmReturnResultShapesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The if/else tail shape: a non-void helper whose body is a two-armed
+	// if/else where EVERY arm's tail is the return value (an explicit return
+	// in each arm). Proven across int, bool, str, and a struct result, with
+	// the arm selection flipped by a bool flag so both arms lower and run.
+	emitAndRun(t, `type Point = struct { x int; };
+fn pick_int(flag bool) int { if flag { return 1; } else { return 2; } }
+fn pick_bool(flag bool) bool { if flag { return true; } else { return false; } }
+fn pick_str(flag bool) str { if flag { return "yes"; } else { return "no"; } }
+fn pick_point(flag bool) Point { if flag { return Point.{ x = 3 }; } else { return Point.{ x = 9 }; } }
+fn main() int {
+  var a int = pick_int(true);
+  var b bool = pick_bool(false);
+  var s str = pick_str(true);
+  var p Point = pick_point(false);
+  if a == 1 && !b && s == "yes" && p.x == 9 { return 42; }
+  return 1;
+}`, false, 42, false)
+}
+
+func TestEmitDiscardedCallExpressionStatementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The expression-statement shape: a call whose result is discarded as a
+	// standalone statement. The discarded call is non-void (a permitted
+	// discard, per the C0612 rule that allows calls), and a subsequent call
+	// proves statement sequencing still runs after the discarded one — the
+	// exit code proves both the discard and the later return execute.
+	emitAndRun(t, `fn side(x int) int { return x * 10; }
+fn main() int {
+  side(42);
+  side(1);
+  return 42;
+}`, false, 42, false)
+}

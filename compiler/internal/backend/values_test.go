@@ -1540,6 +1540,139 @@ func TestEmitUintAllComparisonOperatorsCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitI16AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The i16 twin of the i8 matrix: all six comparison operators on a signed
+	// narrow width in an int-entry main, using a NEGATIVE value so the
+	// signedness-sensitive ordering direction is proven at the i16 width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h i16 = -5; if h == -5 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h i16 = -5; if h == -4 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h i16 = -5; if h != -4 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h i16 = -5; if h != -5 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h i16 = -5; if h < -4 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h i16 = -5; if h < -5 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h i16 = -5; if h <= -5 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h i16 = -5; if h <= -6 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h i16 = -5; if h > -6 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h i16 = -5; if h > -5 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h i16 = -5; if h >= -5 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h i16 = -5; if h >= -4 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitU16AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The u16 twin of the u8 matrix. The value 40000 is above the positive
+	// range of a 16-bit SIGNED integer, so a width-mismatched or
+	// signed-interpreted comparison would compare 40000 incorrectly — each
+	// row proves the u16 unsigned comparison evaluates at the correct width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h u16 = 40000; if h == 40000 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h u16 = 40000; if h == 40001 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h u16 = 40000; if h != 40001 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h u16 = 40000; if h != 40000 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h u16 = 40000; if h < 40001 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h u16 = 40000; if h < 40000 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h u16 = 40000; if h <= 40000 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h u16 = 40000; if h <= 39999 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h u16 = 40000; if h > 39999 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h u16 = 40000; if h > 40000 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h u16 = 40000; if h >= 40000 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h u16 = 40000; if h >= 40001 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitU32AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The u32 comparison matrix. The value 4000000000 is above the positive
+	// range of a 32-bit SIGNED integer, so a signed-interpreted comparison
+	// would compare it as a negative number — each row proves the u32
+	// unsigned comparison evaluates at the correct width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h u32 = 4000000000; if h == 4000000000 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h u32 = 4000000000; if h == 4000000001 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h u32 = 4000000000; if h != 4000000001 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h u32 = 4000000000; if h != 4000000000 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h u32 = 4000000000; if h < 4000000001 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h u32 = 4000000000; if h < 4000000000 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h u32 = 4000000000; if h <= 4000000000 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h u32 = 4000000000; if h <= 3999999999 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h u32 = 4000000000; if h > 3999999999 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h u32 = 4000000000; if h > 4000000000 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h u32 = 4000000000; if h >= 4000000000 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h u32 = 4000000000; if h >= 4000000001 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitI64AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The i64 comparison matrix, the missing six-op twin for the wide signed
+	// width (existing i64 coverage only exercised < in loop bounds). A
+	// negative value keeps the signedness-sensitive ordering direction honest
+	// at the i64 width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h i64 = -5; if h == -5 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h i64 = -5; if h == -4 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h i64 = -5; if h != -4 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h i64 = -5; if h != -5 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h i64 = -5; if h < -4 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h i64 = -5; if h < -5 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h i64 = -5; if h <= -5 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h i64 = -5; if h <= -6 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h i64 = -5; if h > -6 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h i64 = -5; if h > -5 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h i64 = -5; if h >= -5 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h i64 = -5; if h >= -4 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitI64WidePrecisionComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 64-bit comparison the f64 precision could not express: 9007199254740993
+	// (2^53 + 1) compared against 9007199254740992 (2^53). A double would
+	// round both to the same value, so a comparison widened to f64 would get
+	// this wrong; the i64 comparison must distinguish them to exit 1.
+	emitAndRun(t, "fn main() int { let h i64 = 9007199254740993; if h > 9007199254740992 { return 1; } else { return 2; } }", false, 1, false)
+	emitAndRun(t, "fn main() int { let h i64 = 9007199254740992; if h < 9007199254740993 { return 1; } else { return 2; } }", false, 1, false)
+}
+
 func TestEmitF32AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// All six comparison operators on f32 values in an int-entry main. The
@@ -1682,6 +1815,21 @@ func TestEmitCharOrderingFalseCompilesAndRuns(t *testing.T) {
 	// the process exits 0 — proving the ordering distinguishes the two scalar
 	// values in the correct direction.
 	emitAndRun(t, "fn main() i32 { let c char = 'b'; let d char = 'a'; if c < d { return 1; } else { return 0; } }", false, 0, false)
+}
+
+func TestEmitCharLessEqualGreaterComparisonsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The three ordering operators the existing char tests do not cover:
+	// <=, >, and >= (==, !=, and < are proven by TestEmitCharLocalEquality*,
+	// TestEmitCharNotEqual, and TestEmitCharOrdering). 'a' is 97 and 'b' is
+	// 98, so each row asserts the correct numeric ordering of the two Unicode
+	// scalar values, both the true and the false outcome.
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c <= 'a' { return 1; } else { return 0; } }", false, 1, false)
+	emitAndRun(t, "fn main() i32 { let c char = 'b'; let d char = 'a'; if c <= 'a' { return 1; } else { return 0; } }", false, 0, false)
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if d > c { return 1; } else { return 0; } }", false, 1, false)
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c > d { return 1; } else { return 0; } }", false, 0, false)
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if d >= 'b' { return 1; } else { return 0; } }", false, 1, false)
+	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c >= 'b' { return 1; } else { return 0; } }", false, 0, false)
 }
 
 func TestEmitCharI64EntryCompilesAndRuns(t *testing.T) {

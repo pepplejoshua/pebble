@@ -411,3 +411,90 @@ func TestEmitWrappingU64BuiltinsCompileAndRun(t *testing.T) {
     return 0;
 }`, 0)
 }
+
+func TestEmitUintArithmeticCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// uint (+ - *) is lowered by buildUintExpr to plain C arithmetic at uint's
+	// own 64-bit word width (not a checked runtime helper), so the audit
+	// row's "each operation at its own ABI width" proof for uint needs its own
+	// run tests. Each helper takes uint parameters and returns the
+	// arithmetically correct result, surfaced through `as int` and asserted as
+	// the process exit code, mirroring the u64 matrix.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"add", "fn addU(x uint, y uint) uint { return x + y; } fn main() int { let r uint = addU(40, 2); return r as int; }", 42},
+		{"sub", "fn subU(x uint, y uint) uint { return x - y; } fn main() int { let r uint = subU(50, 8); return r as int; }", 42},
+		{"mul", "fn mulU(x uint, y uint) uint { return x * y; } fn main() int { let r uint = mulU(6, 7); return r as int; }", 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitUintArithmeticBoundaryWrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The wraparound proof at uint's boundary: uint arithmetic is plain C
+	// unsigned arithmetic (uint64_t), so it wraps modulo 2^64 even under
+	// PEBBLE_RT_MODE_SAFE. max + 1 wraps to 0, 0 - 1 wraps to max, and
+	// max * 2 wraps to max - 1 — each at the full 64-bit word width, not a
+	// 32-bit truncation.
+	emitAndRun(t, "fn main() int { var m uint = 18446744073709551615; var w uint = m + 1; if w == 0 { return 42; } else { return 1; } }", false, 42, false)
+	emitAndRun(t, "fn main() int { var n uint = 0; var s uint = n - 1; if s == 18446744073709551615 { return 42; } else { return 1; } }", false, 42, false)
+	emitAndRun(t, "fn main() int { var m uint = 18446744073709551615; var p uint = m * 2; if p == 18446744073709551614 { return 42; } else { return 1; } }", false, 42, false)
+}
+
+func TestEmitI64DivisionAndModuloCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The positive i64 / and % gap: both lower to the i64 checked helpers
+	// (pebble_rt_checked_div_i64 / mod_i64) at the i64 width. Truncation
+	// toward zero is the language's semantics (the same plain-C division the
+	// i32 helpers apply), so a negative dividend truncates the same way:
+	// -22 / 7 = -3 and -22 % 7 = -1.
+	emitAndRun(t, "fn main() int { var a i64 = 22; var b i64 = 7; var q i64 = a / b; var r i64 = a % b; if q == 3 && r == 1 { return 42; } else { return 1; } }", false, 42, false)
+	emitAndRun(t, "fn main() int { var a i64 = -22; var b i64 = 7; var q i64 = a / b; var r i64 = a % b; if q == -3 && r == -1 { return 42; } else { return 1; } }", false, 42, false)
+}
+
+func TestEmitIntArithmeticOperatorsCompileAndRun(t *testing.T) {
+	t.Parallel()
+	// The abstract `int` builtin resolves to the entry signed width for its
+	// checked-arithmetic helpers; + is already covered by
+	// TestEmitIntEntryCheckedAddCompilesAndRuns, so this adds - * / % at
+	// mid-range values. The width BOUNDARY is deliberately avoided: `int`'s
+	// literal range (64-bit checker word vs the int32_t C type) is the
+	// unresolved architectural question recorded in proposal 14, so only
+	// values safe under both interpretations are used.
+	emitAndRun(t, "fn main() int { var a int = 50; var b int = 8; var d int = a - b; if d == 42 { return 42; } else { return 1; } }", false, 42, false)
+	emitAndRun(t, "fn main() int { var a int = 6; var b int = 7; var m int = a * b; if m == 42 { return 42; } else { return 1; } }", false, 42, false)
+	emitAndRun(t, "fn main() int { var a int = 22; var b int = 7; var q int = a / b; var r int = a % b; if q == 3 && r == 1 { return 42; } else { return 1; } }", false, 42, false)
+}
+
+func TestEmitF32ArithmeticOperatorsCompileAndRun(t *testing.T) {
+	t.Parallel()
+	// f32 (+ - * /) at its own 32-bit float width, mirroring the f64 matrix
+	// (TestEmitFloatArithmeticOperatorsCompileAndRun, which covers f64 only).
+	// Each row computes an f32 result and asserts it by f32 comparison in an
+	// int-entry main, proving the arithmetic produces the exact value rather
+	// than that the expression merely compiles. The division row uses an f32
+	// divisor (1.5) so the quotient exercises the float operand grammar, not
+	// an integer promotion.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"addition", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; var s f32 = a + b; if s == 4.0 { return 42; } else { return 1; } }", 42},
+		{"subtraction", "fn main() int { var a f32 = 5.5; var b f32 = 2.5; var s f32 = a - b; if s == 3.0 { return 42; } else { return 1; } }", 42},
+		{"multiplication", "fn main() int { var a f32 = 1.5; var b f32 = 4.0; var s f32 = a * b; if s == 6.0 { return 42; } else { return 1; } }", 42},
+		{"division", "fn main() int { var a f32 = 33.0; var b f32 = 1.5; var s f32 = a / b; if s == 22.0 { return 42; } else { return 1; } }", 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
