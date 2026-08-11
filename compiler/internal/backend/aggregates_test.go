@@ -4569,6 +4569,106 @@ func TestEmitSizeofArrayOfOptionalCompilesAndRuns(t *testing.T) {
 }`, false, 16, false)
 }
 
+func TestEmitSizeofBareTupleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The tracker's exact repro shape: a bare `sizeof (int, int)` with NO
+	// array wrapper and no other reference to the tuple anywhere — the
+	// SizeofType node's TypeArg is the tuple type directly, so the pre-fix
+	// collectTupleTypesWalk (which only had the array-element case) never
+	// collected its pebble_tuple_<typeID>_t typedef and cc rejected the
+	// lowered sizeof(pebble_tuple_<typeID>_t) with "use of undeclared
+	// identifier". int is int32_t, so (int, int) is 8 bytes.
+	emitAndRun(t, `fn main() int {
+    return (sizeof (int,int)) as int;
+}`, false, 8, false)
+}
+
+func TestEmitSizeofBareOptionalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The tracker's exact repro shape: a bare `sizeof ?int` with NO array
+	// wrapper and no other reference to the optional anywhere — the
+	// SizeofType node's TypeArg is the optional type directly, so the pre-fix
+	// collectOptionalTypesWalk (which only had the array-element case) never
+	// collected its pebble_optional_<typeID>_t typedef and cc rejected the
+	// lowered sizeof(pebble_optional_<typeID>_t) with "use of undeclared
+	// identifier". ?int lowers to { bool has_value; int32_t value; } = 8
+	// bytes.
+	emitAndRun(t, `fn main() int {
+    return (sizeof ?int) as int;
+}`, false, 8, false)
+}
+
+func TestEmitSizeofBareTupleOnlyReferenceEmitsTupleTypedef(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the direct-typedef collection fix, using the
+	// exact repro shape (sizeof is the ONLY reference to the tuple): the sizeof
+	// must reference the tuple's own pebble_tuple_<typeID>_t typedef, and the
+	// typedef must be collected and emitted even though nothing else in the
+	// program references the type; before the fix the lowered sizeof named a
+	// typedef that was never declared, which cc rejected.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn main() int {
+    return (sizeof (int,int)) as int;
+}`, "main", false)
+	var tupleType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.SizeofType {
+			tupleType = node.TypeArg
+			break
+		}
+	}
+	if tupleType == 0 {
+		t.Fatal("fixture has no SizeofType node to read its tuple TypeArg from")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+tupleTypeName(tupleType)+")") {
+		t.Errorf("emitted C does not sizeof the tuple's own typedef %q:\n%s", tupleTypeName(tupleType), out)
+	}
+	tupleTypedef := "typedef struct {\n    int32_t _0;\n    int32_t _1;\n} " + tupleTypeName(tupleType) + ";"
+	if !strings.Contains(out, tupleTypedef) {
+		t.Errorf("emitted C is missing the tuple typedef %q (sizeof is the only reference, so the tuple's typedef must still be collected):\n%s", tupleTypedef, out)
+	}
+}
+
+func TestEmitSizeofBareOptionalOnlyReferenceEmitsOptionalTypedef(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the direct-typedef collection fix, using the
+	// exact repro shape (sizeof is the ONLY reference to the optional): the
+	// sizeof must reference the optional's own pebble_optional_<typeID>_t
+	// typedef, and the typedef must be collected and emitted even though
+	// nothing else in the program references the type; before the fix the
+	// lowered sizeof named a typedef that was never declared, which cc
+	// rejected.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn main() int {
+    return (sizeof ?int) as int;
+}`, "main", false)
+	var optionalType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.SizeofType {
+			optionalType = node.TypeArg
+			break
+		}
+	}
+	if optionalType == 0 {
+		t.Fatal("fixture has no SizeofType node to read its optional TypeArg from")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sizeof("+optionalTypeName(optionalType)+")") {
+		t.Errorf("emitted C does not sizeof the optional's own typedef %q:\n%s", optionalTypeName(optionalType), out)
+	}
+	optionalTypedef := "typedef struct {\n    bool has_value;\n    int32_t value;\n} " + optionalTypeName(optionalType) + ";"
+	if !strings.Contains(out, optionalTypedef) {
+		t.Errorf("emitted C is missing the optional typedef %q (sizeof is the only reference, so the optional's typedef must still be collected):\n%s", optionalTypedef, out)
+	}
+}
+
 func TestEmitSizeofCastToIntegerCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A bare `sizeof T` directly cast to an integer (`(sizeof int) as

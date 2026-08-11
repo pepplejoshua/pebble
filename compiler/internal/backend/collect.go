@@ -414,7 +414,8 @@ func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 // at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
 // region of the node graph the body builders consume. TupleValue, TupleCoerce,
-// Initialize, and a bare `sizeof` of a tuple-element array carry tuple types:
+// Initialize, a bare `sizeof` of a tuple (`sizeof (int, int)`), and a bare
+// `sizeof` of a tuple-element array carry tuple types:
 // a TupleValue node's own Type, a
 // TupleCoerce's destination tuple type recovered from TypeArgs, an
 // Initialize whose initializer
@@ -439,6 +440,20 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 		}
 		*out = append(*out, destination)
 	}
+	if node.Kind == tir.SizeofType && isTuple(snapshot, node.TypeArg) {
+		// A bare `sizeof` of a tuple (`sizeof (int, int)`), with no array
+		// wrapper and no other reference to the tuple type anywhere: the
+		// tuple's own pebble_tuple_<typeID>_t typedef must still be collected
+		// and emitted, or the lowered sizeof(pebble_tuple_<typeID>_t) names an
+		// undeclared C type (see sizeofCTypeName) — the same SizeofType
+		// collection gap collectStructTypesWalk's bare-struct case closes for
+		// structs. This must run before the array-element case below: for
+		// `sizeof [N](int, int)` the TypeArg is the ARRAY type (isTuple is
+		// false), so only the array-element case fires for that shape; for a
+		// bare `sizeof (int, int)` the TypeArg is the tuple itself, so only
+		// this case fires. The two cases are disjoint and both coexist.
+		*out = append(*out, node.TypeArg)
+	}
 	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
 		// A bare `sizeof` of a fixed array whose ELEMENT is a tuple
 		// (`sizeof [N](int, int)`): the array's own pebble_array_<typeID>_t
@@ -447,8 +462,8 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 		// `pebble_tuple_<typeID>_t data[N]`, so the element tuple's typedef
 		// must ALSO be collected here or the array typedef names an undeclared
 		// C type. The SizeofType node's TypeArg is the ARRAY type, not the
-		// tuple, so no other rule in this walk sees it — the element is
-		// resolved here via the same (length, elementType, ok) key.Array()
+		// tuple, so the bare-tuple case above never fires for it — the element
+		// is resolved here via the same (length, elementType, ok) key.Array()
 		// pattern the rest of this file uses.
 		key, ok := snapshot.Key(node.TypeArg)
 		if !ok {
@@ -548,11 +563,12 @@ func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 // collectOptionalTypesWalk appends every optional type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Three node shapes carry
+// region of the node graph the body builders consume. Four node shapes carry
 // an optional type: a SomeOptional node's own Type, an Initialize whose
 // initializer value carries an optional type (an optional-typed local
 // declaration — confirmed against a real fixture: the local's type is recorded
-// on the initializer value node, not on the Initialize node itself), and a
+// on the initializer value node, not on the Initialize node itself), a bare
+// `sizeof` of an optional (`sizeof ?int`), and a
 // bare `sizeof` of a tuple/struct/optional-element array (`sizeof [N]?int`),
 // whose array typedef's C body references the optional's
 // pebble_optional_<typeID>_t typedef. The
@@ -574,6 +590,21 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 			*out = append(*out, node.Type)
 		}
 	}
+	if node.Kind == tir.SizeofType && isOptional(snapshot, node.TypeArg) {
+		// A bare `sizeof` of an optional (`sizeof ?int`), with no array
+		// wrapper and no other reference to the optional type anywhere: the
+		// optional's own pebble_optional_<typeID>_t typedef must still be
+		// collected and emitted, or the lowered sizeof(pebble_optional_<typeID>_t)
+		// names an undeclared C type (see sizeofCTypeName) — the same
+		// SizeofType collection gap collectStructTypesWalk's bare-struct case
+		// closes for structs. This must run before the array-element case
+		// below: for `sizeof [N]?int` the TypeArg is the ARRAY type
+		// (isOptional is false), so only the array-element case fires for that
+		// shape; for a bare `sizeof ?int` the TypeArg is the optional itself,
+		// so only this case fires. The two cases are disjoint and both
+		// coexist.
+		*out = append(*out, node.TypeArg)
+	}
 	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
 		// A bare `sizeof` of a fixed array whose ELEMENT is an optional
 		// (`sizeof [N]?int`): the array's own pebble_array_<typeID>_t typedef
@@ -581,10 +612,10 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 		// that array typedef's C body declares `pebble_optional_<typeID>_t
 		// data[N]`, so the element optional's typedef must ALSO be collected
 		// here or the array typedef names an undeclared C type. The SizeofType
-		// node's TypeArg is the ARRAY type, not the optional, so no other rule
-		// in this walk sees it — the element is resolved here via the same
-		// (length, elementType, ok) key.Array() pattern the rest of this file
-		// uses.
+		// node's TypeArg is the ARRAY type, not the optional, so the
+		// bare-optional case above never fires for it — the element is
+		// resolved here via the same (length, elementType, ok) key.Array()
+		// pattern the rest of this file uses.
 		key, ok := snapshot.Key(node.TypeArg)
 		if !ok {
 			return fmt.Errorf("optional-type walk: sizeof array type %s is not in the type snapshot", describeType(snapshot, node.TypeArg))
