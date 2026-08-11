@@ -709,7 +709,22 @@ func buildSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		subjectIntWidth = types.Uint
 		subjectExpr, err = buildUintExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
 	} else if isBool(snapshot, subjectNode.Type) {
-		subjectExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		// A bool-typed subject: built by buildBoolExpr, the same builder every
+		// other bool value position in this backend uses. The subject is cast
+		// to int32_t for JUST the C switch (...) header: C's -Wswitch-bool
+		// (enabled under the mandated -Werror) rejects a switch whose
+		// controlling expression is itself a C bool, and bool's underlying
+		// value is already 0 or 1, so the int32_t cast is the minimal C idiom
+		// that satisfies the strict flags without changing the case labels
+		// (buildCaseLabel spells bool case constants as `case 1:`/`case 0:`,
+		// which an int32_t switch still compares correctly against). The
+		// int32_t cast matches this backend's cast convention everywhere else
+		// (char literals, slice-length arguments to checked-index calls).
+		boolExpr, boolErr := buildBoolExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, width)
+		if boolErr != nil {
+			return "", boolErr
+		}
+		subjectExpr = "(int32_t)" + boolExpr
 	} else if isChar(snapshot, subjectNode.Type) {
 		// A char-typed subject: built by buildCharOperand, the same builder
 		// every other char-typed position in this backend uses. A char's C

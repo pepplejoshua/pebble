@@ -1901,6 +1901,59 @@ func TestEmitSwitchBoolSubjectFalseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { switch false { case true: return 1; else: return 0; } }", false, 0, false)
 }
 
+func TestEmitSwitchBoolParamSubjectCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The proposal-13 defect, reproduced verbatim: a bool PARAMETER as the
+	// switch subject used to emit a raw C `switch (bool)` and fail the
+	// mandated -Wswitch-bool -Werror at the cc step. The backend now casts the
+	// subject to int32_t for the C switch header only, so this exact program
+	// must compile and run, returning 1.
+	emitAndRun(t, "fn choose(flag bool) int { switch flag { case true: return 1; else: return 0; } } fn main() int { return choose(true); }", false, 1, false)
+}
+
+func TestEmitSwitchBoolSubjectWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C for a bool switch: the subject is the bool
+	// parameter's C bool local, cast to int32_t in the C switch (...) header —
+	// `switch ((int32_t)pebble_local_25)` — so the controlling expression is
+	// an integer rather than a C bool, the -Wswitch-bool fix. The bool case
+	// labels stay `case 1:` (true) / `case 0:` (false), which an int32_t
+	// switch compares correctly against; the else arm is the default label.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn choose(flag bool) int { switch flag { case true: return 1; else: return 0; } } fn main() int { return choose(true); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"switch ((int32_t)pebble_local_25)",
+		"case 1:",
+		"default:",
+		"return 1;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitSwitchBoolExhaustiveNoElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A bool switch with both case true and case false and no else arm: the
+	// checker proves exhaustiveness for a bool subject, and the backend emits
+	// `case 1:`/`case 0:` labels under an int32_t-cast subject. C cannot prove
+	// a bool switch is exhaustive the way it can a C enum's, so the trailing
+	// `return 999;` — which the checker flags as C0618, tolerated by
+	// buildFixture — is the same fallback the exhaustive u8 switch test uses
+	// to keep the emitted C warning-free under -Werror=return-type (a
+	// pre-existing, documented backend limitation for exhaustive integer
+	// switches). Running both arms through choose proves the matching is
+	// correct across true and false.
+	emitAndRun(t, "fn choose(flag bool) int { switch flag { case true: return 1; case false: return 0; } return 999; } fn main() int { var a int = 0; if choose(false) == 0 { a = a + 1; } if choose(true) == 1 { a = a + 2; } return a; }", false, 3, false)
+}
+
 func TestEmitSwitchCharSubjectCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A char-typed switch subject with char case labels and an else/default
