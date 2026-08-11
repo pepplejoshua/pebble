@@ -2254,6 +2254,57 @@ func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitStructLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole struct-typed local from another struct-typed
+	// local (`let second Point = first;`), the fresh-declaration sibling of
+	// the reassignment shape (p = q;): the Initialize's initializer is a
+	// SymbolValue naming an in-scope struct-typed local of the same type,
+	// emitted as a plain C declaration-with-initializer
+	// `pebble_struct_<typeID>_t pebble_local_<second> = pebble_local_<first>;`.
+	// The copied local's field must reflect first's value (1), the declared
+	// copy.
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn main() int { let first = Point.{ x = 1, y = 2 }; let second Point = first; return second.x; }", false, 1, false)
+}
+
+func TestEmitThreeFieldStructLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 3-field struct copy-initialization proves the SymbolValue initializer
+	// branch isn't hardcoded to 2 fields: the whole-value C copy works for any
+	// struct arity.
+	emitAndRun(t, "type Triple = struct { x int; y int; z int; };\nfn main() int { let first = Triple.{ x = 1, y = 2, z = 3 }; let second Triple = first; return second.z; }", false, 3, false)
+}
+
+func TestEmitStructContainingStructLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct-of-struct copy-initialization proves the SymbolValue initializer
+	// branch composes with a nested struct field, not just scalar fields: the
+	// whole-value C copy carries the nested struct member across unchanged.
+	emitAndRun(t, "type Inner = struct { x int; };\ntype Outer = struct { inner Inner; y int; };\nfn main() int { let first = Outer.{ inner = Inner.{ x = 7 }, y = 8 }; let second Outer = first; return second.inner.x; }", false, 7, false)
+}
+
+func TestEmitStructLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to a declaration-with-initializer
+	// `pebble_struct_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — the struct's own pebble_struct_<typeID>_t typedef makes the by-value
+	// copy trivially valid C, so no member-wise lowering is needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn main() int { let first = Point.{ x = 1, y = 2 }; let second Point = first; return second.x; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_struct_\d+_t pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-struct local copy declaration %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "pebble_struct_") {
+		t.Errorf("emitted C missing the struct typedef:\n%s", out)
+	}
+}
+
 func TestEmitStructLocalInsideHelperCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A struct-typed local declared inside a reachable helper's body, not the

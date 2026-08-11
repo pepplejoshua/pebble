@@ -639,14 +639,19 @@ func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 // suite's own harness). Every field type must be exactly the entry's width or
 // bool, or str; anything else (a char field, a nested struct field) is a clean
 // rejection naming the field position, since this backend emits exactly those
-// three C field types. Three initializer shapes are supported (10.26): a
+// three C field types. Four initializer shapes are supported (10.26): a
 // RecordConstruct (a struct literal), emitted as a designated-initializer
 // brace list, a DirectCall to a struct-returning helper whose result type
 // matches the local's declared type, emitted by the same call-building
 // machinery buildExpr's DirectCall case uses (see buildAggregateCallInitializer),
-// and — since the slice-of-struct-element slice — a Load of a CheckedIndexPlace,
-// a by-value read of one struct element of an array or slice local (`let e =
-// old_entries[j];`, a whole-struct copy of the bounds-checked element lvalue).
+// a Load of a CheckedIndexPlace or DereferencePlace, a by-value whole-struct
+// read (one struct element of an array or slice local — `let e = old_entries[j];`,
+// or a whole struct read through a pointer — `let q = *ptr;`), or a SymbolValue
+// naming an in-scope struct-typed local of exactly the local's type, emitted as
+// `pebble_struct_<typeID>_t pebble_local_<symbol> = pebble_local_<other>;` — a
+// plain C struct declaration-with-initializer, valid because the struct's own
+// typedef makes the by-value copy trivially correct (the same acceptance logic
+// buildStructStoreValue uses for the reassignment sibling `p = q;`).
 // Initializing a struct local from any other value — a whole-struct
 // copy of another local, anything else — is a clean rejection. The
 // local's scope entry records its struct type (a localInfo with structType
@@ -704,8 +709,28 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 		scope[statement.Symbol] = localInfo{structType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope struct-typed local of exactly the local's
+		// type used as the direct initializer — `let second Point = first;`, a
+		// whole-struct local copy, the sibling of the reassignment shape
+		// buildStructStoreValue accepts (`p = q;`). The referenced local's
+		// declared type must be exactly the local's type: the scope lookup
+		// records the struct type each local was declared with
+		// (localInfo.structType), so a non-struct local, an undeclared symbol,
+		// or a struct local of a different type is a clean rejection naming
+		// what was found. The emitted C is a declaration-with-initializer
+		// `pebble_struct_<typeID>_t pebble_local_<sym> = pebble_local_<other>;`
+		// — the struct's own typedef makes the by-value copy trivially valid C,
+		// the same convention struct call arguments and returns already use.
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || valueInfo.structType != initValue.Type {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s from symbol %d, which is not a struct-typed local in scope of that type", context, structTypeName(initValue.Type), initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.RecordConstruct {
-		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal) or a call to a struct-returning helper; initializing a struct local from another value is not supported yet", context, structTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a %s, want a RecordConstruct (a struct literal), a call to a struct-returning helper, or a reference to a struct-typed local in scope of that type", context, structTypeName(initValue.Type), initValue.Kind)
 	}
 	preStatements, braceList, err := buildStructBraceList(st, unit, snapshot, fileSet, initValue, scope, indent, context, width)
 	if err != nil {
