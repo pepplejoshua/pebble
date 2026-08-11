@@ -291,7 +291,7 @@ is at `backend/emit.go:4140-4405`.
 
 | V1 behavior | V2 behavior | Status |
 |---|---|---|
-| Fixed Pebble parameters | supported | supported | **Implemented, proof needed** by value shape |
+| Fixed Pebble parameters | supported | supported | **Verified** (`56cb9ff`) — single-program matrix proves literal, local reference, nested-call result, struct-field read, and inline struct/tuple literal argument shapes all land correctly |
 | Trailing Pebble slice parameter marked variadic | V1 collects zero or more tail elements | V2 collects zero or more tail elements into a temporary slice | **Verified** for int, bool, zero tail, and fixed-prefix tests near `emit_test.go:12762` |
 | One existing slice as the sole variadic tail | V1 detects the matching slice and passes it directly at `codegen.c:4000-4068` | ~~V2 validates the slice as one element and reports C0601~~ **Resolved (`94e74f0`)** | **Closed** |
 | C variadic extern call | V1 permits primitive C variadic use | V2 reports C0604 | **Decision needed**; do not infer a target from V1 alone |
@@ -692,7 +692,7 @@ their command-line selection belongs to the driver.
 | Freestanding compilation | V1 suppresses hosted headers, allocator adapters, and `print`; entry gets an empty context | V2 runtime header describes `PEBBLE_RT_FREESTANDING`, but the current backend `Emit` API has no freestanding configuration and always writes the hosted entry/context template | **Decision needed**, also a driver decision |
 | No-main/library output | V1 checker can skip entry validation and codegen can omit hosted `main` | V2 checker has `EntryNone`, but backend `Emit` requires one entry symbol and always writes hosted `main` | **Partial/absent backend mode**; driver decision remains open |
 | Custom non-`main` entry | V1 accepts a configured zero-parameter, void, C-convention entry | V2 checker can validate a configured symbol, but backend always emits its fixed hosted `main` bridge around that entry | **Partial**; exact desired mode is undecided |
-| Hidden Pebble context forwarding | V1 adds context to Pebble-convention calls | V2 records `ContextForward`, `ContextExpr`, and `ContextIndirect` and writes `PebbleContext *ctx` | **Implemented, proof needed** for indirect and nested call chains |
+| Hidden Pebble context forwarding | V1 adds context to Pebble-convention calls | V2 records `ContextForward`, `ContextExpr`, and `ContextIndirect` and writes `PebbleContext *ctx` | **Verified** (`56cb9ff`) — nested three-level call chain and an indirect call through a function-typed parameter both proven with a real allocator alloc/write/read/free roundtrip at the deepest hop, confirming `ctx` threads through each hop rather than being dropped or re-fetched |
 | Allocator callback ABI bridge | V1 runtime context stores alloc/realloc/free callbacks | V2 emits file-scope adapters for source functions stored in `Allocator` callback fields | **Verified** for construction, invocation, argument passing, return, local initialization, and field storage |
 | C headers for extern functions | V1 emits configured headers/library data | V2 includes a fixed broad libc header set when any C extern exists | **Partial/intentional simplification**; custom header and library selection is driver work |
 
