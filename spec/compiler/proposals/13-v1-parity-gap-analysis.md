@@ -44,9 +44,54 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — str local copy initialization landed as `7747aaa`. 12 of 19
-P1 slices done. Next: slice local copy initialization — the LAST of
-the 6 "local copy initialization" slices.)*
+**Item: a slice-typed local cannot be initialized from another slice
+value (`let second []int = first;`) — the LAST of the 6 "local copy
+initialization" slices.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1. Independently reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let first []int = [1, 2, 3];
+    let second []int = first;
+    return second[0];
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+slice construction is a SymbolValue, want a CheckedSlice`.
+
+**Known cause — this one is shaped differently from the other 5.**
+`buildSliceLocalDeclaration`
+(`compiler/internal/backend/locals.go:398`) has NO fallback rejection
+of its own for an unrecognized initializer kind — it handles
+`DirectCall`/`MethodCall`, `SliceFromRaw`, and `Load` (a whole-struct
+copy of a slice-typed struct FIELD, `var old_entries = self.entries;`
+— note this ALREADY does almost exactly what we need, just for a
+field read instead of a plain local reference) explicitly, then falls
+through to `buildSliceConstruction`
+(`compiler/internal/backend/aggregates.go:456`) for anything else,
+which only accepts a `CheckedSlice` node — hence the confusing "want a
+CheckedSlice" message for a plain `SymbolValue`.
+
+**Scope:** add a `SymbolValue` case to `buildSliceLocalDeclaration`,
+mirroring its OWN existing `Load` case almost exactly (same
+declaration-with-initializer shape: `pebble_slice_<typeID>_t
+pebble_local_<new> = <value>;` plus `(void)` cast) — a slice is a
+struct (`.data`/`.len`), so copying the struct header directly (not
+the underlying array) is correct and matches how DirectCall/
+SliceFromRaw/Load already just assign the compound value. Scope lookup
++ type-match guard, same pattern as the other 5 already-fixed
+siblings (check this function's `localInfo` field name for slice type
+— likely `sliceType`, confirm by reading the existing `Load` case's
+own scope-registration line). Verify the reproduction above compiles
+and runs, returning 1. Also verify: a slice copied through a helper
+call vs. through a plain local reference behave identically, and that
+slice reassignment (if it exists), slice indexing, and the existing
+`Load`/`DirectCall`/`SliceFromRaw` initializer paths are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
