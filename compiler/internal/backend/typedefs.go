@@ -35,16 +35,26 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 	for _, info := range structs {
 		structByType[info.typ] = info
 	}
-	var depth func(types.TypeID, map[types.TypeID]bool) int
-	depth = func(id types.TypeID, active map[types.TypeID]bool) int {
+	// depth returns the maximum dependency-nesting level below id (a leaf is 0,
+	// an aggregate/array field adds 1) together with whether ANY dependency edge
+	// under id routes through an array type. The array flag drives the
+	// selective nesting check below: a chain built only from struct/tuple/
+	// optional nesting may nest arbitrarily deep, while a chain that passes
+	// through an array keeps the depth>1 rejection — a struct-field array's
+	// typedef is emitted BEFORE the aggregate block (see Emit's
+	// fieldArrayTypedefs), and its inline `elem data[length]` member needs the
+	// COMPLETE element type, so an array whose element is itself an aggregate
+	// would reference a typedef not yet defined.
+	var depth func(types.TypeID, map[types.TypeID]bool) (int, bool)
+	depth = func(id types.TypeID, active map[types.TypeID]bool) (int, bool) {
 		if active[id] {
-			return 0
+			return 0, false
 		}
 		active[id] = true
 		defer delete(active, id)
 		key, ok := snapshot.Key(id)
 		if !ok {
-			return 0
+			return 0, false
 		}
 		var deps []types.TypeID
 		switch key.Kind() {
@@ -66,6 +76,7 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			}
 		}
 		max := 0
+		throughArray := false
 		for _, d := range deps {
 			// A compiler-builtin runtime type (Allocator, Context) is Nominal
 			// like an ordinary struct but is NOT an aggregate this pass orders:
@@ -76,12 +87,19 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			// guard). Without it a struct containing a runtime-typed field would
 			// be miscounted as nested and rejected by the depth check below.
 			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || (isStruct(snapshot, d) && runtimeType(unit, snapshot, d) == 0)) && !isEnumType(unit, snapshot, d) {
-				if v := depth(d, active) + 1; v > max {
+				if isArray(snapshot, d) {
+					throughArray = true
+				}
+				subDepth, subArray := depth(d, active)
+				if subArray {
+					throughArray = true
+				}
+				if v := subDepth + 1; v > max {
 					max = v
 				}
 			}
 		}
-		return max
+		return max, throughArray
 	}
 	for _, id := range append(append(append([]types.TypeID{}, tuples...), optionals...), func() []types.TypeID {
 		r := make([]types.TypeID, len(structs))
@@ -90,7 +108,7 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 		}
 		return r
 	}()...) {
-		if depth(id, map[types.TypeID]bool{}) > 1 {
+		if nesting, throughArray := depth(id, map[types.TypeID]bool{}); nesting > 1 && throughArray {
 			return aggregateTypeOrder{}, fmt.Errorf("aggregate type %s has more than one level of nesting, which is unsupported", describeType(snapshot, id))
 		}
 	}

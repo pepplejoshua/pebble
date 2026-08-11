@@ -359,10 +359,45 @@ func TestEmitTupleWithStrElementCompilesAndRuns(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsTupleNestedMoreThanOneLevel(t *testing.T) {
+func TestEmitTupleNestedMultipleLevelsCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported")
+	// A tuple-only dependency chain nested more than one level deep — b embeds
+	// a, c embeds b — is exactly the shape the selective depth fix now allows
+	// (struct/tuple/optional-only chains may nest arbitrarily deep; only a
+	// chain that passes through an array keeps the depth>1 rejection). Before
+	// the fix orderAggregateTypes rejected this as "more than one level of
+	// nesting" (this test was TestEmitRejectsTupleNestedMoreThanOneLevel). The
+	// three tuple typedefs must be emitted dependency-first — the innermost
+	// (i32, i32) before the ((i32, i32), i32) that embeds it, before the
+	// (((i32, i32), i32), i32) that embeds that — and the program must compile
+	// and run.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let a (i32, i32) = (1, 2); let b ((i32, i32), i32) = (a, 3); let c (((i32, i32), i32), i32) = (b, 4); return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "} pebble_tuple_") {
+			names = append(names, strings.TrimSuffix(strings.TrimPrefix(trimmed, "} "), ";"))
+		}
+	}
+	if len(names) < 3 {
+		t.Fatalf("expected three nested tuple typedefs, got %v:\n%s", names, out)
+	}
+	inner, middle, outer := names[0], names[1], names[2]
+	innerEnd := strings.Index(out, "} "+inner+";")
+	middleEnd := strings.Index(out, "} "+middle+";")
+	outerEnd := strings.Index(out, "} "+outer+";")
+	if innerEnd < 0 || middleEnd < 0 || outerEnd < 0 {
+		t.Fatalf("failed to locate the three tuple typedef definitions:\n%s", out)
+	}
+	if !(innerEnd < middleEnd && middleEnd < outerEnd) {
+		t.Fatalf("tuple typedefs are not dependency-first (inner %d, middle %d, outer %d):\n%s", innerEnd, middleEnd, outerEnd, out)
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
 }
 
 func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {

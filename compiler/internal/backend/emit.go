@@ -782,8 +782,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// (a forward declaration cannot serve an inline array, unlike a slice's
 	// pointer). A struct-field array element is never an aggregate:
 	// orderAggregateTypes' nesting check rejects a struct whose field is an
-	// array of an aggregate as two levels of nesting, so every field-referenced
-	// array is self-contained and safe to emit ahead of the aggregate block.
+	// array of an aggregate as two levels of nesting (the check is selective —
+	// struct/tuple/optional-only chains may nest deeper — but a chain that
+	// passes through an array keeps the depth>1 rejection), so every
+	// field-referenced array is self-contained and safe to emit ahead of the
+	// aggregate block.
 	inFieldArrays := make(map[types.TypeID]bool)
 	var fieldArrayTypes []types.TypeID
 	for _, structInfo := range structInfos {

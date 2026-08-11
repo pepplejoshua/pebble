@@ -392,3 +392,147 @@ func TestEmitTupleResultTypeScanGetsTypedef(t *testing.T) {
 		t.Fatalf("tuple type 23 used only as a helper's result type was not discovered, got %v", ids)
 	}
 }
+
+// structTypedefNames returns, in emission order, every full struct typedef's
+// name (`} pebble_struct_<typeID>_t;`) in the emitted C. Only the closing line
+// of a COMPLETE struct typedef matches the prefix; union/tuple/optional/array
+// typedefs and slice forward declarations use different names or shapes, so the
+// list is exactly the aggregate block's struct typedefs in dependency-first
+// postorder.
+func structTypedefNames(out string) []string {
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "} pebble_struct_") {
+			names = append(names, strings.TrimSuffix(strings.TrimPrefix(trimmed, "} "), ";"))
+		}
+	}
+	return names
+}
+
+func TestEmitThreeLevelStructChainCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The reproduction this whole change exists for: a plain struct-only
+	// dependency chain Outer -> Middle -> Inner (three levels, no arrays) must
+	// now compile and run, returning 42. Before the selective depth fix,
+	// orderAggregateTypes rejected it as "more than one level of nesting".
+	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { value int; };\ntype Middle = struct { inner Inner; };\ntype Outer = struct { middle Middle; };\nfn main() int { let o = Outer.{ middle = Middle.{ inner = Inner.{ value = 42 } } }; return o.middle.inner.value; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitThreeLevelStructChainTypedefsDependencyFirst(t *testing.T) {
+	t.Parallel()
+	// The structural ordering check for the three-level chain: the emitted C
+	// must define the inner struct's typedef before the middle's, and the
+	// middle's before the outer's, because each struct embeds the previous one
+	// by value (C requires a type fully defined before it is used as a struct
+	// member). The first three struct typedefs are exactly Inner, Middle,
+	// Outer in postorder; the test recovers their names from the emitted C
+	// rather than hardcoding TypeIDs, then asserts both the order and that each
+	// outer typedef's struct-typed field names the immediately preceding one.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { value int; };\ntype Middle = struct { inner Inner; };\ntype Outer = struct { middle Middle; };\nfn main() int { let o = Outer.{ middle = Middle.{ inner = Inner.{ value = 42 } } }; return o.middle.inner.value; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	names := structTypedefNames(out)
+	if len(names) < 3 {
+		t.Fatalf("expected at least three struct typedefs, got %v:\n%s", names, out)
+	}
+	inner, middle, outer := names[0], names[1], names[2]
+	innerEnd := strings.Index(out, "} "+inner+";")
+	middleEnd := strings.Index(out, "} "+middle+";")
+	outerEnd := strings.Index(out, "} "+outer+";")
+	if innerEnd < 0 || middleEnd < 0 || outerEnd < 0 {
+		t.Fatalf("failed to locate the three struct typedef definitions:\n%s", out)
+	}
+	if !(innerEnd < middleEnd && middleEnd < outerEnd) {
+		t.Fatalf("struct typedefs are not dependency-first: Inner end %d, Middle end %d, Outer end %d:\n%s", innerEnd, middleEnd, outerEnd, out)
+	}
+	// Middle's typedef embeds Inner by value and Outer's embeds Middle.
+	middleField := strings.Index(out, inner+" pebble_field_")
+	outerField := strings.Index(out, middle+" pebble_field_")
+	if middleField < 0 || middleField > middleEnd {
+		t.Fatalf("middle struct typedef does not embed the inner typedef before its own end (field ref %d, middle end %d):\n%s", middleField, middleEnd, out)
+	}
+	if outerField < 0 || outerField > outerEnd {
+		t.Fatalf("outer struct typedef does not embed the middle typedef before its own end (field ref %d, outer end %d):\n%s", outerField, outerEnd, out)
+	}
+}
+
+func TestEmitFourLevelStructChainCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A four-level struct-only chain (Top -> Outer -> Middle -> Inner) is a
+	// strictly deeper case than the reproduction, confirming the selective fix
+	// is not a three-level special case: any depth built purely from struct
+	// nesting is allowed and emits in dependency-first order.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { value int; };\ntype Middle = struct { inner Inner; };\ntype Outer = struct { middle Middle; };\ntype Top = struct { outer Outer; };\nfn main() int { let t = Top.{ outer = Outer.{ middle = Middle.{ inner = Inner.{ value = 42 } } } }; return t.outer.middle.inner.value; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitTupleAndOptionalNestedInStructChainCompiles(t *testing.T) {
+	t.Parallel()
+	// The selective fix must also cover a struct-only chain that routes through
+	// tuple and optional wrappers (depth 2, no arrays): Wrapper -> (Pair, int)
+	// tuple and Wrapper -> ?Pair optional, both down to Pair. All four typedefs
+	// (Pair struct, tuple, optional, Wrapper struct) must be emitted
+	// dependency-first and the program must compile and run.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Pair = struct { a int; b int; };\ntype Wrapper = struct { t (Pair, int); o ?Pair; };\nfn main() int { let w = Wrapper.{ t = (Pair.{ a = 20, b = 22 }, 1), o = some Pair.{ a = 5, b = 6 } }; return w.t.0.a + w.t.0.b; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Pair's struct typedef must be defined before the tuple and optional
+	// typedefs that embed it, and both of those before the Wrapper struct
+	// typedef that embeds them.
+	pairName := ""
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "} pebble_struct_") {
+			pairName = strings.TrimSuffix(strings.TrimPrefix(trimmed, "} "), ";")
+			break
+		}
+	}
+	if pairName == "" {
+		t.Fatalf("emitted C has no struct typedef:\n%s", out)
+	}
+	pairEnd := strings.Index(out, "} "+pairName+";")
+	tupleRef := strings.Index(out, pairName+" _0;")
+	optionalRef := strings.Index(out, pairName+" value;")
+	if pairEnd < 0 || tupleRef < 0 || optionalRef < 0 {
+		t.Fatalf("failed to locate Pair typedef or its tuple/optional embeddings:\n%s", out)
+	}
+	if !(pairEnd < tupleRef && pairEnd < optionalRef) {
+		t.Fatalf("Pair typedef (%s, end %d) is not emitted before the tuple/optional typedefs that embed it (tuple ref %d, optional ref %d):\n%s", pairName, pairEnd, tupleRef, optionalRef, out)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+func TestEmitArrayOfAggregateStructFieldStillRejected(t *testing.T) {
+	t.Parallel()
+	// The selective fix must NOT newly enable the array-of-aggregate shape:
+	// `struct { arr [2]Inner; }` routes its dependency chain through an array,
+	// so the depth>1 rejection must still fire. Allowing it would emit the
+	// field-referenced array typedef BEFORE the aggregate block (see Emit's
+	// fieldArrayTypedefs) while its inline `pebble_struct_<Inner> data[2]`
+	// member names a struct typedef not yet defined — a silent C-ordering bug.
+	// The shape must be CONSTRUCTED (reachable) for the check to run; an
+	// unreferenced Holder never reaches orderAggregateTypes.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { value int; };\ntype Holder = struct { arr [2]Inner; };\nfn main() int { let h = Holder.{ arr = [Inner.{ value = 1 }, Inner.{ value = 2 }] }; return h.arr[0].value; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
+		t.Fatal("Emit accepted a struct whose field is an array of an aggregate, which would emit the array typedef before the element struct typedef is defined")
+	} else if !strings.Contains(err.Error(), "more than one level of nesting") {
+		t.Fatalf("unexpected rejection: %v", err)
+	}
+}
