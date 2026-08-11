@@ -44,9 +44,113 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #49 (slice struct field as call argument) closed in
-`d33060e`. 17 P1s and P0s resolved this window: tasks #33-49. Next
-up: #50, existing slice as sole variadic tail.)*
+**Item: an existing slice cannot be passed directly as the sole tail
+argument to a variadic slice parameter.**
+
+Sourced from proposal 14's backend gap matrix (`One existing slice as
+the sole variadic tail`, line 296; `Existing slice as one variadic
+tail`, line 73), P1. Independently reproduced and root-caused before
+dispatch. Broader/riskier than the recent backend-only fixes (#40-49)
+— touches the CHECKER's constraint-based inference, not just the
+backend — so scope this one carefully.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn sum(...values []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < values.len {
+        total = total + values[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var s []int = arr[0:3];
+    return sum(s);
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the CHECKER level (not
+emission): `error[C0601]: cannot convert value for argument 1`, since
+`s`'s type (`[]int`) doesn't unify against the per-element expectation
+(`int`) the checker builds for every variadic-tail argument.
+
+**Root cause.** `prepareDirect`'s variadic handling
+(`compiler/internal/check/call_facts.go`, the `if signature.Variadic`
+block starting around line 285) unconditionally treats EVERY argument
+from `p.target.FixedCount` onward as one ELEMENT of the variadic
+slice: it calls `w.variadicElement` to resolve the slice parameter's
+element type, then builds one destination typed as that element for
+each tail argument, with no special case for "the caller passed
+exactly one argument whose OWN type is already the parameter's whole
+slice type." V1's reference semantics (`src/codegen.c:4020-4022`:
+`if (arg_count == fixed_params + 1 && variadic_type->kind ==
+TYPE_SLICE) { write_expression(exprs[fixed_params]); }`) confirm this
+is a real, intentional V1 behavior — not just a convenience the V1
+codegen invented — the emitted C forwards the single slice argument
+directly instead of collecting it into a synthesized array-backed
+slice. **This means V1's own semantic/type-checking layer (find and
+read the equivalent pre-codegen file in `src/`, e.g. wherever call
+argument type-checking happens, before assuming the exact rule) must
+already special-case arg-count == 1 against the parameter's own slice
+type — confirm the precise V1 rule by reading that code, don't just
+infer it from the codegen snippet.**
+
+Even if the checker is fixed to accept this shape, the BACKEND also
+needs a matching change: `buildVariadicSliceArgument`
+(`compiler/internal/backend/calls.go:1448-1489`) unconditionally
+builds a `(sliceType){ .data = (elemType[]){ ... }, .len = N }`
+compound literal from the collected per-element argument expressions
+— it has no path for "the single tail argument is already a
+slice value of the right type, forward it directly" (V1's own
+`arg_count == fixed_params + 1` shortcut). Both layers need the fix
+for the reproduction to actually work end-to-end.
+
+**Scope — investigate before implementing, this is not a
+guaranteed-safe backend-only change:**
+
+1. Read `prepareDirect`'s variadic block and `variadicElement` in full
+   to understand exactly how per-tail-argument destinations are
+   created and how the constraint solver (`w.addConstraint`,
+   `infer.Equal`) resolves an argument's type against a destination.
+2. Determine whether there's an existing, cheap way to check "this
+   specific call has exactly one tail argument, and that argument's
+   syntax node already carries a statically-known type equal to the
+   variadic parameter's slice type" BEFORE constraints are added —
+   look for how other parts of the checker peek an already-resolved
+   type for a simple reference (a local variable's declared type is
+   often known immediately, unlike a general inferred expression).
+   If no such cheap peek exists and the only way to decide is to run
+   full inference twice (once against the slice type, once against
+   the element type, picking whichever unifies) — STOP and report
+   this precisely rather than forcing something architecturally
+   awkward into the constraint solver; this may need a design
+   decision rather than a quick fix.
+3. If a workable approach exists: scope it EXACTLY to "arg count in
+   the variadic tail is exactly 1." Do NOT change behavior for zero
+   tail arguments, multiple tail arguments, or a single tail argument
+   that is genuinely meant as one element (e.g. `sum(5)` — a bare
+   `int` literal in a single-element variadic call — MUST continue to
+   work exactly as today; verify this explicitly as a regression
+   test).
+4. Once the checker accepts the reproduction, add the matching
+   backend case to `buildVariadicSliceArgument`: when there is exactly
+   one variadic argument AND its resolved type is exactly the slice
+   parameter's type (not the element type), forward it directly as
+   the argument expression instead of building the collected-array
+   compound literal (mirroring what `buildSliceArgument`
+   `calls.go:1657+` already does for a plain slice-typed argument in
+   a non-variadic position — likely reusable logic, not a fresh
+   pattern).
+5. Verify the reproduction compiles and runs, returning 6. Verify
+   `sum(5)` (a single literal element, not a slice) is unaffected.
+   Verify a multi-element variadic call (`sum(1, 2, 3)`) is unaffected.
+   Verify a zero-argument variadic call is unaffected. Verify a fixed
+   parameter alongside a variadic slice tail (both the multi-element
+   and sole-slice-tail shapes) still works.
 
 <!-- Previous item, resolved 2026-08-11:
 
