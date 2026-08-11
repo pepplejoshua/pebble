@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — the non-literal bool switch P1 landed as `9b86144`. All P0
+items are closed; working through Sol's P1 list. Next: pick another P1
+from proposal 14's fourth-pass gap table — 6 of the 19 slices done.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a non-literal bool switch subject emits an invalid native C
 `switch(bool)`, failing under the mandated `-Wswitch-bool -Werror`.**
 
@@ -102,6 +108,16 @@ covered by existing tests per the ledger's "Verified V2 extension"
 claim); a bool switch with both `case true`/`case false` (no `else`,
 exhaustive by construction) compiles and runs correctly; existing bool
 switch tests are unaffected.
+
+**Resolution (`9b86144`, 2026-08-10).** The bool subject is now cast
+to `int32_t` for just the C switch header
+(`switch ((int32_t)pebble_local_25)`), matching this backend's
+existing cast convention elsewhere. Case labels unchanged — they
+already compare correctly against an `int32_t` switch. Verified the
+non-literal repro, literal bool subjects, and an exhaustive true/false
+switch (no else). Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 

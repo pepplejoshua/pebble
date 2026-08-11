@@ -280,7 +280,7 @@ is at `backend/emit.go:4140-4405`.
 | `u8` or `i8` with all 256 values | V1 treats it as exhaustive | V2 enumerates the full domain | **Resolved (`4817dae`)** |
 | Character | accepted and emitted as C switch | accepted and emitted with Unicode-scalar labels | **Resolved (`72f0207`)** |
 | String | accepted and emitted as `strcmp` if/else chain with a subject temporary | V2 emits a `pebble_rt_str_eq` if/else chain, subject materialized once into a temp | **Resolved (`b1a53e7`, 2026-08-10)** |
-| Boolean | V1 rejects it | V2 accepts it and proves `true` plus `false` exhaustive, but a non-literal bool subject emits `switch(bool)` and fails under `-Wswitch-bool -Werror` | **Broken V2 extension** |
+| Boolean | V1 rejects it | **Resolved (`9b86144`, 2026-08-10).** V2 accepts it and proves `true` plus `false` exhaustive; a bool subject is now cast to `int32_t` for the C switch header, fixing the non-literal case's `-Wswitch-bool` failure. | — |
 | Enum | accepted, duplicate-checked, exhaustive, emitted | V2 supports it | **Verified** for ordinary enums |
 | Tagged union | accepted, narrowed, exhaustive, emitted by tag | V2 supports local, variant, and call-valued subjects; generic-self narrowing is resolved | **Verified for current subject forms**, payload C-shape limits remain |
 | Default `else` | supported | supported | **Implemented, proof needed** for each subject kind |
