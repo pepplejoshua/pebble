@@ -1285,6 +1285,24 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 			}
 		}
 	}
+	if node.Kind == tir.RecordConstruct {
+		// A struct construction's field values (`Holder.{ c = Color.blue }`)
+		// are stored in node.Fields ([]FieldInit{Field, Value}), NOT
+		// node.Children, so the Children-following recursion below never
+		// reaches an enum value used only as a field's construction value (an
+		// EnumVariantValue at Fields[i].Value) — the same "Fields isn't in
+		// Children" gap collectStructTypesWalk, collectOptionalTypesWalk, and
+		// collectFunctionTypesWalk already close. Without this recursive walk
+		// the enum type is never collected, so neither its pebble_enum_
+		// <typeID>_t typedef nor the EnumVariantValue's pebble_variant_<sym>
+		// constant is emitted, leaving the field's initializer naming
+		// undeclared C identifiers.
+		for _, field := range node.Fields {
+			if err := collectEnumTypesWalk(unit, snapshot, field.Value, out); err != nil {
+				return err
+			}
+		}
+	}
 	for _, childID := range node.Children {
 		if err := collectEnumTypesWalk(unit, snapshot, childID, out); err != nil {
 			return err

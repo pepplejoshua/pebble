@@ -476,6 +476,63 @@ func TestEmitStructEnumFieldWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitStructEnumFieldOnlyConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact repro of the RecordConstruct.Fields enum gap (tracker 13
+	// active defect): a plain enum value used ONLY as a struct field's
+	// construction value, with no other reference to the enum anywhere in
+	// the program. The field's EnumVariantValue lives in node.Fields
+	// ([]FieldInit), never visited by collectEnumTypesWalk's Children-only
+	// recursion, so before the fix neither the enum's
+	// pebble_enum_<typeID>_t typedef nor the variant's
+	// pebble_variant_<sym> constant was emitted and cc failed with
+	// "unknown type name 'pebble_enum_19_t'" / "use of undeclared
+	// identifier 'pebble_variant_27'". The construction must compile, run,
+	// and exit 0.
+	emitAndRun(t, "type Color = enum { red, green, blue };\ntype Holder = struct { c Color; };\nfn main() int {\n    let h Holder = Holder.{ c = Color.blue };\n    return 0;\n}", false, 0, false)
+}
+
+func TestEmitStructEnumFieldOnlyConstructionWritesC(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the gap: the enum typedef (with its variant
+	// constants) must be present and precede the struct typedef that names
+	// it as a field's C type (definition before use), and the construction
+	// must initialize the field from the variant's C enum constant — the
+	// exact two things that were missing before the fix.
+	unit, snapshot, entryID, enumType, _, sources := enumFixture(t, "type Color = enum { red, green, blue };\ntype Holder = struct { c Color; };\nfn main() int {\n    let h Holder = Holder.{ c = Color.blue };\n    return 0;\n}")
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef enum {",
+		enumTypeName(enumType) + " pebble_field_",
+		"= pebble_variant_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	enumIndex := strings.Index(out, "} pebble_enum_")
+	structIndex := strings.Index(out, "} pebble_struct_")
+	if enumIndex < 0 || structIndex < 0 || enumIndex > structIndex {
+		t.Errorf("enum typedef does not precede the struct typedef that names it as a field (definition before use):\n%s", out)
+	}
+}
+
+func TestEmitStructEnumFieldNestedConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The nested-struct variant of the same gap: the enum value is used only
+	// as the INNER struct's construction value, which itself is used only as
+	// the OUTER struct's field value — so the EnumVariantValue sits at
+	// Outer.Fields[0].Value → Inner's RecordConstruct.Fields[0].Value, two
+	// levels deep from any Children-only walk. The read-back comparison
+	// returns 42 only if the enum value round-trips through both
+	// constructions and the field read.
+	emitAndRun(t, "type Color = enum { red, green, blue };\ntype Inner = struct { c Color; };\ntype Outer = struct { inner Inner; };\nfn main() int {\n    let o Outer = Outer.{ inner = Inner.{ c = Color.blue } };\n    if o.inner.c == Color.blue { return 42; }\n    return 1;\n}", false, 42, false)
+}
+
 func TestEmitFixedArrayStructFieldCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The exact repro from the fixed-array-typed-struct-field audit finding
