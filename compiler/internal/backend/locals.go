@@ -985,9 +985,15 @@ func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
 // `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
-// .len = <N> };` whose initializer is a StringLiteral (a string literal) or,
-// since 10.36, a call to a str-returning helper (a DirectCall whose result
-// type is str — `let s str = g();`). PebbleStr is the
+// .len = <N> };` whose initializer is a StringLiteral (a string literal), a
+// call to a str-returning helper (a DirectCall whose result type is str —
+// `let s str = g();`, since 10.36), or — since str local copy-initialization —
+// a SymbolValue naming an in-scope str-typed local, emitted as
+// `PebbleStr pebble_local_<new> = pebble_local_<other>;` — a plain C struct
+// declaration-with-initializer, valid because PebbleStr is a genuine C struct
+// ({data, len}) and so copies by value like tuple/struct/enum locals do (the
+// same acceptance logic buildStrOperand's SymbolValue case uses for the str
+// value read). PebbleStr is the
 // runtime ABI's length-prefixed string type (runtime/include/pebble_rt.h), a
 // fixed runtime type rather than a program-specific shape, so the local is
 // declared directly as PebbleStr with no typedef. .data points at the
@@ -997,12 +1003,14 @@ func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // printable byte emitted as a fixed-width octal escape so a following digit
 // can never be swallowed by C's maximal-munch escape rules); .len is the
 // decoded byte length, a compile-time constant known from the literal itself,
-// so no runtime strlen is involved. The initializer must be a StringLiteral
-// or a matching str-returning DirectCall:
+// so no runtime strlen is involved. The initializer must be a StringLiteral,
+// a matching str-returning DirectCall, or a reference to a str-typed local in
+// scope:
 // initializing a str local from any other value — a copy of another str
 // local, anything else — is a clean rejection, keeping this slice's
-// supported initializer exactly the string literal (or a call to a
-// str-returning helper). The local's scope entry
+// supported initializer exactly the string literal, a call to a
+// str-returning helper, or a reference to a str-typed local in scope. The
+// local's scope entry
 // records isStr, so a later str ==/!= comparison, reassignment, or
 // str-returning function return resolves the operand as a
 // str local. Like every scalar local, the declaration is followed by a (void)
@@ -1037,8 +1045,30 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		scope[statement.Symbol] = localInfo{isStr: true}
 		return withLeadingPre(callPre, indent, fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope str-typed local used as the direct
+		// initializer — `let second str = first;`, a whole-str local copy, the
+		// sibling of the str value read buildStrOperand's SymbolValue case
+		// accepts (a SymbolValue naming a str-typed local emits its
+		// pebble_local_<symbol> C name). The referenced local must be an
+		// in-scope str-typed local: the scope lookup records isStr for every
+		// str local (str carries no per-declaration type ID the way
+		// tuple/struct/enum do — every str is the same PebbleStr C type), so a
+		// non-str local or an undeclared symbol is a clean rejection naming
+		// what was found. The emitted C is a declaration-with-initializer
+		// `PebbleStr pebble_local_<new> = pebble_local_<other>;` — PebbleStr is
+		// a genuine C struct ({data, len}), so the by-value copy is trivially
+		// valid C, the same convention str call arguments and returns already
+		// use.
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || !valueInfo.isStr {
+			return "", fmt.Errorf("%s declares a str-typed local from symbol %d, which is not a str-typed local in scope", context, initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.StringLiteral {
-		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal) or a call to a str-returning helper; initializing a str local from another value is not supported yet", context, initValue.Kind)
+		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal), a call to a str-returning helper, or a reference to a str-typed local in scope", context, initValue.Kind)
 	}
 	valueText, err := buildStrLiteralValue(initValue)
 	if err != nil {

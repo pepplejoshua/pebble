@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -455,6 +456,51 @@ func TestEmitStrLocalAndLiteralEqualCompilesAndRuns(t *testing.T) {
 	// declared from the same decoded bytes as the literal, so equality holds
 	// and the then-arm runs, exiting 10.
 	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; if s == \"hi\" { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole str-typed local from another str-typed local
+	// (`let second str = first;`), the fresh-declaration sibling of the str
+	// value read buildStrOperand's SymbolValue case accepts: the Initialize's
+	// initializer is a SymbolValue naming an in-scope str-typed local, emitted
+	// as a plain C declaration-with-initializer
+	// `PebbleStr pebble_local_<second> = pebble_local_<first>;` — PebbleStr is
+	// a genuine C struct ({data, len}), so the by-value copy is trivially valid
+	// C. The copied local's content must reflect first's ("hello"), the
+	// declared copy.
+	emitAndRun(t, "fn main() i32 { let first str = \"hello\"; let second str = first; if second == \"hello\" { return 0; } return 1; }", false, 0, false)
+}
+
+func TestEmitChainedStrLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A chained str copy-initialization (`let b str = a; let c str = b;`)
+	// proves the SymbolValue initializer branch composes across successive
+	// copies: c's content flows through b and must reflect a's ("x"), not a
+	// zeroed or truncated PebbleStr.
+	emitAndRun(t, "fn main() i32 { let a str = \"x\"; let b str = a; let c str = b; if c == \"x\" { return 0; } return 1; }", false, 0, false)
+}
+
+func TestEmitStrLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to a declaration-with-initializer
+	// `PebbleStr pebble_local_<second> = pebble_local_<first>;` — PebbleStr's
+	// {data, len} struct shape makes the by-value copy trivially valid C, so no
+	// other lowering is needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let first str = \"hello\"; let second str = first; if second == \"hello\" { return 0; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`PebbleStr pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-str local copy declaration %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hello\", .len = 5 };") {
+		t.Errorf("emitted C missing the source local's literal declaration:\n%s", out)
+	}
 }
 
 func TestEmitStrParameterLocalCompilesAndRuns(t *testing.T) {
