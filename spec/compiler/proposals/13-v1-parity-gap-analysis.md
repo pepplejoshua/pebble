@@ -44,9 +44,50 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — enum local copy initialization landed as `7f1db25`. 11 of
-19 P1 slices done. Next: string local copy initialization (slice 5 of
-6 in this family), same one-type-per-task discipline.)*
+**Item: a `str`-typed local cannot be initialized from another `str`
+value (`let second str = first;`).**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1, fifth of 6 "local copy initialization" slices. Independently
+reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let first str = "hello";
+    let second str = first;
+    if second == "hello" { return 0; }
+    return 1;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares a str-typed local initialized from a SymbolValue, want a
+StringLiteral (a string literal) or a call to a str-returning helper;
+initializing a str local from another value is not supported yet`.
+
+**Known cause and required approach.** `buildStrLocalDeclaration`
+(`compiler/internal/backend/locals.go:1010`) rejects a `SymbolValue`
+initializer. A `str`-typed local is `PebbleStr` — a plain C struct
+`{data, len}` — same representation family as the already-fixed
+tuple (`834927e`), struct (`2179ebf`), and enum (`7f1db25`) siblings.
+Trivially declaration-initializable from another `str` value in plain
+C, no `memcpy` needed.
+
+**Scope:** widen `buildStrLocalDeclaration` to accept a `SymbolValue`
+naming an in-scope `str`-typed local, mirroring the tuple/struct/enum
+local-copy fixes' acceptance-logic shape exactly (scope lookup, a
+`str`-specific type check — check how this codebase's `localInfo`
+marks a local as str-typed, likely a boolean flag rather than a
+type-ID field like the aggregate cases, since every `str` shares one
+C type `PebbleStr` — don't assume the same field shape as
+tuple/struct/enum), single-statement declaration-with-initializer plus
+`(void)` cast. Verify the reproduction above compiles and runs,
+returning 0. Also verify: a `str` local copied from a helper-call
+result stored in an intermediate local (chained copy), and that `str`
+reassignment, `str` equality, and `str`-typed struct fields are
+unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
