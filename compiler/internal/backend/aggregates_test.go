@@ -1680,6 +1680,78 @@ func TestEmitArrayRepeatSingleEvaluationWritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 15, false)
 }
 
+func TestEmitArrayLenLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The array `.len` structural accessor on a fixed-array local (proposal 14
+	// row "Array .len", proof needed). The checker folds `a.len` to a
+	// compile-time IntegerLiteral of type uint (see ir_builder_value.go's
+	// expressionMember len fold for an array receiver), so no runtime field
+	// exists — the emitted C is the literal 4. The `as int` cast drops the
+	// uint width. A bare `return a.len;` is out of scope (a uint result needs
+	// the cast), exactly as slice `.len` requires one.
+	emitAndRun(t, "fn main() int { let a [4]int = [10, 20, 30, 40]; return a.len as int; }", false, 4, false)
+}
+
+func TestEmitArrayLenParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read on an array-typed PARAMETER, not just a local: the
+	// checker folds the read the same way regardless of the array's source
+	// (the member base resolves to the [5]i32 parameter type), so the helper
+	// returns the compile-time length 5 even though it never touches the
+	// elements. The entry passes a real array local by value.
+	emitAndRun(t, "fn size(a [5]i32) i32 { return a.len as i32; } fn main() i32 { var a [5]i32 = [1, 2, 3, 4, 5]; return size(a); }", false, 5, false)
+}
+
+func TestEmitArrayLenLoopBoundCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read consumed as a loop bound — `loop 0..a.len : i`.
+	// The uint-typed folded length anchors the shared bound type, so the
+	// iterator is a uint C counter and `a[i]` indexes through the uint index
+	// path; the three elements sum to 18, proving the fold was used to drive
+	// a real runtime loop over the array.
+	emitAndRun(t, "fn main() int { let a [3]int = [5, 6, 7]; var total int = 0; loop 0..a.len : i { total = total + a[i]; } return total; }", false, 18, false)
+}
+
+func TestEmitArrayLenStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read through a struct-field array (`b.data.len`, where
+	// data is a [3]int field): the array-typed field is a supported struct
+	// C shape (an inline `pebble_array_<id>_t`-style wrapper), and the len
+	// fold resolves against the FIELD's resolved [3]int type, returning the
+	// compile-time 3.
+	emitAndRun(t, "type Box = struct { data [3]int; };\nfn main() int { let b Box = Box.{ data = [1, 2, 3] }; return b.data.len as int; }", false, 3, false)
+}
+
+func TestEmitArrayLenI64EntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read under an i64 entry width: the fold is width-
+	// independent (the array's length is a compile-time constant regardless of
+	// the ambient entry width), and the `as i64` cast lands the uint literal
+	// at the entry's own width. The same fold drives the `a.len as i64`
+	// result of 4.
+	emitAndRun(t, "fn main() i64 { let a [4]i64 = [1, 2, 3, 4]; return a.len as i64; }", false, 4, false)
+}
+
+func TestEmitArrayLenOfRepeatCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read on an ArrayRepeat-initialized local (`[7; 3]`): the
+	// repeat construction fills three slots with one evaluation of 7, and the
+	// length fold returns the repeat's compile-time length 3 regardless of the
+	// repeated value. A repeat-shaped array is a distinct source shape from the
+	// ArrayValue literal used in the other array-len tests above.
+	emitAndRun(t, "fn main() int { let a [3]int = [7; 3]; return a.len as int; }", false, 3, false)
+}
+
+func TestEmitArrayLenFromReturningHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An array `.len` read on an array whose value came from an
+	// array-returning helper call: the caller declares an array local from the
+	// call and reads its length. The fold resolves against the local's
+	// declared [3]int type, so the compile-time length 3 is returned even
+	// though the array's value crossed a function boundary by value.
+	emitAndRun(t, "fn make() [3]int { return [5, 6, 7]; } fn main() int { let a [3]int = make(); return a.len as int; }", false, 3, false)
+}
+
 func TestEmitNestedTupleElementCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, "fn main() i32 { let inner (i32, i32) = (20, 22); let outer ((i32, i32), bool) = (inner, true); return (outer.0).1; }", false, 22, false)
@@ -1740,6 +1812,55 @@ func TestEmitTupleParameterUsedInBoolElementAndSecondCall(t *testing.T) {
 	// (the Load(TuplePlace) bool path) exactly as a tuple local's do.
 	// choose((10, true)) takes the then-arm and returns the i32 element 10.
 	emitAndRun(t, "fn choose(t (i32, bool)) i32 { if t.1 { return t.0; } else { return 99; } } fn main() i32 { let t (i32, bool) = (10, true); return choose(t); }", false, 10, false)
+}
+
+func TestEmitTupleFourElementLaterOrdinalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 4-element tuple's LAST ordinal (`.3`): the existing tuple tests cover
+	// `.0`/`.1`/`.2` but never an ordinal 3, so the late-element path of the
+	// Load(TuplePlace) read (`pebble_local_<sym>._3`) is unproven. The
+	// four-field tuple typedef and the `.3` read-back return 4.
+	emitAndRun(t, "fn main() int { let t (int, int, int, int) = (1, 2, 3, 4); return t.3; }", false, 4, false)
+}
+
+func TestEmitTupleFiveElementLateOrdinalsAddedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 5-element tuple reading TWO late ordinals (`.2` and `.4`): the
+	// five-field typedef and both Load(TuplePlace) reads lower to
+	// `._2`/`._4` field projections inside the checked add. 30 + 50 = 80 is
+	// the exit code, proving the last ordinal of a 5-tuple is not a special
+	// cutoff.
+	emitAndRun(t, "fn main() int { let t (int, int, int, int, int) = (10, 20, 30, 40, 50); return t.2 + t.4; }", false, 80, false)
+}
+
+func TestEmitTupleOrdinalsOnStructFieldTupleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Tuple ordinals read off a tuple stored in a STRUCT FIELD (`b.t.1`),
+	// not just a local: the existing tests cover a struct-typed tuple element
+	// (`.0`), but never the ordinal projection itself through a FieldPlace
+	// base. The nested place chain — Load(TuplePlace) whose base is
+	// Load(FieldPlace) — resolves to `pebble_local_<b>.pebble_field_<t>._1`,
+	// and 8 + 9 = 17 proves both field and ordinal projections are correct.
+	emitAndRun(t, "type Box = struct { t (int, int, int); };\nfn main() int { let b Box = Box.{ t = (7, 8, 9) }; return b.t.1 + b.t.2; }", false, 17, false)
+}
+
+func TestEmitFourElementTupleParameterOrdinalsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 4-element tuple PARAMETER read at three ordinals (`.0`, `.2`, `.3`):
+	// the callee's parameter seeds its scope as a tuple local, and the late
+	// ordinals resolve through the same Load(TuplePlace) machinery a tuple
+	// local's do. 1 + 3 + 4 = 8 is the exit code.
+	emitAndRun(t, "fn sum(t (int, int, int, int)) int { return t.0 + t.2 + t.3; } fn main() int { let t (int, int, int, int) = (1, 2, 3, 4); return sum(t); }", false, 8, false)
+}
+
+func TestEmitTupleBoolOrdinalsDriveIfCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Bool-typed tuple ordinals at positions 1 and 2 of a three-element tuple
+	// (`t.1`, `t.2`) driving an if condition: each read routes through the
+	// Load(TuplePlace) bool grammar. The nested `if t.1 { if !t.2 {...} }`
+	// requires both the true and the negated bool element read, and the
+	// then-arm exit 3 proves both projected values.
+	emitAndRun(t, "fn main() int { let t (int, bool, bool) = (1, true, false); if t.1 { if !t.2 { return 3; } } return 4; }", false, 3, false)
 }
 
 func TestEmitOptionalNoneNeverUnwrappedCompilesClean(t *testing.T) {
@@ -5360,6 +5481,97 @@ func TestEmitSliceParameterI64CompilesAndRuns(t *testing.T) {
 	// the exit code. The parameter's C type is pebble_slice_<id>_t with an
 	// int64_t* data field.
 	emitAndRun(t, "fn first(s []i64) i64 { return s[0]; } fn main() i64 { var a [5]i64 = [100, 200, 300, 400, 500]; var s []i64 = a[1:3]; return first(s); }", false, 200, false)
+}
+
+func TestEmitSliceLenStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice `.len` read through a slice-typed STRUCT FIELD (`b.items.len`):
+	// the existing `.len` tests cover a local, a parameter, and a variadic
+	// tail, but never the Load(FieldPlace) base on a slice field. The runtime
+	// `.len` field of the field-projected slice is read back and cast, and
+	// b.items = a[:] holds all four elements, so 4 is the exit code.
+	emitAndRun(t, "type Box = struct { items []int; };\nfn main() int { var a [4]int = [1, 2, 3, 4]; var b Box = Box.{ items = a[:] }; return b.items.len as int; }", false, 4, false)
+}
+
+func TestEmitSliceLenParameterArithmeticCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice `.len` read on a slice PARAMETER consumed as a value operand in
+	// checked arithmetic, complementing the existing loop-bound use: the
+	// Load(FieldPlace) `.len` read lowers to the parameter's runtime `.len`
+	// field, and `(s.len as int) * k` with a three-element slice computes
+	// 3 * 10 = 30.
+	emitAndRun(t, "fn scale(s []int, k int) int { return (s.len as int) * k; } fn main() int { var a [3]int = [1, 2, 3]; var s []int = a[0:3]; return scale(s, 10); }", false, 30, false)
+}
+
+func TestEmitSliceDataPointeeReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice `.data` read USED as a pointer VALUE — its pointee dereferenced —
+	// not just referenced as an index or slice base (proposal 14 row "Slice
+	// .len and .data", proof needed). `s.data` is `*int`; the read lowers to a
+	// Load(FieldPlace) of pointer type resolved by the pointer grammar, stored
+	// in a pointer local, and dereferenced through the checked deref path.
+	// s = a[1:2] = [20], so `*p` = 20 is the exit code.
+	emitAndRun(t, "fn main() int { var a [3]int = [10, 20, 30]; var s []int = a[1:2]; let p *int = s.data; return *p; }", false, 20, false)
+}
+
+func TestEmitSliceDataStructFieldPointeeReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The struct-field twin of the slice `.data` pointee read: `b.items.data`
+	// is a Load(FieldPlace) of pointer type whose base is itself a
+	// Load(FieldPlace) (the slice-typed field projection), so the nested
+	// place chain must resolve to
+	// `pebble_local_<b>.pebble_field_<items>.data` and dereference through it.
+	// b.items = a[1:3] = [20, 30], so the first pointee is 20.
+	emitAndRun(t, "type Box = struct { items []int; };\nfn main() int { var a [3]int = [10, 20, 30]; var b Box = Box.{ items = a[1:3] }; let p *int = b.items.data; return *p; }", false, 20, false)
+}
+
+func TestEmitSliceDataPointeeReadParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The parameter-side slice `.data` pointee read: the callee's slice
+	// parameter seeds its scope as a slice local, so `s.data` resolves through
+	// the same Load(FieldPlace) pointer read a slice local's does. s = a[1:3]
+	// = [20, 30], and the first pointee 20 is the exit code.
+	emitAndRun(t, "fn first(s []int) int { let p *int = s.data; return *p; } fn main() int { var a [3]int = [10, 20, 30]; var s []int = a[1:3]; return first(s); }", false, 20, false)
+}
+
+func TestEmitSliceDataPointerEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Two slices' `.data` pointers compared for equality — the strongest proof
+	// that `.data` is a real, usable value and that slices share a backing
+	// array exactly when sliced from it. Both s and t slice the SAME array, so
+	// s.data == t.data is true (exit 1); two slices of two separate arrays
+	// compare unequal (exit 3). Pointer equality lowers to the plain C == on
+	// the two `.*.data` lvalues.
+	emitAndRun(t, "fn main() int { var a [3]int = [10, 20, 30]; var s []int = a[0:2]; var t []int = a[0:2]; if s.data == t.data { return 1; } else { return 2; } }", false, 1, false)
+}
+
+func TestEmitSliceDataPointerEqualityDifferentBackingsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The negative twin of the backing-array sharing proof: s slices a and t
+	// slices b — two distinct backing arrays — so s.data != t.data is true and
+	// the exit code is 3. Without this arm, a compiler that (wrongly) compared
+	// backing CONTENT instead of pointers would still pass the equality test
+	// above (both backings hold [10, 20]).
+	emitAndRun(t, "fn main() int { var a [3]int = [10, 20, 30]; var b [3]int = [10, 20, 30]; var s []int = a[0:2]; var t []int = b[0:2]; if s.data != t.data { return 3; } else { return 4; } }", false, 3, false)
+}
+
+func TestEmitSliceDataNilComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice `.data` compared against nil: the pointer-typed `.data` read
+	// participates in a `== nil` comparison through the same NilPointer path
+	// pointer locals use. s = a[0:2] has a non-null data pointer, so the
+	// equality is false and the else arm exits 1.
+	emitAndRun(t, "fn main() int { var a [3]int = [1, 2, 3]; var s []int = a[0:2]; if s.data == nil { return 0; } else { return 1; } }", false, 1, false)
+}
+
+func TestEmitSliceDataAsPointerArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice `.data` pointer passed as an argument to a pointer-taking
+	// helper: the Load(FieldPlace) pointer value flows through the call-
+	// argument builder and the callee dereferences the received pointer. first
+	// returns `*p` = a[0] = 10, proving `.data` is a first-class pointer value
+	// in argument position, not only a local initializer.
+	emitAndRun(t, "fn first(p *int) int { return *p; } fn main() int { var a [3]int = [10, 20, 30]; var s []int = a[0:2]; return first(s.data); }", false, 10, false)
 }
 
 func TestEmitSliceReturningHelperInlineConstructionCompilesAndRuns(t *testing.T) {
