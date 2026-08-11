@@ -44,6 +44,19 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #84 (tagged-union struct field construction) closed in
+`e3478af`, requiring TWO compounding fixes (a builder-routing bug
+plus a matching `collectUnionTypesWalk` RecordConstruct.Fields
+collection gap, individually causation-checked as both necessary).
+The literal reproduction's `value i32` shape hit a SEPARATE,
+orthogonal, pre-existing limitation (union payloads must be exactly
+int/bool/str) — not touched, confirmed identical on locals too, not a
+new gap. Now at 2 of the "up to 5" additional gaps chased this
+session (this item, plus #85 queued next: float/char/str tuple
+ordinal reads).)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a tagged-union-typed struct field's construction fails —
 `buildStructBraceList`'s enum-field case routes a payload-carrying
 variant to the wrong builder.**
@@ -97,6 +110,32 @@ unaffected. Verify a tagged-union LOCAL declaration and a tagged-union
 call argument/return (if those already work — confirm before assuming)
 are unaffected, since this fix only touches the struct-field
 construction switch.
+
+**Resolution (`e3478af`, 2026-08-11).** Verification revealed a
+SECOND, compounding gap needed alongside the scoped builder fix:
+`collectUnionTypesWalk` had no `RecordConstruct` case (the identical
+"Fields isn't in Children" gap `collectEnumTypesWalk` got fixed for in
+`d19717c`) — without it, the union's typedef pair was never collected
+when only reachable through a struct field's construction, and the
+field declaration named an undeclared C type even after the builder
+fix. Both fixes landed together, independently causation-checked as
+each individually necessary (reverting either one alone reproduces a
+distinct failure — the original clean rejection, or a `cc` "unknown
+type name" failure). **Also confirmed: the tracker's own literal
+reproduction (`value i32`) hits a SEPARATE, pre-existing, orthogonal
+limitation** — this backend's tagged-union payloads must be exactly
+int/bool/str (documented gates in `collect.go`/`types.go`), confirmed
+identical for a union LOCAL of the same shape on unmodified `HEAD`, so
+NOT part of this defect. Verified instead with the repo's own
+established `value int` convention (matching every existing union
+test): the payload-carrying case round-trips through construction,
+storage, and a narrowing switch; the payload-less sibling
+(`Holder.{ u = Choice.empty }`) correctly routes through
+`buildUnionValueExpr`'s `EnumVariantValue` case; plain-enum struct
+fields and tagged-union locals/arguments/returns are confirmed
+unaffected. Full suite (`go test ./... -count=1 -timeout 600s
+-parallel 16`, 11 packages) clean, `gofmt`/`go vet` clean.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
