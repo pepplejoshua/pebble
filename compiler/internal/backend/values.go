@@ -205,6 +205,40 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", err
 		}
 		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
+	case tir.CharToInteger:
+		// A char value cast to uint (`c as uint`), the uint twin of
+		// buildExpr's CharToInteger case: the whole cast lowers to a plain,
+		// unchecked C cast to uint's own C type (uint64_t) of the single char
+		// child expression, built by buildCharOperand (a char literal, a
+		// char-typed local reference, a char-returning call, or a char element
+		// read). The well-definedness reasoning is exactly buildExpr's: a char
+		// is a Unicode scalar value, and every valid codepoint (max 0x10FFFF)
+		// fits identically in every integer width Pebble has, so reading out
+		// the char's codepoint as a uint is always well-defined and needs no
+		// runtime helper. uint needed its OWN case only because buildUintExpr
+		// is a separate builder function from buildExpr (a uint-typed
+		// CharToInteger node routes here, never to buildExpr's case), not
+		// because the semantics differ. The destination is uint by
+		// construction (buildUintExpr's gate above already required node.Type
+		// to be uint), so there's no need to re-derive the destination width
+		// the way buildExpr's case does — just cast to cType(types.Uint)
+		// directly, exactly as the IntegerCast/PointerToInteger cases above
+		// do for their own uint-cast wrapping.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a CharToInteger with %d children, want exactly one", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("uint expression CharToInteger references invalid child node %d", node.Children[0])
+		}
+		if !isChar(snapshot, child.Type) {
+			return "", fmt.Errorf("uint expression CharToInteger child has type %s, want a char value", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
 	case tir.Load:
 		// A by-value read of a uint-typed place — a uint struct field read
 		// (`var old_cap = self.cap;`, the std/hmap.peb rehash shape, lowered

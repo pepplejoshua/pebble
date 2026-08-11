@@ -1044,6 +1044,63 @@ func TestEmitCharToIntegerU64CompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i64 { let c char = 'A'; let n u64 = c as u64; return n as i64; }", false, 65, false)
 }
 
+func TestEmitCharToIntegerUintCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact minimal repro of the bug being fixed: `let n uint = c as
+	// uint;` — a char-typed local read out as its codepoint into a uint. uint
+	// is the platform-native builtin the backend routes through buildUintExpr,
+	// which had no CharToInteger case (every other integer destination was
+	// handled by buildExpr's CharToInteger), so the cast failed at Emit with
+	// "unsupported uint expression node CharToInteger". The fix adds the case
+	// to buildUintExpr; the whole cast now lowers to a plain C cast
+	// (uint64_t)(pebble_local_<c>) — 'A' is codepoint 65, so the exit code is
+	// 65. The uint destination is not the entry's int width, so the cast
+	// appears as the uint local's initializer, then the local is read back
+	// out as int.
+	emitAndRun(t, "fn main() int { let c char = 'A'; let n uint = c as uint; return n as int; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerUintFromLiteralCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The CharToInteger child can be a bare char literal (not just a local
+	// reference): 'A' as uint is built by buildCharOperand's CharLiteral path
+	// and cast to uint64_t, then read back out as int. Codepoint 65. This is
+	// the literal-source counterpart to the local-reference test above, and
+	// covers the buildUintExpr CharToInteger child built by buildCharOperand's
+	// literal path.
+	emitAndRun(t, "fn main() int { let n uint = 'A' as uint; return n as int; }", false, 65, false)
+}
+
+func TestEmitCharToIntegerUintHighByteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A char value near the high end of its range cast to uint, proving the
+	// uint destination does not truncate. '\u{FFFF}' (65535) is a valid
+	// Unicode scalar and a multi-byte-in-UTF8, single-scalar codepoint; uint
+	// is uint64_t, so the cast must carry the full value. The exit code cannot
+	// carry 65535 (the OS masks exit status to 8 bits), so the value is
+	// asserted via a comparison: returning 7 proves the cast produced exactly
+	// 65535, not a truncated or wrapped value. (The same fixture already
+	// proves u16's maximum; here it proves uint's 64-bit destination keeps the
+	// value intact through buildUintExpr's dedicated CharToInteger path.)
+	emitAndRun(t, "fn main() int { let c char = '\\u{FFFF}'; let n uint = c as uint; if n == 65535 { return 7; } return 1; }", false, 7, false)
+}
+
+func TestEmitCharToIntegerUintWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly: the uint CharToInteger lowers to a plain
+	// C cast of the char value's expression to uint's own C type
+	// (uint64_t)(...), with no runtime helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let c char = 'A'; let n uint = c as uint; return n as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(uint64_t)(pebble_local_") {
+		t.Errorf("emitted C missing the char-to-integer cast (uint64_t)(pebble_local_...):\n%s", out)
+	}
+}
+
 func TestEmitCharToIntegerWritesC(t *testing.T) {
 	t.Parallel()
 	// Confirm the emitted C directly: the CharToInteger lowers to a plain C
@@ -1118,9 +1175,9 @@ func TestEmitCharToIntegerAllWidthsCompilesAndRuns(t *testing.T) {
 	// int32_t, i64 is int64_t, u8/u16/u32/u64 are the fixed unsigned widths,
 	// i8/i16 are the narrow signed widths). Every row reads the cast result
 	// back out as the entry's int and asserts the real codepoint value. The
-	// 10th width, uint, is deliberately NOT here: `c as uint` is broken
-	// (buildUintExpr has no CharToInteger case — see the NEW FINDING in the
-	// task report), so a compile-link-run row for it cannot pass today.
+	// 10th width, uint, is here too: uint values are built by the SEPARATE
+	// buildUintExpr builder (which routes through its own CharToInteger case
+	// now), so its row exercises that dedicated path rather than buildExpr's.
 	for _, tc := range []struct {
 		name string
 		src  string
@@ -1134,6 +1191,7 @@ func TestEmitCharToIntegerAllWidthsCompilesAndRuns(t *testing.T) {
 		{"u16", "fn main() int { let c char = 'A'; let n u16 = c as u16; return n as int; }"},
 		{"u32", "fn main() int { let c char = 'A'; let n u32 = c as u32; return n as int; }"},
 		{"u64", "fn main() int { let c char = 'A'; let n u64 = c as u64; return n as int; }"},
+		{"uint", "fn main() int { let c char = 'A'; let n uint = c as uint; return n as int; }"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
