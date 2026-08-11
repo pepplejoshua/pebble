@@ -4249,6 +4249,114 @@ fn main() int {
 	}
 }
 
+func TestEmitSizeofArrayOfStructCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The tracker's exact repro shape: sizeof [2]Point is the ONLY reference
+	// to Point (no construction, no field access, no local, no helper
+	// signature) and the only reference to the [2]Point array type. Before the
+	// fix collectArrayTypesWalk collected the array's own typedef (its own
+	// SizeofType case) but collectStructTypesWalk never collected the struct
+	// ELEMENT type — its SizeofType case only matched a TypeArg that was
+	// directly a struct, and for sizeof [2]Point the TypeArg is the array
+	// type — so the array typedef's `pebble_struct_<typeID>_t data[2]` field
+	// named an undeclared C type and cc rejected the program. int is int32_t
+	// here, so Point (x int; y int;) is 8 bytes and [2]Point is 16 (confirmed
+	// against the emitted C's actual struct layout).
+	emitAndRun(t, `type Point = struct {
+    x int;
+    y int;
+};
+fn main() int {
+    return (sizeof [2]Point) as int;
+}`, false, 16, false)
+}
+
+func TestEmitSizeofArrayOfStructOnlyReferenceEmitsStructTypedef(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the array-element struct collection fix: the
+	// array typedef must reference the struct's pebble_struct_<typeID>_t
+	// typedef, and that struct typedef must be collected, emitted, and placed
+	// BEFORE the array typedef; before the fix the struct typedef was never
+	// collected at all (a missing-collection gap, not an ordering gap), so the
+	// array typedef named a never-declared C type.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Point = struct {
+    x int;
+    y int;
+};
+fn main() int {
+    return (sizeof [2]Point) as int;
+}`, "main", false)
+	var arrayType, structType types.TypeID
+	for _, node := range unit.Nodes() {
+		if node.Kind != tir.SizeofType {
+			continue
+		}
+		arrayType = node.TypeArg
+		if key, ok := snapshot.Key(arrayType); ok {
+			if _, element, ok := key.Array(); ok {
+				structType = element
+			}
+		}
+		break
+	}
+	if arrayType == 0 || structType == 0 {
+		t.Fatal("fixture has no SizeofType node carrying the array and its struct element type")
+	}
+	var members []symbol.SymbolID
+	for _, td := range entryTypeDeclarations(unit) {
+		members = td.Members
+		break
+	}
+	if len(members) != 2 {
+		t.Fatalf("fixture declares %d struct members, want 2 (x, y)", len(members))
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	structTypedef := "typedef struct {\n" +
+		"    int32_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
+		"    int32_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
+		"} " + structTypeName(structType) + ";"
+	arrayTypedef := "typedef struct {\n    " + structTypeName(structType) + " data[2];\n} " + arrayTypeName(arrayType) + ";"
+	if !strings.Contains(out, structTypedef) {
+		t.Errorf("emitted C is missing the element struct typedef %q (the array typedef references it, so the struct must be collected and emitted):\n%s", structTypedef, out)
+	}
+	if !strings.Contains(out, arrayTypedef) {
+		t.Errorf("emitted C is missing the array typedef %q:\n%s", arrayTypedef, out)
+	}
+	if strings.Index(out, structTypedef) > strings.Index(out, arrayTypedef) {
+		t.Errorf("emitted C declares the array typedef before the struct element typedef it references; the struct typedef must come first:\n%s", out)
+	}
+}
+
+func TestEmitSizeofArrayOfTupleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The same SizeofType-array-element collection gap, for a TUPLE element:
+	// sizeof [2](int, int) is the only reference to both the array and the
+	// tuple, so only collectArrayTypesWalk sees the array and the element
+	// tuple's pebble_tuple_<typeID>_t typedef would never be collected — the
+	// same shape of missing-collection bug, fixed alongside the struct case.
+	// int is int32_t, so (int, int) is 8 bytes and [2](int, int) is 16.
+	emitAndRun(t, `fn main() int {
+    return (sizeof [2](int, int)) as int;
+}`, false, 16, false)
+}
+
+func TestEmitSizeofArrayOfOptionalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The same SizeofType-array-element collection gap, for an OPTIONAL
+	// element: sizeof [2]?int is the only reference to both the array and the
+	// optional, so the element optional's pebble_optional_<typeID>_t typedef
+	// would never be collected — the same shape of missing-collection bug,
+	// fixed alongside the struct case. ?int lowers to { bool has_value;
+	// int32_t value; } = 8 bytes, so [2]?int is 16.
+	emitAndRun(t, `fn main() int {
+    return (sizeof [2]?int) as int;
+}`, false, 16, false)
+}
+
 func TestEmitSizeofCastToIntegerCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A bare `sizeof T` directly cast to an integer (`(sizeof int) as

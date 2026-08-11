@@ -414,8 +414,9 @@ func collectTupleTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 // at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
 // region of the node graph the body builders consume. TupleValue, TupleCoerce,
-// and Initialize nodes carry tuple types: a TupleValue node's own Type, a
-// TupleCoerce's destination tuple type recovered from TypeArgs, and an
+// Initialize, and a bare `sizeof` of a tuple-element array carry tuple types:
+// a TupleValue node's own Type, a
+// TupleCoerce's destination tuple type recovered from TypeArgs, an
 // Initialize whose initializer
 // value carries a tuple type (a tuple-typed local declaration — the local's
 // type is recorded on the initializer value node, not on the Initialize node
@@ -437,6 +438,25 @@ func collectTupleTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 			return fmt.Errorf("tuple-type walk on a TupleCoerce: %v", err)
 		}
 		*out = append(*out, destination)
+	}
+	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
+		// A bare `sizeof` of a fixed array whose ELEMENT is a tuple
+		// (`sizeof [N](int, int)`): the array's own pebble_array_<typeID>_t
+		// typedef is collected by collectArrayTypesWalk (its own SizeofType
+		// case), but that array typedef's C body declares
+		// `pebble_tuple_<typeID>_t data[N]`, so the element tuple's typedef
+		// must ALSO be collected here or the array typedef names an undeclared
+		// C type. The SizeofType node's TypeArg is the ARRAY type, not the
+		// tuple, so no other rule in this walk sees it — the element is
+		// resolved here via the same (length, elementType, ok) key.Array()
+		// pattern the rest of this file uses.
+		key, ok := snapshot.Key(node.TypeArg)
+		if !ok {
+			return fmt.Errorf("tuple-type walk: sizeof array type %s is not in the type snapshot", describeType(snapshot, node.TypeArg))
+		}
+		if _, elementType, ok := key.Array(); ok && isTuple(snapshot, elementType) {
+			*out = append(*out, elementType)
+		}
 	}
 	if node.Kind == tir.Initialize {
 		for _, childID := range node.Children {
@@ -528,11 +548,14 @@ func collectOptionalTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID
 // collectOptionalTypesWalk appends every optional type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Two node shapes carry an
-// optional type: a SomeOptional node's own Type, and an Initialize whose
+// region of the node graph the body builders consume. Three node shapes carry
+// an optional type: a SomeOptional node's own Type, an Initialize whose
 // initializer value carries an optional type (an optional-typed local
 // declaration — confirmed against a real fixture: the local's type is recorded
-// on the initializer value node, not on the Initialize node itself). The
+// on the initializer value node, not on the Initialize node itself), and a
+// bare `sizeof` of a tuple/struct/optional-element array (`sizeof [N]?int`),
+// whose array typedef's C body references the optional's
+// pebble_optional_<typeID>_t typedef. The
 // Initialize rule alone covers a `none`-initialized local too (a NoneOptional
 // node carries its own optional Type exactly like SomeOptional does), so no
 // separate NoneOptional case is needed here. A RecordConstruct's field values
@@ -549,6 +572,25 @@ func collectOptionalTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID t
 	if node.Kind == tir.SomeOptional {
 		if isOptional(snapshot, node.Type) {
 			*out = append(*out, node.Type)
+		}
+	}
+	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
+		// A bare `sizeof` of a fixed array whose ELEMENT is an optional
+		// (`sizeof [N]?int`): the array's own pebble_array_<typeID>_t typedef
+		// is collected by collectArrayTypesWalk (its own SizeofType case), but
+		// that array typedef's C body declares `pebble_optional_<typeID>_t
+		// data[N]`, so the element optional's typedef must ALSO be collected
+		// here or the array typedef names an undeclared C type. The SizeofType
+		// node's TypeArg is the ARRAY type, not the optional, so no other rule
+		// in this walk sees it — the element is resolved here via the same
+		// (length, elementType, ok) key.Array() pattern the rest of this file
+		// uses.
+		key, ok := snapshot.Key(node.TypeArg)
+		if !ok {
+			return fmt.Errorf("optional-type walk: sizeof array type %s is not in the type snapshot", describeType(snapshot, node.TypeArg))
+		}
+		if _, elementType, ok := key.Array(); ok && isOptional(snapshot, elementType) {
+			*out = append(*out, elementType)
 		}
 	}
 	if node.Kind == tir.Initialize {
@@ -933,16 +975,20 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 // collectStructTypesWalk appends every struct type encountered in the tree
 // rooted at nodeID to out, in first-encountered order, following Children and
 // DeferChain exactly like collectDirectCalls so it visits the same reachable
-// region of the node graph the body builders consume. Three node shapes carry
+// region of the node graph the body builders consume. Four node shapes carry
 // a struct type: a RecordConstruct node's own Type, an Initialize whose
 // initializer value carries a struct type (a struct-typed local declaration —
 // the local's type is recorded on the initializer value node, not on the
 // Initialize node itself, confirmed against a real fixture, the same finding
-// tuple/array/optional collection made), and a SizeofType node whose TypeArg
+// tuple/array/optional collection made), a SizeofType node whose TypeArg
 // is a struct type (a bare `sizeof Pair` with no other reference to the type
 // anywhere — no construction, field access, local, or helper signature — so
 // only the SizeofType node carries it, the same SizeofType collection gap
-// collectUnionTypesWalk and collectArrayTypesWalk close for their own kinds).
+// collectUnionTypesWalk and collectArrayTypesWalk close for their own kinds),
+// and a SizeofType node whose TypeArg is an ARRAY of a struct type (a bare
+// `sizeof [N]Point` — the array typedef collectArrayTypesWalk collects names
+// the struct's pebble_struct_<typeID>_t in its own C body, so the element
+// struct must be collected here even though no other node carries it).
 // A RecordConstruct whose own type is a
 // compiler-builtin runtime type (Allocator, Context) is excluded — its C type
 // is the hand-written PebbleAllocator / PebbleContext (never a per-TypeID
@@ -971,6 +1017,25 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		// typedef, and an enum-shaped type (a plain enum or tagged union)
 		// is collected by collectEnumTypes/collectUnionTypes instead.
 		*out = append(*out, node.TypeArg)
+	}
+	if node.Kind == tir.SizeofType && isArray(snapshot, node.TypeArg) {
+		// A bare `sizeof` of a fixed array whose ELEMENT is a plain struct
+		// (`sizeof [N]Point`): the array's own pebble_array_<typeID>_t typedef
+		// is collected by collectArrayTypesWalk (its own SizeofType case), but
+		// that array typedef's C body declares `pebble_struct_<typeID>_t
+		// data[N]`, so the element struct's typedef must ALSO be collected
+		// here or the array typedef names an undeclared C type. The
+		// SizeofType node's TypeArg is the ARRAY type, not the struct, so the
+		// bare-struct case above never fires for it — the element is resolved
+		// here via the same (length, elementType, ok) key.Array() pattern the
+		// rest of this file uses, guarded identically to the bare-struct case.
+		key, ok := snapshot.Key(node.TypeArg)
+		if !ok {
+			return fmt.Errorf("struct-type walk: sizeof array type %s is not in the type snapshot", describeType(snapshot, node.TypeArg))
+		}
+		if _, elementType, ok := key.Array(); ok && isStruct(snapshot, elementType) && runtimeType(unit, snapshot, elementType) == 0 && !isEnumType(unit, snapshot, elementType) {
+			*out = append(*out, elementType)
+		}
 	}
 	if node.Kind == tir.RecordConstruct {
 		// A compiler-builtin runtime type (Allocator, Context) is Nominal like
