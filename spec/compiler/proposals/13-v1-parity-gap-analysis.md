@@ -44,16 +44,91 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #84 (tagged-union struct field construction) closed in
-`e3478af`, requiring TWO compounding fixes (a builder-routing bug
-plus a matching `collectUnionTypesWalk` RecordConstruct.Fields
-collection gap, individually causation-checked as both necessary).
-The literal reproduction's `value i32` shape hit a SEPARATE,
-orthogonal, pre-existing limitation (union payloads must be exactly
-int/bool/str) — not touched, confirmed identical on locals too, not a
-new gap. Now at 2 of the "up to 5" additional gaps chased this
-session (this item, plus #85 queued next: float/char/str tuple
-ordinal reads).)*
+**Item: tuple ordinal reads of `char` and `str` elements are cleanly
+rejected — a genuine narrow accessor gap, RESCOPED after
+investigation to exclude `f64` (see below).**
+
+Discovered during proof-batch verification (task #65-67), 2026-08-11.
+Independently investigated and precisely rescoped before dispatch.
+
+**Investigation finding — the original "f64/char/str" grouping was
+WRONG, do not dispatch it as one task.** All three were re-investigated
+individually:
+
+- **`char`**: a genuine narrow gap, confirmed identical in shape to
+  the char/str Load-case gaps already fixed elsewhere this session.
+  `(char, int)` tuple CONSTRUCTION already works; only the read-back
+  (`t.0` into a `char` local) fails: `entry function body expression
+  contains a char Load whose place is a TuplePlace, want a
+  CheckedIndexPlace (a char-element slice read)` —
+  `buildCharOperand`'s `Load` gate
+  (`compiler/internal/backend/values.go:1387`) only recognizes a
+  `CheckedIndexPlace` (a slice element), not a `TuplePlace`.
+- **`str`**: also a genuine narrow gap, and ALSO reachable through a
+  struct field (not just a tuple) — `str` tuple/struct-field STORAGE
+  already works; only reading a `str` value back out via a `Load` into
+  a local fails, with the identical message for both the tuple and the
+  struct-field case: `... declares a str-typed local initialized from
+  a Load, want a StringLiteral ..., a call to a str-returning helper,
+  or a reference to a str-typed local in scope` —
+  `compiler/internal/backend/locals.go:1135`'s str-local-declaration
+  switch has NO `Load` case at all.
+- **`f64` — NOT a narrow gap, explicitly EXCLUDED from this task.**
+  Investigation revealed `f64` is not accepted as a STRUCT FIELD type
+  at all (`struct type ...: field type f64 is not supported, want a
+  fixed-width integer, bool, str, tuple, struct, enum, pointer, slice,
+  function type, or runtime type` — confirmed via a direct
+  reproduction). This means float support as an aggregate MEMBER type
+  (tuple element or struct field) is a pre-existing, deliberate, much
+  larger scope boundary than a missing accessor case — task #22
+  ("Support f32/f64 helper parameters and return values") scoped floats
+  to PARAMETERS and RESULTS only, never aggregate members. Fixing this
+  properly needs float support threaded through typedef field-type
+  acceptance, `orderAggregateTypes`, and every aggregate value builder
+  — a substantially bigger, separate future task, not a quick
+  accessor fix. Do NOT attempt it as part of this item.
+
+**Reproductions** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let t (char, int) = ('a', 1);
+    let x char = t.0;
+    if x == 'a' { return 1; }
+    return 0;
+}
+```
+
+```
+fn main() int {
+    let t (str, int) = ("hi", 1);
+    let x str = t.0;
+    return 0;
+}
+```
+
+**Scope:**
+1. Add a `Load(TuplePlace)` case to `buildCharOperand`
+   (`compiler/internal/backend/values.go`), reusing `buildPlaceLValue`
+   the way other tuple-ordinal reads for other types already do —
+   read the existing int/bool tuple-ordinal `Load` case in `buildExpr`/
+   `buildBoolExpr` as the pattern to mirror, and confirm
+   `buildPlaceLValue` already resolves a `TuplePlace` correctly (it
+   should, since int/bool tuple ordinals already work) before writing
+   the char case.
+2. Add a `Load` case to the str-local-declaration switch in
+   `locals.go` (search for the exact rejection text above to find the
+   switch), reusing `buildPlaceLValue` the same way — this single case
+   should serve BOTH the tuple-ordinal shape (`t.0`) AND the
+   struct-field shape (`b.v`), since both hit the identical rejection
+   today; verify both with a reproduction, don't assume fixing one
+   fixes the other.
+3. Verify both reproductions above compile and run. Verify a str
+   struct-field read-back (`let x str = b.v;` for a `Box.{ v = "hi" }`
+   struct) also works from the same fix. Verify the existing
+   int/bool/other tuple-ordinal reads and existing char/str usage
+   (literals, comparisons, slice-element char reads) are completely
+   unaffected.
 
 <!-- Previous item, resolved 2026-08-11:
 
