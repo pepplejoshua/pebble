@@ -1895,3 +1895,103 @@ fn main() int {
     return takes(pick());
 }`, false, 1, false)
 }
+
+// TestEmitIntegerLiteralBoundariesAtEachWidthCompilesAndRuns proves the
+// "V2 preserves text, constrains range, and lowers by width" claim for the
+// positive-maximum and unsigned-minimum boundary of every fixed-width integer
+// builtin the backend emits: a literal AT the exact max (or 0, the unsigned
+// min) for that width is lowered at the local's own width and the printed
+// value must equal the authored boundary exactly — never a wrapped or
+// truncated neighbour. Each row is a compile-link-run through the real C
+// toolchain with the mandated -Wall -Wextra -Werror, so a literal that fails
+// to fit the width's own C type would fail here.
+//
+// The SIGNED MINIMUM literals are deliberately absent for i32/int/i64 (and
+// only those three): `-2147483648` (i32/int) and `-9223372036854775808`
+// (i64) pass the checker (correctly — each IS that width's minimum) but the
+// backend lowers a negative-literal initializer to
+// pebble_rt_checked_neg_i32(2147483648) / _i64(9223372036854775808), and the
+// positive magnitude 2^(n-1) cannot be spelled as a signed C constant of that
+// width, so cc fails under -Werror with -Wconstant-conversion /
+// -Wimplicitly-unsigned-literal. i8 (-128) and i16 (-32768) min literals work
+// because they take the constant-fold path instead. This is recorded as a NEW
+// FINDING (checker/backend literal-lowering defect), not fixed here. The
+// int max row also pins the backend's int32_t width for int (2147483647 works;
+// 2147483648 is checker-accepted and then fails at cc — a separate NEW FINDING
+// about the int literal range, recorded with the checker tests).
+func TestEmitIntegerLiteralBoundariesAtEachWidthCompilesAndRuns(t *testing.T) {
+	tests := []struct {
+		name  string
+		width string
+		value string
+		want  string
+	}{
+		{"i8 max", "i8", "127", "127\n"},
+		{"i8 min", "i8", "-128", "-128\n"},
+		{"i16 max", "i16", "32767", "32767\n"},
+		{"i16 min", "i16", "-32768", "-32768\n"},
+		{"i32 max", "i32", "2147483647", "2147483647\n"},
+		{"i64 max", "i64", "9223372036854775807", "9223372036854775807\n"},
+		{"int max", "int", "2147483647", "2147483647\n"},
+		{"u8 max", "u8", "255", "255\n"},
+		{"u8 min", "u8", "0", "0\n"},
+		{"u16 max", "u16", "65535", "65535\n"},
+		{"u16 min", "u16", "0", "0\n"},
+		{"u32 max", "u32", "4294967295", "4294967295\n"},
+		{"u32 min", "u32", "0", "0\n"},
+		{"u64 max", "u64", "18446744073709551615", "18446744073709551615\n"},
+		{"u64 min", "u64", "0", "0\n"},
+		{"uint max", "uint", "18446744073709551615", "18446744073709551615\n"},
+		{"uint min", "uint", "0", "0\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; print x; return 0; }"
+			if got := emitAndRunCapture(t, src, false, 0, false); got != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmitFloatLiteralFormsAndWidthsCompileAndRun proves the "V2 supports
+// f32/f64 lowering" claim for the literal forms Pebble's lexer can actually
+// produce. There is NO f32/f64 literal suffix in this language: the lexer
+// turns a numeric token with a fractional part and/or exponent into a bare
+// FloatLiteral (digits [ . digits ] [ e/E [+-] digits ], no trailing suffix),
+// and the float kind is inferred from context (the declared local/parameter
+// width). The backend splices the validated literal text verbatim into the
+// emitted C and the destination width's C type (float/double) applies the
+// rounding. The print capture observes the exact resulting value, so the f32
+// rows prove real 24-bit-significand narrowing (1.5e10 prints 15000000512,
+// the nearest f32, not the exact 15000000000 the f64 row prints) rather than
+// a silent double-wide interpretation. Negative and e/E-exponent forms are
+// included, plus the f32/f64 finite-maximum magnitude (values at the largest
+// representable magnitude round-trip without overflow to infinity).
+func TestEmitFloatLiteralFormsAndWidthsCompileAndRun(t *testing.T) {
+	tests := []struct {
+		name  string
+		width string
+		value string
+		want  string
+	}{
+		{"f64 fraction", "f64", "3.25", "3.250000\n"},
+		{"f32 fraction", "f32", "3.25", "3.250000\n"},
+		{"f64 exponent", "f64", "1.5e10", "15000000000.000000\n"},
+		{"f32 exponent narrows", "f32", "1.5e10", "15000000512.000000\n"},
+		{"f64 exponent upper E", "f64", "2.5E3", "2500.000000\n"},
+		{"f64 negative exponent", "f64", "2.5e-3", "0.002500\n"},
+		{"f32 negative fraction", "f32", "-2.5", "-2.500000\n"},
+		{"f32 integer-valued exponent", "f32", "5e0", "5.000000\n"},
+		{"f64 maximum magnitude", "f64", "1.7976931348623157e308", "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000\n"},
+		{"f32 maximum magnitude", "f32", "3.40282346e38", "340282346638528859811704183484516925440.000000\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; print x; return 0; }"
+			if got := emitAndRunCapture(t, src, false, 0, false); got != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -293,3 +293,89 @@ fn main() i32 { return printf("hi", 1, 2); }
 		t.Fatalf("C variadic call was not rejected with C0604: %+v", diagnostics.Items())
 	}
 }
+
+// TestIntegerLiteralRangeRejectedPerWidth proves the "V2 preserves text,
+// constrains range" claim: the checker must cleanly reject (T0508) a literal
+// one past the width's max — and one below the min for signed widths, any
+// negative for unsigned widths — in a local-declaration initializer, instead
+// of silently wrapping it. Every fixed-width integer builtin the backend
+// emits is covered. This is the direct per-width generalization of the
+// existing variadic-argument T0508 test (TestVariadicCallRejectsLiteralOutsideElementType).
+//
+// `int` is deliberately excluded: the checker constrains an `int` literal
+// against LiteralTarget.WordBits (64 in the production pipeline), so
+// `let x int = 2147483648;` is checker-accepted even though the backend emits
+// `int` as int32_t (proposal 10 §10.45), and the emitted C then fails cc
+// under -Werror. That checker/backend `int`-literal-range mismatch is a NEW
+// FINDING (see the worklog and the task report), not something this rejection
+// test may assert yet.
+func TestIntegerLiteralRangeRejectedPerWidth(t *testing.T) {
+	tests := []struct {
+		name    string
+		width   string
+		tooHigh string
+		tooLow  string
+	}{
+		{"i8", "i8", "128", "-129"},
+		{"i16", "i16", "32768", "-32769"},
+		{"i32", "i32", "2147483648", "-2147483649"},
+		{"i64", "i64", "9223372036854775808", "-9223372036854775809"},
+		{"u8", "u8", "256", "-1"},
+		{"u16", "u16", "65536", "-1"},
+		{"u32", "u32", "4294967296", "-1"},
+		{"u64", "u64", "18446744073709551616", "-1"},
+		{"uint", "uint", "18446744073709551616", "-1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, value := range []string{tc.tooHigh, tc.tooLow} {
+				src := "fn main() int { let x " + tc.width + " = " + value + "; print x; return 0; }"
+				inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(src)})
+				result := Check(inputs, diagnostics, Config{})
+				if result.Successful() {
+					t.Fatalf("out-of-range literal %s for %s was accepted", value, tc.width)
+				}
+				if !hasValidationDiagnostic(diagnostics, diagnostic.Code("T0508")) {
+					t.Fatalf("out-of-range literal %s for %s was not rejected with T0508: %+v", value, tc.width, diagnostics.Items())
+				}
+			}
+		})
+	}
+}
+
+// TestFloatLiteralRangePerWidth proves the checker half of the float-literal
+// claim: a float literal is range-constrained against the DESTINATION float
+// width (overflow to infinity is rejected with T0508, per the literal-fitting
+// rule in 05b), a literal at the finite maximum is accepted, and a
+// subnormal/tiny value is accepted (underflow to zero is allowed). This is
+// the check that guarantees the backend never emits a C floating constant
+// that overflows its destination float/double type.
+func TestFloatLiteralRangePerWidth(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  string
+		value  string
+		accept bool
+	}{
+		{"f64 maximum accepted", "f64", "1.7976931348623157e308", true},
+		{"f64 over maximum rejected", "f64", "1.8e308", false},
+		{"f32 maximum accepted", "f32", "3.40282346e38", true},
+		{"f32 over maximum rejected", "f32", "3.4028235e38", false},
+		{"f64-sized value into f32 rejected", "f32", "1e40", false},
+		{"f32 subnormal accepted", "f32", "1.4e-45", true},
+		{"f64 subnormal accepted", "f64", "5e-324", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "fn main() int { let x " + tc.width + " = " + tc.value + "; print x; return 0; }"
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(src)})
+			result := Check(inputs, diagnostics, Config{})
+			if got := result.Successful(); got != tc.accept {
+				t.Fatalf("accepted = %v, want %v; diagnostics=%+v", got, tc.accept, diagnostics.Items())
+			}
+			if !tc.accept && !hasValidationDiagnostic(diagnostics, diagnostic.Code("T0508")) {
+				t.Fatalf("rejected literal was not rejected with T0508: %+v", diagnostics.Items())
+			}
+		})
+	}
+}
