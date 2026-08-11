@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #51 (direct cast of sizeof) closed in `634db99`. 19
+P1s and P0s resolved this window: tasks #33-51. Next up: #52, sizeof
+[N]Struct typedef ordering.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a direct cast of a `sizeof` expression is rejected.**
 
 Sourced from proposal 14's backend gap matrix (`Direct cast of
@@ -90,6 +96,16 @@ Verify a `sizeof` of a wider type (e.g. `sizeof i64 as int`) and a
 plain (uncast) `sizeof` expression. Verify the existing plain
 `sizeof T` (uncast, used directly as a `uint`-typed value) is
 unaffected.
+
+**Resolution (`634db99`, 2026-08-11).** Added a `case tir.SizeofType:`
+to `buildExpr`'s switch, delegating to `buildUintExpr` exactly as
+scoped. Verified: the reproduction returns 4; `(sizeof i64) as int`
+returns 8; `(sizeof Pair) as int` (a two-`int`-field struct) returns
+8; the existing plain, uncast `sizeof` path is unaffected. Full suite
+(`go test ./... -count=1 -timeout 600s -parallel 16`, 11 packages)
+clean, `gofmt`/`go vet` clean, causation check confirmed reverting
+reproduces the original rejection exactly.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 

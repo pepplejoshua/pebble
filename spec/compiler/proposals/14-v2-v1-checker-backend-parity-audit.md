@@ -71,7 +71,7 @@ The following failures are current and independently reproduced:
 | Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
 | Slice field as call argument | ~~`sum(holder.values)` is rejected because the slice argument builder accepts only a slice local or parameter, not `Load(FieldPlace)`.~~ **Resolved (`d33060e`).** `buildSliceArgument` now handles `Load(FieldPlace)`, reusing `buildPlaceLValue`. | **Closed** |
 | Existing slice as one variadic tail | ~~`sum(values)` for `fn sum(...values []int)` is rejected as an element conversion.~~ **Resolved (`94e74f0`).** Checker peeks the sole tail argument's known type bottom-up; backend forwards it directly. | **Closed** |
-| Direct cast of `sizeof` | `return (sizeof int) as int;` is rejected because the integer-cast child builder has no `SizeofType` case. | **Value-source gap** |
+| Direct cast of `sizeof` | ~~`return (sizeof int) as int;` is rejected because the integer-cast child builder has no `SizeofType` case.~~ **Resolved (`634db99`).** `buildExpr` now delegates `SizeofType` to `buildUintExpr`. | **Closed** |
 | `sizeof [N]Struct` | The type resolver now accepts the fixed array, but emitted C can reference the array typedef before the struct element typedef exists. A `[2]Point` reproduction fails in `cc` with unknown `pebble_struct_*_t`. | **C typedef-order gap** |
 | Narrow checked arithmetic | `u8 + u8` and `u8 / u8` emit calls named `pebble_rt_checked_add_` / `pebble_rt_checked_div_`, then fail in `cc`. Narrow signed negation and `u64` divide/shift reject earlier. | **Runtime-helper contract defect** |
 | Narrow optional unwrap | `?u8` storage and `some` construction work, but `value!` rejects because no narrow unwrap helper exists. | **Runtime-helper coverage gap** |
@@ -168,7 +168,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Array literal and repeat | V2 `ArrayValue` and `ArrayRepeat` | **Partial** by element and destination shape |
 | Struct literal | V2 `RecordConstruct` | **Resolved (`e649476`)** for plain deep struct/tuple/optional nesting; runtime Allocator/Context construction is resolved; array-of-aggregate struct fields remain a separate, out-of-scope backend gap |
 | Tagged-union variant literal | V2 `VariantConstruct` | **Partial** by payload C shape; generic narrowing is resolved |
-| `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 supports scalar, struct, enum, union, tuple, optional, slice, pointer, runtime, and fixed-array types. `sizeof [N]Struct` still has typedef ordering failure, and a direct cast of `sizeof` is a separate value-source rejection. | **Partial** |
+| `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 supports scalar, struct, enum, union, tuple, optional, slice, pointer, runtime, and fixed-array types, plus a direct cast of `sizeof` (`634db99`). `sizeof [N]Struct` still has a typedef ordering failure. | **Partial** |
 | Force unwrap | V2 checked optional unwrap | **Partial** by payload type |
 | Postfix `++` and `--` as a value expression | V1 uses C postfix semantics and returns the old value | V2 defines them as void updates that are legal only as statements or for updates | **Intentional difference** |
 | Arithmetic `+ - * / %` | V1 emits raw C arithmetic for all numeric types | V2 uses checked helpers for integers and direct C for floats | **Partial**; helper-width matrix is incomplete |
@@ -327,7 +327,7 @@ small source reproduction before it moves to the issue tracker.
 | Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Confirmed absent**; listed in the fourth-pass gap table |
 | Inline checked slice inside a nested pure expression | GNU statement-expression carries its required temporary | **Resolved (`836fbea`)** except a slice-typed struct-literal field |
 | Fixed-array literal returned directly | ~~fixed-array return builder accepts a local or call, not `ArrayValue`/`ArrayRepeat`~~ **Resolved (`7c625ab`).** Both cases now supported; `ArrayRepeat` single-evaluates its value via a threaded pre-return temp. | **Closed** |
-| Direct cast of `sizeof` | integer cast child builder rejects `SizeofType` | **Confirmed absent source shape** |
+| Direct cast of `sizeof` | ~~integer cast child builder rejects `SizeofType`~~ **Resolved (`634db99`)** | **Closed** |
 | Function value with C convention, variadic signature, or unsupported aggregate result | `validateFunctionTypeSignature` near `emit.go:3069` restricts the signature | **Partial** |
 
 ## Backend C-shape capability matrix
