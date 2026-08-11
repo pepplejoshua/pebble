@@ -44,6 +44,19 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — slice local copy initialization landed as `22ceab8`. This
+closes ALL 6 "local copy initialization" slices from Sol's fourth-
+pass audit (tuple/array/struct/enum/string/slice). 13 of 19 original
+P1 slices done overnight. 11 items remain: TupleCoerce, three-level
+aggregate dependencies, direct array-literal return, slice struct
+field as call argument, existing slice as variadic tail, direct cast
+of sizeof, sizeof [N]Struct typedef ordering, narrow checked
+arithmetic, narrow optional unwrap, ordinary optional enum payload,
+first-class narrow integer function types — pick the next one from
+proposal 14's fourth-pass gap table.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a slice-typed local cannot be initialized from another slice
 value (`let second []int = first;`) — the LAST of the 6 "local copy
 initialization" slices.**
@@ -92,6 +105,17 @@ and runs, returning 1. Also verify: a slice copied through a helper
 call vs. through a plain local reference behave identically, and that
 slice reassignment (if it exists), slice indexing, and the existing
 `Load`/`DirectCall`/`SliceFromRaw` initializer paths are unaffected.
+
+**Resolution (`22ceab8`, 2026-08-10).** Added a `SymbolValue` case to
+`buildSliceLocalDeclaration` before the `buildSliceConstruction`
+fallthrough, mirroring the function's own `Load` case — a slice is a
+struct, no `memcpy` needed. Confirmed the shared-backing-array
+semantics are correct (matches how a slice parameter already behaves).
+Verified the repro, a chained copy, a copy of a resliced array, and a
+write-through-copy visible in the original; existing initializer
+paths, indexing, and `.len` unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 

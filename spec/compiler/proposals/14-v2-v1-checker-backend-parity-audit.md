@@ -65,7 +65,7 @@ The following failures are current and independently reproduced:
 | ~~Range-bound evaluation order~~ | **RESOLVED (`003141d`, 2026-08-10),** as a byproduct of the descending-range fix — both bounds are now materialized into locals in source order (start then end). | — |
 | Non-literal bool switch | A helper that switches on a bool parameter reaches C, then fails under the required `-Wswitch-bool -Werror`. Existing proof covered only a literal bool subject. | **Checker/backend/C contract defect** |
 | Unbound range loop | `loop 0..3 { ... }` is accepted by parser, checker, and TIR, then rejected because `RangeLoop.Symbol == 0`. V1 exposes the implicit iterator as `iter`. If V2 keeps the explicit-name rule, the checker must reject the source form. | **Checker/backend contract defect** |
-| Local copy initialization | `let second T = first` is backend-rejected for tuple, array, struct, enum, `str`, and slice values. Reassignment support that landed earlier does not cover declaration initialization. | **V1 value-copy gap** |
+| Local copy initialization | **RESOLVED for all 6 types (2026-08-10).** `let second T = first` now works for tuple (`834927e`), array (`8c72f36`), struct (`2179ebf`), enum (`7f1db25`), `str` (`7747aaa`), and slice (`22ceab8`) — each independently verified and causation-checked, one type per task. | — |
 | Tuple coercion | `let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b);` reaches `TupleCoerce`, then the tuple-local builder rejects it. | **Checker/backend contract defect** |
 | More than one aggregate dependency level | A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”. V1 recursively orders the complete dependency graph. | **C-shape gap** |
 | Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
@@ -315,7 +315,7 @@ small source reproduction before it moves to the issue tracker.
 | Initialize a struct local from another struct value | **RESOLVED (`2179ebf`, 2026-08-10)** — `let second Point = first;` now works, verified for a 3-field struct and a nested-struct field, causation-checked | — |
 | Initialize an enum local from another enum value | **RESOLVED (`7f1db25`, 2026-08-10)** — `let second Color = first;` now works, verified for a second variant proving tag round-tripping, causation-checked | — |
 | Initialize a `str` local from another `str` value | **RESOLVED (`7747aaa`, 2026-08-10)** — `let second str = first;` now works, verified for a chained copy, causation-checked | — |
-| Initialize a slice local from another slice value | the slice local path treats the initializer as a new `CheckedSlice` and rejects `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a slice local from another slice value | **RESOLVED (`22ceab8`, 2026-08-10)** — `let second []int = first;` now works (shared-backing-array semantics, matching slice-parameter behavior), verified for a chained copy and a write-through-copy, causation-checked | — |
 | Materialize an interpolated string as a local, argument, result, or ordinary value | `InterpolatedString` is handled only inside `buildPrint`; general string builders reject it | **Absent** |
 | Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
