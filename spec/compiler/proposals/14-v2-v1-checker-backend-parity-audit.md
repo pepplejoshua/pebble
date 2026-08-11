@@ -197,12 +197,12 @@ in `checker.c:2437-2529`. V2 classification is in
 | Float width change | implicit | explicit only | **Intentional stricter rule** |
 | Float to integer | explicit | explicit, checked runtime conversion | **Partial** by destination width |
 | Integer to integer | explicit and implicit | explicit, plus contextual literal fit | **Implemented**, backend proof needed by pair |
-| Character to integer | explicit | explicit | **Implemented, proof needed** |
+| Character to integer | explicit | explicit | **Verified** (`20efd9a`) for int/i8/i16/i32/i64/u8/u16/u32/u64, boundary values, overflow semantics, and non-literal sources. **New finding**: `char as uint` is broken (`buildUintExpr` has no `CharToInteger` case) — see the gap table below. |
 | Integer to character | explicit | forbidden | **Intentional difference** until Unicode scalar validation is specified |
 | Enum to integer | explicit | explicit | **Verified** |
 | Integer to enum | absent as a general V1 cast; V1 has partial enum inference | explicit checked cast, plus optional checked form | **Verified V2 extension** |
 | Pointer to pointer | explicit; `*void` conversions are also implicit | explicit only | **Intentional stricter rule** |
-| Pointer to integer | explicit | explicit | **Implemented, proof needed** by width |
+| Pointer to integer | explicit | explicit | **Verified** (`20efd9a`) for pointer-width-or-wider destinations (u64, uint, i64) across int/struct/opaque-extern pointees. **New finding**: any NARROWER destination (u8/u16/u32/i8/i16/i32/int) is checker-accepted but fails at `cc` under `-Werror -Wpointer-to-int-cast` — see the gap table below. |
 | Integer to pointer | explicit | forbidden | **Intentional difference** |
 | V1 `str` to/from `*void`, `*u8`, or `*char` | explicit or implicit, because V1 `str` is a C pointer | absent for V2 `PebbleStr` | **Intentional ABI difference**; use explicit library adapters if accepted later |
 | Fixed array to slice | implicit | dedicated checked slice shape, including direct array-literal initialization of a slice binding | **Partial by source position**; binding form resolved in `f4c3970` |
@@ -324,6 +324,8 @@ small source reproduction before it moves to the issue tracker.
 | Tagged-union-typed struct field construction (`Holder.{ u = Choice.value(5) }`) | ~~fails identically to the enum case above~~ **Resolved (`e3478af`)**, requiring both a builder-routing fix and a matching `collectUnionTypesWalk` collection fix | **Closed** |
 | Tuple ordinal read of a `char`/`str` element | ~~checker accepts, Emit cleanly rejects each: `char` hits `buildCharOperand`'s `TuplePlace` gate, `str` hits the str-local initializer's `Load` gate~~ **Resolved (`bd84ee9`)**. `str` in a VALUE position (not a local declaration, e.g. a call argument) has an adjacent, still-open gap in `buildStrOperand`'s `FieldPlace`-only `Load` case — not yet formal. | **Closed** for the local-declaration shape |
 | Tuple/struct-field `f64` member | rejected entirely — `f64` is not accepted as a struct field type at all, and by extension a tuple element read-back; `f32`/`f64` were only ever wired up for helper parameters/results (task #22), never aggregate members | **Confirmed absent**; deferred as task #86 (larger, separate scope: typedef field-type acceptance, `orderAggregateTypes`, every aggregate value builder) |
+| `char as uint` | `buildUintExpr` has `IntegerCast` and `PointerToInteger` cases but no `CharToInteger` case | **Confirmed absent**, discovered during cast proof-batch verification (2026-08-11), queued as task #87 |
+| Pointer cast to a destination narrower than the pointer (`ptr as int`/`u8`/`u16`/`u32`/`i8`/`i16`/`i32`) | checker-accepted, backend emits a plain `(destType)(ptr)` cast, but `cc` fails under this project's required `-Wall -Wextra -Werror` with `-Wpointer-to-int-cast`; only pointer-width-or-wider destinations (`u64`/`uint`/`i64`) actually compile | **Confirmed absent**, discovered during cast proof-batch verification (2026-08-11), queued as task #88 — needs a design decision (reject narrow destinations cleanly at the checker/backend, or truncate via `(uintptr_t)` then narrow, matching whatever V1 does) before implementation |
 | Aggregate nesting deeper than one dependency level | ~~aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain~~ **Resolved (`e649476`)** | **Closed** |
 | Whole dereferenced struct as a value | local-initializer and argument paths | **Resolved (`a242181`)** |
 | Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
