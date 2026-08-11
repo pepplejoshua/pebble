@@ -3091,6 +3091,52 @@ func TestEmitEnumLocalUnusedCompilesClean(t *testing.T) {
 	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar c Color = Color.red;\nreturn 3;\n}", false, 3, false)
 }
 
+func TestEmitEnumLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole enum-typed local from another enum-typed
+	// local (`let second Color = first;`), the fresh-declaration sibling of
+	// the reassignment shape (c = other;): the Initialize's initializer is a
+	// SymbolValue naming an in-scope enum-typed local of the same type,
+	// emitted as a plain C declaration-with-initializer
+	// `pebble_enum_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — the enum's own typedef makes the by-value copy trivially valid C.
+	// The copied local's variant must reflect first's (green), the declared
+	// copy.
+	emitAndRun(t, "type Color = enum { red, green, blue };\nfn main() int { let first = Color.green; let second Color = first; if second == Color.green { return 0; } return 1; }", false, 0, false)
+}
+
+func TestEmitSecondVariantEnumLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copying a NON-first variant (blue, ordinal 2, not the first declared
+	// red) proves the tag value round-trips correctly through the C enum
+	// constants, not just coincidentally for one variant: if the copy widened,
+	// narrowed, or zeroed the value, the equality against Color.blue would fail
+	// and return a non-zero code.
+	emitAndRun(t, "type Color = enum { red, green, blue };\nfn main() int { let first = Color.blue; let second Color = first; if second == Color.blue { return 0; } return 1; }", false, 0, false)
+}
+
+func TestEmitEnumLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to a declaration-with-initializer
+	// `pebble_enum_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — the enum's own pebble_enum_<typeID>_t typedef makes the by-value copy
+	// trivially valid C, so no other lowering is needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue };\nfn main() int { let first = Color.green; let second Color = first; if second == Color.green { return 0; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_enum_\d+_t pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-enum local copy declaration %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "pebble_enum_") {
+		t.Errorf("emitted C missing the enum typedef:\n%s", out)
+	}
+}
+
 func TestEmitEnumWritesC(t *testing.T) {
 	t.Parallel()
 	// Confirm the emitted C directly for one fixture: the enum typedef's exact

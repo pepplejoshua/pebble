@@ -756,11 +756,16 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 // produce — confirmed against a real fixture) — an integer cast to the enum
 // (`5 as Color`, built by buildCheckedIntegerToEnumExpr through the checked
 // runtime primitive, e.g. `pebble_local_<sym> =
-// (pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...);`), or — since
-// enum-element slices — a by-value read of one enum element of an array or
-// slice local (`let c = colors[1];`, a Load of a CheckedIndexPlace, the same
-// element-read shape buildStructLocalDeclaration gained for struct-element
-// slices).
+// (pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...);`), a by-value
+// read of one enum element of an array or slice local (`let c = colors[1];`, a
+// Load of a CheckedIndexPlace, the same element-read shape
+// buildStructLocalDeclaration gained for struct-element slices), or — since
+// enum-local copy-initialization — a SymbolValue naming an in-scope
+// enum-typed local of exactly the local's type, emitted as
+// `pebble_enum_<typeID>_t pebble_local_<symbol> = pebble_local_<other>;` — a
+// plain C declaration-with-initializer, valid because the enum's own typedef
+// makes the by-value copy trivially correct (the same acceptance logic
+// buildEnumValue's SymbolValue case uses for the reassignment sibling `p = q;`).
 // A variant literal lowers to the variant's C
 // enum constant, whose value is the variant's ordinal in the enum's declared
 // order (the C typedef emits one named constant per variant in TypeDecl order,
@@ -810,6 +815,26 @@ func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		scope[statement.Symbol] = localInfo{enumType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope enum-typed local of exactly the local's
+		// type used as the direct initializer — `let second Color = first;`, a
+		// whole-enum local copy, the sibling of the reassignment shape
+		// buildEnumValue's SymbolValue case accepts (`p = q;`). The referenced local's
+		// declared type must be exactly the local's type: the scope lookup
+		// records the enum type each local was declared with (localInfo.enumType),
+		// so a non-enum local, an undeclared symbol, or an enum local of a
+		// different type is a clean rejection naming what was found. The emitted
+		// C is a declaration-with-initializer
+		// `pebble_enum_<typeID>_t pebble_local_<sym> = pebble_local_<other>;`
+		// — the enum's own typedef makes the by-value copy trivially valid C,
+		// the same convention enum call arguments and returns already use.
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || valueInfo.enumType != initValue.Type {
+			return "", fmt.Errorf("%s declares an enum-typed local of type %s from symbol %d, which is not an enum-typed local in scope of that type", context, enumTypeName(initValue.Type), initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
 	switch initValue.Kind {
 	case tir.EnumVariantValue:
 		if len(initValue.Children) == 1 {
@@ -824,7 +849,7 @@ func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		// buildCheckedIntegerToEnumExpr below — the value is produced by the
 		// checked runtime primitive, not a variant constant.
 	default:
-		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green) or an integer cast to the enum type (e.g. 5 as Color); initializing an enum local from another value is not supported yet", context, enumTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a %s, want a variant literal (e.g. Color.green), an integer cast to the enum type (e.g. 5 as Color), or a reference to an enum-typed local in scope of that type", context, enumTypeName(initValue.Type), initValue.Kind)
 	}
 	info, err := resolveEnumInfo(unit, snapshot, initValue.Type)
 	if err != nil {
