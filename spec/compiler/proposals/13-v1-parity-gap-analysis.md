@@ -44,9 +44,53 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — array local copy initialization landed as `8c72f36`. 9 of
-19 P1 slices done. Next: struct local copy initialization (slice 3 of
-6 in this family), same one-type-per-task discipline.)*
+**Item: a struct-typed local cannot be initialized from another
+struct value (`let second Point = first;`).**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1, third of 6 "local copy initialization" slices. Independently
+reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Point = struct { x int; y int; };
+fn main() int {
+    let first = Point.{ x = 1, y = 2 };
+    let second Point = first;
+    return second.x;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares a struct-typed local of type pebble_struct_19_t initialized
+from a SymbolValue, want a RecordConstruct (a struct literal) or a
+call to a struct-returning helper; initializing a struct local from
+another value is not supported yet`.
+
+**Known cause and required approach — the SIMPLEST of the 6 local-
+copy-init slices.** `buildStructLocalDeclaration`
+(`compiler/internal/backend/locals.go:656`) rejects a `SymbolValue`
+initializer. Unlike array, a struct-typed local IS a genuine C struct
+(`pebble_struct_<id>_t`), freely declaration-initializable from
+another struct value in plain C
+(`pebble_struct_19_t pebble_local_28 = pebble_local_27;` is valid,
+ordinary C — no `memcpy` needed, exactly like tuple). This is the
+closest possible sibling of the ALREADY-FIXED tuple local copy
+initialization (`834927e`,
+`buildTupleLocalDeclaration`) — same representation, same fix shape,
+different type.
+
+**Scope:** widen `buildStructLocalDeclaration` to accept a
+`SymbolValue` naming an in-scope struct-typed local of the exact
+matching type, mirroring `buildTupleLocalDeclaration`'s `SymbolValue`
+branch (`834927e`) almost exactly — same type-match guard shape, same
+single-statement `<structType> pebble_local_<new> =
+pebble_local_<other>;` plus `(void)` cast. Verify the reproduction
+above compiles and runs, returning 1. Also verify: a struct with more
+fields, a struct containing a nested struct field, and that whole-
+struct REASSIGNMENT (already working, from an earlier session's
+`9df0351`/`5ef060a`) and struct field reads are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
