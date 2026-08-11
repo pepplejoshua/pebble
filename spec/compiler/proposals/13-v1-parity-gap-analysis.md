@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — enum local copy initialization landed as `7f1db25`. 11 of
+19 P1 slices done. Next: string local copy initialization (slice 5 of
+6 in this family), same one-type-per-task discipline.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: an enum-typed local cannot be initialized from another enum
 value (`let second Color = first;`).**
 
@@ -91,6 +97,16 @@ above compiles and runs, returning 0. Also verify: a different variant
 (not just the first one declared), and that enum-typed struct fields,
 enum-typed array/slice elements (from `94a2a39`), and enum equality
 comparisons are unaffected.
+
+**Resolution (`7f1db25`, 2026-08-10).** Added a `SymbolValue` branch
+to `buildEnumLocalDeclaration` mirroring the tuple/struct fixes
+exactly — an enum is a plain C enum, no `memcpy` needed. Sits
+correctly alongside (not conflicting with) the `Load(CheckedIndexPlace)`
+case from `94a2a39`. Verified the repro and a second-variant copy
+(proving tag round-tripping); reassignment, struct fields, array/slice
+elements, and equality unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
