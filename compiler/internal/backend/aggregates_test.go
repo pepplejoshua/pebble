@@ -1326,6 +1326,88 @@ func TestEmitArrayWholeReassignmentWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitArrayLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole array-typed local from another array-typed
+	// local (`let second [3]int = first;`), the fresh-declaration sibling of
+	// the reassignment shape aef808e added (`a = b;`): the Initialize's
+	// initializer is a SymbolValue naming an in-scope array-typed local of the
+	// same type. Unlike the tuple sibling — whose own typedef makes a plain
+	// declaration-with-initializer `pebble_tuple_<id>_t ... = ...;` trivially
+	// valid C — the standalone array local is a RAW C array
+	// (`int32_t pebble_local_<sym>[<len>]`), and C cannot initialize a raw
+	// array from another array variable in a declarator either (only from a
+	// brace list), so the copy lowers to a bare declaration plus a byte-for-byte
+	// memcpy of first's storage into second's (see
+	// TestEmitArrayLocalCopyInitializationWritesC). The copied local's element
+	// must reflect first's value (1), the declared copy.
+	emitAndRun(t, "fn main() int { let first [3]int = [1, 2, 3]; let second [3]int = first; return second[0]; }", false, 1, false)
+}
+
+func TestEmitFiveElementArrayLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 5-element array copy-initialization proves the SymbolValue initializer
+	// branch's memcpy size isn't hardcoded to 3 elements: the byte-for-byte
+	// copy is sized by the destination's own storage, so any length works.
+	emitAndRun(t, "fn main() int { let first [5]int = [1, 2, 3, 4, 5]; let second [5]int = first; return second[4]; }", false, 5, false)
+}
+
+func TestEmitBoolElementArrayLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A bool-element array copy-initialization proves the SymbolValue
+	// initializer branch composes with a non-integer element type, not just
+	// uniform int arrays: the copied local's elements must reflect first's.
+	emitAndRun(t, `fn main() int { let first [2]bool = [true, false]; let second [2]bool = first; if second[0] != true { return 1; } if second[1] != false { return 2; } return 0; }`, false, 0, false)
+}
+
+func TestEmitArrayLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to THREE statements instead of the usual two —
+	// `<elemCType> pebble_local_<second>[<len>];` (a bare declaration with no
+	// initializer, because C cannot initialize a raw array variable from
+	// another array variable in a declarator), then a byte-for-byte
+	// `memcpy(pebble_local_<second>, &pebble_local_<first>,
+	// sizeof(pebble_local_<second>))` (the same memcpy shape aef808e's
+	// whole-array reassignment emits), then the (void) cast every local ends
+	// with. The bare declaration is fully written by the memcpy before any
+	// read, so -Wuninitialized does not fire; the trailing (void) cast
+	// silences -Wunused-variable.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let first [3]int = [1, 2, 3]; let second [3]int = first; return second[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	declRE := regexp.MustCompile(`int32_t pebble_local_\d+\[3\];\n    memcpy\(pebble_local_\d+, &pebble_local_\d+, sizeof\(pebble_local_\d+\)\);\n    \(void\)pebble_local_\d+;`)
+	if !declRE.MatchString(out) {
+		t.Errorf("emitted C contains no bare-declaration-plus-memcpy local copy %q:\n%s", declRE, out)
+	}
+}
+
+func TestEmitArrayLocalCopyInitializationEmitsStringHInclude(t *testing.T) {
+	t.Parallel()
+	// The memcpy emitted by the local copy-initialization needs <string.h> in
+	// the preamble even when the program uses NO other memcpy source — no
+	// whole-array reassignment, no C externs — so a program whose ONLY
+	// array-memcpy use is a fresh local copy still compiles clean under the
+	// mandated -Wall -Wextra -Werror build (memcpy's declaration lives in
+	// <string.h>). This is the hasArrayStore flag st hasArrayStore records in
+	// the SymbolValue branch and emitEntryC's preamble consults.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let first [3]int = [1, 2, 3]; let second [3]int = first; return second[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "#include <string.h>\n") {
+		t.Errorf("emitted C missing #include <string.h> despite an array local copy-initialization:\n%s", out)
+	}
+	if !strings.Contains(out, "memcpy(") {
+		t.Errorf("emitted C contains no memcpy call:\n%s", out)
+	}
+}
+
 func TestEmitArrayLiteralReassignmentEmitsTypedefBeforeUse(t *testing.T) {
 	t.Parallel()
 	// The literal-reassignment C shape: the store is a memcpy FROM a

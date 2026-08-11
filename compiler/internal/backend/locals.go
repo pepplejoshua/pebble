@@ -143,8 +143,8 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // loop) so the repeat value is evaluated exactly once, not once per slot
 // (10.27).
 func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal) or an ArrayRepeat (a [v; N] repeat initializer); initializing an array local from another value is not supported yet", context, describeType(snapshot, initValue.Type), initValue.Kind)
+	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat && initValue.Kind != tir.SymbolValue {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal), an ArrayRepeat (a [v; N] repeat initializer), or a reference to an array-typed local in scope of that type", context, describeType(snapshot, initValue.Type), initValue.Kind)
 	}
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
@@ -179,6 +179,46 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 	scope[statement.Symbol] = localInfo{array: initValue.Type}
 	if initValue.Kind == tir.ArrayRepeat {
 		return buildArrayRepeatLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, length, elementType)
+	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope array-typed local of exactly the local's
+		// type used as the direct initializer — `let second [3]int = first;`,
+		// a whole-array local copy, the sibling of the reassignment shape
+		// buildArrayStoreValue accepts (`a = b;`). The referenced local's
+		// declared type must be exactly the local's type — same length AND same
+		// element type, mirroring buildArrayStoreValue's own type-match guard
+		// (the scope lookup records the array type each local was declared
+		// with, localInfo.array, so a non-array local, an undeclared symbol, or
+		// an array local of a different type is a clean rejection naming what
+		// was found). Unlike the reassignment statement, which sits after both
+		// declarations and can memcpy into an already-declared lvalue, this is
+		// a DECLARATION: C cannot initialize a raw array variable from another
+		// array variable in its declarator (only from a brace list), so the
+		// whole-array copy must run after the declaration exists. The emitted C
+		// is therefore three statements — a bare declaration with no
+		// initializer, then a byte-for-byte memcpy of the source local's own
+		// storage into the new local's, sized by the new local's storage (the
+		// same memcpy shape buildArrayStoreValue's plain-local path emits, the
+		// whole-array by-value copy convention array call arguments already
+		// use), then the (void) cast every local ends with. The bare declaration
+		// is uninitialized-but-immediately-fully-written: memcpy writes every
+		// byte before any read, so -Wuninitialized does not fire (confirmed by
+		// real cc compiles in the test suite), and -Wunused-variable is silenced
+		// by the trailing (void) cast exactly as every other local does.
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || valueInfo.array != initValue.Type {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s from symbol %d, which is not an array-typed local in scope of that type", context, describeType(snapshot, initValue.Type), initValue.Symbol)
+		}
+		elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
+		if err != nil {
+			return "", fmt.Errorf("%s: %v", context, err)
+		}
+		st.hasArrayStore = true
+		return strings.Join([]string{
+			fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, elementCType, statement.Symbol, length),
+			fmt.Sprintf("%smemcpy(pebble_local_%d, &pebble_local_%d, sizeof(pebble_local_%d));", indent, statement.Symbol, initValue.Symbol, statement.Symbol),
+			fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+		}, "\n"), nil
 	}
 	if len(initValue.Children) != int(length) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
