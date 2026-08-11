@@ -44,6 +44,17 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #58 (bare sizeof(T,U)/sizeof ?T) closed in `392ae16`.
+Both newly-found gaps from the P2/audit-cleanup pass are now closed
+(#57, #58). Spot-checked adjacent shapes during verification (a
+tagged-union bare sizeof — already had its own SizeofType handling
+from a prior fix; a nested `sizeof (?int, int)` — works correctly) and
+found no further gaps. Next: the 27 "Implemented, proof needed" items
+in proposal 14 — write dedicated compile-run tests to prove each one,
+per user instruction.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a bare `sizeof (T,U)` or `sizeof ?T` (a tuple/optional type
 with NO array wrapper) is rejected — the array-element case was
 fixed (task #52), but the direct case never was.**
@@ -98,6 +109,19 @@ Verify the existing array-element `sizeof [N](int,int)`/`sizeof
 `sizeof Struct` (the sibling case this mirrors) is unaffected. Verify
 a bare `sizeof T` for a primitive type (already working) is
 unaffected.
+
+**Resolution (`392ae16`, 2026-08-11).** Added the direct-match case
+to both walks exactly as scoped, positioned alongside (not replacing)
+the existing array-element case — the two guards are disjoint by
+construction, so both coexist correctly. Verified: both reproductions
+compile and run (exit 8 each); the array-element shapes from task #52
+and a bare `sizeof Struct`/`sizeof int` are unaffected; a spot-check
+of a nested `sizeof (?int, int)` also works correctly (exit 12),
+confirming the fix generalizes across combined aggregate shapes. Full
+suite (`go test ./... -count=1 -timeout 600s -parallel 16`, 11
+packages) clean, `gofmt`/`go vet` clean, causation check confirmed
+reverting reproduces the exact original `cc` failure.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
