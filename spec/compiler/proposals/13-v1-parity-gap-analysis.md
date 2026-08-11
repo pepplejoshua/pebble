@@ -44,10 +44,97 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — the str-switch double-evaluation P0 landed as `b1a53e7`; see
-proposal 14's switch matrix. Two P0 items remain from Sol's fourth
-pass: runtime/negative descending ranges running zero iterations, and
-range-bound evaluation order.)*
+**Item: a range loop with a runtime-computed or negative-literal
+descending bound silently runs zero iterations.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P0. Independently reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn start_val() int { return 3; }
+fn end_val() int { return 0; }
+fn main() int {
+    var total int = 0;
+    loop start_val()..end_val() : i {
+        total = total + 1;
+    }
+    return total;
+}
+```
+
+```
+fn main() int {
+    var total int = 0;
+    loop 0..-5 : i {
+        total = total + 1;
+    }
+    return total;
+}
+```
+
+Both `go run ./cmd/pebc -run <file.peb>` runs return `0` — `total`
+never incremented, the loop body never ran, no error, no warning. A
+genuinely silent semantic bug.
+
+**Known cause:** `buildRangeLoop`
+(`compiler/internal/backend/statements.go:1319`) only chooses the
+descending direction (`>`/`--`) when BOTH bounds' emitted C text
+parses via `strconv.Atoi` as plain decimal literals (lines 1375-1394)
+— i.e. only when both bounds are compile-time-known, non-negative
+integer LITERALS. A runtime bound (a call, a variable) never produces
+`strconv.Atoi`-parseable text, so it silently falls through to the
+"ascending" default. A negative literal ALSO fails this: `-5` in
+Pebble source doesn't lower as a single `IntegerLiteral` node with
+negative text — `buildRangeBound`'s literal branch
+(`isNonNegativeDecimal`, line ~1449) only accepts non-negative decimal
+text, so a negative bound is built via a different node shape entirely
+(routed through `buildExpr`, likely emitting a checked-negation
+runtime call, not plain decimal text) — which also fails the
+`strconv.Atoi` literal check and falls through to ascending.
+
+**V1's actual fix, already in production — mirror it exactly, don't
+invent a new pattern.** `src/codegen.c:2568-2670` (`AST_STMT_LOOP`)
+NEVER special-cases compile-time-literal bounds. It ALWAYS:
+1. Evaluates both bounds once into C locals (`int loop_start0 = ...;
+   int loop_end0 = ...;`).
+2. Computes the step direction AT RUNTIME: `int loop_step0 =
+   (loop_start0 <= loop_end0) ? 1 : -1;`.
+3. Uses a ternary-conditioned loop test that works for either
+   direction: `for (int loop_i0 = loop_start0; (loop_step0 > 0) ?
+   (loop_i0 < loop_end0) : (loop_i0 > loop_end0); loop_i0 +=
+   loop_step0) { ... }` (with `<=`/`>=` swapped in for an inclusive
+   range).
+
+This ONE uniform lowering handles compile-time-ascending,
+compile-time-descending, negative-literal, and runtime-computed bounds
+identically, with zero special-casing — it's strictly simpler than
+V2's current two-path (literal vs. non-literal) logic, not more
+complex, and it's V1 parity by construction since it's V1's own
+emitted C, verbatim.
+
+**Scope:** replace `buildRangeLoop`'s compile-time-literal direction
+detection entirely with this always-runtime-direction lowering.
+Verify both reproductions above now return `3` (three iterations).
+Also verify: the existing compile-time-ascending case (`loop 0..3 :
+i`) and compile-time-descending case (`loop 3..0 : i`, from the
+earlier `8baeb8e` fix) both still produce the correct iteration count
+and correct iterator values inside the body; inclusive ranges (`loop
+0..=3`) in both directions; a zero-length range (`loop 3..3`) still
+runs zero iterations correctly (not an off-by-one). Full suite clean,
+causation-checked.
+
+**Note — likely fixes a second tracked P0 as a byproduct.** Sol's
+audit separately flagged that `buildRangeLoop` evaluates the END bound
+before the START bound (a side-effecting bound records the wrong
+order vs. V1). Since V1's pattern (above) evaluates start into a local
+FIRST, then end into a local SECOND, as two separate sequential C
+statements, adopting it here should also fix that ordering bug for
+free. Confirm this explicitly with a side-effecting-bounds
+reproduction (each bound a call that appends to a shared counter/log)
+proving start runs before end, and report whether a separate dispatch
+for that item is still needed.
 
 <!-- Previous item, resolved 2026-08-10:
 
