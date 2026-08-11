@@ -172,8 +172,8 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Force unwrap | V2 checked optional unwrap | **Resolved** for every scalar payload type (i32/i64/u64/bool/pointer plus u8/u16/i8/i16/u32, `9426382`) |
 | Postfix `++` and `--` as a value expression | V1 uses C postfix semantics and returns the old value | V2 defines them as void updates that are legal only as statements or for updates | **Intentional difference** |
 | Arithmetic `+ - * / %` | V1 emits raw C arithmetic for all numeric types | V2 uses checked helpers for integers and direct C for floats | **Partial**; helper-width matrix is incomplete |
-| Numeric comparisons `== != < <= > >=` | Both compilers support numeric comparisons | **Implemented, proof needed** for mixed widths and floats |
-| String equality and ordering | V1 uses C string comparison paths | V2 has length-aware string runtime paths | **Implemented, proof needed** for all six operators |
+| Numeric comparisons `== != < <= > >=` | Both compilers support numeric comparisons | **Verified** (`b086dfd`) — all six operators x true/false on u8, i8 (signed, negative values), uint, f32, f64, and u64; no gaps found |
+| String equality and ordering | V1 uses C string comparison paths | V2 has length-aware string runtime paths | **Verified** (`b086dfd`) — all six operators proven for empty strings, non-prefix different-length ordering, byte-value ordering, and length-aware equality (a byte-for-byte prefix does not compare equal); no gaps found |
 | Boolean logical `&&` and `||` | V2 uses `ShortCircuitValue` | **Verified** for short-circuit sequencing |
 | Bitwise `& | ^` | V2 checker accepts integral types; backend coverage is width-specific | **Partial** |
 | Shifts `<< >>` | V1 emits C shifts; V2 uses checked helpers | **Partial**; no `uint` or `u64` helpers |
