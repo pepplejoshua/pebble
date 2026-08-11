@@ -47,6 +47,41 @@ uint64_t pebble_rt_checked_unwrap_u64(bool has_value, uint64_t value, PebbleSour
     return value;
 }
 
+uint8_t pebble_rt_checked_unwrap_u8(bool has_value, uint8_t value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
+uint16_t pebble_rt_checked_unwrap_u16(bool has_value, uint16_t value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
+int8_t pebble_rt_checked_unwrap_i8(bool has_value, int8_t value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
+int16_t pebble_rt_checked_unwrap_i16(bool has_value, int16_t value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
+uint32_t pebble_rt_checked_unwrap_u32(bool has_value, uint32_t value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
 void *pebble_rt_checked_unwrap_ptr(bool has_value, void *value, PebbleSourceLoc loc) {
     if (!has_value) {
         pebble_rt_unwrap_panic(loc);

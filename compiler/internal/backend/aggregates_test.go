@@ -2032,6 +2032,87 @@ func TestEmitOptionalPointerHmapGetByRefGetShapeNoneCompilesAndRuns(t *testing.T
 	emitAndRun(t, "type Entry = struct { value int; }; fn get_by_ref(entry *Entry, key int) ?*int { if key < 0 { return none; } return some &entry.value; } fn get(entry *Entry, key int) ?int { let ptr = get_by_ref(entry, key); if !ptr.has_value { return none; } return some *(ptr!); } fn main() int { var e Entry = Entry.{ value = 5 }; let r = get(&e, -1); if r.has_value { return 99; } else { return 0; } }", false, 0, false)
 }
 
+func TestEmitOptionalNarrowWidthsSomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The narrow-width force-unwrap gap: u8/u16/i8/i16/u32 payloads had a
+	// runtime helper in no configuration until the five
+	// pebble_rt_checked_unwrap_u8/u16/i8/i16/u32 helpers landed, so a `x!`
+	// on each was a clean emission rejection. Storage (`some <value>` at the
+	// narrow width) and the cast back to int already worked; only the unwrap
+	// was missing. Each case now force-unwraps a some-initialized optional at
+	// its own width and returns the value as int. Exit codes are masked to 8
+	// bits, so each payload value is chosen to land on its exact expected code;
+	// the emitted-C and smoke-test coverage prove the true-width round-trip
+	// (a u16 > 255, etc.).
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"u8", "fn main() int { var x ?u8 = some 42; return x! as int; }", 42},
+		{"u16", "fn main() int { var x ?u16 = some 22; return x! as int; }", 22},
+		{"i8", "fn main() int { var x ?i8 = some 7; return x! as int; }", 7},
+		{"i16", "fn main() int { var x ?i16 = some 200; return x! as int; }", 200},
+		{"u32", "fn main() int { var x ?u32 = some 9; return x! as int; }", 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitOptionalNarrowWidthsNoneUnwrapPanics(t *testing.T) {
+	t.Parallel()
+	// A force-unwrap of an absent optional at a narrow width must panic via
+	// pebble_rt_checked_unwrap_u8/u16/i8/i16/u32 (PEBBLE_PANIC_UNWRAP_FAILED,
+	// process abort), exactly like i32/i64/bool/u64/ptr — no silent garbage
+	// return. Each case declares a none-initialized optional at its own width
+	// and force-unwraps it; wantAbnormal proves the process terminated
+	// abnormally.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"u8", "fn main() int { let x ?u8 = none; return x! as int; }"},
+		{"u16", "fn main() int { let x ?u16 = none; return x! as int; }"},
+		{"i8", "fn main() int { let x ?i8 = none; return x! as int; }"},
+		{"i16", "fn main() int { let x ?i16 = none; return x! as int; }"},
+		{"u32", "fn main() int { let x ?u32 = none; return x! as int; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 0, true)
+		})
+	}
+}
+
+func TestEmitOptionalNarrowWidthsWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the narrow-width unwrap fixtures: each optional
+	// typedef's .value field carries the payload's true narrow C type
+	// (uint8_t for u8, etc. — the optionalPayloadCType/cType pinning), and
+	// the force-unwrap routes to the matching pebble_rt_checked_unwrap_<w>
+	// helper. Symbol IDs come from the real fixture dump for the u8 case.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var x ?u8 = some 42; return x! as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    uint8_t value;\n} pebble_optional_",
+		"pebble_rt_checked_unwrap_u8(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_rt_checked_unwrap_i32(") {
+		t.Errorf("emitted C routed a u8 unwrap to the i32 helper:\n%s", out)
+	}
+}
+
 func TestEmitStructTwoFieldReadBackCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The confirmation fixture for struct construction and a field read: a

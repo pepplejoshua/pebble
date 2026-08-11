@@ -448,15 +448,14 @@ func TestEmitRejectsOptionalWithUnsupportedPayloadType(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a fixed-width integer, bool, tuple, struct, or enum")
 }
 
-func TestEmitRejectsOptionalUnwrapOfU8Payload(t *testing.T) {
+func TestEmitOptionalUnwrapOfU8PayloadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// The narrower fixed-width integers pass the typedef and some-value gates
-	// (the generic resolvedBuiltin/cType mechanism), but their force-unwrap is
-	// a clean rejection: there is no pebble_rt_checked_unwrap_i8/u8-style
-	// runtime helper family beyond i32/i64/u64/bool yet. This pins that
-	// residual precisely rather than emitting a call to a nonexistent helper.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var o ?u8 = some 5; return o! as i32; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "has no runtime unwrap helper")
+	// A u8 optional payload's force-unwrap now routes to
+	// pebble_rt_checked_unwrap_u8. This shape was previously a clean
+	// rejection ("has no runtime unwrap helper") before that runtime helper
+	// existed (this test was TestEmitRejectsOptionalUnwrapOfU8Payload); now
+	// it compiles and runs, returning 5.
+	emitAndRun(t, "fn main() i32 { var o ?u8 = some 5; return o! as i32; }", false, 5, false)
 }
 
 func TestEmitRejectsStructUnsupportedFieldType(t *testing.T) {

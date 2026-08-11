@@ -701,6 +701,11 @@ static void test_checked_unwrap_normal(void) {
     assert(pebble_rt_checked_unwrap_bool(true, true, (PebbleSourceLoc){0}) == true);
     assert(pebble_rt_checked_unwrap_bool(true, false, (PebbleSourceLoc){0}) == false);
     assert(pebble_rt_checked_unwrap_u64(true, 18446744073709551615ULL, (PebbleSourceLoc){0}) == 18446744073709551615ULL);
+    assert(pebble_rt_checked_unwrap_u8(true, 255, (PebbleSourceLoc){0}) == 255);
+    assert(pebble_rt_checked_unwrap_u16(true, 65535, (PebbleSourceLoc){0}) == 65535);
+    assert(pebble_rt_checked_unwrap_i8(true, -128, (PebbleSourceLoc){0}) == -128);
+    assert(pebble_rt_checked_unwrap_i16(true, -32768, (PebbleSourceLoc){0}) == -32768);
+    assert(pebble_rt_checked_unwrap_u32(true, 4294967295U, (PebbleSourceLoc){0}) == 4294967295U);
     int value = 7;
     assert(pebble_rt_checked_unwrap_ptr(true, &value, (PebbleSourceLoc){0}) == &value);
     assert(pebble_rt_checked_unwrap_ptr(true, NULL, (PebbleSourceLoc){0}) == NULL);
@@ -716,6 +721,26 @@ static void trigger_unwrap_absent_i64(void) {
 
 static void trigger_unwrap_absent_bool(void) {
     (void)pebble_rt_checked_unwrap_bool(false, false, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_u8(void) {
+    (void)pebble_rt_checked_unwrap_u8(false, 0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_u16(void) {
+    (void)pebble_rt_checked_unwrap_u16(false, 0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_i8(void) {
+    (void)pebble_rt_checked_unwrap_i8(false, 0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_i16(void) {
+    (void)pebble_rt_checked_unwrap_i16(false, 0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_u32(void) {
+    (void)pebble_rt_checked_unwrap_u32(false, 0, (PebbleSourceLoc){0});
 }
 
 static void trigger_unwrap_absent_u64(void) {
@@ -1134,7 +1159,7 @@ int main(void) {
     test_checked_unwrap_normal();
     printf("ok: checked unwrap normal results\n");
 
-    /* Unwrapping an absent optional panics in EVERY configuration, all five
+    /* Unwrapping an absent optional panics in EVERY configuration, all ten
      * payload types — same reasoning as division by zero and array bounds.
      */
     if (verify_checked_overflow_panics("i32 unwrap of absent optional", trigger_unwrap_absent_i32) != 0) {
@@ -1147,6 +1172,26 @@ int main(void) {
     }
     if (verify_checked_overflow_panics("bool unwrap of absent optional", trigger_unwrap_absent_bool) != 0) {
         fprintf(stderr, "smoke_test: checked bool unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("u8 unwrap of absent optional", trigger_unwrap_absent_u8) != 0) {
+        fprintf(stderr, "smoke_test: checked u8 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("u16 unwrap of absent optional", trigger_unwrap_absent_u16) != 0) {
+        fprintf(stderr, "smoke_test: checked u16 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i8 unwrap of absent optional", trigger_unwrap_absent_i8) != 0) {
+        fprintf(stderr, "smoke_test: checked i8 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("i16 unwrap of absent optional", trigger_unwrap_absent_i16) != 0) {
+        fprintf(stderr, "smoke_test: checked i16 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("u32 unwrap of absent optional", trigger_unwrap_absent_u32) != 0) {
+        fprintf(stderr, "smoke_test: checked u32 unwrap subprocess check FAILED\n");
         return 1;
     }
     if (verify_checked_overflow_panics("u64 unwrap of absent optional", trigger_unwrap_absent_u64) != 0) {

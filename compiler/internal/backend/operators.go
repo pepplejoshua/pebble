@@ -197,12 +197,12 @@ func isCompatibleIntegerWidth(snapshot *types.Snapshot, width types.BuiltinKind,
 }
 
 // optionalUnwrapSuffix returns the pebble_rt_checked_unwrap_* helper suffix
-// for an optional payload of the given type: "i32" for an int/i32 payload,
-// "i64" for an i64 payload, "u64" for a uint or u64 payload (both carry the
-// C type uint64_t, so one runtime helper reads both back at their true
-// width), and "bool" for a bool payload. Any other payload type (a narrower
-// fixed-width integer without a runtime unwrap helper yet, a char, str,
-// tuple, or struct) yields "", a clean rejection for the caller. The helper
+// for an optional payload of the given type: "u8"/"u16"/"i8"/"i16"/"u32"
+// for the narrow fixed-width payloads, "i32" for an int/i32 payload, "i64"
+// for an i64 payload, "u64" for a uint or u64 payload (both carry the C
+// type uint64_t, so one runtime helper reads both back at their true
+// width), and "bool" for a bool payload. Any other payload type (a char,
+// str, tuple, or struct) yields "", a clean rejection for the caller. The helper
 // must be selected from the PAYLOAD's own type rather than the ambient entry
 // width: a uint payload's .value field is uint64_t, which only
 // pebble_rt_checked_unwrap_u64 reads back at its true width, not the
@@ -223,6 +223,16 @@ func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 		return ""
 	}
 	switch payloadWidth {
+	case types.U8:
+		return "u8"
+	case types.U16:
+		return "u16"
+	case types.I8:
+		return "i8"
+	case types.I16:
+		return "i16"
+	case types.U32:
+		return "u32"
 	case types.Int, types.I32:
 		return "i32"
 	case types.I64:
