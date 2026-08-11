@@ -44,10 +44,56 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — the unbound-range-loop checker gap landed as `87e8c43`. 7 of
-19 P1 slices done. Next: another P1 from proposal 14's fourth-pass gap
-table — the six local-copy-initialization slices (tuple/array/struct/
-enum/string/slice) are next in queue, one type per task.)*
+**Item: a tuple-typed local cannot be initialized from another tuple
+value (`let second (int, int) = first;`).**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1, first of 6 "local copy initialization" slices (tuple, array,
+struct, enum, string, slice — one type per task, matching this
+tracker's established discipline). Independently reproduced before
+dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let first (int, int) = (1, 2);
+    let second (int, int) = first;
+    return second.0;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares a tuple-typed local of type pebble_tuple_23_t initialized
+from a SymbolValue, want a TupleValue (a tuple literal) or a call to a
+tuple-returning helper; initializing a tuple local from another value
+is not supported yet`.
+
+**Known cause:** `buildTupleLocalDeclaration`
+(`compiler/internal/backend/locals.go:92`) only accepts a `TupleValue`
+(a tuple literal) or a `DirectCall` to a tuple-returning helper as the
+initializer — a `SymbolValue` naming an already-declared tuple-typed
+local is rejected. This is the exact same shape of gap already fixed
+TODAY for tuple REASSIGNMENT (`d1b05be`,
+`buildTupleStoreValue`/`buildStoreCore`) — this is the sibling case
+for tuple local INITIALIZATION (`let x = y;`, a fresh declaration,
+not reassigning an existing local).
+
+**Scope:** widen `buildTupleLocalDeclaration` to also accept a
+`SymbolValue` naming an in-scope tuple-typed local of the exact
+matching type, emitting the same plain C struct assignment/
+initialization the literal case already produces (a tuple lowers to a
+C struct; C already allows initializing one struct FROM another
+struct value directly in a declaration, `pebble_tuple_23_t
+pebble_local_28 = pebble_local_27;`, which is simpler than the
+reassignment case's separate-statement `=` — confirm this exact C
+shape compiles). Mirror `buildTupleStoreValue`'s exact acceptance
+logic (type-match guard, scope lookup) rather than inventing new
+logic. A tuple-returning-call right-hand side already works (existing
+behavior, confirmed accepted) — don't touch that path. Verify the
+reproduction above compiles and runs, returning 1. Also verify: a
+3-element tuple, a mixed-type tuple, and that whole-tuple REASSIGNMENT
+(`d1b05be`, already working) and tuple ELEMENT reads are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
