@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — array local copy initialization landed as `8c72f36`. 9 of
+19 P1 slices done. Next: struct local copy initialization (slice 3 of
+6 in this family), same one-type-per-task discipline.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: an array-typed local cannot be initialized from another array
 value (`let second [3]int = first;`).**
 
@@ -96,6 +102,17 @@ template. Verify the reproduction above compiles and runs, returning
 1. Also verify: a longer array (5+ elements), a bool-element array,
 and that whole-array REASSIGNMENT (`aef808e`, already working) and
 array element reads/writes are unaffected.
+
+**Resolution (`8c72f36`, 2026-08-10).** Added a `SymbolValue` branch
+to `buildArrayLocalDeclaration`, emitting a bare declaration followed
+by a `memcpy` (the same shape `aef808e`'s reassignment fix uses,
+adapted for a declaration since C can't initialize a raw array
+variable from another array variable either). `hasArrayStore` set so
+`<string.h>` is included. Verified the repro, a 5-element array, and a
+bool-element array; reassignment and element reads/writes unaffected.
+Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
