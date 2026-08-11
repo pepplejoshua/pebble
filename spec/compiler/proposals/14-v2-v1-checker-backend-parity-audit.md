@@ -67,7 +67,7 @@ The following failures are current and independently reproduced:
 | Unbound range loop | `loop 0..3 { ... }` is accepted by parser, checker, and TIR, then rejected because `RangeLoop.Symbol == 0`. V1 exposes the implicit iterator as `iter`. If V2 keeps the explicit-name rule, the checker must reject the source form. | **Checker/backend contract defect** |
 | Local copy initialization | **RESOLVED for all 6 types (2026-08-10).** `let second T = first` now works for tuple (`834927e`), array (`8c72f36`), struct (`2179ebf`), enum (`7f1db25`), `str` (`7747aaa`), and slice (`22ceab8`) — each independently verified and causation-checked, one type per task. | — |
 | Tuple coercion | **RESOLVED (`d905ab6`, 2026-08-10)** — `let value (i64, f64) = (a, b);` now works for the tuple-local declaration path (call-argument and reassignment `TupleCoerce` remain deliberately out of scope), verified for a full and a partial-coercion case, causation-checked | — |
-| More than one aggregate dependency level | A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”. V1 recursively orders the complete dependency graph. | **C-shape gap** |
+| More than one aggregate dependency level | ~~A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”.~~ **Resolved (`e649476`).** `orderAggregateTypes`'s depth cap is now selective: struct/tuple/optional-only chains nest arbitrarily deep; the cap stays only for chains routed through an array (preserving `emit.go`'s field-array-before-aggregate-block ordering invariant). | **Closed** |
 | Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
 | Slice field as call argument | `sum(holder.values)` is rejected because the slice argument builder accepts only a slice local or parameter, not `Load(FieldPlace)`. | **Value-source gap** |
 | Existing slice as one variadic tail | `sum(values)` for `fn sum(...values []int)` is rejected as an element conversion. V1 passes the matching slice directly. | **V1 call gap** |
@@ -132,7 +132,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Function type and function value | V2 supports Pebble-convention, non-variadic function values for a limited C-representable signature set | **Partial**; V1 supports a wider convention and signature surface |
 | Opaque extern type | V2 represents it, emits incomplete C declarations, permits pointer use, and rejects invalid `sizeof` use | **Verified** |
 | Generic type and specialization | V2 supports generic nominal types, specialization, and owner type-parameter inheritance | **Partial** by deep aggregate and value-source shape; owner inheritance resolved in `ddbe454` |
-| Recursive nominal type | V2 collection has dependency ordering and recursion paths | **Partial**; even a non-recursive plain three-level aggregate dependency chain is still rejected |
+| Recursive nominal type | V2 collection has dependency ordering and recursion paths | **Resolved (`e649476`)**; a plain three-level (and deeper) non-recursive struct chain now compiles and runs; array-of-aggregate chains remain rejected by design |
 | Tuple member `.0`, `.1`, and so on | V1 and V2 resolve tuple ordinals | **Implemented, proof needed** |
 | Array `.len` | V1 and V2 support it | **Implemented, proof needed** |
 | Slice `.len` and `.data` | V1 and V2 support both | **Implemented, proof needed** |
@@ -166,7 +166,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Slice expression | V2 checked slices work in ordinary and nested expression positions, including GNU statement-expression lowering where a temporary is required | **Partial**; struct-literal slice fields and other value-source positions remain separate gaps (`836fbea`) |
 | Tuple literal | V2 `TupleValue` | **Implemented**, but whole-value copy paths are partial |
 | Array literal and repeat | V2 `ArrayValue` and `ArrayRepeat` | **Partial** by element and destination shape |
-| Struct literal | V2 `RecordConstruct` | **Partial** for deep nested aggregates; runtime Allocator/Context construction is resolved |
+| Struct literal | V2 `RecordConstruct` | **Resolved (`e649476`)** for plain deep struct/tuple/optional nesting; runtime Allocator/Context construction is resolved; array-of-aggregate struct fields remain a separate, out-of-scope backend gap |
 | Tagged-union variant literal | V2 `VariantConstruct` | **Partial** by payload C shape; generic narrowing is resolved |
 | `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 supports scalar, struct, enum, union, tuple, optional, slice, pointer, runtime, and fixed-array types. `sizeof [N]Struct` still has typedef ordering failure, and a direct cast of `sizeof` is a separate value-source rejection. | **Partial** |
 | Force unwrap | V2 checked optional unwrap | **Partial** by payload type |
@@ -571,8 +571,8 @@ The fourth pass completed the old read-only queue:
 
 - library-named extern blocks compile, link, and run;
 - opaque extern types compile, link, and run through real `FILE *` use;
-- a plain three-level aggregate dependency is a confirmed backend defect, so
-  the problem is broader than nested generic types;
+- a plain three-level aggregate dependency was a confirmed backend defect,
+  broader than nested generic types — resolved in `e649476`;
 - `TupleCoerce` is reachable from ordinary source and is a confirmed backend
   defect;
 - `TypeUse` is compile-time metadata and needs no runtime backend node;

@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #47 (three-level aggregate dependency rejection) closed
+in `e649476`. 15 P1s and P0s resolved this window: tasks #33-47. Next
+up: #48, direct array-literal return.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a plain (non-generic, non-recursive) three-level aggregate
 dependency chain is rejected as "more than one level of nesting."**
 
@@ -103,6 +109,31 @@ too), and that a GENUINELY problematic shape (if one exists — check
 whether recursive/self-referential nesting is a separate, intentional
 rejection elsewhere, which should stay rejected) is not accidentally
 now accepted.
+
+**Resolution (`e649476`, 2026-08-11).** The depth-1 cap in
+`orderAggregateTypes` (`compiler/internal/backend/typedefs.go`) was
+indeed a stale, overly-conservative guard for the plain struct/tuple/
+optional case, but not removable wholesale: a struct field whose type
+is an array of an aggregate (`struct { arr [2]Inner }`) also hits the
+same cap, and `emit.go`'s field-referenced-array typedef ordering
+relies on that specific rejection staying in place (it unconditionally
+emits array typedefs before the aggregate block, which is only correct
+because no array element could be an aggregate). Fix: `depth()` now
+returns both the max nesting depth and whether any dependency edge in
+the chain passed through an array type; the depth>1 rejection fires
+only when an array is present in the chain. Verified: the three-level
+and four-level struct-only reproductions compile and run correctly
+(exit 42), with `Inner`'s typedef confirmed emitted before `Middle`'s
+and `Middle`'s before `Outer`'s in the actual emitted C; a tuple+
+optional-in-struct chain at depth 2 compiles and runs; the
+array-of-aggregate shape (`struct { arr [2]Inner }`, constructed so
+the checker actually reaches it) still rejects with the same message;
+a recursive struct via a pointer field is unaffected (emitted C
+identical before/after, confirmed via causation check). Full suite
+(`go test ./... -count=1 -timeout 600s -parallel 16`, 11 packages)
+clean, `gofmt`/`go vet` clean, independent causation check confirmed
+reverting the fix reproduces the original rejection exactly.
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
