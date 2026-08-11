@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -2175,6 +2176,172 @@ fn main() int {
 		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 3+5+7+2, false)
+}
+
+// compileAndRunWithShimFirst is compileAndRun for programs that call extern
+// FUNCTIONS whose C definitions no included libc header declares (bool, char,
+// narrow-width, and genuinely-mixed extern signatures): the backend emits no
+// prototype for an extern function — the emitted C relies on the fixed libc
+// header set — so the shim's definitions must be visible BEFORE the emitted
+// C's call sites. The shim source is therefore concatenated ahead of the
+// emitted C into one translation unit (unlike compileAndRunWithShim in
+// extern_data_test.go, which links a separate shim translation unit for extern
+// variables, whose forward declarations the emitted C provides itself). The
+// combined file is compiled under the same -Wall -Wextra -Werror flags against
+// the same cached runtime objects as compileEmittedC, and the binary must exit
+// with wantCode.
+func compileAndRunWithShimFirst(t *testing.T, emitted []byte, shimSource string, wantCode int) {
+	t.Helper()
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+	}
+	dir := t.TempDir()
+	combined := filepath.Join(dir, "combined.c")
+	combinedSource := append([]byte(shimSource+"\n"), emitted...)
+	if err := os.WriteFile(combined, combinedSource, 0o644); err != nil {
+		t.Fatalf("write combined C: %v", err)
+	}
+	binary := filepath.Join(dir, "program")
+	runtimeRoot := runtimeSourceRoot(t)
+	objectsDir, err := cachedRuntimeObjects(cc, runtimeRoot)
+	if err != nil {
+		if runtimeCCMissing {
+			t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
+		}
+		t.Fatalf("compiling cached runtime objects: %v", err)
+	}
+	compileArgs := []string{
+		"-std=c11",
+		"-Wall", "-Wextra", "-Werror",
+		"-DPEBBLE_RT_MODE_SAFE",
+		"-I", filepath.Join(runtimeRoot, "include"),
+		combined,
+	}
+	for _, sourceFile := range runtimeSourceFiles {
+		compileArgs = append(compileArgs, filepath.Join(objectsDir, strings.TrimSuffix(sourceFile, ".c")+".o"))
+	}
+	compileArgs = append(compileArgs, "-o", binary)
+	compile := exec.Command(cc, compileArgs...)
+	if output, err := compile.CombinedOutput(); err != nil {
+		t.Fatalf("cc compilation failed: %v\n%s", err, output)
+	}
+	runCompiledBinary(t, binary, wantCode, false, false)
+}
+
+// --- proposal 14 audit: extern C signatures across accepted parameter/result types ---
+
+// TestEmitExternCharAndMixedRealLibcCompilesAndRuns proves two accepted extern
+// parameter/result families that the existing real-libc matrix did not cover:
+// a `char` PARAMETER (putchar's real C signature is int putchar(int), and the
+// char C ABI is int32_t, so the emitted `int32_t putchar(int32_t)` call agrees
+// with the stdio.h declaration exactly — the returned int is compared against
+// `'a' as i32`) and a genuinely mixed multi-parameter extern (memcpy takes
+// *void + *void + uint and returns *void — three parameters of two families
+// plus a pointer result, in one call). The memcpy buffers are scalar ints, not
+// array locals: `&arr as *void` lowers through a broken statement-expression
+// path (separately noted). Exit 0 = putchar returned 'a' and the copied value
+// arrived; each other code names the exact step that failed.
+func TestEmitExternCharAndMixedRealLibcCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern fn putchar(c char) i32;
+extern fn memcpy(dest *void, src *void, n uint) *void;
+fn main() int {
+    var c char = 'a';
+    var r i32 = putchar(c);
+    if r != 'a' as i32 { return 1; }
+    var src i32 = 10;
+    var dst i32 = 0;
+    var p *void = memcpy(&dst as *void, &src as *void, 4);
+    if p == nil { return 2; }
+    if dst != 10 { return 3; }
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"putchar(", "memcpy("} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C does not call the real C name %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_fn_") {
+		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
+// TestEmitExternSignatureFamilyShimCompilesAndRuns completes the accepted
+// extern parameter/result families the real-libc tests cannot reach, because
+// no included libc header declares them: bool → bool, char → char, narrow
+// fixed-width integers (u8 → u8, i16 → i16), u64 → u64, f32 → f32, a void
+// result with mixed params, and — the "multiple mixed parameters" shape — one
+// extern taking i32 + f64 + str + *i32 and returning i64. Each declared extern
+// is defined by a test-only C shim (the backend emits no prototype for an
+// extern function, so the shim is concatenated AHEAD of the emitted C in one
+// translation unit via compileAndRunWithShimFirst), and every parameter and
+// result lands at its own C width: u8 emits uint8_t, i16 int16_t, u64
+// uint64_t, f32 float, str const char *, i64 int64_t. Exit 0 = every
+// signature shape lowered, linked, and round-tripped correctly; each other
+// code names the exact step that failed.
+func TestEmitExternSignatureFamilyShimCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern fn shim_not(b bool) bool;
+extern fn shim_next(c char) char;
+extern fn shim_byte(x u8) u8;
+extern fn shim_wide(a i16, b i16) i16;
+extern fn shim_u64(x u64) u64;
+extern fn shim_f32(x f32) f32;
+extern fn shim_mix(a i32, b f64, s str, p *i32) i64;
+extern fn shim_void_mixed(a int, b bool) void;
+fn main() int {
+    var nb bool = shim_not(true);
+    if nb { return 1; }
+    var nc char = shim_next('a');
+    if nc != 'b' { return 2; }
+    var nub u8 = shim_byte(200);
+    if nub != 201 { return 3; }
+    var nw i16 = shim_wide(1000, 2000);
+    if nw != 3000 { return 4; }
+    var nu u64 = shim_u64(18446744073709551615);
+    if nu != 0 { return 5; }
+    var nf f32 = shim_f32(1.5);
+    if nf != 3.0 { return 6; }
+    var x i32 = 40;
+    var nm i64 = shim_mix(2, 1.5, "hi", &x);
+    if nm != 193 { return 7; }
+    shim_void_mixed(1, true);
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"shim_not(", "shim_next(", "shim_byte(", "shim_wide(", "shim_u64(", "shim_f32(", "shim_mix(", "shim_void_mixed(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C does not call the real C name %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_fn_") {
+		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", out)
+	}
+	compileAndRunWithShimFirst(t, buf.Bytes(), `#include <stdint.h>
+#include <stdbool.h>
+bool shim_not(bool b) { return !b; }
+int32_t shim_next(int32_t c) { return c + 1; }
+uint8_t shim_byte(uint8_t b) { return (uint8_t)(b + 1u); }
+int16_t shim_wide(int16_t a, int16_t b) { return (int16_t)(a + b); }
+uint64_t shim_u64(uint64_t x) { return x + 1u; }
+float shim_f32(float x) { return x * 2.0f; }
+int64_t shim_mix(int32_t a, double b, const char *s, int32_t *p) {
+    return (int64_t)a + (int64_t)(b * 100.0) + (int64_t)(s[1] - s[0]) + (int64_t)(*p);
+}
+void shim_void_mixed(int32_t a, bool b) { (void)a; (void)b; }`, 0)
 }
 
 // --- proposal 14 audit: fixed-parameter value shapes ---

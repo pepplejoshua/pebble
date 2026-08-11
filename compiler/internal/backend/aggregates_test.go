@@ -1904,6 +1904,49 @@ func TestEmitOptionalNoneNeverUnwrappedCompilesClean(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let x ?i32 = none; return 1; }", false, 1, false)
 }
 
+// TestEmitNoneToOptionalConstructionAcrossPayloadsCompilesAndRuns is the
+// focused proof for proposal 14's "`none` to any optional — contextual
+// optional construction — proof needed" conversion row. `none` must be a valid
+// initializer for an optional local of every supported payload family — int
+// (?i32), bool, a pointer (?*int), and a nominal struct (?Point) — and each
+// none-constructed value must be distinguishable at runtime from a
+// some(...)-constructed value of the same payload type via the language's
+// optional presence member (.has_value): every none-initialized local must
+// read has_value == false, and a some-initialized local of each payload must
+// read has_value == true, with the scalar payloads (int, bool, pointer)
+// force-unwrapped to prove their values round-trip. (Struct-payload
+// force-unwrap is not used: unwrapping an aggregate payload into a struct
+// value is a separate, pre-existing limitation — scalar unwrap is resolved.)
+// Exit 0 = every construction and presence read was correct; each other code
+// names the exact payload that failed.
+func TestEmitNoneToOptionalConstructionAcrossPayloadsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Point = struct { x i32; y i32; };
+fn main() int {
+    var ni ?i32 = none;
+    var nb ?bool = none;
+    var np ?*i32 = none;
+    var ns ?Point = none;
+    if ni.has_value { return 1; }
+    if nb.has_value { return 2; }
+    if np.has_value { return 3; }
+    if ns.has_value { return 4; }
+    var si ?i32 = some 7;
+    if !si.has_value { return 5; }
+    if si! != 7 { return 6; }
+    var sb ?bool = some false;
+    if !sb.has_value { return 7; }
+    if sb! { return 8; }
+    var sp ?Point = some Point.{ x = 3, y = 4 };
+    if !sp.has_value { return 9; }
+    var y int = 40;
+    var sp2 ?*int = some &y;
+    if !sp2.has_value { return 10; }
+    if *(sp2!) != 40 { return 11; }
+    return 0;
+}`, false, 0, false)
+}
+
 func TestEmitOptionalUnwrapNoneAborts(t *testing.T) {
 	t.Parallel()
 	// Force-unwrapping a none-initialized local panics via

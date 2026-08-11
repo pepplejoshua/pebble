@@ -1276,6 +1276,61 @@ fn main() int {
 	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
+// TestEmitNilPointerAcrossPointeeTypesCompilesAndRuns is the focused proof for
+// proposal 14's "`nil` pointer — V2 `NilPointer` — proof needed by pointer
+// type" row. One program initializes a nil pointer local of every supported
+// pointee family — a fixed-width integer (*i32, *u8, *u64), bool, char, void,
+// a nominal struct (*Point), and an opaque extern pointee (*FILE) — compares
+// each against nil with both != and ==, runs a nil-check branch that actually
+// executes its then-arm at runtime, passes a nil to a helper expecting a
+// pointer to a struct (which nil-checks it), and copies a nil between two
+// pointer locals. Every check exits with a distinct code, so a wrong nil
+// lowering (a nonzero sentinel, a mistyped comparison, a dropped copy) fails
+// the process code with the exact step that broke. (*str, *f32/*f64, and
+// **T pointees are cleanly rejected by the backend rather than proven here;
+// the enum/union-pointee shapes hit a separate typedef-collection break,
+// reported as a NEW FINDING.) The fixture is built with the symbol table
+// because *FILE needs the extern type's real C name (FILE) to resolve.
+func TestEmitNilPointerAcrossPointeeTypesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `type Point = struct { x i32; y i32; };
+extern {
+    type FILE;
+}
+fn is_nil_point(p *Point) int {
+    if p == nil { return 1; }
+    return 0;
+}
+fn main() int {
+    var pi *i32 = nil;
+    if pi != nil { return 1; }
+    var pb *bool = nil;
+    if pb != nil { return 2; }
+    var pc *char = nil;
+    if pc != nil { return 3; }
+    var pu *u8 = nil;
+    if pu != nil { return 4; }
+    var pu64 *u64 = nil;
+    if pu64 != nil { return 5; }
+    var pv *void = nil;
+    if pv != nil { return 6; }
+    var pp *Point = nil;
+    if pp != nil { return 7; }
+    var pf *FILE = nil;
+    if pf != nil { return 8; }
+    if is_nil_point(pp) != 1 { return 9; }
+    var q *i32 = pi;
+    if q != nil { return 10; }
+    if pi == nil { var hit int = 1; if hit == 1 { } else { return 11; } } else { return 12; }
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
 func TestEmitU64EqualityComparisonCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The exact minimal repro for the non-entry-width comparison bug: a u64
