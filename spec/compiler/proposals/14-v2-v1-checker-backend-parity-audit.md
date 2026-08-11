@@ -70,7 +70,7 @@ The following failures are current and independently reproduced:
 | More than one aggregate dependency level | ~~A plain `Outer -> Middle -> Inner` struct chain is rejected as “more than one level of nesting”.~~ **Resolved (`e649476`).** `orderAggregateTypes`'s depth cap is now selective: struct/tuple/optional-only chains nest arbitrarily deep; the cap stays only for chains routed through an array (preserving `emit.go`'s field-array-before-aggregate-block ordering invariant). | **Closed** |
 | Direct array return | `return [20, 22]` from a function with result `[2]int` is rejected. Therefore an array-returning call cannot yet provide the deferred call-value copy paths. | **V1 aggregate result gap** |
 | Slice field as call argument | ~~`sum(holder.values)` is rejected because the slice argument builder accepts only a slice local or parameter, not `Load(FieldPlace)`.~~ **Resolved (`d33060e`).** `buildSliceArgument` now handles `Load(FieldPlace)`, reusing `buildPlaceLValue`. | **Closed** |
-| Existing slice as one variadic tail | `sum(values)` for `fn sum(...values []int)` is rejected as an element conversion. V1 passes the matching slice directly. | **V1 call gap** |
+| Existing slice as one variadic tail | ~~`sum(values)` for `fn sum(...values []int)` is rejected as an element conversion.~~ **Resolved (`94e74f0`).** Checker peeks the sole tail argument's known type bottom-up; backend forwards it directly. | **Closed** |
 | Direct cast of `sizeof` | `return (sizeof int) as int;` is rejected because the integer-cast child builder has no `SizeofType` case. | **Value-source gap** |
 | `sizeof [N]Struct` | The type resolver now accepts the fixed array, but emitted C can reference the array typedef before the struct element typedef exists. A `[2]Point` reproduction fails in `cc` with unknown `pebble_struct_*_t`. | **C typedef-order gap** |
 | Narrow checked arithmetic | `u8 + u8` and `u8 / u8` emit calls named `pebble_rt_checked_add_` / `pebble_rt_checked_div_`, then fail in `cc`. Narrow signed negation and `u64` divide/shift reject earlier. | **Runtime-helper contract defect** |
@@ -293,7 +293,7 @@ is at `backend/emit.go:4140-4405`.
 |---|---|---|
 | Fixed Pebble parameters | supported | supported | **Implemented, proof needed** by value shape |
 | Trailing Pebble slice parameter marked variadic | V1 collects zero or more tail elements | V2 collects zero or more tail elements into a temporary slice | **Verified** for int, bool, zero tail, and fixed-prefix tests near `emit_test.go:12762` |
-| One existing slice as the sole variadic tail | V1 detects the matching slice and passes it directly at `codegen.c:4000-4068` | V2 validates the slice as one element and reports C0601 | **Confirmed absent** with `sum(values)` reproduction |
+| One existing slice as the sole variadic tail | V1 detects the matching slice and passes it directly at `codegen.c:4000-4068` | ~~V2 validates the slice as one element and reports C0601~~ **Resolved (`94e74f0`)** | **Closed** |
 | C variadic extern call | V1 permits primitive C variadic use | V2 reports C0604 | **Decision needed**; do not infer a target from V1 alone |
 | Aggregate argument, result, and receiver | V1 C value passing handles ordinary C-representable aggregate values | V2 has many implemented paths, but each type and source expression has a separate builder | **Partial**; see the backend shape table |
 

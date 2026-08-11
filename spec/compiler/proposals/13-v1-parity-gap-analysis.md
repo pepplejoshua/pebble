@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #50 (existing slice as sole variadic tail) closed in
+`94e74f0`, a checker+backend fix. 18 P1s and P0s resolved this window:
+tasks #33-50. Next up: #51, direct cast of `sizeof`.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: an existing slice cannot be passed directly as the sole tail
 argument to a variadic slice parameter.**
 
@@ -151,6 +157,34 @@ guaranteed-safe backend-only change:**
    Verify a zero-argument variadic call is unaffected. Verify a fixed
    parameter alongside a variadic slice tail (both the multi-element
    and sole-slice-tail shapes) still works.
+
+**Resolution (`94e74f0`, 2026-08-11).** Confirmed the V1 rule exactly
+by reading `src/checker.c:3204-3237`: V1 synthesizes a sole tail
+argument's type bottom-up first, then branches (forward the slice if
+the synthesized type is itself a slice; otherwise bind as one
+element). Implemented as a `knownReferenceType` peek in `prepareDirect`
+(`compiler/internal/check/call_facts.go`): when the tail has exactly
+one argument that is a simple reference (a Name/Path resolving to an
+annotated binding or parameter) whose statically-known declared type
+equals the variadic parameter's whole slice type, the destination is
+the slice type instead of the element type — bottom-up and
+expectation-free, matching V1's synthesize-then-branch order, not a
+"try both and see which unifies" hack. `buildVariadicSliceArgument`
+(`compiler/internal/backend/calls.go`) got the matching case,
+delegating to the existing `buildSliceArgument` to forward the value
+directly. A slice-typed struct field as the sole tail argument
+(`sum(h.values)`) stays rejected — its type isn't statically known to
+the walker at `prepareDirect` time (a solver-resolved constraint, not
+an annotated binding/parameter) — a deliberate, narrower scope
+boundary. Verified: the reproduction, a bare literal (`sum(5)`), a
+multi-element call, a zero-argument call, a fixed-parameter-plus-tail
+call, and the GENERIC variadic path (which already forwarded at the
+checker level via a different mechanism) all behave correctly; full
+suite (`go test ./... -count=1 -timeout 600s -parallel 16`, 11
+packages) clean, `gofmt`/`go vet` clean, causation check independently
+bisected checker-only and backend-only reverts to confirm both layers
+are individually necessary.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
