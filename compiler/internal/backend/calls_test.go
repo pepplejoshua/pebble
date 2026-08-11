@@ -2176,3 +2176,208 @@ fn main() int {
 	}
 	compileAndRun(t, buf.Bytes(), 3+5+7+2, false)
 }
+
+// --- proposal 14 audit: fixed-parameter value shapes ---
+
+// TestEmitFixedParameterValueShapeMatrixCompilesAndRuns is the focused proof
+// for proposal 14's "Fixed Pebble parameters — Implemented, proof needed by
+// value shape" row. One program passes every required argument VALUE SHAPE to
+// a helper's fixed (non-variadic) parameters, each with a distinguishable
+// value, and the exit code is the arithmetic sum so a wrong, misplaced, or
+// dropped argument fails the process code. sum5 receives, in order: a literal
+// (1), a local variable reference (local = 2), the result of ANOTHER call (mk()
+// = 3, the nested-call-as-argument shape), a struct-field read (p.x = 4), and
+// a second struct-field read (p.y = 40) — sum5 = 50. The inline-construction
+// shape is passed directly as an aggregate-typed argument: an inline struct
+// literal (sumPoint(Point.{ x = 6, y = 7 }) = 13) and an inline tuple literal
+// (sumPair((8, 9)) = 17). Exit code 80. A single struct-typed parameter
+// receiving the inline literal also proves an aggregate value survived the
+// call boundary field-by-field.
+func TestEmitFixedParameterValueShapeMatrixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Point = struct { x int; y int; };
+fn mk() int { return 3; }
+fn sum5(a int, b int, c int, d int, e int) int { return a + b + c + d + e; }
+fn sumPoint(p Point) int { return p.x + p.y; }
+fn sumPair(t (int, int)) int { return t.0 + t.1; }
+fn main() int {
+    let local int = 2;
+    let p Point = Point.{ x = 4, y = 40 };
+    return sum5(1, local, mk(), p.x, p.y) + sumPoint(Point.{ x = 6, y = 7 }) + sumPair((8, 9));
+}`, false, 50+13+17, false)
+}
+
+// TestEmitFixedParameterValueShapeMatrixWritesC pins the lowered C for the
+// same matrix: the call site threads ctx, then each argument value shape has
+// its own lowered form — the literal as a plain constant, the local reference
+// as its pebble_local_<sym> name, the nested call as a pebble_fn_<sym>(ctx)
+// call (context threaded to it too), each struct-field read as the
+// pebble_local_<p>.pebble_field_<member> projection, and the inline struct
+// literal as a (pebble_struct_<id>_t){ .pebble_field_... = ... } compound
+// literal. A wrong shape for any argument (e.g. the literal re-emitted as a
+// local) fails the assertion.
+func TestEmitFixedParameterValueShapeMatrixWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `type Point = struct { x int; y int; };
+fn mk() int { return 3; }
+fn sum5(a int, b int, c int, d int, e int) int { return a + b + c + d + e; }
+fn sumPoint(p Point) int { return p.x + p.y; }
+fn sumPair(t (int, int)) int { return t.0 + t.1; }
+fn main() int {
+    let local int = 2;
+    let p Point = Point.{ x = 4, y = 40 };
+    return sum5(1, local, mk(), p.x, p.y) + sumPoint(Point.{ x = 6, y = 7 }) + sumPair((8, 9));
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"ctx, 1, pebble_local_",      // literal + local reference, both after ctx
+		"pebble_fn_27(ctx), pebble_", // nested call (mk) threaded with ctx
+		".pebble_field_",             // struct-field reads
+		"(pebble_struct_19_t){",      // inline struct-literal argument
+		"(pebble_tuple_",             // inline tuple-literal argument
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 50+13+17, false)
+}
+
+// --- proposal 14 audit: hidden context forwarding, nested and indirect ---
+
+// TestEmitContextForwardingNestedCallChainCompilesAndRuns is the focused proof
+// for proposal 14's "Hidden Pebble context forwarding — Implemented, proof
+// needed for indirect and nested call chains" row's nested half. helperA calls
+// helperB calls helperC, each a Pebble-convention helper (so the hidden
+// context must thread through all three hops), and helperC actually USES the
+// context: it binds `context`, reads its default_allocator, and performs a
+// real alloc/write/read/free roundtrip that returns 42. If any hop re-fetched
+// or defaulted the context instead of forwarding its own PebbleContext *ctx,
+// the deepest allocator would not be the live runtime allocator and the
+// roundtrip could not succeed. The companion WritesC test pins the per-hop
+// `(ctx)` threading in the emitted C. Exit code 42.
+func TestEmitContextForwardingNestedCallChainCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `fn helperC() int {
+    let ctx = context;
+    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    let value = *p;
+    (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
+    return value;
+}
+fn helperB() int { return helperC(); }
+fn helperA() int { return helperB(); }
+fn main() int { return helperA(); }`, false, 42, false)
+}
+
+// TestEmitContextForwardingNestedCallChainWritesC pins the emitted C for the
+// three-hop chain: every helper definition declares the hidden PebbleContext
+// *ctx parameter, every call site threads ctx as its first argument — main
+// calls helperA(ctx), helperA's body calls helperB(ctx), helperB's body calls
+// helperC(ctx) — and helperC's own `context` use lowers to the dereferenced
+// (*ctx), never a re-fetched or freshly-constructed value. Each call passes
+// the CURRENT helper's own ctx parameter (pebble_fn_26 -> pebble_fn_25 ->
+// pebble_fn_24, the callee-before-caller post-order of the reachability
+// walk). Symbols come from the real fixture dump (helperC=24, helperB=25,
+// helperA=26, main=27).
+func TestEmitContextForwardingNestedCallChainWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `fn helperC() int {
+    let ctx = context;
+    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    *p = 42;
+    let value = *p;
+    (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
+    return value;
+}
+fn helperB() int { return helperC(); }
+fn helperA() int { return helperB(); }
+fn main() int { return helperA(); }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
+		"static int32_t pebble_fn_25(PebbleContext *ctx) {",
+		"static int32_t pebble_fn_26(PebbleContext *ctx) {",
+		"return pebble_fn_26(ctx);", // main -> helperA
+		"return pebble_fn_25(ctx);", // helperA -> helperB
+		"return pebble_fn_24(ctx);", // helperB -> helperC
+		"= (*ctx);",                 // helperC's `context` use is the threaded ctx
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+// TestEmitContextForwardingIndirectCallCompilesAndRuns is the indirect half of
+// the same row. apply takes a function-typed PARAMETER and calls through it
+// (f(x)); the callee helper itself calls another Pebble-convention helper leaf,
+// which USES the context (the allocator roundtrip). Context must thread across
+// every hop: main -> apply (direct), apply -> helper (INDIRECT through the
+// function-typed parameter — the boundary the row calls out), helper -> leaf
+// (direct). If the indirect boundary dropped or corrupted ctx, leaf's
+// allocator roundtrip could not succeed. helper(41) forwards to leaf(42), so
+// the exit code is 42 — the exact value that round-tripped through the
+// allocator at the deepest hop.
+func TestEmitContextForwardingIndirectCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `fn leaf(x int) int {
+    let ctx = context;
+    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    *p = x;
+    let value = *p;
+    (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
+    return value;
+}
+fn helper(x int) int { return leaf(x + 1); }
+fn apply(f fn(int) int, x int) int { return f(x); }
+fn main() int { return apply(helper, 41); }`, false, 42, false)
+}
+
+// TestEmitContextForwardingIndirectCallWritesC pins the emitted C for the
+// indirect boundary: apply's body calls through the function-typed parameter
+// as callee(ctx, arg) — the same `(ctx` threading a direct call gets — helper's
+// body calls leaf with ctx, and main passes the bare pebble_fn_26 function
+// value as apply's first argument (no ctx prepended to the VALUE itself, since
+// it is not a call; the ctx is threaded when the value is invoked). Symbols
+// come from the real fixture dump (leaf=24, helper=26, apply=28, f=29, x=30).
+func TestEmitContextForwardingIndirectCallWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `fn leaf(x int) int {
+    let ctx = context;
+    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    *p = x;
+    let value = *p;
+    (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
+    return value;
+}
+fn helper(x int) int { return leaf(x + 1); }
+fn apply(f fn(int) int, x int) int { return f(x); }
+fn main() int { return apply(helper, 41); }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"return pebble_fn_28(ctx, pebble_fn_26, 41);",   // main -> apply, helper passed as a bare value
+		"return pebble_local_29(ctx, pebble_local_30);", // apply's INDIRECT call threads ctx through the fn-typed param
+		"return pebble_fn_24(ctx,",                      // helper -> leaf, ctx threaded
+		"= (*ctx);",                                     // leaf's `context` use is the threaded ctx
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
