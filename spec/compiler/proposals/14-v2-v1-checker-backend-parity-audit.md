@@ -133,9 +133,9 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Opaque extern type | V2 represents it, emits incomplete C declarations, permits pointer use, and rejects invalid `sizeof` use | **Verified** |
 | Generic type and specialization | V2 supports generic nominal types, specialization, and owner type-parameter inheritance | **Partial** by deep aggregate and value-source shape; owner inheritance resolved in `ddbe454` |
 | Recursive nominal type | V2 collection has dependency ordering and recursion paths | **Resolved (`e649476`)**; a plain three-level (and deeper) non-recursive struct chain now compiles and runs; array-of-aggregate chains remain rejected by design |
-| Tuple member `.0`, `.1`, and so on | V1 and V2 resolve tuple ordinals | **Implemented, proof needed** |
-| Array `.len` | V1 and V2 support it | **Implemented, proof needed** |
-| Slice `.len` and `.data` | V1 and V2 support both | **Implemented, proof needed** |
+| Tuple member `.0`, `.1`, and so on | V1 and V2 resolve tuple ordinals | **Verified** (`f1841e1`) for integer/bool elements across 2-5-element tuples, locals, parameters, and struct fields. **New finding**: `f64`/`char`/`str` tuple ordinal reads are cleanly rejected at Emit even though construction and `.0` reads work — see the P1 item below. |
+| Array `.len` | V1 and V2 support it | **Verified** (`f1841e1`) — previously ZERO backend compile-link-run coverage; now proven on a local, parameter, loop bound, struct field, i64 entry, `ArrayRepeat` source, and an array-returning helper's result. |
+| Slice `.len` and `.data` | V1 and V2 support both | **Verified** (`f1841e1`) — `.len` proven on a struct field and in parameter arithmetic; `.data` proven as a real pointer value (pointee read, pointer equality against shared/distinct backings, nil comparison, and pointer-argument use), not just as an index/slice base. |
 | String `.len` | V1 string code uses `strlen` but has no structural member | V2 exposes byte length as `.len` | **Verified V2 extension** in real string consumers |
 | Optional presence member | V1 spells it `.is_some` | V2 spells it `.has_value` | **Intentional rename** |
 | Struct field and instance method selection | Both compilers support it | **Partial** by value-source shape; generic and runtime-owner gaps listed here are resolved |
@@ -321,7 +321,8 @@ small source reproduction before it moves to the issue tracker.
 | Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Ordinary `some Color.red` optional enum payload | ~~accepts only the integer-to-optional-enum cast path~~ **Resolved (`1bf785d`)** | **Closed** |
 | Enum-typed struct field construction (`Holder.{ c = Color.blue }`) | ~~`collectEnumTypesWalk` had no `RecordConstruct` case, so the enum's typedef and variant constant were never collected when only reachable via a field's construction value~~ **Resolved (`d19717c`)** | **Closed** |
-| Tagged-union-typed struct field construction (`Holder.{ u = Choice.value(5) }`) | fails identically to the enum case above, independently causation-checked as a separate, pre-existing gap not touched by `d19717c` | **Confirmed absent**, not yet a formal tracker item |
+| Tagged-union-typed struct field construction (`Holder.{ u = Choice.value(5) }`) | fails identically to the enum case above, independently causation-checked as a separate, pre-existing gap not touched by `d19717c` | **Confirmed absent**; opened as a formal P1 item |
+| Tuple ordinal read of a `f64`/`char`/`str` element | checker accepts (construction and `.0` reads of other element types already work), but Emit cleanly rejects each: `f64` hits the float grammar's `Load` case, `char` hits `buildCharOperand`'s `TuplePlace` gate, `str` hits the str-local initializer's `Load` gate | **Confirmed absent**, discovered during proof-batch verification (2026-08-11), not yet a formal tracker item |
 | Aggregate nesting deeper than one dependency level | ~~aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain~~ **Resolved (`e649476`)** | **Closed** |
 | Whole dereferenced struct as a value | local-initializer and argument paths | **Resolved (`a242181`)** |
 | Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
