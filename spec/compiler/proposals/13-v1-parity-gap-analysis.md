@@ -44,15 +44,69 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #56 (first-class narrow integer function type
-inconsistency) closed in `6fd44d2`. 24 P1s and P0s resolved this
-window: tasks #33-56, the entire queued backlog. No queued item
-remains; the next active defect should come from a fresh audit pass
-or from the follow-up gaps this window surfaced but did NOT open as
-formal items — see the resolution notes for #52 (bare `sizeof
-(T,U)`/`sizeof ?T` with no array wrapper) and #55 (an enum-typed
-struct field's construction fails even without an optional wrapper —
-a `RecordConstruct.Fields` traversal gap in `collectEnumTypesWalk`).)*
+**Item: an enum-typed struct field's construction fails — the
+enum's typedef and variant constant are never collected when the
+field's construction value is only reachable through
+`RecordConstruct.Fields`.**
+
+Discovered during task #55's verification (2026-08-11), not from
+Sol's audit. P1-equivalent (a clean, real backend gap with a precise
+mechanical fix, mirroring three already-fixed sibling collectors).
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Color = enum { red, green, blue };
+type Holder = struct { c Color; };
+fn main() int {
+    let h Holder = Holder.{ c = Color.blue };
+    return 0;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the C COMPILER stage:
+`unknown type name 'pebble_enum_19_t'` and (in the same output) `use
+of undeclared identifier 'pebble_variant_27'` — both the enum's
+typedef AND its variant constant are missing from the emitted C.
+
+**Root cause.** `RecordConstruct`'s field values live in a SEPARATE
+`node.Fields []FieldInit` slice, not the generic `node.Children` every
+collection walk's default recursion follows (confirmed pattern from
+this session's earlier fixes, e.g. task #52). Three sibling type
+collectors already have a dedicated `case tir.RecordConstruct:` in
+`compiler/internal/backend/collect.go` that explicitly recurses into
+`field.Value` for exactly this reason:
+`collectStructTypesWalk` (own struct field, per its own comment
+citing this same "Fields isn't in Children" pattern),
+`collectOptionalTypesWalk` (commit `8c339d3`), and
+`collectFunctionTypesWalk` (commit `0b6ed32`). `collectEnumTypesWalk`
+has NO `RecordConstruct` case at all — a plain enum value used ONLY
+as a struct field's construction value (`Holder.{ c = Color.blue }`,
+no other reference to `Color` anywhere in the program) is never
+visited by the walk, so neither the enum's typedef nor its
+`EnumVariantValue`'s variant constant get collected.
+
+**Independently spot-checked and confirmed narrow:** the identical
+gap does NOT reproduce for a TUPLE-typed struct field constructed the
+same way (`Holder.{ t = (1, 2) }` compiles and runs fine today) — so
+this is genuinely enum-specific, not a broader pattern needing a
+matching fix across every collector. Do not expand scope to other
+collectors without first reproducing a real failure for that shape.
+
+**Scope:** add a `case tir.RecordConstruct:` to `collectEnumTypesWalk`
+that iterates `node.Fields` and recursively walks
+`collectEnumTypesWalk(unit, snapshot, field.Value, out)` for each
+field — mirroring `collectStructTypesWalk`'s own `RecordConstruct`
+case exactly (same iteration pattern, same recursive self-call).
+Verify the reproduction above compiles and runs. Verify a plain enum
+value used ONLY as a NESTED struct field's construction value (a
+struct-within-a-struct) also works, if practical. Verify existing
+enum-typed struct field paths (already-working shapes — an enum field
+read, assignment, comparison from task #18, and an enum-typed local
+declaration) are completely unaffected. Verify a tagged-union-typed
+struct field constructed via `VariantConstruct` (not `RecordConstruct`
+— a different node kind) is unaffected, since this fix only touches
+the `RecordConstruct` case.
 
 <!-- Previous item, resolved 2026-08-11:
 
