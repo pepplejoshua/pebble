@@ -44,6 +44,16 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #53 (narrow checked arithmetic invalid helper names)
+closed in `73bfbb1`. 21 P1s and P0s resolved this window: tasks
+#33-53. Correction: `uint` turned out NOT to be affected — `buildUintExpr`
+lowers uint-typed `CheckedArithmetic` to plain C arithmetic and never
+reaches `checkedArithmeticHelper` at all; the genuinely affected
+widths are u8/u16/i8/i16/u32. Next up: #54, narrow optional unwrap
+missing helper.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a narrow-width (u8/u16/i8/i16/u32/uint) checked arithmetic
 binary expression emits a call to a nonexistent, empty-suffix runtime
 helper instead of a clean rejection.**
@@ -116,6 +126,28 @@ rejects with its own existing, different, already-correct message).
 Verify checked shift, checked negation, and float-to-integer
 conversion (separate helper functions, not touched by this fix) are
 unaffected.
+
+**Resolution (`73bfbb1`, 2026-08-11).** Added the same empty-suffix
+guard `checkedShiftHelper` already had. Also widened the
+`CheckedArithmetic` rejection message (`values.go:1969`) to name the
+actual offending width instead of unconditionally mentioning u64.
+**Correction to this item's own listed affected widths:** `uint`
+turned out NOT to be affected — `buildUintExpr` lowers uint-typed
+`CheckedArithmetic` to plain C arithmetic and never calls
+`checkedArithmeticHelper` at all, discovered and confirmed during
+independent verification. The genuinely affected widths are
+u8/u16/i8/i16/u32. Verified: the reproduction now rejects cleanly at
+`pebc`'s own emission stage (`entry function body expression contains
+a CheckedArithmetic with operator + at u8, want an operator with a
+checked runtime helper...`), not a `cc` failure; the compound-assignment
+path (`a += b` at u8) is unaffected, still rejecting with its own
+distinct, pre-existing message; existing i32/i64/u64 checked
+arithmetic, checked shift, checked negation, and float-to-integer
+conversion are all unaffected. Full suite (`go test ./... -count=1
+-timeout 600s -parallel 16`, 11 packages) clean, `gofmt`/`go vet`
+clean, causation check confirmed reverting reproduces the exact
+original `cc` failure.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
