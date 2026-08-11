@@ -44,14 +44,59 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #58 (bare sizeof(T,U)/sizeof ?T) closed in `392ae16`.
-Both newly-found gaps from the P2/audit-cleanup pass are now closed
-(#57, #58). Spot-checked adjacent shapes during verification (a
-tagged-union bare sizeof — already had its own SizeofType handling
-from a prior fix; a nested `sizeof (?int, int)` — works correctly) and
-found no further gaps. Next: the 27 "Implemented, proof needed" items
-in proposal 14 — write dedicated compile-run tests to prove each one,
-per user instruction.)*
+**Item: a tagged-union-typed struct field's construction fails —
+`buildStructBraceList`'s enum-field case routes a payload-carrying
+variant to the wrong builder.**
+
+The THIRD sibling gap flagged during task #57's verification
+(2026-08-11), now root-caused and formally opened (task #84).
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Choice = union enum { empty void; value i32; };
+type Holder = struct { u Choice; };
+fn main() int {
+    let h Holder = Holder.{ u = Choice.value(5) };
+    return 0;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with a CLEAN Pebble-level
+rejection (not a `cc` failure, unlike #57's bug): `entry function body
+expression constructs enum variant symbol 26 with 1 payload(s); a
+tagged-union (union enum) construction routes through
+buildUnionConstruction, never a plain enum value`.
+
+**Root cause.** `buildStructBraceList`
+(`compiler/internal/backend/aggregates.go`, its per-field-type switch)
+has a `case isEnumType(unit, snapshot, fieldType):` that unconditionally
+routes the field's construction value to `buildEnumValue` — but
+`isEnumType` is true for BOTH a plain enum AND a tagged union (this
+codebase's own established convention, confirmed repeatedly this
+session — a tagged union is enum-shaped, checked separately from
+struct-shaped). `buildEnumValue` explicitly rejects any payload-carrying
+variant by design (it's ONLY for plain enums). There is NO
+`isTaggedUnionType` case checked BEFORE the `isEnumType` case in this
+switch — unlike the ALREADY-FIXED sibling pattern in
+`buildOptionalValueExpr`/`buildOptionalLocalDeclaration` (task #55),
+where the tagged-union case correctly precedes the enum case and
+routes to `buildUnionValueExpr`.
+
+**Scope:** add a `case isTaggedUnionType(unit, snapshot, fieldType):`
+to `buildStructBraceList`'s switch, positioned BEFORE the existing
+`case isEnumType(...)` (mirroring the exact ordering
+`buildOptionalValueExpr` already uses), routing to
+`buildUnionValueExpr(st, unit, snapshot, fileSet, field.Value, scope,
+context, fieldType, width)` — the same function #55 used for an
+optional's tagged-union payload. Verify the reproduction above compiles
+and runs. Verify a payload-LESS tagged-union variant as a struct field
+(`Holder.{ u = Choice.empty }`) also works. Verify the existing
+plain-enum struct field paths (task #18, task #57) are completely
+unaffected. Verify a tagged-union LOCAL declaration and a tagged-union
+call argument/return (if those already work — confirm before assuming)
+are unaffected, since this fix only touches the struct-field
+construction switch.
 
 <!-- Previous item, resolved 2026-08-11:
 
