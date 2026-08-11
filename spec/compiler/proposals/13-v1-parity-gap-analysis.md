@@ -44,12 +44,57 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — the `context`-as-value gap landed as `64d2e2b`; see proposal
-15 slice 4 and proposal 14 tracker item 1. Both composite print
-(proposal 17) and the Allocator/Context redesign (proposal 15) are now
-genuinely complete — Allocator and Context both move correctly through
-every value position, verified independently in each case, not just
-self-reported.)*
+**Item: a call-valued `str` switch subject is evaluated once per case
+comparison instead of once.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P0. Independently spot-verified before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn choose() str {
+    print "called";
+    return "b";
+}
+fn main() int {
+    switch choose() {
+        case "a": return 1;
+        case "b": return 0;
+        else: return 2;
+    }
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` prints `called` TWICE (once per
+case comparison against `"a"` and `"b"`), instead of once. A genuine
+silent semantic bug: any switch subject with a side effect (a call
+that logs, mutates, or has any observable effect beyond its return
+value) runs that side effect once per case label instead of once
+total.
+
+**Known cause:** `buildStrSwitchStatement`
+(`compiler/internal/backend/statements.go:912`) builds the subject
+expression ONCE via `buildStrOperand` (line 919), but a `str` switch
+doesn't lower to a native C `switch` (C can't switch on a struct) — it
+lowers to an if/else chain of `pebble_rt_str_eq(subjectExpr, lit)`
+calls (line 972), and the same `subjectExpr` TEXT is spliced into
+every one of those calls. A native C `switch(expr)` evaluates `expr`
+exactly once by C's own semantics; this if/else-chain lowering gets no
+such guarantee for free, and nothing here materializes the subject
+into a temp first.
+
+**Scope:** materialize the subject into a `PebbleStr` local temp once,
+before the if/else chain, and reference that temp (not the raw
+expression) in every `pebble_rt_str_eq` call — mirroring the
+"materialize once into a per-operand temp" convention already used
+elsewhere in this backend (e.g. composite print operands, the
+tagged-union switch subject). Verify the reproduction above prints
+`called` exactly once; verify a str-LITERAL subject (no side effect to
+observe, but confirm it still compiles/runs correctly and the temp
+doesn't break the no-side-effect case); verify existing str-switch
+tests (from `49d0f23`) are unaffected; verify a `do { ... } while (0)`
+break-wrapped chain still uses the temp correctly.
 
 <!-- Previous item, resolved 2026-08-10:
 
