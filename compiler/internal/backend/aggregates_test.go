@@ -1200,6 +1200,57 @@ func TestEmitTupleWholeReassignmentWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole tuple-typed local from another tuple-typed
+	// local (`let second (int, int) = first;`), the fresh-declaration sibling
+	// of the reassignment shape d1b05be added (`p = q;`): the Initialize's
+	// initializer is a SymbolValue naming an in-scope tuple-typed local of the
+	// same type, emitted as a plain C declaration-with-initializer
+	// `pebble_tuple_<typeID>_t pebble_local_<second> = pebble_local_<first>;`.
+	// The copied local's element must reflect first's value (1), the declared
+	// copy.
+	emitAndRun(t, "fn main() int { let first (int, int) = (1, 2); let second (int, int) = first; return second.0; }", false, 1, false)
+}
+
+func TestEmitThreeElementTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 3-element tuple copy-initialization proves the SymbolValue initializer
+	// branch isn't hardcoded to 2 elements: the whole-value C copy works for
+	// any tuple arity.
+	emitAndRun(t, "fn main() int { let first (int, int, int) = (1, 2, 3); let second (int, int, int) = first; return second.2; }", false, 3, false)
+}
+
+func TestEmitMixedTypeTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A (int, str) tuple copy-initialization proves the SymbolValue initializer
+	// branch composes with a non-integer element type, not just uniform int
+	// tuples.
+	emitAndRun(t, `fn main() int { let first (int, str) = (9, "b"); let second (int, str) = first; return second.0; }`, false, 9, false)
+}
+
+func TestEmitTupleLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to a declaration-with-initializer
+	// `pebble_tuple_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — the tuple's own pebble_tuple_<typeID>_t typedef makes the by-value copy
+	// trivially valid C, so no member-wise lowering is needed.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let first (int, int) = (1, 2); let second (int, int) = first; return second.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_tuple_\d+_t pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-tuple local copy declaration %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "pebble_tuple_") {
+		t.Errorf("emitted C missing the tuple typedef:\n%s", out)
+	}
+}
+
 func TestEmitArrayWholeReassignmentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Reassigning a whole array-typed local from another array-typed local

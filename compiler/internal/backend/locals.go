@@ -81,14 +81,19 @@ func buildRuntimeLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 // nested tuple element) is a clean rejection naming the element position, since
 // this backend emits exactly those two C field types. The local's scope entry
 // records its tuple type (a localInfo with tuple set), so a later element read
-// resolves the tuple type being indexed. Two initializer shapes are supported
-// (10.26): a TupleValue (a tuple literal), emitted as a bare brace list, or a
+// resolves the tuple type being indexed. Three initializer shapes are supported
+// (10.26): a TupleValue (a tuple literal), emitted as a bare brace list; a
 // DirectCall to a tuple-returning helper whose result type matches the local's
 // declared type, emitted by the same call-building machinery buildExpr's
-// DirectCall case uses (see buildAggregateCallInitializer). Initializing a
-// tuple local from any other value — a whole-tuple copy of another local,
-// anything else — is a clean rejection. Like every scalar local, the
-// declaration is followed by a (void) cast against -Wunused-variable.
+// DirectCall case uses (see buildAggregateCallInitializer); or a SymbolValue
+// naming an in-scope tuple-typed local of exactly the local's type, emitted as
+// `pebble_tuple_<typeID>_t pebble_local_<symbol> = pebble_local_<other>;` — a
+// plain C struct declaration-with-initializer, valid because the tuple's own
+// typedef makes the by-value copy trivially correct (the same acceptance
+// logic buildTupleStoreValue uses for the reassignment sibling `p = q;`).
+// Initializing a tuple local from any other value is a clean rejection. Like
+// every scalar local, the declaration is followed by a (void) cast against
+// -Wunused-variable.
 func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
 	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
 		// A call to a tuple-returning helper used as the direct initializer of
@@ -97,8 +102,28 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		// a tuple-returning helper is supported.
 		return buildAggregateCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, true)
 	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope tuple-typed local of exactly the local's
+		// type used as the direct initializer — `let second (int, int) =
+		// first;`, a whole-tuple local copy, the sibling of the reassignment
+		// shape buildTupleStoreValue accepts (`p = q;`). The referenced
+		// local's declared type must be exactly the local's type: the scope
+		// lookup records the tuple type each local was declared with
+		// (localInfo.tuple), so a non-tuple local, an undeclared symbol, or a
+		// tuple local of a different type is a clean rejection naming what was
+		// found. The emitted C is a declaration-with-initializer
+		// `pebble_tuple_<typeID>_t pebble_local_<sym> = pebble_local_<other>;`
+		// — the tuple's own typedef makes the by-value copy trivially valid C,
+		// the same convention tuple call arguments and returns already use.
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || valueInfo.tuple != initValue.Type {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s from symbol %d, which is not a tuple-typed local in scope of that type", context, tupleTypeName(initValue.Type), initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.TupleValue {
-		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal) or a call to a tuple-returning helper; initializing a tuple local from another value is not supported yet", context, tupleTypeName(initValue.Type), initValue.Kind)
+		return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a %s, want a TupleValue (a tuple literal), a call to a tuple-returning helper, or a reference to a tuple-typed local in scope of that type", context, tupleTypeName(initValue.Type), initValue.Kind)
 	}
 	braceList, err := buildTupleBraceList(st, unit, snapshot, fileSet, initValue, scope, context, width)
 	if err != nil {
