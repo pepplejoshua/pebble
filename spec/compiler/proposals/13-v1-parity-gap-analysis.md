@@ -44,14 +44,88 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #54 (narrow optional unwrap missing helper) closed in
-`9426382`, a runtime C + backend Go fix. 22 P1s and P0s resolved this
-window: tasks #33-54. A pre-existing test
-(`TestEmitRejectsOptionalUnwrapOfU8Payload`) pinned the OLD "no
-runtime unwrap helper" u8 rejection and only surfaced as a full-suite
-failure after the fix — the worker's own narrower test-name filter
-missed it; converted to assert the new correct behavior. Next up:
-#55, ordinary optional enum payload construction.)*
+**Item: `some Color.blue` (an ordinary enum-variant literal as an
+optional's payload) is rejected — only an integer-to-optional-enum
+cast works.**
+
+Sourced from proposal 14's backend gap matrix (`Ordinary optional
+enum construction`, line 78/322), P1. Independently reproduced and
+root-caused before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Color = enum { red, green, blue };
+fn main() int {
+    let value ?Color = some Color.blue;
+    return 0;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with: `entry function body
+block declares an optional-typed local of type pebble_optional_24_t
+initialized from some with an enum payload pebble_enum_19_t; the only
+supported enum-payload optional initializer is an integer-to-optional-enum
+cast (e.g. 5 as ?Color)`.
+
+**Root cause.** Two separate builders each handle a `SomeOptional`/
+`OptionalInject` payload by switching on the payload's type, and BOTH
+are missing a plain-enum case:
+
+1. `buildOptionalLocalDeclaration`
+   (`compiler/internal/backend/locals.go:544-`, the `some`-payload
+   `switch` starting ~line 567) has a `case isTaggedUnionType(...)`
+   (line 596, correctly calling `buildUnionValueExpr`) immediately
+   followed by `case isEnumType(unit, snapshot, payloadType):` (line
+   613) — but THIS case doesn't build a value at all, it just
+   `return`s the clean-rejection error (line 619). This is a
+   DELIBERATE, explicit rejection (there's an explanatory comment
+   right above it), not a missing-case fallthrough — someone
+   intentionally left this unimplemented, presumably because the
+   integer-to-optional-enum cast path shipped first and covered the
+   immediate need.
+2. `buildOptionalValueExpr` (`compiler/internal/backend/values.go:312-365`,
+   used for OTHER optional-value positions — struct-field
+   construction, call arguments, wherever a fresh optional value is
+   built inline, not just a local declaration) has the SAME shape of
+   switch (line 330-360) with a `case isTaggedUnionType(...)` (line
+   339) but NO enum case at all — a plain-enum payload falls through
+   to the generic `default: return "", fmt.Errorf("%s optional
+   payload %s is unsupported", ...)` at line 358-359.
+
+Both switches already have the exact machinery to fix this: plain enum
+values are built elsewhere by `buildEnumValue`
+(`compiler/internal/backend/values.go:457+`), the same function an
+enum-typed local's declaration, a struct field, etc. already use. The
+signature is `buildEnumValue(st, unit, snapshot, fileSet, id, locals,
+width)` — an exact match for what each switch case needs to call with
+`node.Children[0]`/`initValue.Children[0]` as `id`.
+
+**Scope:**
+1. In `buildOptionalLocalDeclaration`
+   (`compiler/internal/backend/locals.go`), replace the
+   `case isEnumType(unit, snapshot, payloadType):` body (currently just
+   the rejection) with a call to `buildEnumValue(st, unit, snapshot,
+   fileSet, initValue.Children[0], scope, width)`, assigning the
+   result to `valueExpr` exactly like the `isTaggedUnionType` case
+   immediately above it does.
+2. In `buildOptionalValueExpr` (`compiler/internal/backend/values.go`),
+   add a `case isEnumType(unit, snapshot, payload):` (positioned after
+   the existing `isTaggedUnionType` case, before the `default`) that
+   assigns `value, err = buildEnumValue(st, unit, snapshot, fileSet,
+   node.Children[0], scope, width)`.
+3. Verify the reproduction above compiles and runs. Verify a plain
+   enum payload works in EVERY position `buildOptionalValueExpr`
+   serves — check which real source shapes actually reach it (a
+   struct field of optional-enum type constructed with `some`, an
+   optional-enum call argument, an optional-enum return, if
+   reachable) and test at least one beyond the local-declaration
+   reproduction. Verify the existing integer-to-optional-enum cast
+   path (`5 as ?Color`) is completely unaffected. Verify a `none`
+   optional-enum initializer is unaffected (a different code path,
+   the `NoneOptional` branch, not touched by this fix). Verify a
+   tagged-union payload (the case immediately preceding the one
+   you're adding in both functions) is completely unaffected.
 
 <!-- Previous item, resolved 2026-08-11:
 
