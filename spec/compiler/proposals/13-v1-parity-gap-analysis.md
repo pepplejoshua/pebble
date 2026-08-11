@@ -44,6 +44,13 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #48 (direct array-literal return) closed in `7c625ab`
+(plus a follow-up single-evaluation correction in the same commit).
+16 P1s and P0s resolved this window: tasks #33-48. Next up: #49,
+slice struct field as call argument.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a fixed-array-returning function cannot return an array
 literal or repeat expression directly.**
 
@@ -95,6 +102,28 @@ existing `DirectCall` and `SymbolValue` return paths are unaffected;
 an array of a non-trivial element type (struct or tuple element, if
 practical) returned directly also works, mirroring what
 `buildArrayBraceElements` already supports for locals.
+
+**Resolution (`7c625ab`, 2026-08-11).** `buildArrayReturnValue`
+gained `tir.ArrayValue` and `tir.ArrayRepeat` cases, reusing
+`buildArrayBraceElements` for the literal case. The first delivered
+diff for `ArrayRepeat` had a real bug an independent review caught
+before commit: it repeated the built value-expression STRING `length`
+times in the C brace list rather than evaluating it once, so any
+side-effecting `[v; N]` value would have run `v` `N` times instead of
+once — a silent divergence from the single-evaluation semantics
+`buildArrayRepeatLocalDeclaration` already guarantees for the local
+case. Fixed in the same commit by threading a `preReturn` temp
+declaration (mirroring the existing `buildSliceReturnValue` pattern)
+so the value is built once into a C temp and the temp name is what's
+repeated in the compound literal. Verified: both reproductions compile
+and run correctly (6 and 21); the emitted C for the `ArrayRepeat` case
+was inspected directly and confirmed a single `pebble_repeat_ret_N`
+temp declaration with the value assigned exactly once, referenced
+three times in the brace list; full suite
+(`go test ./... -count=1 -timeout 600s -parallel 16`, 11 packages)
+clean, `gofmt`/`go vet` clean, causation check confirmed reverting
+reproduces the original rejection exactly.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 

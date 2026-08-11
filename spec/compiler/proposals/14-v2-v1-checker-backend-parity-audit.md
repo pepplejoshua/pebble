@@ -120,7 +120,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 |---|---|---|
 | `int`/V1 `isize`, `uint`/V1 `usize`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `char`, `void` | All exist in V2; V2 uses `int` and `uint` as the pointer-width signed and unsigned names | **Implemented, proof needed** for each operation and ABI width |
 | Pointer `*T`, address-of, dereference, `nil` | V2 has `AddressOf`, `DereferencePlace`, `Load`, and pointer conversions | **Partial**; whole dereferenced structs are resolved (`a242181`), but other aggregate shapes remain position-specific |
-| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Partial.** Struct fields (`9dfa4e1`), local/literal reassignment (`aef808e`), enum elements (`94a2a39`), and ordinary `sizeof` landed. Direct array-literal return still rejects; `sizeof [N]Struct` still emits typedefs in the wrong order. |
+| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Partial.** Struct fields (`9dfa4e1`), local/literal reassignment (`aef808e`), enum elements (`94a2a39`), ordinary `sizeof`, and direct array-literal/repeat return (`7c625ab`) landed. `sizeof [N]Struct` still emits typedefs in the wrong order. |
 | Slice `[]T` | V2 has slice types, `.len`, `.data`, checked index/slice, and `SliceFromRaw` | **Partial** by source position and element type |
 | V1 pointer slice `ptr[start:end]` | V2 rejects pointer slicing and provides std-only `slice ptr, count` | **Intentional difference** under the pointer-safety design |
 | Struct | V2 record construction, fields, methods, parameters, results, runtime nominals, and C typedefs exist | **Partial**; local copy initialization and deep aggregate dependencies still reject |
@@ -326,7 +326,7 @@ small source reproduction before it moves to the issue tracker.
 | Array literal directly assigned to a slice local | checker and backend lower it through a hidden backing array | **Resolved (`f4c3970`)** |
 | Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Confirmed absent**; listed in the fourth-pass gap table |
 | Inline checked slice inside a nested pure expression | GNU statement-expression carries its required temporary | **Resolved (`836fbea`)** except a slice-typed struct-literal field |
-| Fixed-array literal returned directly | fixed-array return builder accepts a local or call, not `ArrayValue`/`ArrayRepeat` | **Confirmed absent** |
+| Fixed-array literal returned directly | ~~fixed-array return builder accepts a local or call, not `ArrayValue`/`ArrayRepeat`~~ **Resolved (`7c625ab`).** Both cases now supported; `ArrayRepeat` single-evaluates its value via a threaded pre-return temp. | **Closed** |
 | Direct cast of `sizeof` | integer cast child builder rejects `SizeofType` | **Confirmed absent source shape** |
 | Function value with C convention, variadic signature, or unsupported aggregate result | `validateFunctionTypeSignature` near `emit.go:3069` restricts the signature | **Partial** |
 
