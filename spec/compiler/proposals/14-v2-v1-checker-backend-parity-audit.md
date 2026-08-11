@@ -81,13 +81,13 @@ using one broad row:
 |---|---|---|
 | `int`/V1 `isize`, `uint`/V1 `usize`, `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `char`, `void` | All exist in V2; V2 uses `int` and `uint` as the pointer-width signed and unsigned names | **Implemented, proof needed** for each operation and ABI width |
 | Pointer `*T`, address-of, dereference, `nil` | V2 has `AddressOf`, `DereferencePlace`, `Load`, and pointer conversions | **Partial**; whole dereferenced aggregates remain absent |
-| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Partial** by element and whole-value shape |
+| Fixed array `[N]T` | V2 has `ArrayValue`, `ArrayRepeat`, array locals, indexing, and `.len` | **Mostly resolved.** Struct-field arrays (`9dfa4e1`), whole-value reassignment for a local/literal (`aef808e`), and enum-element arrays (`94a2a39`) all landed 2026-08-10. Remaining: a bare `sizeof [N]StructType`, and a whole-array reassignment from an array-returning call (deliberately deferred, currently unreachable anyway since returning an array literal isn't supported at all yet). |
 | Slice `[]T` | V2 has slice types, `.len`, `.data`, checked index/slice, and `SliceFromRaw` | **Partial** by source position and element type |
 | V1 pointer slice `ptr[start:end]` | V2 rejects pointer slicing and provides std-only `slice ptr, count` | **Intentional difference** under the pointer-safety design |
 | Struct | V2 record construction, fields, methods, parameters, results, and C typedefs exist | **Partial**; runtime nominals and whole-value paths are incomplete |
-| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Partial**; whole-value copies and focused coercion proof are missing |
+| Tuple | V2 tuple construction, elements, parameters, results, and `TupleCoerce` exist | **Mostly resolved.** Whole-value reassignment for a local/literal landed `d1b05be` (2026-08-10); a call-value right-hand side stays a deliberate, deferred rejection. `TupleCoerce` backend-reachability proof is still an open small investigation (tracker verification queue). |
 | Optional `?T`, `some`, `none`, force unwrap | V2 has optional construction, injection, and checked unwrap | **Partial** by payload type |
-| Enum | V2 construction, switch labels, and integer conversions exist | **Verified** for enum-to-integer and integer-to-enum; aggregate containers remain partial |
+| Enum | V2 construction, switch labels, and integer conversions exist | **Verified** for enum-to-integer and integer-to-enum. Enum-element arrays and slices resolved `94a2a39` (2026-08-10). Remaining: enum-typed optional payloads. |
 | Tagged union | V2 construction and ordinary switch narrowing exist | **Partial**; generic-self narrowing is tracker item 3 |
 | Untagged union | V1 emits a C union and permits construction and member access | V2 rejects construction, read, and write because no safety rule is accepted | **Decision needed** |
 | Function type and function value | V2 supports Pebble-convention, non-variadic function values for a limited C-representable signature set | **Partial**; V1 supports a wider convention and signature surface |
@@ -114,7 +114,7 @@ using one broad row:
 | String literal | V1 is a NUL-terminated C pointer; V2 is `PebbleStr {data,len}` | **Intentional ABI and semantic difference** |
 | `nil` pointer | V2 `NilPointer` | **Implemented, proof needed** by pointer type |
 | `none` and `some value` | V2 optional nodes | **Partial** by payload shape |
-| Context expression | V1 and V2 expose the hidden allocator/context value | **Partial** while `Allocator` and `Context` ordinary-struct redesign is open |
+| Context expression | V1 and V2 expose the hidden allocator/context value | **Resolved.** The `Allocator`/`Context` ordinary-struct redesign (proposal 15) is fully complete — all 4 slices, `context` working in every value position (argument, return, local initializer, struct-field construction/assignment). |
 | Identifier, module member, partial member | V2 symbol and member value paths | **Partial** by declaration category |
 | Grouped expression | Parser-only grouping in both compilers | **Verified** by construction; no backend behavior |
 | Interpolated string value | V1 materializes a string expression and formats string, bool, signed/unsigned integer, float, char, enum, struct, and tuple parts | V2 builds `InterpolatedString` TIR, but the backend can consume it only as a direct `print` operand and only when every value part is bool | **Absent except for one narrow print form** |
@@ -264,9 +264,9 @@ small source reproduction before it moves to the issue tracker.
 
 | Value shape | V2 source evidence | Status |
 |---|---|---|
-| Reassign a whole tuple local | `emit.go:5520` rejects it | **Absent** |
-| Reassign a whole fixed-array local | `emit.go:5523` rejects it | **Absent** |
-| Reassign a whole struct local | `emit.go:5543` rejects it | **Absent** |
+| Reassign a whole tuple local | `buildTupleStoreValue`, `stores.go` | **RESOLVED** (`d1b05be`, local/literal; a call value stays deferred) |
+| Reassign a whole fixed-array local | `buildArrayStoreValue`, `stores.go` | **RESOLVED** (`aef808e`, local/literal via `memcpy`; a call value stays deferred) |
+| Reassign a whole struct local | `buildStructStoreValue`, `stores.go` | **RESOLVED** (`9df0351`/`5ef060a`, local/literal/call value all supported) |
 | Reassign a `str` local from another string value | `emit.go:5474` accepts only a string literal | **Partial** |
 | Initialize a tuple local from another tuple value | `emit.go:7190` accepts only a tuple literal or helper result | **Partial** |
 | Initialize an array local from another array value | `emit.go:7418` accepts only a literal or repeat | **Partial** |
@@ -274,12 +274,12 @@ small source reproduction before it moves to the issue tracker.
 | Initialize an enum local from another enum value | `emit.go:8826` accepts only a variant literal or integer cast | **Partial** |
 | Initialize a `str` local from another `str` value | `emit.go:9290` accepts a limited literal/call grammar | **Partial** |
 | Materialize an interpolated string as a local, argument, result, or ordinary value | `InterpolatedString` is handled only inside `buildPrint`; general string builders reject it | **Absent** |
-| Enum-typed fixed-array element | `emit.go:7442` and `emit.go:8148` reject it | **Absent** |
-| Enum-typed slice element | `emit.go:8186` rejects it | **Absent** |
+| Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
+| Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Ordinary `some Color.red` optional enum payload | `emit.go:8270` accepts only the integer-to-optional-enum cast path | **Partial** |
 | Aggregate nesting deeper than one dependency level | `emit.go:2026` rejects it | **Absent**; the accepted C-layout graph needs investigation |
 | Whole dereferenced struct as a value | explicit checker/backend boundary gap | **Absent**; tracker item 9 |
-| Runtime `Allocator` argument, result, and field assignment | special runtime nominal paths do not form one ordinary value model | **Absent**; tracker item 1 and proposal 15 |
+| Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
 | Array literal of non-primitive values directly assigned to a slice local | checker reports C0601 | **Absent**; tracker item 7 |
 | Slice-typed struct field passed as an argument | backend accepts slice locals but rejects this field source shape | **Absent**; recorded under tracker item 2 |
 | Inline checked slice inside a nested pure expression | required pre-statement cannot travel through all expression builders | **Absent**; tracker item 6 |
