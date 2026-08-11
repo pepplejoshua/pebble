@@ -2,7 +2,9 @@ package backend
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1033,6 +1035,174 @@ func TestEmitPointerToIntegerWritesC(t *testing.T) {
 	if !strings.Contains(out, "(uint64_t)(pebble_local_") {
 		t.Errorf("emitted C missing the pointer-to-integer cast (uint64_t)(pebble_local_...):\n%s", out)
 	}
+}
+
+func TestEmitCharToIntegerAllWidthsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The full destination-width matrix for char-to-integer casts ('A' = 65).
+	// u32 and u64 already have dedicated tests above; this table closes the
+	// rest of the set the backend's CharToInteger case accepts (any width with
+	// cType() != "" — see cType/resolvedBuiltin in types.go: int/i32 share
+	// int32_t, i64 is int64_t, u8/u16/u32/u64 are the fixed unsigned widths,
+	// i8/i16 are the narrow signed widths). Every row reads the cast result
+	// back out as the entry's int and asserts the real codepoint value. The
+	// 10th width, uint, is deliberately NOT here: `c as uint` is broken
+	// (buildUintExpr has no CharToInteger case — see the NEW FINDING in the
+	// task report), so a compile-link-run row for it cannot pass today.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"int", "fn main() int { let c char = 'A'; let n int = c as int; return n; }"},
+		{"i8", "fn main() int { let c char = 'A'; let n i8 = c as i8; return n as int; }"},
+		{"i16", "fn main() int { let c char = 'A'; let n i16 = c as i16; return n as int; }"},
+		{"i32", "fn main() int { let c char = 'A'; let n i32 = c as i32; return n as int; }"},
+		{"i64", "fn main() int { let c char = 'A'; let n i64 = c as i64; return n as int; }"},
+		{"u8", "fn main() int { let c char = 'A'; let n u8 = c as u8; return n as int; }"},
+		{"u16", "fn main() int { let c char = 'A'; let n u16 = c as u16; return n as int; }"},
+		{"u32", "fn main() int { let c char = 'A'; let n u32 = c as u32; return n as int; }"},
+		{"u64", "fn main() int { let c char = 'A'; let n u64 = c as u64; return n as int; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 65, false)
+		})
+	}
+}
+
+func TestEmitCharToIntegerHighByteU8BoundaryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A char with a high byte value cast to the narrow destination that can
+	// hold it. The checker's char-literal range is a full Unicode scalar (max
+	// 0x10FFFF, excluding the surrogate range — see lexer.go's escape decode),
+	// so '\u{FF}' (255, LATIN SMALL LETTER Y WITH DIAERESIS) is a valid char.
+	// 255 is exactly u8's maximum, so `'\u{FF}' as u8` must produce 255 — a
+	// real return value asserting the cast was not sign-extended, truncated,
+	// or range-checked into a panic.
+	emitAndRun(t, "fn main() int { let c char = '\\u{FF}'; let n u8 = c as u8; return n as int; }", false, 255, false)
+}
+
+func TestEmitCharToIntegerU16MaximumBoundaryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// '\u{FFFF}' (65535) is a valid Unicode scalar and fits u16 exactly (its
+	// maximum). The exit code cannot carry 65535 (the OS masks exit status to
+	// 8 bits), so the value is asserted via a comparison: returning 7 proves
+	// the cast produced exactly 65535, not a truncated or wrapped value.
+	emitAndRun(t, "fn main() int { let c char = '\\u{FFFF}'; let n u16 = c as u16; if n == 65535 { return 7; } return 1; }", false, 7, false)
+}
+
+func TestEmitCharToIntegerNarrowOverflowCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// What actually happens when a char overflows a destination that cannot
+	// hold it? The cast is a plain, unchecked C cast (CharToInteger emits
+	// `(<dest C type>)(<char expr>)`), so the value wraps/truncates per C's
+	// integer-conversion rules — this is documented, deterministic behavior
+	// on every C implementation the test suite's cc accepts. Two cases are
+	// pinned through their wrapped numeric value:
+	//   - '\u{100}' (256) as u8 truncates to 0 (256 mod 256);
+	//   - '\u{FF}' (255) as i8 wraps to -1 (bit pattern 0xFF), round-tripped
+	//     back to u8 as 255 so no negative literal is needed in the fixture.
+	emitAndRun(t, "fn main() int { let c char = '\\u{100}'; let n u8 = c as u8; if n == 0 { return 7; } return 1; }", false, 7, false)
+	emitAndRun(t, "fn main() int { let c char = '\\u{FF}'; let n i8 = c as i8; let back u8 = n as u8; if back == 255 { return 7; } return 1; }", false, 7, false)
+}
+
+func TestEmitCharToIntegerSliceElementSourceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A char-element slice read as the cast source: s[1] over a []char slice
+	// ('b' = 98). The CharToInteger child is Load(CheckedIndexPlace), built by
+	// buildCharOperand's slice-element path, then cast to u8. Proves the cast
+	// works for a source shape that is not a literal or a plain local.
+	emitAndRun(t, "fn main() int { var arr [3]char = ['a', 'b', 'c']; var s []char = arr[:]; let n u8 = s[1] as u8; return n as int; }", false, 98, false)
+}
+
+func TestEmitCharToIntegerStrIndexSourceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-index read as the cast source: "hi"[0] decodes to 'h' (104)
+	// through the runtime's UTF-8 decoder, then cast to u16. Exercises the
+	// CharToInteger child shape CheckedIndex (the non-addressable str base).
+	emitAndRun(t, "fn main() int { let c char = \"hi\"[0]; let n u16 = c as u16; return n as int; }", false, 104, false)
+}
+
+func TestEmitCharToIntegerCallSourceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A char-returning helper call as the cast source: pick() ('z' = 122).
+	// The CharToInteger child is a DirectCall, built by buildCharOperand's
+	// DirectCall path, then cast to u8.
+	emitAndRun(t, "fn pick() char { return 'z'; } fn main() int { let n u8 = pick() as u8; return n as int; }", false, 122, false)
+}
+
+func TestEmitPointerToIntegerI64DestinationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The third pointer-width-or-wider destination beyond the existing u64 and
+	// uint coverage: i64's int64_t is exactly as wide as a pointer, so the
+	// cast emits a same-width C cast and compiles cleanly under -Werror (the
+	// narrower-than-pointer destinations do NOT — see the NEW FINDING in the
+	// task report). The address value is non-deterministic, so the assertion
+	// is that the cast emits and the pointer still dereferences to 42.
+	emitAndRun(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n i64 = p as i64; return *p; }", false, 42, false)
+}
+
+func TestEmitPointerToIntegerStructPointeeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct pointee at both pointer-width destinations (uint and u64). The
+	// address itself is non-deterministic, so the proof is: (1) two casts of
+	// the same pointer produce the same numeric address (a wrong or
+	// non-deterministic cast would diverge), (2) the address is non-zero (a
+	// real stack address, not a collapsed NULL), and (3) the pointer still
+	// reads the struct fields correctly afterwards (p.x + p.y = 15). An
+	// emitted-C-only cast bug would fail the cc compile; a wrong-value cast
+	// would fail the comparison or nonzero assertion. Struct fields are typed
+	// int (not i32) to sidestep a pre-existing, unrelated checker quirk in
+	// which i32-typed aggregate members do not unify in an int-entry function.
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn main() int { var p Point = Point.{ x = 7, y = 8 }; let q *Point = &p; let a uint = q as uint; let b uint = q as uint; if a != 0 && a == b { return p.x + p.y; } return 1; }", false, 15, false)
+	emitAndRun(t, "type Point = struct { x int; y int; };\nfn main() int { var p Point = Point.{ x = 7, y = 8 }; let q *Point = &p; let a u64 = q as u64; let b u64 = q as u64; if a != 0 && a == b { return p.x + p.y; } return 1; }", false, 15, false)
+}
+
+func TestEmitPointerToIntegerOpaquePointeeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An opaque extern pointee (*FILE, a real libc type) cast to uint, proven
+	// against a real file write-then-read-back round trip: fopen returns a
+	// genuine FILE*, the cast must compile and produce a non-zero, stable
+	// address (two casts of the same pointer are equal), and the FILE* must
+	// still work for fputs/fgetc afterwards. Exit 0 = every step succeeded;
+	// each other code names the exact step that failed, so a wrong cast (or a
+	// wrong FILE* type name) pinpoints the break.
+	path := filepath.Join(t.TempDir(), "pebble_opaque_pointee_cast_test.txt")
+	source := fmt.Sprintf(`extern {
+    type FILE;
+    fn fopen(path str, mode str) *FILE;
+    fn fclose(file *FILE) i32;
+    fn fputs(s str, file *FILE) i32;
+    fn fgetc(file *FILE) i32;
+    fn remove(path str) i32;
+}
+fn main() int {
+    var f = fopen(%q, "w");
+    if f == nil { return 1; }
+    let a uint = f as uint;
+    let b uint = f as uint;
+    if a == 0 { return 2; }
+    if a != b { return 3; }
+    var w = fputs("h", f);
+    if w < 0 { return 4; }
+    var closed = fclose(f);
+    if closed != 0 { return 5; }
+    var g = fopen(%q, "r");
+    if g == nil { return 6; }
+    var c = fgetc(g);
+    var closed2 = fclose(g);
+    if closed2 != 0 { return 7; }
+    var removed = remove(%q);
+    if removed != 0 { return 8; }
+    if c != 104 { return 9; }
+    return 0;
+}`, path, path, path)
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, source)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
 func TestEmitU64EqualityComparisonCompilesAndRuns(t *testing.T) {
