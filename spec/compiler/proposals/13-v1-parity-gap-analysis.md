@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — struct local copy initialization landed as `2179ebf`. 10 of
+19 P1 slices done. Next: enum local copy initialization (slice 4 of 6
+in this family), same one-type-per-task discipline.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a struct-typed local cannot be initialized from another
 struct value (`let second Point = first;`).**
 
@@ -91,6 +97,15 @@ above compiles and runs, returning 1. Also verify: a struct with more
 fields, a struct containing a nested struct field, and that whole-
 struct REASSIGNMENT (already working, from an earlier session's
 `9df0351`/`5ef060a`) and struct field reads are unaffected.
+
+**Resolution (`2179ebf`, 2026-08-10).** Added a `SymbolValue` branch to
+`buildStructLocalDeclaration` mirroring the tuple fix (`834927e`)
+exactly — a struct is a plain C struct, so a declaration-with-
+initializer needs no `memcpy`. Verified the repro, a 3-field struct,
+and a struct containing a nested struct; reassignment and field reads
+unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 

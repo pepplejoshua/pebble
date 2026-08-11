@@ -312,7 +312,7 @@ small source reproduction before it moves to the issue tracker.
 | Reassign a `str` local from another string value | `buildStrStoreValue` accepts only a string literal | **Confirmed partial** |
 | Initialize a tuple local from another tuple value | **RESOLVED for `SymbolValue` (`834927e`, 2026-08-10)** — `let second (int, int) = first;` now works, verified for 3-element and mixed-type tuples, causation-checked. `TupleCoerce` still separately rejected (a distinct gap, tracked on its own row below) | — |
 | Initialize an array local from another array value | **RESOLVED (`8c72f36`, 2026-08-10)** — `let second [3]int = first;` now works via a bare declaration + `memcpy`, verified for 5-element and bool-element arrays, causation-checked | — |
-| Initialize a struct local from another struct value | `buildStructLocalDeclaration` rejects a plain struct `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a struct local from another struct value | **RESOLVED (`2179ebf`, 2026-08-10)** — `let second Point = first;` now works, verified for a 3-field struct and a nested-struct field, causation-checked | — |
 | Initialize an enum local from another enum value | `buildEnumLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
 | Initialize a `str` local from another `str` value | `buildStrLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
 | Initialize a slice local from another slice value | the slice local path treats the initializer as a new `CheckedSlice` and rejects `SymbolValue` | **Confirmed absent source shape** |
