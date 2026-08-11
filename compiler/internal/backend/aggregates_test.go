@@ -3601,6 +3601,80 @@ func TestEmitOptionalIntegerToEnumWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitOptionalEnumSomeLocalDeclCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The ordinary (non-cast) enum-payload optional construction:
+	// `some Color.blue` as a local's declaration initializer, distinct from
+	// the integer-to-optional-enum cast family above (`5 as ?Color`).
+	// buildOptionalLocalDeclaration's isEnumType case previously returned a
+	// clean rejection unconditionally ("the only supported enum-payload
+	// optional initializer is an integer-to-optional-enum cast"); it now
+	// builds the payload via buildEnumValue, the same builder an ordinary
+	// enum-typed local already uses.
+	emitAndRun(t, `type Color = enum { red, green, blue };
+fn main() int {
+    let value ?Color = some Color.blue;
+    if value.has_value {
+        if value! == Color.blue { return 0; }
+        return 1;
+    }
+    return 2;
+}`, false, 0, false)
+}
+
+func TestEmitOptionalEnumSomeCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The same ordinary enum-payload optional construction used as a call
+	// argument (`g(some Color.blue)`), reaching buildOptionalValueExpr's new
+	// isEnumType case rather than buildOptionalLocalDeclaration's — a
+	// distinct builder for a distinct value position, both fixed together.
+	emitAndRun(t, `type Color = enum { red, green, blue };
+fn g(o ?Color) int {
+    if !o.has_value { return 99; }
+    if o! == Color.blue { return 0; }
+    return 1;
+}
+fn main() int {
+    return g(some Color.blue);
+}`, false, 0, false)
+}
+
+func TestEmitOptionalEnumSomeReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The same ordinary enum-payload optional construction used as a helper's
+	// tail return value (`return some Color.blue;`), also routed through
+	// buildOptionalValueExpr (via buildOptionalValue's SomeOptional
+	// delegation), confirming the fix serves every position that shares this
+	// builder, not just a hand-picked one.
+	emitAndRun(t, `type Color = enum { red, green, blue };
+fn f() ?Color {
+    return some Color.blue;
+}
+fn main() int {
+    var o ?Color = f();
+    if !o.has_value { return 99; }
+    if o! == Color.blue { return 0; }
+    return 1;
+}`, false, 0, false)
+}
+
+func TestEmitOptionalEnumIntegerCastUnaffected(t *testing.T) {
+	t.Parallel()
+	// Regression guard: the pre-existing integer-to-optional-enum cast path
+	// (`5 as ?Color`) is a completely separate TIR node kind
+	// (OptionalIntegerToEnum) and code path from the ordinary `some
+	// Color.blue` construction this fix adds; it must be entirely unaffected.
+	emitAndRun(t, `type Color = enum { red, green, blue };
+fn main() int {
+    let value ?Color = 2 as ?Color;
+    if value.has_value {
+        if value! == Color.blue { return 0; }
+        return 1;
+    }
+    return 2;
+}`, false, 0, false)
+}
+
 func TestEmitOptionalImplicitInjectionCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Implicit optional injection (`var o ?int = 5;`, no `some` keyword) is a

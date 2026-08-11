@@ -611,12 +611,20 @@ func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 			}
 			valueExpr = expr
 		case isEnumType(unit, snapshot, payloadType):
-			// An enum-payload optional initialized from `some <variant>` — the
-			// only enum-payload optional initializer this backend supports is
-			// an integer-to-optional-enum cast (`5 as ?Color`, see the
-			// OptionalIntegerToEnum case below); a some-initialized enum
-			// payload is a clean rejection naming the shape.
-			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from some with an enum payload %s; the only supported enum-payload optional initializer is an integer-to-optional-enum cast (e.g. 5 as ?Color)", context, optionalTypeName(initValue.Type), enumTypeName(payloadType))
+			// An enum-payload optional initialized from `some <variant>`: the
+			// payload is a plain enum value (a variant literal like Color.blue,
+			// an enum-typed local reference, an enum-returning call, or an
+			// enum-typed field read), built by buildEnumValue into the
+			// optional struct's .value field — which the optional typedef
+			// declares with the enum's own pebble_enum_<typeID>_t. The
+			// integer-to-optional-enum cast (`5 as ?Color`) is a separate,
+			// distinct initializer shape handled by its own
+			// OptionalIntegerToEnum case below and is unaffected.
+			expr, err := buildEnumValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
 		case isStruct(snapshot, payloadType):
 			expr, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {

@@ -347,6 +347,16 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		// precedes isEnumType: a tagged union is Nominal like a struct but its
 		// value is a union value, never a RecordConstruct.
 		value, err = buildUnionValueExpr(st, unit, snapshot, fileSet, node.Children[0], scope, context, payload, width)
+	case isEnumType(unit, snapshot, payload):
+		// A plain-enum payload's some/injected value is an enum value (a
+		// variant literal like Color.blue, an enum-typed local reference, an
+		// enum-returning call, or an enum-typed field read), built by
+		// buildEnumValue into the optional's .value field — the same C type
+		// the optional typedef declares the field with. This follows the
+		// isTaggedUnionType case exactly as the SomeOptional branch's own
+		// union case precedes isEnumType: a tagged union is enum-shaped too,
+		// but its value is a union value, never a plain enum constant.
+		value, err = buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isStruct(snapshot, payload):
 		value, err = buildStructValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isPointer(snapshot, payload):
