@@ -883,12 +883,18 @@ func groupSwitchCases(unit *tir.Unit, caseIDs []tir.NodeID) ([]switchCaseGroup, 
 // pebble_rt_str_eq (the exact helper buildComparison uses for a == between two
 // str values) against the subject and the case's string literal. Multiple case
 // labels sharing one arm (`case "a", "b":`) are ORed into a single if
-// condition. The else/default arm becomes the chain's final else. The emitted
-// text, indented at this switch's depth, is:
+// condition. The else/default arm becomes the chain's final else. Because the
+// chain splices the subject's C text into every equality check, the subject is
+// first materialized ONCE into a PebbleStr local temp (the same
+// evaluate-once-into-a-per-operand-temp pattern the composite print operands
+// use): a call-valued subject (switch choose() { ... }) must not run its
+// observable side effects once per case comparison. The emitted text, indented
+// at this switch's depth, is:
 //
-//	<indent>if (pebble_rt_str_eq(<subject>, (PebbleStr){...})) {
+//	<indent>PebbleStr pebble_switch_str_<subjectNodeID> = <subject>;
+//	<indent>if (pebble_rt_str_eq(pebble_switch_str_<subjectNodeID>, (PebbleStr){...})) {
 //	<indent>    <body>
-//	<indent>} else if (pebble_rt_str_eq(<subject>, (PebbleStr){...})) {
+//	<indent>} else if (pebble_rt_str_eq(pebble_switch_str_<subjectNodeID>, (PebbleStr){...})) {
 //	<indent>    <body>
 //	<indent>} else {
 //	<indent>    <body>
@@ -920,12 +926,23 @@ func buildStrSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	if err != nil {
 		return "", err
 	}
+	indent := strings.Repeat("    ", depth+1)
+	// Materialize the subject into a PebbleStr local temp exactly once,
+	// before the if/else chain. The chain splices the subject's C text into
+	// every pebble_rt_str_eq call below, so a call-valued subject (switch
+	// choose() { ... }) would otherwise be evaluated once per case label —
+	// every observable side effect of the call would run once per case
+	// comparison instead of once total. The temp is the same
+	// evaluate-once-into-a-per-operand-temp pattern the composite print
+	// operands use: the subject expression appears exactly once, as the
+	// temp's initializer, and every equality check below reads the temp.
+	subjectTemp := fmt.Sprintf("pebble_switch_str_%d", switchNode.Children[0])
+	subjectDecl := indent + fmt.Sprintf("PebbleStr %s = %s;", subjectTemp, subjectExpr)
 	// Group case nodes by shared body node ID (multi-value case labels).
 	groups, err := groupSwitchCases(unit, switchNode.Children[1:])
 	if err != nil {
 		return "", err
 	}
-	indent := strings.Repeat("    ", depth+1)
 	// Detect a break targeting this switch (a tir.Break whose Target names
 	// the switch's region) anywhere in the case bodies: the if/else chain
 	// has no enclosing native switch/loop for the emitted `break;` to
@@ -969,7 +986,7 @@ func buildStrSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snap
 			if err != nil {
 				return "", err
 			}
-			conds = append(conds, "pebble_rt_str_eq("+subjectExpr+", "+lit+")")
+			conds = append(conds, "pebble_rt_str_eq("+subjectTemp+", "+lit+")")
 		}
 		header := "if"
 		if idx > 0 {
@@ -979,7 +996,7 @@ func buildStrSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snap
 		lines = append(lines, bodyText)
 	}
 	lines = append(lines, indent+"}")
-	chain := strings.Join(lines, "\n")
+	chain := strings.Join(append([]string{subjectDecl}, lines...), "\n")
 	if needsDoWhile {
 		return fmt.Sprintf("%sdo {\n%s\n%s} while (0);", indent, chain, indent), nil
 	}

@@ -2428,6 +2428,68 @@ func TestEmitStrSwitchWriteC(t *testing.T) {
 	}
 }
 
+func TestEmitStrSwitchCallSubjectEvaluatedOnce(t *testing.T) {
+	t.Parallel()
+	// A call-valued str switch subject with a side effect must be evaluated
+	// exactly once per switch, not once per case comparison. The if/else-chain
+	// lowering splices the subject's C text into every pebble_rt_str_eq call,
+	// so without materializing the subject into a temp the helper would print
+	// "called" once per case label (twice here: against "a" then "b"). This is
+	// the exact reproduction from proposal 13. The subject is materialized
+	// into a PebbleStr temp before the chain, so the helper runs once total
+	// and the "b" case still returns 0.
+	out := emitAndRunCapture(t, "fn choose() str {\n    print \"called\";\n    return \"b\";\n}\nfn main() int {\n    switch choose() {\n        case \"a\": return 1;\n        case \"b\": return 0;\n        else: return 2;\n    }\n}\n", false, 0, false)
+	if out != "called\n" {
+		t.Fatalf("compiled program output = %q, want %q (subject helper evaluated exactly once)", out, "called\n")
+	}
+}
+
+func TestEmitStrSwitchCallSubjectMaterializedOnce(t *testing.T) {
+	t.Parallel()
+	// The emitted C must materialize a call-valued str switch subject into a
+	// PebbleStr temp exactly once, then reference that temp in every
+	// pebble_rt_str_eq call — the same evaluate-once-into-a-per-operand-temp
+	// pattern the composite print operands use. The helper call text appears
+	// exactly once (the temp's initializer), never spliced into a case
+	// comparison.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn choose() str { return \"b\"; }\nfn main() int { switch choose() { case \"a\": return 1; case \"b\": return 0; else: return 2; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tempRE := regexp.MustCompile(`(?m)^\s*PebbleStr (pebble_switch_str_\d+) = pebble_fn_\d+\(ctx\);`)
+	match := tempRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the subject's materialized PebbleStr temp from the call:\n%s", out)
+	}
+	temp := match[1]
+	if count := len(regexp.MustCompile(`pebble_rt_str_eq\(`+regexp.QuoteMeta(temp)+`, `).FindAllString(out, -1)); count != 2 {
+		t.Errorf("emitted C has %d pebble_rt_str_eq calls against the subject temp, want 2 (cases \"a\" and \"b\"):\n%s", count, out)
+	}
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the subject helper %d time(s), want exactly once (the temp initializer):\n%s", callCount, out)
+	}
+}
+
+func TestEmitStrSwitchBreakCaseBodyUsesTempCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A break inside a str switch case body wraps the whole if/else chain in
+	// do { ... } while (0) so the emitted break has a valid C target. The
+	// materialized subject temp must live inside that wrapper, one temp per
+	// switch evaluation, and the break must exit only the switch, not the
+	// enclosing loop. choose() is called as the subject once per loop
+	// iteration ("called" prints once per iteration = 3 total, never 6 for
+	// the two case comparisons), the never-hit break on case "a" proves the
+	// wrapper gives break a valid target without intercepting the loop, and
+	// the after-switch accumulation still runs each iteration (total = 3 *
+	// 11 = 33), proving the break does not leak to the loop.
+	out := emitAndRunCaptureBounded(t, "fn choose() str { print \"called\"; return \"b\"; }\nfn main() i32 { var total i32 = 0; var i i32 = 0; while i < 3 { switch choose() { case \"a\": break; case \"b\": total = total + 10; else: total = total + 1; } total = total + 1; i = i + 1; } return total; }", false, 33, false)
+	if out != "called\ncalled\ncalled\n" {
+		t.Fatalf("compiled program output = %q, want %q (one subject evaluation per switch)", out, "called\ncalled\ncalled\n")
+	}
+}
+
 func TestEmitDeferBeforeReturnCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A single defer running before a return, observably changing the returned
