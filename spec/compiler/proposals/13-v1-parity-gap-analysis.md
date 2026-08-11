@@ -44,13 +44,85 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #53 (narrow checked arithmetic invalid helper names)
-closed in `73bfbb1`. 21 P1s and P0s resolved this window: tasks
-#33-53. Correction: `uint` turned out NOT to be affected — `buildUintExpr`
-lowers uint-typed `CheckedArithmetic` to plain C arithmetic and never
-reaches `checkedArithmeticHelper` at all; the genuinely affected
-widths are u8/u16/i8/i16/u32. Next up: #54, narrow optional unwrap
-missing helper.)*
+**Item: force-unwrapping a narrow-width (u8/u16/i8/i16/u32) optional
+has no runtime helper — a genuine runtime-coverage gap, not a
+backend-only bug like the last several items.**
+
+Sourced from proposal 14's integer runtime coverage matrix (`Narrow
+optional unwrap`, line 77/400), P1. Independently reproduced and
+root-caused before dispatch. Unlike #47-53 (all backend Go-only), this
+one needs REAL RUNTIME C ADDITIONS in `runtime/src/optional.c` and
+`runtime/include/pebble_rt.h` (repo root `runtime/`, NOT under
+`compiler/`), plus a small backend Go change to route to them.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    var x ?u8 = some 42;
+    return x! as int;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` already rejects CLEANLY at
+`pebc`'s own emission stage (not a `cc` failure, unlike #53's bug):
+`entry function body integer cast child: entry function body
+expression contains a CheckedOptionalUnwrap of a u8 payload, which has
+no runtime unwrap helper`. `?u8` storage and `some 42` construction
+both already work fine — only the force-unwrap (`!`) operation is
+missing.
+
+**Root cause.** `optionalUnwrapSuffix`
+(`compiler/internal/backend/operators.go:210-234`) maps a payload's
+resolved width to a `pebble_rt_checked_unwrap_<suffix>` helper suffix,
+but its `switch` only covers `types.Int/I32 → "i32"`,
+`types.I64 → "i64"`, and `types.Uint/U64 → "u64"` (plus separate
+`isBool`/`isPointer` branches above the switch) — every other integer
+width (u8, u16, i8, i16, u32) falls through to `return ""`, a clean
+rejection. This is NOT a bug in the suffix-resolution logic itself
+(unlike #53's missing-guard bug) — it's simply that the runtime C
+helpers for these five widths were never written.
+`runtime/src/optional.c` currently has exactly five checked-unwrap
+helpers: `pebble_rt_checked_unwrap_i32/i64/bool/u64/ptr`, each an
+identical three-line pattern (`if (!has_value) { panic(loc); } return
+value;`) differing only in the C parameter/return type. The optional
+struct's own `.value` field ALREADY correctly declares the payload at
+its narrow C type (`optionalPayloadCType`,
+`compiler/internal/backend/types.go:1448-1491`, confirmed via
+`cType(payloadWidth)` — e.g. `uint8_t` for a `u8` payload) — the
+struct layout is not the problem, only the missing unwrap helper.
+
+**Scope:**
+1. In `runtime/src/optional.c`, add five new helpers following the
+   EXACT existing pattern (same panic call, same shape), one each for
+   u8/u16/i8/i16/u32, using the confirmed C types
+   (`compiler/internal/backend/types.go`'s `cType` function pins
+   these): `uint8_t pebble_rt_checked_unwrap_u8(bool has_value,
+   uint8_t value, PebbleSourceLoc loc)`, and the u16/i8/i16/u32 twins
+   with `uint16_t`/`int8_t`/`int16_t`/`uint32_t` respectively.
+2. Declare all five in `runtime/include/pebble_rt.h` alongside the
+   existing five declarations (same header, same style).
+3. In `compiler/internal/backend/operators.go`'s `optionalUnwrapSuffix`,
+   add the five missing width cases to the switch (`types.U8 → "u8"`,
+   `types.U16 → "u16"`, `types.I8 → "i8"`, `types.I16 → "i16"`,
+   `types.U32 → "u32"`), mirroring the existing `types.I64 → "i64"`
+   case exactly.
+4. Verify the reproduction above compiles and runs, returning 42.
+   Verify each of the other four widths (u16, i8, i16, u32) also
+   works with its own small reproduction. Verify the PANIC path: a
+   `none`-valued optional force-unwrapped at each of these widths
+   panics (does not silently return garbage) — follow whatever
+   existing test convention proves this for i32/i64/bool/u64 today
+   (search `compiler/internal/backend/*_test.go` and
+   `runtime/test/smoke_test.c` for the existing unwrap-panic tests as
+   the structural model).
+5. Verify the existing i32/i64/bool/u64/ptr unwrap paths are
+   completely unaffected.
+6. Check whether `runtime/test/smoke_test.c` needs matching entries
+   for the five new helpers (it currently exercises the existing five
+   directly — `test_checked_unwrap_normal`/panic tests around line
+   698-726) and add them if that's this repo's established
+   convention for new runtime helpers.
 
 <!-- Previous item, resolved 2026-08-11:
 
