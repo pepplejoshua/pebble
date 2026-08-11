@@ -44,6 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #85 (char/str tuple ordinal reads) closed in `bd84ee9`.
+This is gap #3 of the "up to 5" additional gaps chased this session
+(#84, #85, plus the `f64`-as-aggregate-member investigation that
+spun off #86 as a deliberately deferred, separately-scoped item — not
+counted toward the 5, since it wasn't fixed). A further adjacent gap
+was discovered but correctly left alone: `str` tuple-ordinal reads in
+a str VALUE position (e.g. a call argument, not a local declaration)
+still reject via `buildStrOperand`'s `FieldPlace`-only `Load` case —
+noted for a future item, not yet formal. Two of the "up to 5" slots
+remain if anything else surfaces before moving to the "Implemented,
+proof needed" phase.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: tuple ordinal reads of `char` and `str` elements are cleanly
 rejected — a genuine narrow accessor gap, RESCOPED after
 investigation to exclude `f64` (see below).**
@@ -129,6 +143,24 @@ fn main() int {
    int/bool/other tuple-ordinal reads and existing char/str usage
    (literals, comparisons, slice-element char reads) are completely
    unaffected.
+
+**Resolution (`bd84ee9`, 2026-08-11).** Fixed exactly as rescoped —
+`buildCharOperand` gained a `TuplePlace` case, and
+`buildStrLocalDeclaration` gained ONE `Load` case correctly serving
+both the tuple-ordinal AND struct-field shapes, confirmed
+independently for both. Verified: both reproductions compile and run;
+a str struct-field read-back also works from the same fix; existing
+int/bool tuple-ordinal reads, char slice-element reads, and str
+literals/comparisons are unaffected. `f64` remained untouched as
+scoped, spun off as task #86 (deferred, separate, larger). A further
+adjacent gap was found and correctly left alone: `str` tuple-ordinal
+reads in a str VALUE position (e.g. a call argument) still reject via
+`buildStrOperand`'s `FieldPlace`-only `Load` case — noted, not fixed,
+not yet a formal item. Full suite (`go test ./... -count=1 -timeout
+600s -parallel 16`, 11 packages) clean, `gofmt`/`go vet` clean,
+causation check confirmed reverting reproduces both exact original
+rejections.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
