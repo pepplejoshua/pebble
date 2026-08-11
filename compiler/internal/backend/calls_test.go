@@ -1701,6 +1701,88 @@ func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitNarrowFixedWidthFunctionTypeParamCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A first-class function type whose PARAMETER is any fixed-width integer
+	// other than the entry's own width — u8/u16/i8/i16/u32/i64 — must compile
+	// and run. This was a genuine validator/builder inconsistency: the exact
+	// reproduction is a u8 parameter, which validateFunctionTypeSignature
+	// admitted (any fixed-width integer, resolved at its OWN width) but whose
+	// typedef builder functionTypeParamCType rejected (it only matched the
+	// AMBIENT entry width, so a u8 parameter fell through to the "is not
+	// supported, want int, uint, bool, char, str, or a pointer type"
+	// rejection). Each row uses a different argument value so the emitted
+	// parameter width is pinned: the value must arrive at the callee intact
+	// and come back +1. (The u64 row is already covered by the u64
+	// function-type tests above; every other fixed-width integer is here.)
+	tests := []struct {
+		name     string
+		src      string
+		wantCode int
+	}{
+		{"u8", "fn add_one(x u8) int { return x as int + 1; } fn main() int { var f fn(u8) int = add_one; return f(5); }", 6},
+		{"u16", "fn add_one(x u16) int { return x as int + 1; } fn main() int { var f fn(u16) int = add_one; return f(6); }", 7},
+		{"i8", "fn add_one(x i8) int { return x as int + 1; } fn main() int { var f fn(i8) int = add_one; return f(7); }", 8},
+		{"i16", "fn add_one(x i16) int { return x as int + 1; } fn main() int { var f fn(i16) int = add_one; return f(8); }", 9},
+		{"u32", "fn add_one(x u32) int { return x as int + 1; } fn main() int { var f fn(u32) int = add_one; return f(9); }", 10},
+		{"i64", "fn add_one(x i64) int { return x as int + 1; } fn main() int { var f fn(i64) int = add_one; return f(10); }", 11},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.src, false, tc.wantCode, false)
+		})
+	}
+}
+
+func TestEmitNarrowU8FunctionTypeParamWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C directly for the narrowest repro: the fnptr
+	// typedef declares the u8 parameter as uint8_t (the parameter's OWN
+	// resolved C type, from cType(u8)), the hoisted helper declares its
+	// parameter as uint8_t too, and the indirect call passes the argument at
+	// that same width — so the typedef, the callee, and the call site always
+	// agree. Before the fix, the typedef builder rejected the u8 parameter
+	// outright.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn add_one(x u8) int { return x as int + 1; } fn main() int { var f fn(u8) int = add_one; return f(5); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef int32_t (*pebble_fnptr_",     // fn(u8) int result slot
+		", uint8_t);",                         // the u8 parameter slot in the typedef
+		"(PebbleContext *ctx, uint8_t pebble", // the hoisted helper's own u8 parameter
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEmitOtherFunctionTypeParamShapesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The non-integer and word-sized parameter shapes the widened typedef
+	// builder must leave completely untouched: uint (uint64_t via its own
+	// explicit case), char (int32_t), and str (PebbleStr). The ambient
+	// entry-width, u64, bool, and pointer parameter shapes already have their
+	// own tests above/below, so they are not duplicated here.
+	emitAndRun(t, "fn add_one(x uint) int { return x as int + 1; } fn main() int { var u uint = 5; var f fn(uint) int = add_one; return f(u); }", false, 6, false)
+	emitAndRun(t, "fn isA(c char) int { if c == 'a' { return 1; } else { return 0; } } fn main() int { var f fn(char) int = isA; return f('a'); }", false, 1, false)
+	emitAndRun(t, "fn getLen(s str) int { return 1; } fn main() int { var f fn(str) int = getLen; return f(\"hi\"); }", false, 1, false)
+}
+
+func TestEmitNarrowU8FunctionTypeResultStillRejected(t *testing.T) {
+	t.Parallel()
+	// The RESULT side of the same gap is deliberately OUT of scope and must
+	// keep rejecting exactly as before: a fn() u8 type passes parameter
+	// validation but its RESULT u8 is not among the result shapes this backend
+	// can consume an indirect call's result in (entry width, u64, bool, char,
+	// void, pointer). The regression guards against the parameter fix leaking
+	// into functionTypeResultCType, which is intentionally narrower.
+	emitAndRunRejects(t, "fn get_u8() u8 { return 5; } fn main() int { var f fn() u8 = get_u8; return f() as int; }", "has result type u8, want int, u64, bool, char, void, or a pointer type")
+}
+
 func TestCheckStdModuleGenericMethodIndexedFieldWrite(t *testing.T) {
 	t.Parallel()
 	// The minimal cross-module reproduction bisection isolated: a generic

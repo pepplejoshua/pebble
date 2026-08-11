@@ -1517,18 +1517,23 @@ func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Buil
 
 // functionTypeParamCType resolves one function type's parameter to the C type
 // an ordinary Pebble-convention helper's parameter of that type is declared
-// with (see buildHelperFunctions): the entry's cType(width) for a width
-// parameter, uint64_t for uint, bool for bool, int32_t for char, PebbleStr
-// for str, and the pointee's own `<pointee> *` via pointerTypeName for a
-// pointer parameter (the same spelling helperSignature gives an ordinary
-// helper's pointer parameter) — the exact self-contained set
+// with (see buildHelperFunctions): uint64_t for uint/u64, bool for bool,
+// int32_t for char, PebbleStr for str, the pointee's own `<pointee> *` via
+// pointerTypeName for a pointer parameter (the same spelling helperSignature
+// gives an ordinary helper's pointer parameter), and cType(ownWidth) for any
+// other integer — including the entry's own width and the narrow fixed-width
+// integers (u8, u16, i8, i16, u32, i64), each resolved at ITS OWN width via
+// resolvedBuiltin/cType, independent of the ambient `width` of the context
+// the function type is being resolved from. This mirrors
+// validateFunctionTypeSignature's parameter admission (deliberately
+// width-independent) and buildCallArgument's per-argument own-width
+// resolution, so a parameter's C type always agrees with the C type the
+// corresponding call argument is built at — the exact self-contained set
 // validateFunctionTypeSignature admits.
 // Anything else is a clean rejection, defense for hand-built IR (the
 // validation has already ruled every reachable parameter shape out).
 func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
 	switch {
-	case isWidth(snapshot, width, param):
-		return cType(width), nil
 	case isUint(snapshot, param):
 		return "uint64_t", nil
 	case isU64(snapshot, param):
@@ -1552,6 +1557,16 @@ func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types
 			return ctypeName, nil
 		}
 		return "", fmt.Errorf("function type parameter type %s has a pointee %s whose C type is unsupported", describeType(snapshot, param), describeType(snapshot, pointeeTypeID))
+	}
+	// Any other fixed-width integer parameter (the entry's own width included,
+	// which is exactly what the former isWidth case resolved, and the narrow
+	// widths u8/u16/i8/i16/u32/i64) is resolved at ITS OWN width rather than
+	// the ambient one, mirroring how validateFunctionTypeSignature validates
+	// parameters and how buildArrayBraceElements/buildCallArgument build each
+	// value at its own resolved width. A non-integer here is a clean rejection.
+	paramWidth, integerParam := resolvedBuiltin(snapshot, param)
+	if integerParam && cType(paramWidth) != "" {
+		return cType(paramWidth), nil
 	}
 	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, or a pointer type", describeType(snapshot, param), wantName(width))
 }
