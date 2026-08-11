@@ -44,6 +44,13 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — the str-switch double-evaluation P0 landed as `b1a53e7`; see
+proposal 14's switch matrix. Two P0 items remain from Sol's fourth
+pass: runtime/negative descending ranges running zero iterations, and
+range-bound evaluation order.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a call-valued `str` switch subject is evaluated once per case
 comparison instead of once.**
 
@@ -95,6 +102,17 @@ observe, but confirm it still compiles/runs correctly and the temp
 doesn't break the no-side-effect case); verify existing str-switch
 tests (from `49d0f23`) are unaffected; verify a `do { ... } while (0)`
 break-wrapped chain still uses the temp correctly.
+
+**Resolution (`b1a53e7`, 2026-08-10).** The subject is now materialized
+into a `PebbleStr` temp once, before the if/else chain; every equality
+check reads the temp. Verified the repro now prints once, not twice; a
+str-literal/str-local subject and the break-wrapped shape are
+unaffected; causation-checked by reverting and reproducing the exact
+double-print.
+
+-->
+
+
 
 <!-- Previous item, resolved 2026-08-10:
 
