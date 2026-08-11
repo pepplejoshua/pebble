@@ -44,17 +44,75 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #55 (ordinary optional enum payload construction)
-closed in `1bf785d`. 23 P1s and P0s resolved this window: tasks
-#33-55. A new, separate, pre-existing gap was DISCOVERED (not fixed)
-during verification: an enum-typed struct field's construction fails
-with a missing-typedef `cc` error even for a bare non-optional enum
-value (`Holder.{ c = Color.blue }`, no optional wrapper) — looks like
-a `RecordConstruct.Fields` traversal gap in `collectEnumTypesWalk`
-(field values live in a separate `Fields` slice, not the generic
-`Children` the walk recurses through). Not yet a formal tracker item;
-worth opening one before the next enum/struct-field-adjacent task.
-Next up: #56, first-class narrow integer function type inconsistency.)*
+**Item: a first-class function type's narrow-width
+(u8/u16/i8/i16/u32/i64) PARAMETER passes signature validation, then
+its C typedef builder rejects it — a genuine validator/builder
+inconsistency, not a deliberate narrower grammar.**
+
+Sourced from proposal 14's backend gap matrix (`First-class narrow
+integer function signature`, line 79), P1. Independently reproduced
+and root-caused before dispatch. Scoped to the PARAMETER side only —
+the RESULT side (`fn() u8`) was independently checked and confirmed to
+reject CONSISTENTLY at validation, matching its own documented,
+deliberately narrower design (the indirect-call result-consumption
+positions this backend can lower into are genuinely limited) — that
+is NOT a bug and is explicitly out of scope here.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn add_one(x u8) int {
+    return x as int + 1;
+}
+fn main() int {
+    var f fn(u8) int = add_one;
+    return f(5);
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails with: `function type
+parameter type u8 is not supported, want int, uint, bool, char, str,
+or a pointer type`.
+
+**Root cause.** `validateFunctionTypeSignature`
+(`compiler/internal/backend/validate.go:306-343`) admits ANY fixed-
+width integer parameter, resolved at ITS OWN width (line 334:
+`paramWidth, integerParam := resolvedBuiltin(snapshot, parameter);
+if !(integerParam && cType(paramWidth) != "") && ...` — this is
+deliberately width-independent per the function's own doc comment:
+"independent of the ambient width of the context the function type is
+being validated from"). But `functionTypeParamCType`
+(`compiler/internal/backend/types.go:1528-1557`, the function that
+resolves each parameter's actual C type for the typedef) only has a
+`case isWidth(snapshot, width, param):` — matching ONLY when the
+parameter's width equals the AMBIENT `width` argument — with no
+general "any other fixed-width integer, resolved at its own width"
+case. A u8 parameter validated successfully (since u8 is a fixed-width
+integer with a valid `cType`) then falls through
+`functionTypeParamCType`'s switch to its final rejection at line 1556,
+since `isWidth(snapshot, width, param)` is false whenever the entry's
+ambient width isn't u8 specifically.
+
+**Scope:** widen `functionTypeParamCType`'s width-matching case to
+resolve ANY fixed-width integer parameter at its OWN width, not just
+one matching the ambient width — replace (or add alongside)
+`case isWidth(snapshot, width, param): return cType(width), nil` with
+a general case using `resolvedBuiltin(snapshot, param)` +
+`cType(paramWidth)` (mirroring the exact pattern
+`validateFunctionTypeSignature` itself already uses to VALIDATE this
+shape, and the pattern this codebase uses pervasively elsewhere — e.g.
+`buildArrayBraceElements`'s "each element is built at the element's
+own resolved width," `buildCallArgument`'s per-argument-own-width
+resolution). Verify the reproduction above compiles and runs
+(returning 6: `5 as int + 1`). Verify each of the other affected
+widths (u16, i8, i16, u32, i64 — everything `validateFunctionTypeSignature`
+already accepts but `functionTypeParamCType` currently can't build)
+also works with its own small reproduction. Verify the existing
+ambient-width, uint/u64, bool, char, str, and pointer parameter shapes
+are completely unaffected. Verify the RESULT side (`fn() u8`) is
+UNCHANGED — still cleanly rejects, do not touch
+`functionTypeResultCType` or `validateFunctionTypeSignature`'s result
+check.
 
 <!-- Previous item, resolved 2026-08-11:
 
