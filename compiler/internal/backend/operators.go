@@ -112,7 +112,11 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 	if width == types.U64 && (op == syntax.Slash || op == syntax.Percent) {
 		return "", false
 	}
-	return base + "_" + checkedSuffix(width), true
+	suffix := checkedSuffix(width)
+	if suffix == "" {
+		return "", false
+	}
+	return base + "_" + suffix, true
 }
 
 func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, bool) {

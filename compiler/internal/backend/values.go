@@ -1966,7 +1966,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		}
 		helper, ok := checkedArithmeticHelper(node.Operator, width)
 		if !ok {
-			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s, want +, -, *, /, or %% (at u64, only +, -, and * have a checked runtime helper)", node.Operator)
+			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with operator %s at %s, want an operator with a checked runtime helper (int/i32/i64 support +, -, *, /, and %%; at u64, only +, -, and * have a checked runtime helper)", node.Operator, wantName(width))
 		}
 		left, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
