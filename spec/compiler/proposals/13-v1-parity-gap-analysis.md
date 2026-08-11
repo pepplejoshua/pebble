@@ -44,9 +44,67 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — the non-literal bool switch P1 landed as `9b86144`. All P0
-items are closed; working through Sol's P1 list. Next: pick another P1
-from proposal 14's fourth-pass gap table — 6 of the 19 slices done.)*
+**Item: an unbound range loop (`loop start..end { ... }`, no `: name`
+iterator) is accepted by the parser, checker, and TIR, then rejected
+only at the backend with an internal-sounding error.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1. Independently reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    var total int = 0;
+    loop 0..3 {
+        total = total + 1;
+    }
+    return total;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails at EMISSION (not the checker):
+`entry function body block contains an unbound range loop (loop
+start..end { ... } with no ': name' iterator); only the bound `loop
+start..end : name { ... }` form is supported`.
+
+**Known cause:** `prepareRangeLoop`
+(`compiler/internal/check/control_facts.go:257`) only publishes the
+iterator symbol and binding INSIDE the `if iterator != (symbol.SyntaxRef{})`
+block (line 288). When no `: name` is authored, this whole block is
+skipped — nothing rejects the omission, `emission.iteratorSymbol`
+simply stays zero, and the program proceeds through the checker and
+into TIR silently missing that data. Only later, deep in
+`buildRangeLoop` (`compiler/internal/backend/statements.go:1319-1330`,
+checking `rangeNode.Symbol == 0`), does anything notice — producing a
+low-level "emission failed" message a user would have no way to
+connect to "you forgot `: name`" without reading the compiler's
+internals.
+
+**Decision** (matches Sol's framing): V2's policy of requiring an
+explicit iterator name (`: name`) is being KEPT (an intentional
+difference from V1, which synthesizes an implicit `iter` name) — this
+is not a "V1 parity" gap to close by implementing an implicit name.
+The gap is a CHECKER/BACKEND CONTRACT DEFECT: whatever V2's actual
+policy is, it should be enforced at the checker, with a real
+diagnostic and source span, not discovered by the backend three
+compiler phases later.
+
+**Scope:** add a checker diagnostic (next free code: `C0622`, since
+`C0601`-`C0621` are all already in use — confirm this is still true
+before picking the number) rejecting a range loop with no `: name`
+iterator, emitted at the loop's own source span, with a clear message
+("a range loop requires an explicit iterator name, e.g. `loop
+0..3 : i { ... }`" or similar). Wire it into the same validation pass
+other control-flow diagnostics use (see `control_validation.go`'s
+existing `C06xx` codes for the established pattern/convention). Verify
+the reproduction above now fails at the CHECKER (not emission) with
+the new clean diagnostic; verify the bound form (`loop 0..3 : i {
+... }`) is completely unaffected; verify existing range-loop tests
+pass unchanged. Once the checker rejects it cleanly, the backend's own
+`rangeNode.Symbol == 0` guard becomes defense-in-depth for hand-built
+TIR (matching this codebase's established pattern elsewhere) — leave
+it in place, don't remove it.
 
 <!-- Previous item, resolved 2026-08-10:
 
