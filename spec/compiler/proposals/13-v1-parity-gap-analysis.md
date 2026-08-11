@@ -44,6 +44,14 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — the descending-range zero-iteration P0 landed as `003141d`,
+and fixed the range-bound evaluation-order P0 as a confirmed byproduct
+— no separate dispatch was needed for that one. All three P0 items
+from Sol's fourth pass are now closed. Next: pick a P1 item from
+proposal 14's fourth-pass gap table.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a range loop with a runtime-computed or negative-literal
 descending bound silently runs zero iterations.**
 
@@ -135,6 +143,20 @@ free. Confirm this explicitly with a side-effecting-bounds
 reproduction (each bound a call that appends to a shared counter/log)
 proving start runs before end, and report whether a separate dispatch
 for that item is still needed.
+
+**Resolution (`003141d`, 2026-08-10).** Replaced the compile-time-
+literal direction detection entirely with V1's actual production
+lowering (`src/codegen.c`'s `AST_STMT_LOOP`), mirrored verbatim: both
+bounds evaluated once into C locals in source order, step computed at
+runtime from comparing them, ternary-conditioned loop test. Verified a
+runtime-bound descending range, a negative-literal range (`0..-5`
+exclusive correctly visits 5 values: 0,-1,-2,-3,-4), all existing
+ascending/descending/inclusive/zero-length/uint-bounded cases
+unaffected. Confirmed the evaluation-order P0 (below) was also fixed
+as a byproduct — no separate dispatch was needed. Causation-checked by
+reverting and reproducing both original bugs.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 
