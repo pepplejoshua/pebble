@@ -921,6 +921,23 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 				return "", "", err
 			}
 			expr = built
+		case isTaggedUnionType(unit, snapshot, fieldType):
+			// A tagged-union-typed field's construction value is a union value (a
+			// variant construction like Choice.value(5) / Choice.empty, a reference
+			// to an already-declared union-typed local, a union-typed field read, or
+			// a union-payload force-unwrap), built by the same buildUnionValueExpr an
+			// optional's tagged-union payload and a union-typed call argument use,
+			// NOT the enum grammar the isEnumType case below would send it to (a
+			// tagged union is enum-shaped too — see isEnumType — but its value is a
+			// union value, never a plain enum constant). This precedes the isEnumType
+			// case exactly as buildOptionalValueExpr's own isTaggedUnionType case
+			// precedes its isEnumType case: buildUnionValueExpr rejects nothing for a
+			// payload-carrying variant, unlike buildEnumValue.
+			built, err := buildUnionValueExpr(st, unit, snapshot, fileSet, field.Value, scope, context, fieldType, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isEnumType(unit, snapshot, fieldType):
 			// An enum-typed field's construction value (Entry's `state = .Empty`,
 			// std/hmap.peb's insert) is a variant literal — an EnumVariantValue or

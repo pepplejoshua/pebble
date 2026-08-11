@@ -1399,7 +1399,7 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // collectUnionTypesWalk appends every tagged-union type encountered in the
 // tree rooted at nodeID to out, in first-encountered order, following Children
 // and DeferChain exactly like collectDirectCalls so it visits the same
-// reachable region of the node graph the body builders consume. Two node
+// reachable region of the node graph the body builders consume. Three node
 // shapes carry a tagged-union type. The primary one is a VariantConstruct
 // with one or more children: its Type is the union's own TypeID, its Member
 // the variant symbol, and each child the payload expression whose own Type is
@@ -1417,6 +1417,11 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 // type with no construction anywhere, so only the SizeofType node carries it —
 // and without this case the union's typedef pair would never be emitted and
 // the lowered sizeof would name an undeclared C type (see sizeofCTypeName).
+// The third is a RecordConstruct: a struct field whose construction value is a
+// union value (`Holder.{ u = Choice.value(5) }`) lives in node.Fields, not
+// node.Children, so the walk recurses into each field's value to reach it —
+// the same "Fields isn't in Children" special-case the sibling collect*Types
+// walks make.
 func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, nodeID tir.NodeID, out *[]types.TypeID, payloads map[types.TypeID]map[symbol.SymbolID]types.TypeID) error {
 	node, ok := unit.Node(nodeID)
 	if !ok {
@@ -1478,6 +1483,23 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 			}
 			byMember[node.Member] = node.Type
 			*out = append(*out, ownerType)
+		}
+	}
+	if node.Kind == tir.RecordConstruct {
+		// A struct construction's field values (`Holder.{ u = Choice.value(5)
+		// }`) are stored in node.Fields ([]FieldInit{Field, Value}), NOT
+		// node.Children, so the Children-following recursion below never
+		// reaches a union value used only as a field's construction value (a
+		// VariantConstruct at Fields[i].Value) — the same "Fields isn't in
+		// Children" gap collectStructTypesWalk, collectOptionalTypesWalk,
+		// collectFunctionTypesWalk, and collectEnumTypesWalk already close.
+		// Without this recursive walk the union type is never collected, so its
+		// pebble_union_<typeID>_t typedef pair is never emitted, leaving the
+		// field's initializer naming an undeclared C type.
+		for _, field := range node.Fields {
+			if err := collectUnionTypesWalk(unit, snapshot, width, field.Value, out, payloads); err != nil {
+				return err
+			}
 		}
 	}
 	for _, childID := range node.Children {

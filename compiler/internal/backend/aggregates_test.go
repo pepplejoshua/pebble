@@ -4200,6 +4200,116 @@ fn main() int {
 }`, false, 42, false)
 }
 
+func TestEmitTaggedUnionStructFieldInlineConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact repro of the tagged-union struct-field construction gap
+	// (tracker 13 active defect): a payload-carrying variant constructed
+	// INLINE as a struct field's construction value (`Holder.{ u =
+	// Choice.value(42) }`), with no other reference to the union anywhere in
+	// the program. The field's VariantConstruct lives in node.Fields
+	// ([]FieldInit), so before the fix buildStructBraceList's enum case
+	// routed it to buildEnumValue — a clean rejection of any payload-carrying
+	// variant — and collectUnionTypesWalk never even visited it ("Fields
+	// isn't in Children"), so the union typedef pair was never collected. The
+	// round trip is the proof: 42 survives construction -> storage -> field
+	// read -> narrowing switch.
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+type Holder = struct {
+    u Choice;
+};
+fn readBack(c Choice) int {
+    switch c {
+        case Choice.empty: return -1;
+        case Choice.value: return c.value;
+    }
+}
+fn main() int {
+    let h Holder = Holder.{ u = Choice.value(42) };
+    return readBack(h.u);
+}`, false, 42, false)
+}
+
+func TestEmitTaggedUnionStructFieldInlineEmptyVariantCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The payload-less sibling of the inline-construction fix: a struct field
+	// constructed from the payload-less variant of a TAG-GED union
+	// (`Holder.{ u = Choice.empty }`, where a payload-carrying construction
+	// elsewhere in the program makes isTaggedUnionType true). The field's
+	// EnumVariantValue must route through the new isTaggedUnionType case to
+	// buildUnionValueExpr — emitting the tagged compound literal
+	// (pebble_union_<id>_t){ .tag = pebble_variant_<empty> } — not the enum
+	// case's bare variant constant, whose type (pebble_enum_<id>_t) would not
+	// match the field's union-typed declaration. readBack returns 7 for the
+	// empty discriminant only if the tag round-trips through the field.
+	emitAndRun(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+type Holder = struct {
+    u Choice;
+};
+fn readBack(c Choice) int {
+    switch c {
+        case Choice.empty: return 7;
+        case Choice.value: return c.value;
+    }
+}
+fn main() int {
+    let c = Choice.value(42);
+    let h Holder = Holder.{ u = Choice.empty };
+    return readBack(h.u);
+}`, false, 7, false)
+}
+
+func TestEmitTaggedUnionStructFieldInlineConstructionWritesC(t *testing.T) {
+	t.Parallel()
+	// Emitted-C shape check for the inline-construction fix, locking in both
+	// halves: the union's typedef pair (discriminant enum followed by the
+	// tagged struct) must appear BEFORE the struct typedef that references the
+	// union as a field type (the raw cc failure when the union was never
+	// collected), the field must be declared with the union's own
+	// pebble_union_<typeID>_t (never the bare tag-enum), and the construction
+	// must lower to the tagged compound literal. The union is referenced ONLY
+	// through the struct field's construction value here — no other
+	// VariantConstruct anywhere — so the only way collectUnionTypesWalk finds
+	// it is the RecordConstruct recursion into node.Fields.
+	unit, snapshot, entryID, unionType, _, sources := unionFixture(t, `type Choice = union enum {
+    empty void;
+    value int;
+};
+type Holder = struct {
+    u Choice;
+};
+fn main() int {
+    let h Holder = Holder.{ u = Choice.value(5) };
+    return 0;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	unionClose := "} " + unionTypeName(unionType) + ";"
+	unionCloseIdx := strings.Index(out, unionClose)
+	fieldUse := unionTypeName(unionType) + " pebble_field_"
+	fieldUseIdx := strings.Index(out, fieldUse)
+	if unionCloseIdx < 0 {
+		t.Errorf("emitted C missing the union typedef close %q:\n%s", unionClose, out)
+	}
+	if fieldUseIdx < 0 {
+		t.Errorf("emitted C missing the union-typed struct field declaration %q (the field must be typed with the union's own typedef):\n%s", fieldUse, out)
+	}
+	if unionCloseIdx >= 0 && fieldUseIdx >= 0 && unionCloseIdx > fieldUseIdx {
+		t.Errorf("emitted C defines the struct typedef (%q at index %d) BEFORE the union typedef it references (%q at index %d); the union typedef must precede the struct typedef:\n%s", fieldUse, fieldUseIdx, unionClose, unionCloseIdx, out)
+	}
+	if !strings.Contains(out, "(pebble_union_"+strconv.Itoa(int(unionType))+"_t){ .tag = pebble_variant_") {
+		t.Errorf("emitted C missing the inline tagged-union construction compound literal:\n%s", out)
+	}
+}
+
 func TestEmitTaggedUnionOptionalPayloadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The tagged-union-as-optional-payload fix (proposal 13, case 2), proven
