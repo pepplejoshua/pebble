@@ -74,7 +74,7 @@ The following failures are current and independently reproduced:
 | Direct cast of `sizeof` | ~~`return (sizeof int) as int;` is rejected because the integer-cast child builder has no `SizeofType` case.~~ **Resolved (`634db99`).** `buildExpr` now delegates `SizeofType` to `buildUintExpr`. | **Closed** |
 | `sizeof [N]Struct` | ~~The type resolver now accepts the fixed array, but emitted C can reference the array typedef before the struct element typedef exists.~~ **Resolved (`cf97cd3`).** Was actually a missing-collection bug (the element struct/tuple/optional typedef was never collected at all, not merely ordered late); fixed in all three walks. A bare `sizeof (T,U)`/`sizeof ?T` with no array wrapper remains a separate, still-open gap. | **Closed** |
 | Narrow checked arithmetic | ~~`u8 + u8` and `u8 / u8` emit calls named `pebble_rt_checked_add_` / `pebble_rt_checked_div_`, then fail in `cc`.~~ **Resolved (`73bfbb1`)** for the plain-binary-expression shape — `checkedArithmeticHelper` now rejects cleanly at u8/u16/i8/i16/u32 instead of emitting an empty-suffix call; `uint` was never actually affected (routes through `buildUintExpr`'s plain-C path). Narrow signed negation and `u64` divide/shift still reject earlier, unaffected by this fix. | **Closed** for this specific shape |
-| Narrow optional unwrap | `?u8` storage and `some` construction work, but `value!` rejects because no narrow unwrap helper exists. | **Runtime-helper coverage gap** |
+| Narrow optional unwrap | ~~`?u8` storage and `some` construction work, but `value!` rejects because no narrow unwrap helper exists.~~ **Resolved (`9426382`).** Added `pebble_rt_checked_unwrap_u8/u16/i8/i16/u32` to the runtime plus matching backend dispatch. | **Closed** |
 | Ordinary optional enum construction | `let value ?Color = some Color.blue;` rejects. The backend supports the separate integer-to-optional-enum cast path, but not an ordinary enum payload. | **Value-source gap** |
 | First-class narrow integer function signature | `fn(u8) int` passes signature validation, then its C typedef builder rejects the `u8` parameter. `fn() u8` is rejected by validation. | **Backend signature-matrix gap** |
 | V1-recursive C shapes | Confirmed clean rejections remain for a `char` struct field, `char` optional payload, `char` tagged-union payload, `f32` slice element, and enum tuple element. | **C-shape matrix gaps** |
@@ -169,7 +169,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Struct literal | V2 `RecordConstruct` | **Resolved (`e649476`)** for plain deep struct/tuple/optional nesting; runtime Allocator/Context construction is resolved; array-of-aggregate struct fields remain a separate, out-of-scope backend gap |
 | Tagged-union variant literal | V2 `VariantConstruct` | **Partial** by payload C shape; generic narrowing is resolved |
 | `sizeof(T)` | V1 rejects opaque types but otherwise delegates to C | V2 supports scalar, struct, enum, union, tuple, optional, slice, pointer, runtime, and fixed-array types, plus a direct cast of `sizeof` (`634db99`) and `sizeof [N]Struct`/tuple/optional (`cf97cd3`). A bare `sizeof (T,U)`/`sizeof ?T` with no array wrapper still fails (no `SizeofType` case for a non-array `TypeArg` in those two walks). | **Partial** |
-| Force unwrap | V2 checked optional unwrap | **Partial** by payload type |
+| Force unwrap | V2 checked optional unwrap | **Resolved** for every scalar payload type (i32/i64/u64/bool/pointer plus u8/u16/i8/i16/u32, `9426382`) |
 | Postfix `++` and `--` as a value expression | V1 uses C postfix semantics and returns the old value | V2 defines them as void updates that are legal only as statements or for updates | **Intentional difference** |
 | Arithmetic `+ - * / %` | V1 emits raw C arithmetic for all numeric types | V2 uses checked helpers for integers and direct C for floats | **Partial**; helper-width matrix is incomplete |
 | Numeric comparisons `== != < <= > >=` | Both compilers support numeric comparisons | **Implemented, proof needed** for mixed widths and floats |
@@ -397,7 +397,7 @@ width needs a real helper or valid direct lowering.
 | Checked shift left and right | `i32`, `i64`, `i8/i16`, `u8/u16/u32` | no `uint` or `u64` helper |
 | Checked integer negation | `i32` and `i64`; a negative narrow literal can be folded | a non-literal narrow signed value has no helper and rejects |
 | Float-to-integer checked conversion | helper family is limited to `i32` and `i64` destinations | no full integer destination matrix |
-| Optional unwrap payload | scalar helper family covers `i32`, `i64`, `u64`, bool, and pointer paths | narrow integer payload matrix is incomplete |
+| Optional unwrap payload | scalar helper family covers `i32`, `i64`, `u64`, `u8`, `u16`, `i8`, `i16`, `u32`, bool, and pointer paths | **Resolved** (`9426382`) |
 | Explicit wrapping multiplication and addition | `wrapping_mul_u64` and `wrapping_add_u64` lower to runtime helpers | **Verified** in SAFE and RELEASE runtime tests and backend run tests |
 
 The earlier audit claim that wrapping `u64` operations remained open was

@@ -44,6 +44,17 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #54 (narrow optional unwrap missing helper) closed in
+`9426382`, a runtime C + backend Go fix. 22 P1s and P0s resolved this
+window: tasks #33-54. A pre-existing test
+(`TestEmitRejectsOptionalUnwrapOfU8Payload`) pinned the OLD "no
+runtime unwrap helper" u8 rejection and only surfaced as a full-suite
+failure after the fix — the worker's own narrower test-name filter
+missed it; converted to assert the new correct behavior. Next up:
+#55, ordinary optional enum payload construction.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: force-unwrapping a narrow-width (u8/u16/i8/i16/u32) optional
 has no runtime helper — a genuine runtime-coverage gap, not a
 backend-only bug like the last several items.**
@@ -123,6 +134,29 @@ struct layout is not the problem, only the missing unwrap helper.
    directly — `test_checked_unwrap_normal`/panic tests around line
    698-726) and add them if that's this repo's established
    convention for new runtime helpers.
+
+**Resolution (`9426382`, 2026-08-11).** Added the five runtime
+helpers, header declarations, backend switch cases, and matching
+`smoke_test.c` entries exactly as scoped. Verified: all five widths
+compile and run for `some`-initialized optionals; all five panic
+(process abort via `pebble_rt_panic`) for a `none`-initialized force
+unwrap; runtime smoke test passes in both SAFE and RELEASE mode; the
+existing i32/i64/bool/u64/ptr paths are unaffected. **Independent
+full-suite verification caught a real regression the dispatched
+worker's own narrower `-run` test filter (`TestEmitOptional*`) missed:
+a pre-existing test, `TestEmitRejectsOptionalUnwrapOfU8Payload`
+(`validate_test.go`), pinned the OLD "has no runtime unwrap helper"
+rejection specifically for u8 and started failing once u8 became
+supported.** Converted it (renamed
+`TestEmitOptionalUnwrapOfU8PayloadCompilesAndRuns`) to assert the new
+correct compile-and-run behavior instead of deleting it, following
+this project's established convention for a stale-rejection test
+(mirrors #47's `TestEmitRejectsTupleNestedMoreThanOneLevel`
+conversion). Full suite (`go test ./... -count=1 -timeout 600s
+-parallel 16`, 11 packages) clean after the correction, `gofmt`/`go
+vet` clean, causation check (reverting all three fix files together)
+confirmed reverting reproduces the exact original rejection.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
