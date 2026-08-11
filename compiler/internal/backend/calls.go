@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -1805,40 +1806,140 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope, a struct literal (a RecordConstruct), or a call to a struct-returning helper (a DirectCall); only returning an already-declared struct-typed local, constructing a fresh struct literal inline, or forwarding a struct-returning helper call is supported", context, node.Kind)
 }
 
-func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, arrayType types.TypeID, width types.BuiltinKind) (string, error) {
+func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, arrayType types.TypeID, indent string, width types.BuiltinKind) (string, string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
-		return "", fmt.Errorf("array return references invalid value node %d", id)
+		return "", "", fmt.Errorf("array return references invalid value node %d", id)
 	}
 	if node.Type != arrayType {
-		return "", fmt.Errorf("array return has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array return has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
 	}
 	if node.Kind == tir.DirectCall {
-		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+		returnValue, err := buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+		return "", returnValue, err
+	}
+	if node.Kind == tir.ArrayValue {
+		// A direct array literal as the tail return value — `return [1, 2,
+		// 3];`. The per-element C expression strings are built by the same
+		// buildArrayBraceElements an array-typed local's brace-list declaration
+		// uses, and emitted in the same `(%s){ .data = { %s } }` compound
+		// literal shape the SymbolValue tail return below produces for an
+		// array local, so the two return shapes are interchangeable at the C
+		// level.
+		key, ok := snapshot.Key(arrayType)
+		if !ok {
+			return "", "", fmt.Errorf("array return type %s is not in the type snapshot", describeType(snapshot, arrayType))
+		}
+		length, elementType, ok := key.Array()
+		if !ok {
+			return "", "", fmt.Errorf("array return type %s has no length and element type", describeType(snapshot, arrayType))
+		}
+		if len(node.Children) != int(length) {
+			return "", "", fmt.Errorf("array return is an ArrayValue with %d element expression(s), want %d", len(node.Children), length)
+		}
+		exprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, node, locals, "array return", width, elementType)
+		if err != nil {
+			return "", "", err
+		}
+		return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(exprs, ", ")), nil
+	}
+	if node.Kind == tir.ArrayRepeat {
+		// A direct [v; N] repeat as the tail return value — `return [7; 3];`.
+		// The count child is validated exactly as buildArrayRepeatLocalDeclaration
+		// validates it (a compile-time uint integer literal equal to the
+		// array's declared length), and the single value expression is built
+		// once and assigned to a C temp whose name is then repeated `length`
+		// times in the brace list. Unlike a brace-list array literal
+		// `[f(), f(), f()]` — which evaluates each written element and so runs
+		// f() three times — [v; N] is a single source expression meant to be
+		// evaluated exactly ONCE and copied N times. A return is a pure
+		// expression position with nowhere to place the temp-declaration
+		// statement, so, mirroring buildSliceReturnValue's CheckedSlice shape,
+		// the temp declaration is returned as a separate pre-return statement
+		// for the caller (buildReturnStatement) to thread into its statement
+		// sequence before the final `return <expr>;` line. The temp name derives
+		// from the return value node's own NodeID (a return has no local symbol
+		// to name it from), the same identity buildSliceReturnValue's
+		// pebble_slice_ret_<nodeID> temp uses, distinct from the
+		// pebble_repeat_<symbolID> temps an ArrayRepeat local declaration uses.
+		key, ok := snapshot.Key(arrayType)
+		if !ok {
+			return "", "", fmt.Errorf("array return type %s is not in the type snapshot", describeType(snapshot, arrayType))
+		}
+		length, elementType, ok := key.Array()
+		if !ok {
+			return "", "", fmt.Errorf("array return type %s has no length and element type", describeType(snapshot, arrayType))
+		}
+		if len(node.Children) != 2 {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat with %d child(ren), want exactly two (the repeated value and the count)", len(node.Children))
+		}
+		countNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat referencing invalid count node %d", node.Children[1])
+		}
+		if countNode.Kind != tir.IntegerLiteral {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat whose count is a %s, want a compile-time integer literal equal to the array's declared length %d", countNode.Kind, length)
+		}
+		if countNode.Type != snapshot.Builtins().Uint {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat whose count has type %s, want uint (the count is a synthesized integer literal)", describeType(snapshot, countNode.Type))
+		}
+		count, err := strconv.ParseUint(countNode.Literal.IntegerNum, 10, 64)
+		if err != nil {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat whose count %q is not a valid non-negative integer", countNode.Literal.IntegerNum)
+		}
+		if count != length {
+			return "", "", fmt.Errorf("array return is an ArrayRepeat whose count %d does not equal the array's declared length %d", count, length)
+		}
+		var valueExpr string
+		if isBool(snapshot, elementType) {
+			valueExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		} else if isChar(snapshot, elementType) {
+			valueExpr, err = buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		} else if isFloat(snapshot, elementType) {
+			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, elementType))
+		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
+			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, elementWidth, width)
+		} else {
+			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, width)
+		}
+		if err != nil {
+			return "", "", err
+		}
+		ctype, err := arrayElementCType(unit, snapshot, width, elementType)
+		if err != nil {
+			return "", "", fmt.Errorf("array return: %v", err)
+		}
+		tempName := fmt.Sprintf("pebble_repeat_ret_%d", id)
+		preReturn := fmt.Sprintf("%s%s %s = %s;", indent, ctype, tempName, valueExpr)
+		values := make([]string, length)
+		for i := range values {
+			values[i] = tempName
+		}
+		return preReturn, fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
 	}
 	if node.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("array return is a %s, want an array local or array-returning call", node.Kind)
+		return "", "", fmt.Errorf("array return is a %s, want an array literal (an ArrayValue), an ArrayRepeat, an array local, or an array-returning call", node.Kind)
 	}
 	info, declared := locals[node.Symbol]
 	if !declared || info.array != arrayType {
-		return "", fmt.Errorf("array return references symbol %d, which is not a local of type %s", node.Symbol, describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array return references symbol %d, which is not a local of type %s", node.Symbol, describeType(snapshot, arrayType))
 	}
 	if info.arrayWrapped {
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
 	key, ok := snapshot.Key(arrayType)
 	if !ok {
-		return "", fmt.Errorf("array return type %s is not in the type snapshot", describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array return type %s is not in the type snapshot", describeType(snapshot, arrayType))
 	}
 	length, _, ok := key.Array()
 	if !ok {
-		return "", fmt.Errorf("array return type %s has no length and element type", describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array return type %s has no length and element type", describeType(snapshot, arrayType))
 	}
 	values := make([]string, length)
 	for i := range values {
 		values[i] = fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i)
 	}
-	return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
 }
 
 // buildSliceReturnValue builds the C text pieces for a slice-returning

@@ -1845,3 +1845,65 @@ fn main() int {
 		t.Errorf("emitted C declared the union-returning helper with a struct typedef, want the union typedef:\n%s", out)
 	}
 }
+
+func TestEmitArrayValueDirectReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A fixed-array-returning helper whose tail return is a direct ArrayValue
+	// literal (`return [1, 2, 3];`), not a local or a forwarded call.
+	emitAndRun(t, `fn make() [3]int {
+    return [1, 2, 3];
+}
+fn main() int {
+    let a = make();
+    return a[0] + a[1] + a[2];
+}`, false, 6, false)
+}
+
+func TestEmitArrayRepeatDirectReturnCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A fixed-array-returning helper whose tail return is a direct ArrayRepeat
+	// (`return [7; 3];`), not a local or a forwarded call.
+	emitAndRun(t, `fn repeated() [3]int {
+    return [7; 3];
+}
+fn main() int {
+    let a = repeated();
+    return a[0] + a[1] + a[2];
+}`, false, 21, false)
+}
+
+func TestEmitArrayRepeatDirectReturnEvaluatesValueOnce(t *testing.T) {
+	t.Parallel()
+	// Regression: an ArrayRepeat direct return (`return [v; N];`) must build
+	// its value expression into a single C temp and reference that temp N
+	// times in the compound literal, not repeat the raw expression string N
+	// times — a brace-list ArrayValue literal like [f(), f(), f()] legitimately
+	// evaluates each written element separately, but [v; N] is one source
+	// expression meant to be evaluated exactly once and copied. Assert the
+	// emitted C declares exactly one pebble_repeat_ret_ temp and the compound
+	// literal's brace list references that same temp name three times, rather
+	// than containing the value expression three separate times.
+	unit, snapshot, entryID, sources := buildFixture(t, `fn repeated() [3]int {
+    return [7; 3];
+}
+fn main() int {
+    let a = repeated();
+    return a[0] + a[1] + a[2];
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	compileAndRun(t, buf.Bytes(), 21, false)
+	tempCount := strings.Count(out, "pebble_repeat_ret_")
+	if tempCount < 4 {
+		t.Fatalf("expected one temp declaration plus three brace-list references (>= 4 occurrences of pebble_repeat_ret_), got %d:\n%s", tempCount, out)
+	}
+	if !strings.Contains(out, "= 7;") {
+		t.Fatalf("expected exactly one assignment of the repeated value 7 into the temp:\n%s", out)
+	}
+	if strings.Count(out, "= 7;") != 1 {
+		t.Fatalf("expected the value 7 to be assigned exactly once (single evaluation), got %d occurrences of \"= 7;\":\n%s", strings.Count(out, "= 7;"), out)
+	}
+}

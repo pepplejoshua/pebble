@@ -398,7 +398,18 @@ func buildReturnStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		// force-unwrap; anything else is a clean rejection.
 		returnValue, err = buildEnumValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, width)
 	} else if result.arrayType != 0 {
-		returnValue, err = buildArrayReturnValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, width)
+		// The enclosing function returns an array (a reachable helper whose
+		// ResultType is an array type), so the return value is built under the
+		// array grammar by buildArrayReturnValue rather than buildExpr, which
+		// rejects an array-typed value. Supported return shapes are a
+		// SymbolValue naming an array-typed local in scope, an ArrayValue
+		// literal, or an ArrayRepeat. An ArrayRepeat (a single [v; N] source
+		// expression evaluated exactly once) needs a C temp to hold the value so
+		// it is not re-evaluated once per slot; a return is a pure expression
+		// position with nowhere to place the temp declaration, so, exactly like
+		// the slice branch below, the temp-declaration statement is threaded
+		// into the statement sequence as an extra pre-return statement.
+		preReturn, returnValue, err = buildArrayReturnValue(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.arrayType, indent, width)
 	} else if result.sliceType != 0 {
 		// The enclosing function returns a slice (a reachable helper whose
 		// ResultType is a slice type), so the return value is built under
