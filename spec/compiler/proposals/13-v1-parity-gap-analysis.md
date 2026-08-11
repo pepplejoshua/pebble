@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — tuple local copy initialization landed as `834927e`. 8 of
+19 P1 slices done. Next: array local copy initialization (slice 2 of
+6 in this family), same one-type-per-task discipline.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a tuple-typed local cannot be initialized from another tuple
 value (`let second (int, int) = first;`).**
 
@@ -94,6 +100,14 @@ behavior, confirmed accepted) — don't touch that path. Verify the
 reproduction above compiles and runs, returning 1. Also verify: a
 3-element tuple, a mixed-type tuple, and that whole-tuple REASSIGNMENT
 (`d1b05be`, already working) and tuple ELEMENT reads are unaffected.
+
+**Resolution (`834927e`, 2026-08-10).** Added a `SymbolValue` branch
+to `buildTupleLocalDeclaration` mirroring `buildTupleStoreValue`'s
+acceptance logic, emitted as a plain C declaration-with-initializer.
+Verified the repro, a 3-element tuple, and a mixed-type `(int, str)`
+tuple; reassignment and element reads unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 

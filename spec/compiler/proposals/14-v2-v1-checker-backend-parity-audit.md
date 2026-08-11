@@ -310,7 +310,7 @@ small source reproduction before it moves to the issue tracker.
 | Reassign a whole fixed-array local | `buildArrayStoreValue`, `stores.go` | **RESOLVED** (`aef808e`, local/literal via `memcpy`; a call value stays deferred) |
 | Reassign a whole struct local | `buildStructStoreValue`, `stores.go` | **RESOLVED** (`9df0351`/`5ef060a`, local/literal/call value all supported) |
 | Reassign a `str` local from another string value | `buildStrStoreValue` accepts only a string literal | **Confirmed partial** |
-| Initialize a tuple local from another tuple value | `buildTupleLocalDeclaration` rejects `SymbolValue`; it also rejects a real `TupleCoerce` | **Confirmed absent source shapes** |
+| Initialize a tuple local from another tuple value | **RESOLVED for `SymbolValue` (`834927e`, 2026-08-10)** — `let second (int, int) = first;` now works, verified for 3-element and mixed-type tuples, causation-checked. `TupleCoerce` still separately rejected (a distinct gap, tracked on its own row below) | — |
 | Initialize an array local from another array value | `buildArrayLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
 | Initialize a struct local from another struct value | `buildStructLocalDeclaration` rejects a plain struct `SymbolValue` | **Confirmed absent source shape** |
 | Initialize an enum local from another enum value | `buildEnumLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
