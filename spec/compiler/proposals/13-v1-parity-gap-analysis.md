@@ -44,18 +44,78 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #52 (sizeof [N]Struct typedef collection gap) closed
-in `cf97cd3`. 20 P1s and P0s resolved this window: tasks #33-52. Two
-new, narrower follow-up gaps surfaced during verification and are
-NOT yet tracked as active items: (1) a bare `sizeof (T,U)` or `sizeof
-?T` with no array wrapper and no other reference anywhere still fails
-— `collectTupleTypesWalk`/`collectOptionalTypesWalk` have no
-SizeofType case at all for a non-array TypeArg, confirmed via `sizeof
-(int,int)` reproducing `error: use of undeclared identifier
-'pebble_tuple_23_t'`; (2) `sizeof [N]EnumType` hits a separate,
-apparently intentional rejection ("enum-typed array elements are not
-supported yet"), not investigated further. Next up: #53, narrow
-checked-arithmetic invalid helper names.)*
+**Item: a narrow-width (u8/u16/i8/i16/u32/uint) checked arithmetic
+binary expression emits a call to a nonexistent, empty-suffix runtime
+helper instead of a clean rejection.**
+
+Sourced from proposal 14's integer runtime coverage matrix (`Narrow
+checked arithmetic`, line 76), P1. Independently reproduced and
+root-caused before dispatch. Small, narrow fix — one missing guard,
+matching a pattern the sibling shift-helper function already has.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    var a u8 = 200;
+    var b u8 = 100;
+    var c u8 = a + b;
+    return c as int;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the C COMPILER stage (not
+Pebble's own emission): `error: call to undeclared function
+'pebble_rt_checked_add_'` — note the TRAILING UNDERSCORE with no
+suffix at all.
+
+**Root cause.** `checkedArithmeticHelper`
+(`compiler/internal/backend/operators.go:96-116`) builds the helper
+name as `base + "_" + checkedSuffix(width)` UNCONDITIONALLY and always
+returns `ok=true` (except for an unmapped operator). `checkedSuffix`
+(`operators.go:236-248`) returns `""` for any width it doesn't
+recognize (u8, u16, i8, i16, u32, uint — everything except
+int/i32/i64/u64), so a narrow-width add/sub/mul/div/mod silently
+produces `pebble_rt_checked_add_` (empty suffix) instead of being
+rejected. The caller in `values.go:1967-1970` (`buildExpr`'s
+`CheckedArithmetic` case) DOES correctly check the returned `ok` and
+reject cleanly — but since `checkedArithmeticHelper` always reports
+`ok=true`, that check never fires for this shape. The sibling
+`checkedShiftHelper` (`operators.go:118-140`) already has the correct
+pattern: it computes its own suffix via `checkedShiftSuffix`, checks
+`if suffix == "" { return "", false }`, and only then builds the
+helper name — `checkedArithmeticHelper` is simply missing this same
+guard.
+
+**Note: the compound-assignment path (`a += b`) is NOT affected** —
+`buildCompoundIntegerCore` (`compiler/internal/backend/stores.go:996-1009`)
+has its own EARLIER explicit `checkedSuffix(placeWidth) == ""` guard
+before it ever calls `checkedArithmeticHelper` (whose own `ok` it then
+discards with `_` — safe, since the guard already filtered the empty
+case), so `a += b` at u8 already rejects cleanly today with a
+Pebble-level error, not a `cc` failure. Confirm this yourself before
+assuming it needs fixing too — only the PLAIN BINARY EXPRESSION path
+(`a + b`, not `a += b`) has the bug.
+
+**Scope:** add the same empty-suffix guard to
+`checkedArithmeticHelper` that `checkedShiftHelper` already has:
+compute `checkedSuffix(width)` into a local, check if it's empty, and
+return `("", false)` before building the helper name. Verify: the
+reproduction above now rejects CLEANLY (a Pebble-level emission error,
+not a `cc` failure) — check the exact error message text produced and
+confirm it's informative, adjusting only if the existing generic
+`values.go:1969` error message needs it (it currently reads
+reasonably already: "want +, -, *, /, or %% (at u64, only +, -, and *
+have a checked runtime helper)" — this may need a small wording
+addition since narrow widths are now ALSO excluded, not just some u64
+operators; use your judgment on whether the message needs updating).
+Verify the existing i32/i64/u64 (add/sub/mul) and i32/i64 (div/mod)
+checked arithmetic paths are completely unaffected. Verify the
+compound-assignment path (`a += b` at u8) is unaffected (still
+rejects with its own existing, different, already-correct message).
+Verify checked shift, checked negation, and float-to-integer
+conversion (separate helper functions, not touched by this fix) are
+unaffected.
 
 <!-- Previous item, resolved 2026-08-11:
 
