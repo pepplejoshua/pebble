@@ -44,6 +44,21 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #52 (sizeof [N]Struct typedef collection gap) closed
+in `cf97cd3`. 20 P1s and P0s resolved this window: tasks #33-52. Two
+new, narrower follow-up gaps surfaced during verification and are
+NOT yet tracked as active items: (1) a bare `sizeof (T,U)` or `sizeof
+?T` with no array wrapper and no other reference anywhere still fails
+— `collectTupleTypesWalk`/`collectOptionalTypesWalk` have no
+SizeofType case at all for a non-array TypeArg, confirmed via `sizeof
+(int,int)` reproducing `error: use of undeclared identifier
+'pebble_tuple_23_t'`; (2) `sizeof [N]EnumType` hits a separate,
+apparently intentional rejection ("enum-typed array elements are not
+supported yet"), not investigated further. Next up: #53, narrow
+checked-arithmetic invalid helper names.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: `sizeof [N]Struct` emits the array typedef before its struct
 element typedef exists — actually a missing-collection gap, not an
 ordering gap.**
@@ -105,6 +120,30 @@ element is a TUPLE, OPTIONAL, or ENUM type under `sizeof [N]T` (e.g.
 in the report; if fixing it requires meaningfully more work than the
 struct case, leave it out and document it as a separate follow-up
 rather than silently expanding this task.
+
+**Resolution (`cf97cd3`, 2026-08-11).** Confirmed as a
+missing-collection bug, not an ordering bug, exactly as hypothesized.
+Added a `SizeofType`-with-array-`TypeArg` case to
+`collectStructTypesWalk`, and — since the identical shape was
+confirmed to affect tuple and optional array elements too, and was
+trivially fixable alongside — the same case to
+`collectTupleTypesWalk` and `collectOptionalTypesWalk`. An
+enum-element array under `sizeof` hits a separate, pre-existing,
+apparently intentional rejection ("enum-typed array elements are not
+supported yet") and was correctly left alone. A bare `sizeof (T,U)`/
+`sizeof ?T` with no array wrapper is a broader, separate, still-open
+gap (those two walks have no `SizeofType` case at all for a
+non-array `TypeArg`) — independently spot-checked and confirmed real,
+noted above as a follow-up, not folded into this fix. Verified: the
+reproduction returns 16; `sizeof [2](int,int)` and `sizeof [2]?int`
+both now work, also returning 16; the emitted C was inspected
+directly and confirmed the struct typedef is placed before the array
+typedef that references it; `sizeof Point` (bare, no array) and
+`sizeof [3]int` (array of a primitive) are unaffected. Full suite
+(`go test ./... -count=1 -timeout 600s -parallel 16`, 11 packages)
+clean, `gofmt`/`go vet` clean, causation check confirmed reverting
+reproduces the exact original `cc` failure.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
