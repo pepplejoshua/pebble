@@ -93,7 +93,7 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Pebble function declaration with parameters, result, body, and hidden context | `checker.c` function passes; `codegen.c` prototypes and bodies | `FunctionDeclaration`, reachability walk, helper prototypes, definitions, and context actions | **Verified** (`0f15fd0`) for a representative parameter/result matrix, including the hidden-context threading confirmed via an emitted-C shape check |
 | Direct and mutual helper recursion | V1 emits prototypes before bodies | V2 emits helper prototypes and has direct and mutual recursion run tests near `emit_test.go:6155` | **Verified** |
 | A recursion cycle through `main` | V1 gives the source entry an internal callable symbol and emits prototypes | V2 rejects any call to `main`; the entry is not an ordinary helper | **Intentional difference**, decided 2026-08-09 |
-| Extern C function | V1 emits `extern` declarations and calls the registered C name | V2 validates C signatures and emits extern calls | **Implemented, proof needed** for all accepted parameter/result types |
+| Extern C function | V1 emits `extern` declarations and calls the registered C name | V2 validates C signatures and emits extern calls | **Verified** (`5956816`) — real-libc (putchar, memcpy) and shim-linked signatures across bool/char/u8/i16/u64/f32/mixed-multi-param/void-result families |
 | Library-named extern block | V1 stores and emits the library name as a C comment/declaration group | V2 accepts a named block and emits/calls its declarations | **Verified** with `extern "C" { fn abs(...) }` compile-link-run |
 | Opaque extern type | V1 resolves and emits an incomplete C type | V2 emits an incomplete C type and permits supported pointer use | **Verified** with real `tmpfile`/`fclose` compile-link-run |
 | Extern variable and extern constant | `codegen.c:509-620` emits C data declarations | V2 emits real-name `extern` data declarations and supports reads/writes | **Resolved (`1372734`)** |
@@ -151,8 +151,9 @@ the Allocator/Context and generic-Result failures no longer appear.
 | Boolean literal | V2 supports it | **Verified** in conditions, print, calls, and aggregates |
 | Character literal | V2 stores a Unicode scalar and uses integer C storage | **Verified** |
 | String literal | V1 is a NUL-terminated C pointer; V2 is `PebbleStr {data,len}` | **Intentional ABI and semantic difference** |
-| `nil` pointer | V2 `NilPointer` | **Implemented, proof needed** by pointer type |
+| `nil` pointer | V2 `NilPointer` | **Verified** (`5956816`) across *i32/*u8/*u64/*bool/*char/*void/*Point/*FILE pointees, both comparison directions, a nil-check branch, a helper parameter, and a nil-to-nil copy. NEW FINDING (tracked separately): a nil pointer whose pointee is a plain enum or tagged union never otherwise referenced as a value fails to compile — see the "enum/union pointer-pointee typedef collection" row below |
 | `none` and `some value` | V2 optional nodes | **Partial** by payload shape |
+| Enum/union pointer-pointee typedef collection | n/a | `*EnumType`/`*UnionType` nil pointer whose pointee type is never otherwise used as a value | **New gap** (found during batch H, `5956816`): `collectEnumTypesWalk`/`collectUnionTypesWalk` lack the pointer-pointee collection rule `collectStructTypesWalk` already has (`collect.go:1129-1139`), so the emitted C references `pebble_enum_N_t`/`pebble_union_N_t` with no typedef collected, and `cc` fails "unknown type name" under `-Werror`. Repro: `type Color = enum { red, green, blue }; fn main() int { var pe *Color = nil; ... }`. Fix: mirror the struct-pointee rule in both walks |
 | Context expression | V1 and V2 expose the hidden allocator/context value | **Resolved.** The `Allocator`/`Context` ordinary-struct redesign (proposal 15) is fully complete — all 4 slices, `context` working in every value position (argument, return, local initializer, struct-field construction/assignment). |
 | Identifier, module member, partial member | V2 symbol and member value paths | **Partial** by declaration category |
 | Grouped expression | Parser-only grouping in both compilers | **Verified** by construction; no backend behavior |
@@ -211,7 +212,7 @@ in `checker.c:2437-2529`. V2 classification is in
 | Array literal element conversion | implicit for equal length | no general structural conversion class | **Partial/absent**; isolate by destination shape |
 | Struct literal field conversion | implicit for equal field count and matching names | no structural struct conversion class | **Absent** |
 | Explicit structural struct prefix cast | source prefix can cast to a smaller destination struct | forbidden | **Absent** unless nominal-only conversion is accepted |
-| `none` to any optional | implicit | contextual optional construction | **Implemented, proof needed** |
+| `none` to any optional | implicit | contextual optional construction | **Verified** (`5956816`) — none-initialized ?i32/?bool/?*int/?Point all read `has_value == false`; some-constructed counterparts read `has_value == true` with scalar unwrap round-trip |
 | `some S` to optional `T` with payload conversion | implicit for a literal `some` | optional injection exists, but payload and backend shapes are limited | **Partial** |
 | Single-field struct literal to matching union variant | implicit | V2 uses explicit `VariantConstruct` syntax/facts | **Intentional representation difference** for tagged unions; untagged union is undecided |
 
