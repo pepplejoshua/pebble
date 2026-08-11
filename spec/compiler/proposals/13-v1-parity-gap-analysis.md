@@ -44,17 +44,70 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #85 (char/str tuple ordinal reads) closed in `bd84ee9`.
-This is gap #3 of the "up to 5" additional gaps chased this session
-(#84, #85, plus the `f64`-as-aggregate-member investigation that
-spun off #86 as a deliberately deferred, separately-scoped item — not
-counted toward the 5, since it wasn't fixed). A further adjacent gap
-was discovered but correctly left alone: `str` tuple-ordinal reads in
-a str VALUE position (e.g. a call argument, not a local declaration)
-still reject via `buildStrOperand`'s `FieldPlace`-only `Load` case —
-noted for a future item, not yet formal. Two of the "up to 5" slots
-remain if anything else surfaces before moving to the "Implemented,
-proof needed" phase.)*
+*(empty — item #91 (enum/union pointer-pointee typedef collection)
+closed in `6c0af95`. All 8 proof batches from tracker 14's
+"Implemented, proof needed" phase are now complete, and this was the
+first fix in the consolidated gap-filling pass over everything those
+batches turned up: #87 (char-to-uint), #88 (narrow pointer-to-int,
+needs a design call), #89 (negative-MIN literal), #90 (void anonymous
+function C0607), #92 (struct call-result/field-read as
+argument/receiver), and #93 (bare string-literal arrow-body T0501)
+remain queued.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: nil pointer whose pointee is a plain enum or tagged union,
+never otherwise referenced as a value, failed to compile.**
+
+Reproduction:
+
+```
+type Color = enum { red, green, blue }
+fn main() int {
+    var pe *Color = nil;
+    if pe != nil { return 8; }
+    return 0;
+}
+```
+
+`Emit` succeeded but the emitted C declared
+`pebble_enum_19_t * pebble_local_31 = NULL;` with no
+`typedef ... pebble_enum_19_t;` anywhere, so `cc` failed "unknown type
+name" under `-Wall -Wextra -Werror`. Same break for a tagged-union
+pointee (`var pc *Choice = nil`) and for a helper parameter
+(`fn is_nil(p *Color) int { ... }` called as `is_nil(nil)`). Adding any
+unrelated value use of the enum/union elsewhere in the same program
+made it compile — the pre-existing value-shape collection rules were
+the only path to a typedef.
+
+Cause: `collectStructTypesWalk` in `internal/backend/collect.go` had a
+pointer-pointee collection rule (a pointer-typed `Initialize` child
+whose pointee is a struct); `collectEnumTypesWalk` and
+`collectUnionTypesWalk` lacked the mirror. Neither `collectEnumTypes`
+nor `collectUnionTypes` scanned a reachable helper's parameter list for
+a pointer-to-enum/union pointee either — a nil pointer argument
+constructs no value node, so only a signature-level scan finds it
+(`collectStructTypes` already had this scan; the enum/union callers
+didn't).
+
+**Resolution (`6c0af95`, 2026-08-11).** Added the mirrored
+pointer-pointee rule to both walks' `Initialize` handling and the
+mirrored Parameters scan to both callers. The enum pointee check uses
+`isDefinitelyEnumType` (requires real variant-declaration evidence)
+rather than the looser `isEnumType`, whose no-evidence fallback reports
+true for a declared-but-empty `TypeDeclaration` — including an opaque
+extern type like `FILE`; using the looser check regressed the
+pre-existing `TestEmitNilPointerAcrossPointeeTypesCompilesAndRuns`
+during development and was caught before landing. Two new tests prove
+the local and helper-parameter shapes for both enum and union pointees
+in isolation; a third proves the pre-existing passing shape (same type
+used as both a nil-pointer pointee and a real value elsewhere) still
+emits exactly one typedef per type, no duplicates from the two
+collection sites now firing together. Causation-checked: reverting
+`collect.go` alone reproduces both original cc failures exactly;
+restoring the fix passes again.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
