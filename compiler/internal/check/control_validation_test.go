@@ -790,6 +790,72 @@ fn fallsOff() void {
 	}
 }
 
+// TestValidateControlFlowRejectsUnboundRangeLoop verifies that a range loop
+// authored without the explicit `: name` iterator is rejected at the checker
+// with C0622, reported at the loop statement's own source span — the omission
+// must not slip through to the backend's rangeNode.Symbol == 0 guard three
+// compiler phases later.
+func TestValidateControlFlowRejectsUnboundRangeLoop(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
+fn main() int {
+    var total int = 0;
+    loop 0..3 {
+        total = total + 1;
+    }
+    return total;
+}
+`)})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.GenerationHadErrors {
+		t.Fatalf("06a reported errors: %+v", diagnostics.Items())
+	}
+	records, ok := resolveRecords(handoff, diagnostics, normalizeConfig(Config{}))
+	if !ok {
+		t.Fatalf("records did not resolve: %+v", diagnostics.Items())
+	}
+	if validateControlFlow(handoff, records, diagnostics, Config{}) {
+		t.Fatalf("unbound range loop accepted: %+v", diagnostics.Items())
+	}
+	found := false
+	for _, item := range diagnostics.Items() {
+		if item.Code != CodeUnboundRangeIterator {
+			continue
+		}
+		found = true
+		if item.Severity != diagnostic.Error {
+			t.Fatalf("C0622 is not an error: %+v", item)
+		}
+		file, ok := inputs.Sources.File(item.Primary.Span.Source)
+		if !ok {
+			t.Fatalf("C0622 primary span has no file: %+v", item)
+		}
+		if text := string(file.Slice(item.Primary.Span)); text != "loop 0..3 {\n        total = total + 1;\n    }" {
+			t.Fatalf("C0622 primary span = %q, want the loop statement itself", text)
+		}
+	}
+	if !found {
+		t.Fatalf("no C0622 emitted: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowAcceptsBoundRangeLoop verifies that the bound form
+// (`loop start..end : name { ... }`) is completely unaffected and passes the
+// control-flow validation pass cleanly with no C0622.
+func TestValidateControlFlowAcceptsBoundRangeLoop(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn main() int {
+    var total int = 0;
+    loop 0..3 : i {
+        total = total + 1;
+    }
+    return total;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeUnboundRangeIterator) {
+		t.Fatalf("bound range loop rejected: valid=%v diagnostics=%+v", valid, diagnostics.Items())
+	}
+}
+
 func TestValidateControlFlowUnreachableWarningIsNotDuplicated(t *testing.T) {
 	diagnostics, valid := validateControlFixture(t, `
 fn unreachable() void {

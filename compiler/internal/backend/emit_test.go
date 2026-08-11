@@ -2071,6 +2071,61 @@ func buildTopLevelBreakUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.Sy
 	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{init, brk, ret})
 }
 
+// buildUnboundRangeLoopUnit hand-builds a unit whose i32 entry body is an
+// unbound RangeLoop (Symbol zero — the `loop start..end { ... }` form with no
+// `: name`) followed by the final Return. Real source can no longer produce
+// this shape: the checker rejects the unbound form with C0622 before IR
+// construction ever runs. But hand-built TIR can still carry one, and
+// buildRangeLoop's rangeNode.Symbol == 0 guard must keep rejecting it cleanly
+// as defense-in-depth, the same way buildTopLevelBreakUnit exercises Emit's
+// own jump rejection after the checker's C0611 already closes the source path.
+// The type snapshot is borrowed from a checker-built fixture so every TypeID
+// the hand-built nodes reference is owned by the snapshot.
+func buildUnboundRangeLoopUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+	t.Helper()
+	_, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { return 0; }", "main", false)
+	builder := tir.NewBuilder(snapshot, tir.Config{})
+	i32 := snapshot.Builtins().I32
+
+	region, err := builder.AddRegion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBlock, err := builder.AddNode(tir.Node{
+		Kind:     tir.Block,
+		Region:   region,
+		Children: nil,
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rangeNode, err := builder.AddNode(tir.Node{
+		Kind:     tir.RangeLoop,
+		Region:   region,
+		Symbol:   0,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "0"), addI32Literal(t, builder, i32, "3"), bodyBlock},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid, err := builder.ReserveFunctionDecl(tir.FunctionDecl{Symbol: entryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, err := builder.AddNode(tir.Node{
+		Kind:     tir.Return,
+		Function: fid,
+		Children: []tir.NodeID{addI32Literal(t, builder, i32, "0")},
+		Span:     source.NewSpan(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildStatementsInBodyUnit(t, builder, snapshot, entryID, fid, []tir.NodeID{rangeNode, ret})
+}
+
 // 10.24 — tuple- and struct-typed function parameters
 
 // 10.21 — optional values

@@ -12,6 +12,12 @@ const (
 	CodeMissingReturn diagnostic.Code = "C0607"
 	CodeStatementForm diagnostic.Code = "C0612"
 	CodeUnreachable   diagnostic.Code = "C0618"
+	// CodeUnboundRangeIterator rejects a range loop authored without the
+	// explicit `: name` iterator (`loop start..end { ... }`). V2 requires
+	// the bound form by policy (unlike V1, which synthesizes an implicit
+	// name), so the checker enforces it here at the loop's own span instead
+	// of leaving the omission for the backend's rangeNode.Symbol == 0 guard.
+	CodeUnboundRangeIterator diagnostic.Code = "C0622"
 )
 
 // switchIsExhaustive determines whether an else-less controlSwitch is

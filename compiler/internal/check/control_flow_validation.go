@@ -290,6 +290,9 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			}
 			return result
 		case controlWhile, controlFor, controlRangeLoop:
+			if ctrl.Kind == controlRangeLoop && ctrl.IteratorSymbol == 0 {
+				report(ctrl, CodeUnboundRangeIterator, diagnostic.Error, "a range loop requires an explicit iterator name (`loop start..end : name { ... }`)")
+			}
 			var body []controlExit
 			for _, child := range ctrl.Composition {
 				if child.Role == roleBody {

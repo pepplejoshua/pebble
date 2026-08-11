@@ -230,12 +230,14 @@ func TestEmitRejectsBreakAsTopLevelLeadingStatement(t *testing.T) {
 func TestEmitRejectsUnboundRangeLoop(t *testing.T) {
 	t.Parallel()
 	// The unbound form (`loop start..end { ... }`, no `: name`) builds a
-	// RangeLoop whose Symbol field is zero (confirmed against a real fixture
-	// dump — nothing attaches an iterator), and there is no way to observe
+	// RangeLoop whose Symbol field is zero, and there is no way to observe
 	// such a loop's iteration count from inside the body, so it is rejected
 	// cleanly rather than lowered with a synthetic counter the source never
-	// names.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 { sum = sum + 1; } return sum; }", "main", false)
+	// names. The checker now rejects the unbound form from real source with
+	// C0622 before IR construction, so this hand-builds the unit directly
+	// through the IR builder to keep exercising buildRangeLoop's own
+	// rangeNode.Symbol == 0 guard as defense-in-depth for hand-built TIR.
+	unit, snapshot, entryID := buildUnboundRangeLoopUnit(t)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unbound range loop")
 }
 
