@@ -2511,6 +2511,186 @@ fn apply(f fn(int) int, x int) int { return f(x); }
 fn main() int { return apply(helper, 41); }`, false, 42, false)
 }
 
+// --- proposal 14 audit: import/qualified paths, instance-method shapes, nested generic calls ---
+
+// emitAndRunProvider is emitAndRun for a multi-file module fixture: it builds
+// the module graph from the provider map, checks it, emits the C for the
+// "main" entry, compiles, links against the runtime, and runs it expecting
+// wantCode. This is the full pipeline proof — the source must pass the checker
+// (module builder + symbol resolution + inference) AND the backend must emit C
+// that cc accepts under -Wall -Wextra -Werror and runs to the right exit code.
+func emitAndRunProvider(t *testing.T, provider fixtureProvider, wantCode int) {
+	t.Helper()
+	sources := source.NewFileSet()
+	diagnostics := diagnostic.NewDiagnosticSet()
+	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
+	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+	store, err := types.New(types.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+	if !result.Successful() {
+		t.Fatalf("check failed: %+v", diagnostics.Items())
+	}
+	unit := result.IR()
+	if unit == nil {
+		t.Fatal("check succeeded without an IR unit")
+	}
+	var entryID symbol.SymbolID
+	for _, candidate := range resolution.Symbols.All() {
+		if candidate.Name == "main" {
+			entryID = candidate.ID
+		}
+	}
+	if entryID == 0 {
+		t.Fatal("missing symbol \"main\"")
+	}
+	var buf bytes.Buffer
+	if err := Emit(unit, unit.Snapshot(), entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), wantCode, false)
+}
+
+// TestEmitImportedQualifiedValueFunctionTypePathsCompileAndRuns is the focused
+// proof for proposal 14's "Import and qualified module value/function/type
+// paths — Implemented, proof needed by symbol category" row. One imported
+// module (lib.peb) declares every symbol category — a mutable module-level
+// value (`var counter`), an immutable module-level value (`let constant`), a
+// non-generic function (`mk`), a generic function (`identity`), a plain struct
+// type (`Point`), and a two-level generic struct type (`Outer[T]` containing a
+// `Wrap[T]` field) — and the root module resolves EACH category through a
+// qualified `lib::` path: the mutable value is read, written through
+// (`lib::counter = lib::counter + 1`), and read back, proving the write landed
+// in the module's real shared storage rather than a copy (base=40, after=41);
+// the immutable value is read (`lib::constant`); a typed binding names the
+// imported struct type explicitly (`let p lib::Point`); construction uses the
+// qualified generic type names (`lib::Outer[int].{ wrap = lib::Wrap[int].{ ... } }`);
+// the non-generic imported function is called (`lib::mk()`); and the generic
+// imported function is called with a NESTED qualified type argument
+// (`lib::identity[lib::Outer[int]](o)`). The imported Point's method `sum` is
+// also invoked through the qualified-constructed value. Exit code 124 =
+// 40 + 41 + 30 + 5 + 6 + 2.
+func TestEmitImportedQualifiedValueFunctionTypePathsCompileAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRunProvider(t, fixtureProvider{
+		"main.peb": []byte(`import "./lib";
+fn main() int {
+    let base int = lib::counter;
+    lib::counter = lib::counter + 1;
+    let after int = lib::counter;
+    let p lib::Point = lib::Point.{ x = 10, y = 20 };
+    let q = lib::mk();
+    let o lib::Outer[int] = lib::Outer[int].{ wrap = lib::Wrap[int].{ inner = 6 } };
+    let o2 lib::Outer[int] = lib::identity[lib::Outer[int]](o);
+    return base + after + p.sum() + q + o2.read() + lib::constant;
+}`),
+		"lib.peb": []byte(`var counter int = 40;
+let constant int = 2;
+type Point = struct { x int; y int; fn sum(self Point) int => self.x + self.y; };
+type Wrap[T] = struct { inner T; };
+type Outer[T] = struct { wrap Wrap[T]; fn read(self Outer[T]) T => self.wrap.inner; };
+fn mk() int { return 5; }
+fn identity[T](x T) T { return x; }`),
+	}, 124)
+}
+
+// TestEmitInstanceMethodOwnerAndArgumentShapeMatrixCompilesAndRuns is the
+// focused proof for proposal 14's "Instance method — Implemented, proof needed
+// for all owner/value shapes" row. One program exercises a representative
+// spread (not a full cross-product) of OWNER shapes — a plain struct value
+// receiver (p.add), a plain struct pointer receiver (c.inc), a generic struct
+// instance with a value receiver (b.get), and a generic struct instance with a
+// pointer receiver (bp.bump) — and ARGUMENT shapes: a local reference (d), a
+// call result (mk()), and a literal (3), plus a method result (g = b.get())
+// reused as another method's argument (bp.bump(g)). Every sub-expression's
+// contribution is summed so a wrong, misplaced, or dropped argument or a
+// mis-dispatched receiver fails the exit code: p.add(d) + p.add(mk()) +
+// p.add(3) = 108, c.inc() twice then c.read() = 42, bp.bump(g) = 1; total 151.
+func TestEmitInstanceMethodOwnerAndArgumentShapeMatrixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Point = struct { x int; fn add(self Point, delta int) int => self.x + delta; };
+type Counter = struct { n int; fn inc(self *Counter) void { self.n = self.n + 1; } fn read(self Counter) int => self.n; };
+type Box[T] = struct { value T; fn get(self Box[T]) T => self.value; fn bump(self *Box[T], k T) T { self.value = k; return self.value; } };
+fn mk() int { return 100; }
+fn main() int {
+    let p Point = Point.{ x = 1 };
+    let d int = 2;
+    let sum_add = p.add(d) + p.add(mk()) + p.add(3);
+    var c Counter = Counter.{ n = 40 };
+    c.inc();
+    c.inc();
+    let b Box[int] = Box[int].{ value = 1 };
+    let g = b.get();
+    var bp Box[int] = Box[int].{ value = 0 };
+    let r = bp.bump(g);
+    return sum_add + c.read() + r;
+}`, false, 151, false)
+}
+
+// TestEmitNestedGenericTypeArgumentCallCompilesAndRuns is the focused proof for
+// proposal 14's "Generic call — V2 specializes named generic functions — proof
+// needed for nested type arguments" row. The same generic function identity[T]
+// is specialized at THREE nested type arguments in one program: Outer[int],
+// Outer[bool] (a generic struct instantiation as the type argument), and
+// Top[int] (a THREE-level nest Outer-free: Top[int] -> Mid[int] -> Deep[int]).
+// pair[A, B] additionally carries a nested generic type argument in its SECOND
+// position. Each call returns its whole nested aggregate value, so each
+// specialization must thread the nested type argument through to the concrete
+// field types or the .peek()/.read() reads dispatch to the wrong specialization
+// and the exit code breaks: rb.peek() gates on Outer[bool]'s true, and the
+// returned value is 5 + 7 + 5 = 17.
+func TestEmitNestedGenericTypeArgumentCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Inner[T] = struct { val T; };
+type Outer[K] = struct { inner Inner[K]; fn peek(self Outer[K]) K => self.inner.val; };
+type Deep[A] = struct { a A; };
+type Mid[B] = struct { d Deep[B]; };
+type Top[C] = struct { m Mid[C]; fn read(self Top[C]) C => self.m.d.a; };
+fn identity[T](x T) T { return x; }
+fn pair[A, B](x A, y B) B { return y; }
+fn main() int {
+    let oi Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } };
+    let ob Outer[bool] = Outer[bool].{ inner = Inner[bool].{ val = true } };
+    let ri Outer[int] = identity[Outer[int]](oi);
+    let rb Outer[bool] = identity[Outer[bool]](ob);
+    let t Top[int] = Top[int].{ m = Mid[int].{ d = Deep[int].{ a = 7 } } };
+    let three Top[int] = identity[Top[int]](t);
+    let paired Outer[int] = pair[int, Outer[int]](1, oi);
+    if rb.peek() { return ri.peek() + three.read() + paired.peek(); } else { return 0; }
+}`, false, 17, false)
+}
+
+// TestEmitNestedGenericTypeArgumentCallWritesC pins the emitted-C shape for the
+// nested-specialization proof: every identity[<nested>] / pair[..., <nested>]
+// specialization's helper must carry the fully concrete substituted signature
+// — never a residual "type-parameter(...)" anywhere in the output — so the
+// nested type argument really threaded through specialization rather than
+// leaking a symbolic parameter into the C.
+func TestEmitNestedGenericTypeArgumentCallWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `type Inner[T] = struct { val T; };
+type Outer[K] = struct { inner Inner[K]; fn peek(self Outer[K]) K => self.inner.val; };
+fn identity[T](x T) T { return x; }
+fn pair[A, B](x A, y B) B { return y; }
+fn main() int {
+    let oi Outer[int] = Outer[int].{ inner = Inner[int].{ val = 5 } };
+    let ri Outer[int] = identity[Outer[int]](oi);
+    let paired Outer[int] = pair[int, Outer[int]](1, oi);
+    return ri.peek() + paired.peek();
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "type-parameter") {
+		t.Errorf("emitted C still carries an unsubstituted type parameter in a nested type argument:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 10, false)
+}
+
 // TestEmitContextForwardingIndirectCallWritesC pins the emitted C for the
 // indirect boundary: apply's body calls through the function-typed parameter
 // as callee(ctx, arg) — the same `(ctx` threading a direct call gets — helper's
