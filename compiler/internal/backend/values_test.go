@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1327,6 +1328,128 @@ fn main() int {
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
+// TestEmitNilPointerEnumPointeeAloneCompilesAndRuns is the focused proof for
+// the enum half of the pointer-pointee typedef-collection gap: a nil *Color
+// local and a nil *Color helper parameter, with NO other use of the Color type
+// anywhere in the program (no variant literal, construction, cast, or
+// sizeof). Before the fix Emit succeeded but the emitted C declared
+// `pebble_enum_19_t * pebble_local_31 = NULL;` with no `typedef ...
+// pebble_enum_19_t;` anywhere, so cc failed "use of undeclared identifier
+// 'pebble_enum_19_t'" under the mandatory -Wall -Wextra -Werror build. The
+// typedef is now collected from both new pointer-pointee rules: the
+// Initialize child rule in collectEnumTypesWalk and the Parameters rule in
+// collectEnumTypes, each mirroring collectStructTypesWalk's struct-pointee
+// rule. The nil-checks never fire, so the program must exit 0.
+func TestEmitNilPointerEnumPointeeAloneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Color = enum { red, green, blue };
+fn is_nil(p *Color) int {
+    if p == nil { return 1; }
+    return 0;
+}
+fn main() int {
+    var pe *Color = nil;
+    if pe != nil { return 1; }
+    if is_nil(nil) != 1 { return 2; }
+    if is_nil(pe) != 1 { return 3; }
+    return 0;
+}`, false, 0, false)
+}
+
+// TestEmitNilPointerUnionPointeeAloneCompilesAndRuns is the union-half twin of
+// TestEmitNilPointerEnumPointeeAloneCompilesAndRuns: a nil *Choice local and a
+// nil *Choice helper parameter for a tagged union with a payload-carrying
+// variant, with NO other use of the Choice type anywhere in the program. Before
+// the fix the emitted C declared `pebble_union_19_t * pebble_local_30 = NULL;`
+// with no `typedef ... pebble_union_19_t;` (its tag-enum/struct typedef pair)
+// anywhere, so cc failed "use of undeclared identifier 'pebble_union_19_t'".
+// The union typedef pair is now collected from both new pointer-pointee rules:
+// the Initialize child rule in collectUnionTypesWalk and the Parameters rule in
+// collectUnionTypes, each appending the union TypeID bare (no payload
+// information exists at either site, mirroring the SizeofType case). The
+// nil-checks never fire, so the program must exit 0.
+func TestEmitNilPointerUnionPointeeAloneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Choice = union enum { empty void; value int; };
+fn is_nil(p *Choice) int {
+    if p == nil { return 1; }
+    return 0;
+}
+fn main() int {
+    var pc *Choice = nil;
+    if pc != nil { return 1; }
+    if is_nil(nil) != 1 { return 2; }
+    if is_nil(pc) != 1 { return 3; }
+    return 0;
+}`, false, 0, false)
+}
+
+// TestEmitNilPointerEnumUnionPointeeWithValueUseKeepsSingleTypedef proves the
+// pre-existing passing shape still works with no regression and no duplicate
+// typedef emission: the same enum and union are used BOTH as nil-pointer
+// pointees (local + helper parameter) AND as values (a variant literal local
+// and a payload-carrying construction + switch), so both collection paths fire
+// for each type. Each typedef must appear exactly once in the emitted C — the
+// per-type dedup in collectEnumTypes/collectUnionTypes collapses the two
+// collection sites — and the program must still compile, link, and run (exit
+// 0). The regexes count the typedef-closing lines, the same structural proof
+// typedefs_test.go uses.
+func TestEmitNilPointerEnumUnionPointeeWithValueUseKeepsSingleTypedef(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `type Color = enum { red, green, blue };
+type Choice = union enum { empty void; value int; };
+fn is_nil_color(p *Color) int {
+    if p == nil { return 1; }
+    return 0;
+}
+fn is_nil_choice(p *Choice) int {
+    if p == nil { return 1; }
+    return 0;
+}
+fn main() int {
+    var pe *Color = nil;
+    if pe != nil { return 1; }
+    var pc *Choice = nil;
+    if pc != nil { return 2; }
+    var c Color = Color.red;
+    if c != Color.red { return 3; }
+    var ch Choice = Choice.value(5);
+    switch ch { case Choice.empty: return 4; case Choice.value: break; }
+    if is_nil_color(nil) != 1 { return 5; }
+    if is_nil_choice(nil) != 1 { return 6; }
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Two enum typedef closing lines are legitimate here — the plain Color
+	// enum's AND the Choice union's tag-enum discriminant (pebble_enum_<unionID>_t,
+	// the tag field of the union's tagged struct) — plus one union struct
+	// typedef closing line. Each must appear exactly once: the per-type dedup
+	// in collectEnumTypes/collectUnionTypes collapses the pointer-pointee and
+	// value-use collection sites, and a duplicate would be a regression of the
+	// two-source collection this fix adds.
+	enumClosings := regexp.MustCompile(`(?m)^} pebble_enum_\d+_t;$`).FindAllString(out, -1)
+	if len(enumClosings) != 2 {
+		t.Errorf("expected exactly two enum typedef closing lines (the plain enum and the union's tag enum), got %d:\n%s", len(enumClosings), out)
+	}
+	if got := len(regexp.MustCompile(`(?m)^} pebble_union_\d+_t;$`).FindAllString(out, -1)); got != 1 {
+		t.Errorf("expected exactly one tagged-union typedef closing line, got %d:\n%s", got, out)
+	}
+	counts := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^} (pebble_(?:enum|union)_\d+_t);$`).FindAllStringSubmatch(out, -1) {
+		counts[m[1]]++
+	}
+	for name, n := range counts {
+		if n != 1 {
+			t.Errorf("expected exactly one typedef for %s, got %d:\n%s", name, n, out)
+		}
 	}
 	compileAndRun(t, buf.Bytes(), 0, false)
 }

@@ -1202,6 +1202,26 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 		if err := collectEnumTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
 			return nil, err
 		}
+		// A reachable helper's own parameter list is a source of enum types
+		// the body walk cannot see: a POINTER-to-enum parameter (a nil *Color
+		// passed to `fn is_nil(p *Color)` references the enum type only through
+		// the helper's C signature — pebble_enum_<typeID>_t * — never through
+		// an Initialize or variant-shaped body node, since a nil pointer
+		// constructs no enum value), so the pointee's typedef must be
+		// discovered here too. This mirrors collectStructTypes' pointer-pointee
+		// Parameters rule exactly; like the walk's Initialize rule above, the
+		// pointee is recognized by the POSITIVE isDefinitelyEnumType test so
+		// an opaque extern pointee (a *FILE parameter) is never collected as
+		// an enum. A direct enum-typed parameter cannot reach emission (the
+		// enum-typed-local rule rejects it), so no plain parameter-Type scan
+		// is needed.
+		for _, param := range helper.decl.Parameters {
+			if isPointer(snapshot, param.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isDefinitelyEnumType(unit, snapshot, pointee) {
+					collected = append(collected, pointee)
+				}
+			}
+		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
 	var infos []enumInfo
@@ -1314,6 +1334,28 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 			if child, ok := unit.Node(childID); ok && isEnumType(unit, snapshot, child.Type) {
 				*out = append(*out, child.Type)
 			}
+			// A pointer-typed local whose pointee is an enum (`var pe *Color
+			// = nil;`) references the pointee's typedef in its own C
+			// declaration (`pebble_enum_<id>_t *`), even though the local's
+			// own Type is the pointer type, not the enum type — the direct
+			// isEnumType check above only ever fires on the child's own Type,
+			// never on a pointer to an enum, so without this mirror of
+			// collectStructTypesWalk's pointer-pointee rule the enum typedef
+			// is never collected and the emitted C names an undeclared type (a
+			// nil *Color local otherwise compiles only if the enum is also
+			// referenced as a value elsewhere in the program). The pointee is
+			// recognized by the POSITIVE isDefinitelyEnumType test, not the
+			// isEnumType the direct rule above uses: isEnumType's no-evidence
+			// fallback reports true for a Nominal with an empty TypeDeclaration
+			// (an opaque extern type like `extern { type FILE; }` pointed to by
+			// a nil local) and would wrongly collect it as an enum. The
+			// caller's tagged-union filter applies to the pointee the same way
+			// it does to the direct-enum rule above.
+			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isDefinitelyEnumType(unit, snapshot, pointee) {
+					*out = append(*out, pointee)
+				}
+			}
 		}
 	}
 	if node.Kind == tir.RecordConstruct {
@@ -1379,6 +1421,25 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		if err := collectUnionTypesWalk(unit, snapshot, width, helper.block, &collected, payloads); err != nil {
 			return nil, err
 		}
+		// A reachable helper's own parameter list is a source of union types
+		// the body walk cannot see: a POINTER-to-union parameter (a nil
+		// *Choice passed to `fn is_nil(p *Choice)` references the union type
+		// only through the helper's C signature — pebble_union_<typeID>_t * —
+		// never through a construction-shaped body node, since a nil pointer
+		// constructs no union value), so the pointee's typedef pair must be
+		// discovered here too. This mirrors collectStructTypes' pointer-pointee
+		// Parameters rule exactly; like the walk's own Initialize rule, it has
+		// no payload information to record, so the union TypeID is appended
+		// bare. A direct union-typed parameter cannot reach emission (the
+		// enum-typed-local rule rejects it), so no plain parameter-Type scan
+		// is needed.
+		for _, param := range helper.decl.Parameters {
+			if isPointer(snapshot, param.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isUnionEnumType(unit, snapshot, pointee) {
+					collected = append(collected, pointee)
+				}
+			}
+		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
 	var infos []unionInfo
@@ -1435,6 +1496,30 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 		// declaration-level isUnionEnumType test is what recognizes the type
 		// here — the construction-based isTaggedUnionType would miss it.
 		*out = append(*out, node.TypeArg)
+	}
+	if node.Kind == tir.Initialize {
+		// A pointer-typed local whose pointee is a tagged union (`var pc
+		// *Choice = nil;`) references the pointee's typedef in its own C
+		// declaration (`pebble_union_<typeID>_t *`), even though the local's
+		// own Type is the pointer type, not the union type. No other node in
+		// the program carries the type (a nil pointer constructs no value), so
+		// without this mirror of collectStructTypesWalk's pointer-pointee
+		// rule the union's typedef pair is never emitted and the declared C
+		// local names an undeclared type (a nil *Choice local otherwise
+		// compiles only if the union is also constructed as a value
+		// elsewhere). Like the SizeofType case above, this is a
+		// declaration-level reference with no payload information to record —
+		// the bare append mirrors how that case appends the union TypeID
+		// alone — and the declaration-level isUnionEnumType test is what
+		// recognizes the pointee, not the construction-based
+		// isTaggedUnionType.
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isUnionEnumType(unit, snapshot, pointee) {
+					*out = append(*out, pointee)
+				}
+			}
+		}
 	}
 	if node.Kind == tir.VariantConstruct && len(node.Children) >= 1 {
 		// A payload-carrying variant construction. node.Type is the union's
