@@ -1720,6 +1720,18 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			return "", fmt.Errorf("entry function body expression contains an integer literal with malformed text %q", text)
 		}
 		return integerLiteralText(text, width), nil
+	case tir.SizeofType:
+		// A bare `sizeof T` used as the operand of an integer cast
+		// (`(sizeof int) as int`). `sizeof T` is itself a uint-typed
+		// expression, so the whole value is delegated to buildUintExpr,
+		// whose SizeofType case resolves the C type name from the node's
+		// own TypeArg (sizeofCTypeName) and emits `sizeof(<type>)` — the
+		// exact same C a plain, uncast `sizeof T` used directly as a
+		// uint-typed value produces. That branch ignores the width
+		// parameter entirely (it sizes the type by its own C storage
+		// type, never the surrounding context's width), so delegating
+		// with this call's own width is safe.
+		return buildUintExpr(st, unit, snapshot, fileSet, id, locals, width)
 	case tir.IntegerCast:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains an IntegerCast with %d children, want exactly one", len(node.Children))

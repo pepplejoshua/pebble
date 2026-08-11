@@ -4249,6 +4249,48 @@ fn main() int {
 	}
 }
 
+func TestEmitSizeofCastToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A bare `sizeof T` directly cast to an integer (`(sizeof int) as
+	// int`). buildExpr's IntegerCast child builder had no SizeofType case,
+	// so this exact shape fell through to the default rejection; it now
+	// delegates to buildUintExpr exactly like a plain, uncast sizeof. int
+	// is int32_t in this backend, so sizeof(int) is 4.
+	emitAndRun(t, `fn main() int {
+    return (sizeof int) as int;
+}`, false, 4, false)
+}
+
+func TestEmitSizeofWiderTypeCastToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The same direct cast of a sizeof whose sized type is WIDER than the
+	// cast destination's own type: `(sizeof i64) as int`. sizeof is always
+	// a uint-typed expression regardless of what it sizes, so the cast
+	// child's width (uint) is independent of the sized type's C width; the
+	// delegation must emit sizeof(int64_t) and cast it down to int,
+	// returning 8.
+	emitAndRun(t, `fn main() int {
+    return (sizeof i64) as int;
+}`, false, 8, false)
+}
+
+func TestEmitSizeofStructCastToIntegerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A sizeof of a STRUCT type directly cast to an integer (`(sizeof
+	// Pair) as int`), mirroring the plain, uncast struct sizeof that
+	// buildUintExpr's SizeofType case already supports: the cast lowers to
+	// (int32_t)(sizeof(pebble_struct_<typeID>_t)), and the struct's own
+	// typedef must be collected even though it is only ever referenced by
+	// the sizeof. Pair (x int; y int;) is 4 + 4 = 8 bytes.
+	emitAndRun(t, `type Pair = struct {
+    x int;
+    y int;
+};
+fn main() int {
+    return (sizeof Pair) as int;
+}`, false, 8, false)
+}
+
 func TestEmitSizeofPlainEnumOnlyReferenceCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The tracker's exact repro shape: sizeof Color is the ONLY reference to
