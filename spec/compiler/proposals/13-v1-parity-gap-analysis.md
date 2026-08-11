@@ -44,11 +44,64 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — the descending-range zero-iteration P0 landed as `003141d`,
-and fixed the range-bound evaluation-order P0 as a confirmed byproduct
-— no separate dispatch was needed for that one. All three P0 items
-from Sol's fourth pass are now closed. Next: pick a P1 item from
-proposal 14's fourth-pass gap table.)*
+**Item: a non-literal bool switch subject emits an invalid native C
+`switch(bool)`, failing under the mandated `-Wswitch-bool -Werror`.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1. Independently reproduced and isolated before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn choose(flag bool) int {
+    switch flag {
+        case true: return 1;
+        else: return 0;
+    }
+}
+fn main() int {
+    return choose(true);
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the `cc` step:
+`error: switch condition has boolean value [-Werror,-Wswitch-bool]`.
+The checker accepts this program fine (bool switch exhaustiveness is
+already proven, per proposal 14's switch matrix) — this is purely a
+backend C-shape bug. (A separate-looking `-Wreturn-type` error only
+appeared in my FIRST reproduction attempt, which omitted the `else`
+clause — that's an artifact of my own incomplete test, not a real
+second bug; confirmed by re-testing with an explicit `else`, which
+isolates cleanly to just `-Wswitch-bool`.)
+
+**Known cause:** `buildSwitchStatement`
+(`compiler/internal/backend/statements.go`, around line 711) routes a
+bool-typed subject through `buildBoolExpr` into the SAME native-C-
+`switch(...)` lowering as int/uint/char subjects. C forbids/warns on
+switching directly on a `bool` expression under `-Wswitch-bool`. A
+str-typed subject already has its own dedicated lowering (an if/else
+chain via `buildStrSwitchStatement`, just fixed today for double-
+evaluation) precisely because C switch labels must be integer
+constants — bool needs similar special treatment, but the fix here is
+much smaller: bool's underlying value IS already an integer (0 or 1),
+so casting the subject expression to `int` before the native C switch
+(`switch ((int)pebble_local_25)`) is the standard, minimal C idiom
+that silences `-Wswitch-bool` without restructuring the lowering into
+an if/else chain at all.
+
+**Scope:** when the subject is bool-typed, wrap the built subject
+expression in an `(int)` cast (or `int32_t`, matching whatever this
+backend's existing int-cast convention is — check `cType`/similar) for
+JUST the C `switch (...)` header — the case labels themselves (`case
+1:`, `case 0:` or however `true`/`false` case constants are currently
+spelled) don't need to change, since a `switch(int)` still compares
+correctly against integer case labels. Verify the reproduction above
+now compiles and runs (returns 1). Also verify: a LITERAL bool subject
+(`switch true { ... }`) is unaffected (still works, was already
+covered by existing tests per the ledger's "Verified V2 extension"
+claim); a bool switch with both `case true`/`case false` (no `else`,
+exhaustive by construction) compiles and runs correctly; existing bool
+switch tests are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
