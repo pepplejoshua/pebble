@@ -5805,6 +5805,98 @@ fn main() i32 {
 	compileAndRun(t, buf.Bytes(), 20, false)
 }
 
+func TestEmitSliceStructFieldAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact reproduction from spec/compiler/proposals/13's active defect:
+	// a slice-typed struct field passed directly as a call argument
+	// (`sum(h.values)`). The argument is a Load of a FieldPlace naming the
+	// slice field (the same Load(FieldPlace) shape a slice field read in any
+	// other value position uses), which buildSliceArgument now emits as the
+	// field-projection lvalue buildPlaceLValue produces,
+	// `pebble_local_<h>.pebble_field_<values>`, passed by value directly — the
+	// slice's own typedef makes the whole-struct copy trivially valid C. Sum of
+	// [1, 2, 3] is 6.
+	emitAndRun(t, `type Holder = struct { values []int; };
+fn sum(v []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < v.len {
+        total = total + v[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var h Holder = Holder.{ values = arr[0:3] };
+    return sum(h.values);
+}`, false, 6, false)
+}
+
+func TestEmitNestedSliceStructFieldAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice field one level deeper than the base repro: `sum(o.inner.values)`
+	// reads a slice field of a struct field, whose FieldPlace chain
+	// (`inner.values` over the `o.inner` struct) resolves through the same
+	// buildPlaceLValue recursion to `pebble_local_<o>.pebble_field_<inner>
+	// .pebble_field_<values>`. Sum of [1, 2, 3] is 6.
+	emitAndRun(t, `type Inner = struct { values []int; };
+type Outer = struct { inner Inner; };
+fn sum(v []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < v.len {
+        total = total + v[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var s []int = arr[0:3];
+    var inn Inner = Inner.{ values = s };
+    var o Outer = Outer.{ inner = inn };
+    return sum(o.inner.values);
+}`, false, 6, false)
+}
+
+func TestEmitSliceStructFieldAsCallArgumentEmitsFieldProjectionDirectly(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the slice-field call argument: the argument is the
+	// field-projection lvalue buildPlaceLValue produces
+	// (`pebble_local_<sym>.pebble_field_<member>`) passed directly to the
+	// callee — no temp declaration, no GNU statement-expression. h.values over
+	// the 3-element array [1, 2, 3], so the callee sums to 6.
+	unit, snapshot, entryID, sources := buildFixture(t, `type Holder = struct { values []int; };
+fn sum(v []int) int {
+    var total int = 0;
+    var i uint = 0;
+    while i < v.len {
+        total = total + v[i];
+        i = i + 1;
+    }
+    return total;
+}
+fn main() int {
+    var arr [3]int = [1, 2, 3];
+    var h Holder = Holder.{ values = arr[0:3] };
+    return sum(h.values);
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	directArgRE := regexp.MustCompile(`pebble_fn_\d+\(ctx, pebble_local_\d+\.pebble_field_\d+\)`)
+	if !directArgRE.MatchString(out) {
+		t.Errorf("emitted C contains no slice-field projection used directly as a call argument (%s):\n%s", directArgRE, out)
+	}
+	if strings.Contains(out, "pebble_slice_arg_") || strings.Contains(out, "({") {
+		t.Errorf("emitted C unexpectedly uses a temp declaration or statement-expression for the slice-field argument:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 6, false)
+}
+
 func TestEmitArrayElementWriteCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The flagship array element write: a[2] = 99 replaces the middle slot of

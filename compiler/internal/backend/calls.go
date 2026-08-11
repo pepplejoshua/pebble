@@ -1646,7 +1646,20 @@ func sliceConstructionStatementExpr(tempDecl, constructionExpr string) string {
 //     instead folded into a GNU statement-expression primary expression by
 //     sliceConstructionStatementExpr and returned as the argument text itself
 //     (with an empty pre) — the REVERSE of the backend's original decision
-//     never to reach for a GNU statement-expression.
+//     never to reach for a GNU statement-expression;
+//   - a by-value read of a slice-typed struct field used directly as the
+//     argument — f(h.values), a Load whose place is a FieldPlace naming the
+//     slice field (the same Load(FieldPlace) shape a slice field read in any
+//     other value position uses, and the same shape buildSliceLocalDeclaration
+//     accepts for a slice local's declaration initializer) — emitted as the
+//     field-projection lvalue buildPlaceLValue produces, e.g.
+//     `pebble_local_<sym>.pebble_field_<member>`, passed directly as the
+//     argument: the slice type's own struct typedef makes passing the whole
+//     slice by value trivially valid C, and buildPlaceLValue's output is
+//     itself a valid inline C lvalue expression usable directly as a call
+//     argument, so no pre-statement or temp is needed. The Load's own type
+//     and the place's resolved type are both double-checked against the
+//     parameter's slice type (defense for hand-built IR).
 //
 // Any other argument shape — a local that is not slice-typed, a SourceAlias-
 // wrapped argument, or any other node kind — is likewise a clean rejection
@@ -1672,6 +1685,22 @@ func buildSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			return "", sliceConstructionStatementExpr(tempDecl, constructionExpr), nil
 		}
 		return tempDecl, constructionExpr, nil
+	}
+	if node.Kind == tir.Load {
+		if node.Type != wantType {
+			return "", "", fmt.Errorf("%s is a Load of type %s, not a slice-typed value of type %s", context, describeType(snapshot, node.Type), sliceTypeName(wantType))
+		}
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", "", fmt.Errorf("%s slice-field read: %v", context, err)
+		}
+		if elementType != wantType {
+			return "", "", fmt.Errorf("%s reads a place of element type %s, not a slice-typed value of type %s", context, describeType(snapshot, elementType), sliceTypeName(wantType))
+		}
+		return "", lvalue, nil
 	}
 	if node.Kind != tir.SymbolValue {
 		return "", "", fmt.Errorf("%s is a %s, want a reference to a slice-typed local in scope; only passing an already-declared slice-typed local is supported", context, node.Kind)
