@@ -276,15 +276,15 @@ is at `backend/emit.go:4140-4405`.
 
 | Switch subject | V1 checker/backend | V2 checker/backend | Status |
 |---|---|---|---|
-| Integer | accepted and emitted as C switch | accepted and emitted | **Implemented, proof needed** by width |
+| Integer | accepted and emitted as C switch | accepted and emitted | **Verified** (`d8dfbe9`) for u64 (>2^32 labels, genuine 64-bit dispatch, confirmed via emitted-C shape check) and i8 (negative/positive labels) |
 | `u8` or `i8` with all 256 values | V1 treats it as exhaustive | V2 enumerates the full domain | **Resolved (`4817dae`)** |
 | Character | accepted and emitted as C switch | accepted and emitted with Unicode-scalar labels | **Resolved (`72f0207`)** |
 | String | accepted and emitted as `strcmp` if/else chain with a subject temporary | V2 emits a `pebble_rt_str_eq` if/else chain, subject materialized once into a temp | **Resolved (`b1a53e7`, 2026-08-10)** |
 | Boolean | V1 rejects it | **Resolved (`9b86144`, 2026-08-10).** V2 accepts it and proves `true` plus `false` exhaustive; a bool subject is now cast to `int32_t` for the C switch header, fixing the non-literal case's `-Wswitch-bool` failure. | — |
 | Enum | accepted, duplicate-checked, exhaustive, emitted | V2 supports it | **Verified** for ordinary enums |
 | Tagged union | accepted, narrowed, exhaustive, emitted by tag | V2 supports local, variant, and call-valued subjects; generic-self narrowing is resolved | **Verified for current subject forms**, payload C-shape limits remain |
-| Default `else` | supported | supported | **Implemented, proof needed** for each subject kind |
-| Multiple labels on one case | supported | supported | **Implemented, proof needed** by kind |
+| Default `else` | supported | supported | **Verified** for int, enum, str, and tagged-union subjects (`d8dfbe9` plus pre-existing coverage) |
+| Multiple labels on one case | supported | supported | **Verified** (`d8dfbe9`) for int, enum, str, and tagged union — closed a real gap where the existing tagged-union multi-label test only ever proved one of its two listed variants actually routed to the shared body |
 | Duplicate constant labels | rejected | rejected | **Verified** for scalar and nominal cases |
 
 ## Calls and variadic arguments
