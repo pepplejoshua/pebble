@@ -3950,6 +3950,15 @@ func TestEmitUnionSwitchMultiValueCaseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.value(5);\nswitch c { case Choice.empty, Choice.value: return 10; }\n}", false, 10, false)
 }
 
+func TestEmitUnionSwitchMultiValueCaseOtherVariantCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same multi-value tagged-union switch with c constructed as the OTHER
+	// listed variant (Choice.empty): the other stacked case label fires and
+	// returns 10, proving BOTH labels of the multi-value case route to the
+	// shared body — not just one of them by coincidence.
+	emitAndRun(t, "type Choice = union enum { empty void; value i32; }; fn main() i32 {\nvar c Choice = Choice.empty;\nswitch c { case Choice.empty, Choice.value: return 10; }\n}", false, 10, false)
+}
+
 func TestEmitUnionSwitchElseCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// An else arm on a tagged-union switch: c = Choice.empty is covered by no

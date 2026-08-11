@@ -2490,6 +2490,164 @@ func TestEmitSwitchI64EntryCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i64 { switch 2 { case 1: return 100; case 2: return 200; else: return 0; } }", false, 200, false)
 }
 
+func TestEmitSwitchU64SubjectMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A wide-width u64 subject (the 2^32..2^64 range, beyond every narrower
+	// width's representable domain) with a multi-value case and an else arm:
+	// `case 5000000000, 9000000000: return 200;` stacks two C case labels on
+	// one body. Subject x = 9000000000 hits the multi-value case's second
+	// label and returns 200, proving the subject is switched on at its OWN
+	// u64 width — a subject or label silently truncated to a narrower width
+	// could never match a 64-bit-only value.
+	emitAndRun(t, "fn main() int { let x u64 = 9000000000; switch x { case 5000000000, 9000000000: return 200; case 3000000000: return 100; else: return 0; } }", false, 200, false)
+}
+
+func TestEmitSwitchU64SubjectMultiValueCaseFirstLabelCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same u64 switch, subject x = 5000000000: the FIRST label of the
+	// multi-value case fires and returns 200, proving both stacked case
+	// labels route to the shared body rather than only the second one.
+	emitAndRun(t, "fn main() int { let x u64 = 5000000000; switch x { case 5000000000, 9000000000: return 200; case 3000000000: return 100; else: return 0; } }", false, 200, false)
+}
+
+func TestEmitSwitchU64SubjectSingleCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same u64 switch, subject x = 3000000000: the single-value case fires
+	// and returns 100, distinct from the multi-value case's 200.
+	emitAndRun(t, "fn main() int { let x u64 = 3000000000; switch x { case 5000000000, 9000000000: return 200; case 3000000000: return 100; else: return 0; } }", false, 100, false)
+}
+
+func TestEmitSwitchU64SubjectElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same u64 switch, subject x = 7000000000 (covered by no case label): the
+	// else/default arm fires and returns 0, proving the else arm is reachable
+	// and correctly selected on a wide-width unsigned subject.
+	emitAndRun(t, "fn main() int { let x u64 = 7000000000; switch x { case 5000000000, 9000000000: return 200; case 3000000000: return 100; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchU64SubjectWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C for a u64 switch: the subject is the u64 local
+	// declared at its own uint64_t width, and each integer case label is
+	// emitted at the subject's OWN width with the "u" suffix every unsigned
+	// value carries — `case 5000000000u:` — so a 64-bit-only label constant
+	// matches the uint64_t subject instead of silently truncating to a
+	// narrower constant. The else arm is the default label.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x u64 = 9000000000; switch x { case 5000000000, 9000000000: return 200; case 3000000000: return 100; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"uint64_t pebble_local_27 = 9000000000u;",
+		"switch (pebble_local_27)",
+		"case 5000000000u:",
+		"case 9000000000u:",
+		"case 3000000000u:",
+		"default:",
+		"return 200;",
+		"return 100;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 200, false)
+}
+
+func TestEmitSwitchI8SubjectNegativeMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A narrow signed i8 subject with a multi-value case spanning a NEGATIVE
+	// and a positive label: `case -5, 7: return 1;` — the negative label is
+	// emitted as `case -5:` at the subject's own int8_t width, never a "u"-
+	// suffixed unsigned reinterpretation. Subject x = -5 hits the multi-value
+	// case and returns 1.
+	emitAndRun(t, "fn main() int { let x i8 = -5; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchI8SubjectNegativeMultiValueCasePositiveLabelCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same i8 switch, subject x = 7: the positive member of the negative/positive
+	// multi-value label fires and returns 1, proving both labels route to the
+	// shared body.
+	emitAndRun(t, "fn main() int { let x i8 = 7; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchI8SubjectSingleCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same i8 switch, subject x = 2: the single-value case fires and returns
+	// 2, distinct from the multi-value case's 1.
+	emitAndRun(t, "fn main() int { let x i8 = 2; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", false, 2, false)
+}
+
+func TestEmitSwitchI8SubjectElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same i8 switch, subject x = 3 (covered by no case label): the else/
+	// default arm fires and returns 0, proving the else arm is reachable and
+	// correctly selected on a narrow signed subject.
+	emitAndRun(t, "fn main() int { let x i8 = 3; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", false, 0, false)
+}
+
+func TestEmitSwitchI8SubjectWritesC(t *testing.T) {
+	t.Parallel()
+	// Confirm the emitted C for an i8 switch: the subject's -5 initializer
+	// folds to the negative constant at its own int8_t width, and the case
+	// labels are spelled `case -5:` / `case 7:` / `case 2:` — the same texts a
+	// signed literal emits anywhere — so the labels match the int8_t subject
+	// rather than a silent unsigned reinterpretation. The else arm is the
+	// default label.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x i8 = -5; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"int8_t pebble_local_27 = -5;",
+		"switch (pebble_local_27)",
+		"case -5:",
+		"case 7:",
+		"case 2:",
+		"default:",
+		"return 1;",
+		"return 2;",
+		"return 0;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
+func TestEmitSwitchU8SubjectMultiValueCaseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A narrow unsigned u8 subject with a multi-value case: `case 5, 200:
+	// return 1;` stacks two C case labels on one body, emitted at the
+	// subject's own uint8_t width. Subject x = 200 hits the multi-value case
+	// and returns 1; the distinct single case (100 -> 2) proves the shared
+	// body is genuinely the one selected.
+	emitAndRun(t, "fn main() int { let x u8 = 200; switch x { case 5, 200: return 1; case 100: return 2; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchU8SubjectMultiValueCaseFirstLabelCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same u8 switch, subject x = 5: the FIRST label of the multi-value case
+	// fires and returns 1, proving both stacked labels route to the shared
+	// body rather than only the second one.
+	emitAndRun(t, "fn main() int { let x u8 = 5; switch x { case 5, 200: return 1; case 100: return 2; else: return 0; } }", false, 1, false)
+}
+
+func TestEmitSwitchU8SubjectMultiValueCaseElseCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same u8 switch, subject x = 50 (covered by no case label): the else/
+	// default arm fires and returns 0, proving the else arm coexists with a
+	// multi-value case on a narrow unsigned subject.
+	emitAndRun(t, "fn main() int { let x u8 = 50; switch x { case 5, 200: return 1; case 100: return 2; else: return 0; } }", false, 0, false)
+}
+
 func TestEmitStrSwitchCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A str-typed switch subject: the exact reproduction from proposal 13. A
