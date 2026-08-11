@@ -44,16 +44,65 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — TupleCoerce landed as `d905ab6`. 14 of the original 19+11
-P1 items done overnight. This one needed escalation to Luna after two
-flash stalls — flash correctly diagnosed the exact node shape both
-times but never wrote the fix; Luna implemented it cleanly on the
-first attempt, including finding a compounding typedef-collection gap.
-10 items remain: three-level aggregate dependencies, direct array-
-literal return, slice struct field as call argument, existing slice as
-variadic tail, direct cast of sizeof, sizeof [N]Struct typedef
-ordering, narrow checked arithmetic, narrow optional unwrap, ordinary
-optional enum payload, first-class narrow integer function types.)*
+**Item: a plain (non-generic, non-recursive) three-level aggregate
+dependency chain is rejected as "more than one level of nesting."**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1. Independently reproduced and root-caused before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Inner = struct { value int; };
+type Middle = struct { inner Inner; };
+type Outer = struct { middle Middle; };
+fn main() int {
+    let o = Outer.{ middle = Middle.{ inner = Inner.{ value = 42 } } };
+    return o.middle.inner.value;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `aggregate type
+nominal(symbol 28) has more than one level of nesting, which is
+unsupported`. Nothing generic or recursive here — three ordinary
+non-generic structs, `Outer -> Middle -> Inner`, one level each.
+
+**Known cause — looks like a stale, overly-conservative guard, not a
+real limitation. Confirm this precisely, don't assume it.**
+`orderAggregateTypes` (`compiler/internal/backend/typedefs.go:33-96`)
+computes a `depth` for every tuple/optional/array/struct type via
+recursive dependency walking (lines 38-85), then HARD-REJECTS anything
+with `depth(id, ...) > 1` (lines 92-96) — before any typedef ordering
+even happens. But the ACTUAL typedef-ordering logic immediately below
+(lines 97+) is a proper dependency-first postorder DFS (`dfs`,
+recursing into each type's own dependencies, emitting dependencies
+before dependents) that appears to handle ARBITRARY nesting depth
+correctly by construction — nothing in the postorder DFS itself
+imposes a depth-1 limit. This strongly suggests the depth check was a
+deliberate but now-obsolete safety guard from before the postorder DFS
+existed/was trusted, not a genuine constraint of the C typedef
+emission this backend produces.
+
+**Scope:** investigate carefully whether the postorder DFS actually
+produces CORRECT C typedef ordering at depth 2+ (the emitted C for
+`Outer`/`Middle`/`Inner` must declare `Inner`'s typedef before
+`Middle`'s, and `Middle`'s before `Outer`'s) — don't just delete the
+check and hope; construct the reproduction above, temporarily
+remove/raise the depth cap, and inspect the ACTUAL emitted C to verify
+the ordering is correct, then run it end-to-end. If correct, remove or
+substantially raise the depth cap (prefer removing it entirely unless
+you find a genuine remaining constraint — if you find one, document it
+precisely rather than picking an arbitrary higher number). Verify the
+reproduction above compiles and runs, returning 42. Also verify: a
+4-level chain (one level deeper than the reproduction) if practical,
+a struct containing a nested struct field where the nested struct
+ALSO has a nested struct field but nothing deeper (the existing
+depth-1 case, already working) is unaffected, tuples/optionals nested
+inside structs at depth 2+ (since the depth check covers those types
+too), and that a GENUINELY problematic shape (if one exists — check
+whether recursive/self-referential nesting is a separate, intentional
+rejection elsewhere, which should stay rejected) is not accidentally
+now accepted.
 
 <!-- Previous item, resolved 2026-08-10:
 
