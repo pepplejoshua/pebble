@@ -2031,3 +2031,148 @@ fn main() int {
 		t.Fatalf("expected the value 7 to be assigned exactly once (single evaluation), got %d occurrences of \"= 7;\":\n%s", strings.Count(out, "= 7;"), out)
 	}
 }
+
+// --- proposal 14 audit: function declaration, anonymous function, direct call ---
+
+// TestEmitFunctionDeclarationParameterResultMatrixCompilesAndRuns is the
+// focused proof for proposal 14's "Pebble function declaration with
+// parameters, result, body, and hidden context — Implemented, proof needed for
+// the full parameter/result matrix" row. One program declares and directly
+// calls a helper for each cell of the representative matrix: 0 parameters
+// (zero), 1 parameter (one), and several parameters of DIFFERENT types in a
+// single signature (combine: int, bool, str, struct, pointer), plus one helper
+// per supported result category (int, bool, str, void, a struct, a pointer).
+// Every helper carries its own body and the hidden context (the C
+// `PebbleContext *ctx` every Pebble-convention helper is threaded); the exit
+// code is the sum of each helper's distinguishable contribution, so a wrong
+// parameter/result row fails the process code. Contributions: zero()=0,
+// one(1)=1, b()=+1, s()=="hi"=+2, combine(3,true,"hi",{1,2},&4)=3+10+2+1+2+4
+// =22, mk()={40,2}=+42, ptr()==nil=+1.
+func TestEmitFunctionDeclarationParameterResultMatrixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `
+type Pair = struct { x int; y int; };
+fn zero() int { return 0; }
+fn one(n int) int { return n; }
+fn combine(n int, flag bool, s str, p Pair, ptr *int) int {
+    var base int = n;
+    if flag { base = base + 10; }
+    base = base + (s.len as int);
+    base = base + p.x + p.y;
+    base = base + *ptr;
+    return base;
+}
+fn b() bool { return true; }
+fn s() str { return "hi"; }
+fn nothing() void {}
+fn mk() Pair { return Pair.{ x = 40, y = 2 }; }
+fn ptr() *int { return nil; }
+fn main() int {
+    nothing();
+    var total int = zero() + one(1);
+    if b() { total = total + 1; }
+    if s() == "hi" { total = total + 2; }
+    var v int = 4;
+    let p = Pair.{ x = 1, y = 2 };
+    total = total + combine(3, true, "hi", p, &v);
+    let q = mk();
+    total = total + q.x + q.y;
+    if ptr() == nil { total = total + 1; }
+    return total;
+}`, false, 0+1+1+2+22+42+1, false)
+}
+
+// TestEmitFunctionDeclarationHiddenContextAndSignatureWritesC pins the emitted
+// C for the matrix's mixed-signature declaration: the helper's prototype AND
+// definition declare the hidden PebbleContext *ctx first, then each parameter
+// at its own C type (int32_t, bool, PebbleStr, the struct typedef, int32_t *),
+// each with the per-parameter (void) cast, and the call site threads ctx before
+// the authored arguments — the declaration's hidden context and full parameter
+// matrix surviving into C. Symbols/type IDs come from the real fixture dump
+// (combine=27, n=28, flag=29, s=30, p=31, ptr=32, Pair struct type 19, main's
+// v=37, p=38).
+func TestEmitFunctionDeclarationHiddenContextAndSignatureWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `
+type Pair = struct { x int; y int; };
+fn combine(n int, flag bool, s str, p Pair, ptr *int) int {
+    var base int = n;
+    if flag { base = base + 10; }
+    base = base + (s.len as int);
+    base = base + p.x + p.y;
+    base = base + *ptr;
+    return base;
+}
+fn main() int {
+    var v int = 4;
+    let p = Pair.{ x = 1, y = 2 };
+    return combine(3, true, "hi", p, &v);
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"static int32_t pebble_fn_27(PebbleContext *ctx, int32_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int32_t * pebble_local_32);",
+		"static int32_t pebble_fn_27(PebbleContext *ctx, int32_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int32_t * pebble_local_32) {",
+		"    (void)pebble_local_28;",
+		"    (void)pebble_local_29;",
+		"    (void)pebble_local_30;",
+		"    (void)pebble_local_31;",
+		"    (void)pebble_local_32;",
+		"return pebble_fn_27(ctx, 3, true, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }, pebble_local_38, (int32_t *)(&pebble_local_37));",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 22, false)
+}
+
+// TestEmitDirectCallExternSignatureMatrixCompilesAndRuns is the focused proof
+// for proposal 14's "Direct call — V2 supports helper and extern direct calls
+// — Implemented, proof needed for the signature matrix" row's extern half.
+// It calls REAL libc functions so the whole pipeline compiles AND RUNS across
+// four extern signature shapes not covered together before (existing extern
+// tests separately covered uint/*void/void, str/*FILE, and i32): int param +
+// int result (abs), one f64 param + f64 result (fabs), two f64 params + f64
+// result (pow), and a str param + uint result (strlen). Each call must lower to
+// its real C name with no hidden context and no pebble_fn_ helper, and every
+// typed result is consumed at its own width. The exit code is 3 + 5 + 7 + 2 =
+// 17; a mis-lowered parameter or result width fails the process code. (The
+// helper half of the same matrix — a direct call to a helper with multiple
+// parameter types — is the combine(...) call in
+// TestEmitFunctionDeclarationParameterResultMatrixCompilesAndRuns.)
+func TestEmitDirectCallExternSignatureMatrixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `
+extern fn abs(x int) int;
+extern fn fabs(x f64) f64;
+extern fn pow(x f64, y f64) f64;
+extern fn strlen(s str) uint;
+fn main() int {
+    var total int = 0;
+    total = total + abs(-3);
+    let r f64 = pow(2.0, 3.0);
+    if r == 8.0 { total = total + 5; }
+    let fl f64 = fabs(-2.5);
+    if fl == 2.5 { total = total + 7; }
+    total = total + (strlen("hi") as int);
+    return total;
+}`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"abs(", "fabs(", "pow(", "strlen("} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C does not call the real C name %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pebble_fn_") {
+		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 3+5+7+2, false)
+}

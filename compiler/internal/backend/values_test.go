@@ -1785,6 +1785,131 @@ fn main() int {
 `, true, 1, false)
 }
 
+// --- proposal 14 audit: anonymous non-capturing function (HoistedFunctionValue) ---
+
+// TestEmitAnonymousFunctionBlockBodyCompilesAndRuns is the focused proof for
+// proposal 14's "Anonymous non-capturing function — V1 hoists it to module
+// scope and cannot capture a local; V2 HoistedFunctionValue does the same —
+// Implemented, proof needed" row's BLOCK-BODY shape. The existing arrow tests
+// above prove the `=> expr` form; these prove the full `{ return ...; }` block
+// body works both as a function-typed local's initializer and directly as a
+// call argument, each time called through the function-typed parameter. 20 +
+// 22 = 42 in both positions.
+func TestEmitAnonymousFunctionBlockBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `
+fn apply(f fn(int, int) int, a int, b int) int { return f(a, b); }
+fn main() int {
+    var f fn(int, int) int = fn (a int, b int) int { return a + b; };
+    return f(20, 22);
+}`, false, 42, false)
+	emitAndRun(t, `
+fn apply(f fn(int, int) int, a int, b int) int { return f(a, b); }
+fn main() int {
+    return apply(fn (a int, b int) int { return a + b; }, 20, 22);
+}`, false, 42, false)
+}
+
+// TestEmitAnonymousFunctionReturnedFromHelperCompilesAndRuns proves an
+// anonymous function flows across a call boundary as a first-class value: a
+// helper returns a bare anonymous literal, the caller stores it into a
+// function-typed local, and the indirect call through it computes 4 * 10 + 2 =
+// 42. This is the same HoistedFunctionValue shape a named function reference
+// uses (chooseOp returning `add`), for a literal.
+func TestEmitAnonymousFunctionReturnedFromHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `
+fn make() fn(int, int) int { return fn (a int, b int) int { return a * 10 + b; }; }
+fn main() int {
+    var f fn(int, int) int = make();
+    return f(4, 2);
+}`, false, 42, false)
+}
+
+// TestEmitAnonymousFunctionHoistedToModuleScopeWritesC makes the V1 parity
+// claim concrete in the emitted C: the anonymous function literal is hoisted
+// to MODULE scope as its own `static int32_t pebble_fn_<id>(PebbleContext *ctx,
+// ...)` helper — a real module-scope function, never inlined at the literal's
+// site — and the call site passes that hoisted function's name BARE (the C
+// identifier decaying to a function pointer) exactly like a named top-level
+// function reference. Symbols come from the real fixture dump (fnptr type 23,
+// apply=24 with its f/x/y params 25/26/27, the anonymous literal=31 with its
+// params 32/33).
+func TestEmitAnonymousFunctionHoistedToModuleScopeWritesC(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `
+fn apply(f fn(int, int) int, a int, b int) int { return f(a, b); }
+fn main() int {
+    return apply(fn (a int, b int) int { return a + b; }, 20, 22);
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef int32_t (*pebble_fnptr_23_t)(PebbleContext *ctx, int32_t, int32_t);",
+		"static int32_t pebble_fn_31(PebbleContext *ctx, int32_t pebble_local_32, int32_t pebble_local_33);",
+		"static int32_t pebble_fn_31(PebbleContext *ctx, int32_t pebble_local_32, int32_t pebble_local_33) {",
+		"return pebble_rt_checked_add_i32(pebble_local_32, pebble_local_33,",
+		"return pebble_fn_24(ctx, pebble_fn_31, 20, 22);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
+// TestEmitAnonymousFunctionCaptureRejectedByChecker proves the NON-capturing
+// contract (proposal 14 row 110 and open-language-decisions §"Anonymous
+// functions and captures"): an anonymous function may only reference
+// module-level members, so attempting to capture an enclosing local is a CLEAN
+// CHECKER REJECTION with C0617 — never a crash, a backend error, or silent
+// wrong behavior — and the pipeline stops before any IR/Emit is produced.
+// Proven for both the `=> expr` body and a full block body.
+func TestEmitAnonymousFunctionCaptureRejectedByChecker(t *testing.T) {
+	t.Parallel()
+	arrow := `fn make(seed int) fn() int {
+    var local int = seed;
+    let inner = fn() int => local;
+    return inner;
+}
+fn main() int { return 0; }`
+	block := `fn make(seed int) fn() int {
+    var local int = seed;
+    let inner = fn() int { return local; };
+    return inner;
+}
+fn main() int { return 0; }`
+	for _, tc := range []struct {
+		name   string
+		source string
+	}{
+		{"arrow body", arrow},
+		{"block body", block},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			sources := source.NewFileSet()
+			diagnostics := diagnostic.NewDiagnosticSet()
+			graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "facts"}, fixtureProvider{"main.peb": []byte(tc.source)}, sources, diagnostics)
+			resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
+			store, err := types.New(types.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := check.Check(check.Inputs{Graph: graph, Sources: sources, Resolution: resolution, Types: store, LiteralTarget: infer.LiteralTarget{WordBits: 64}}, diagnostics, check.Config{})
+			if result.Successful() {
+				t.Fatalf("capturing anonymous function checked clean, want a C0617 rejection: %+v", diagnostics.Items())
+			}
+			if !strings.Contains(fmt.Sprint(diagnostics.Items()), "C0617") {
+				t.Fatalf("rejection carries no C0617 capture diagnostic: %+v", diagnostics.Items())
+			}
+		})
+	}
+}
+
 // --- 13: enum/union-returning DirectCall in a general value position ---
 
 // TestEmitEnumReturningCallAsSwitchSubjectCompilesAndRuns is the exact
