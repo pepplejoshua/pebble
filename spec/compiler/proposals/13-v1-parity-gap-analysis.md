@@ -44,9 +44,67 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #51 (direct cast of sizeof) closed in `634db99`. 19
-P1s and P0s resolved this window: tasks #33-51. Next up: #52, sizeof
-[N]Struct typedef ordering.)*
+**Item: `sizeof [N]Struct` emits the array typedef before its struct
+element typedef exists — actually a missing-collection gap, not an
+ordering gap.**
+
+Sourced from proposal 14's backend gap matrix (`sizeof [N]Struct`,
+line 75), P1. Independently reproduced and root-caused before
+dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Point = struct { x int; y int; };
+fn main() int {
+    return (sizeof [2]Point) as int;
+}
+```
+
+`go run ./cmd/pebc -run <file.peb>` fails at the C COMPILER stage (not
+Pebble's own emission): `cc compilation failed: ... error: unknown
+type name 'pebble_struct_19_t'` — the emitted C for the array typedef
+(`pebble_array_24_t { pebble_struct_19_t data[2]; }`) references
+`pebble_struct_19_t`, but that struct typedef never appears anywhere
+in the output. Point is otherwise unreferenced (no construction, no
+field access, no local) — its ONLY reference in the whole program is
+as the array's element type inside `sizeof [2]Point`.
+
+**Root cause — this is NOT an ordering bug, it's a missing-collection
+bug.** `collectArrayTypesWalk` (`compiler/internal/backend/collect.go:180-192`)
+already has a `case tir.SizeofType && isArray(snapshot, node.TypeArg)`
+that correctly collects the ARRAY type itself (`pebble_array_24_t`) —
+this is the fix from the already-resolved item at tracker 14 line 642
+(`cacaa28`). But `collectStructTypesWalk`
+(`compiler/internal/backend/collect.go:956-974`) only checks
+`isStruct(snapshot, node.TypeArg)` — i.e. whether the `SizeofType`
+node's OWN TypeArg is directly a struct. For `sizeof [2]Point`,
+`node.TypeArg` is the ARRAY type `[2]Point`, not `Point` itself, so
+this check never fires and the struct element is never collected. The
+struct typedef is simply never emitted at all — not emitted-late,
+never-emitted — so `orderAggregateTypes`/the typedef-ordering pass
+never even sees it as something to place before the array typedef.
+
+**Scope:** add a case to `collectStructTypesWalk` (or a small
+dedicated helper called from it) that recognizes a `SizeofType` node
+whose `TypeArg` is an ARRAY type, resolves the array's element type
+via `snapshot.Key(node.TypeArg).Array()` (the standard `(length,
+elementType, ok)` pattern used throughout this file — e.g.
+`locals.go:180`, `calls.go:1878`), and — if that element type is a
+struct (guarded the same way the existing bare-struct `SizeofType`
+case is: `runtimeType(...) == 0 && !isEnumType(...)`) — collects the
+ELEMENT type, not just the array type. Verify the reproduction above
+compiles and runs, returning 16 (2 × 8-byte `Point`, confirm the exact
+value against the actual emitted struct layout, don't assume). Verify
+the existing bare `sizeof Struct` and bare `sizeof [N]T` (a
+primitive-element array, already working) cases are unaffected.
+**Also check, but only fix if trivial and doesn't expand scope
+significantly:** whether the same gap exists for an array whose
+element is a TUPLE, OPTIONAL, or ENUM type under `sizeof [N]T` (e.g.
+`sizeof [2](int,int)`) — if it's the identical shape of gap, note it
+in the report; if fixing it requires meaningfully more work than the
+struct case, leave it out and document it as a separate follow-up
+rather than silently expanding this task.
 
 <!-- Previous item, resolved 2026-08-11:
 
