@@ -730,6 +730,77 @@ func TestEmitStrOrderingGreaterEqualFalseCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let s str = \"ha\"; let t str = \"hi\"; if s >= t { return 10; } else { return 20; } }", false, 20, false)
 }
 
+func TestEmitStrEmptyStringComparisonsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Empty-string comparisons across the operators: an empty string equals
+	// itself (== true), differs from a non-empty string (!= true), sorts
+	// before every non-empty string (< and <= true), and is >= itself. A
+	// zero-length PebbleStr must flow through the length-aware runtime
+	// helpers without relying on a NUL terminator. Both an empty literal
+	// local and a direct `"" == ""` literal comparison are covered.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"empty equals empty", "fn main() i32 { let s str = \"\"; let t str = \"\"; if s == t { return 10; } else { return 20; } }", 10},
+		{"empty literals equal", "fn main() i32 { if \"\" == \"\" { return 10; } else { return 20; } }", 10},
+		{"empty not equal nonempty", "fn main() i32 { let s str = \"\"; let t str = \"a\"; if s != t { return 10; } else { return 20; } }", 10},
+		{"empty equals nonempty false", "fn main() i32 { let s str = \"\"; let t str = \"a\"; if s == t { return 10; } else { return 20; } }", 20},
+		{"empty less than nonempty", "fn main() i32 { let s str = \"\"; let t str = \"a\"; if s < t { return 10; } else { return 20; } }", 10},
+		{"empty lessEqual nonempty", "fn main() i32 { let s str = \"\"; let t str = \"a\"; if s <= t { return 10; } else { return 20; } }", 10},
+		{"empty lessEqual empty", "fn main() i32 { let s str = \"\"; let t str = \"\"; if s <= t { return 10; } else { return 20; } }", 10},
+		{"nonempty greater than empty", "fn main() i32 { let s str = \"a\"; let t str = \"\"; if s > t { return 10; } else { return 20; } }", 10},
+		{"empty greaterEqual empty", "fn main() i32 { let s str = \"\"; let t str = \"\"; if s >= t { return 10; } else { return 20; } }", 10},
+		{"empty greaterEqual nonempty false", "fn main() i32 { let s str = \"\"; let t str = \"a\"; if s >= t { return 10; } else { return 20; } }", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitStrOrderingNonPrefixDifferentLengthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A different-length ordering where neither string is a prefix of the
+	// other: "ab" vs "b". The first bytes 'a' (97) and 'b' (98) decide the
+	// ordering BEFORE the length tie-break comes into play, so "ab" < "b" is
+	// true even though "ab" is the LONGER string — the byte-value ordering a
+	// length-only or prefix-only comparison would get wrong. "b" > "ab" is
+	// the same comparison in the other direction.
+	emitAndRun(t, "fn main() i32 { let s str = \"ab\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s > t { return 10; } else { return 20; } }", false, 10, false)
+}
+
+func TestEmitStrByteValueOrderingCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Single-byte byte-value ordering, both directions and the >=/<= edge: "a"
+	// < "b" is true ('a' is 97, 'b' is 98), "b" < "a" is false, and "b" >=
+	// "a" is true. These prove the comparison orders by byte VALUE, not by
+	// length or by string identity.
+	emitAndRun(t, "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s >= t { return 10; } else { return 20; } }", false, 10, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s >= t { return 10; } else { return 20; } }", false, 20, false)
+}
+
+func TestEmitStrLengthAwareEqualityCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Length-aware equality: a string that is a prefix of another but SHORTER
+	// must not compare equal — "hi" vs "hi!" differ in length, so == is false
+	// and != is true even though every byte of the shorter one matches the
+	// longer one's first two bytes. This is the property that distinguishes
+	// V2's length-prefixed PebbleStr equality (pebble_rt_str_eq checks .len
+	// before bytes) from a NUL-terminated C strcmp-style prefix comparison.
+	// The two longer-strings-equal case also holds (equal bytes and equal
+	// length), proving the helper did not fall back to a blind prefix test.
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi!\"; if s == t { return 10; } else { return 20; } }", false, 20, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"hi\"; let t str = \"hi!\"; if s != t { return 10; } else { return 20; } }", false, 10, false)
+	emitAndRun(t, "fn main() i32 { let s str = \"hi!\"; let t str = \"hi!\"; if s == t { return 10; } else { return 20; } }", false, 10, false)
+}
+
 func TestEmitStrOrderingLiteralOperandCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// An ordering comparison where one operand is a string literal directly
@@ -1296,6 +1367,197 @@ func TestEmitU8ComparisonCompilesAndRuns(t *testing.T) {
 	// ordering operators build the u8 operands at their own resolved width.
 	emitAndRun(t, "fn main() int { let h u8 = 3; if h == 3 { return 0; } else { return 1; } }", false, 0, false)
 	emitAndRun(t, "fn main() int { let h u8 = 3; if h < 4 { return 0; } else { return 1; } }", false, 0, false)
+}
+
+func TestEmitU8AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// All six comparison operators on a u8 (a non-entry width in an int-entry
+	// main), each with a true and a false outcome so both branches are proven
+	// to evaluate to the arithmetically correct result at the narrow width —
+	// completing the u8 coverage beyond the == and < the original slice added.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h u8 = 3; if h == 3 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h u8 = 3; if h == 4 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h u8 = 3; if h != 4 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h u8 = 3; if h != 3 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h u8 = 3; if h < 4 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h u8 = 3; if h < 3 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h u8 = 3; if h <= 3 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h u8 = 3; if h <= 2 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h u8 = 3; if h > 2 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h u8 = 3; if h > 3 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h u8 = 3; if h >= 3 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h u8 = 3; if h >= 4 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitI8AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// All six comparison operators on a signed narrow width (i8 in an
+	// int-entry main) with a NEGATIVE value — the "-5 < -4" direction is the
+	// signedness-sensitive case that a width-mismatched or unsigned-treated
+	// comparison would get wrong, so each row proves the signed comparison
+	// evaluates correctly at the i8 width.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h i8 = -5; if h == -5 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h i8 = -5; if h == -4 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h i8 = -5; if h != -4 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h i8 = -5; if h != -5 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h i8 = -5; if h < -4 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h i8 = -5; if h < -5 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h i8 = -5; if h <= -5 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h i8 = -5; if h <= -6 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h i8 = -5; if h > -6 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h i8 = -5; if h > -5 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h i8 = -5; if h >= -5 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h i8 = -5; if h >= -4 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitU64NotEqualComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The one gap in the u64 matrix (== covered by
+	// TestEmitU64EqualityComparisonCompilesAndRuns and the four ordering
+	// operators by TestEmitU64OrderingComparisonsCompilesAndRuns): != on a
+	// non-entry-width u64, both a true and a false outcome.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"different not equal", "fn main() int { let h u64 = 5; if h != 4 { return 1; } else { return 2; } }", 1},
+		{"identical not equal false", "fn main() int { let h u64 = 5; if h != 5 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitUintAllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// All six comparison operators on `uint` (the word-sized unsigned builtin
+	// whose C type is uint64_t), in an int-entry main. uint comparison
+	// operands flow through buildUintExpr rather than the general integer
+	// operand path, so this is the uint matrix's dedicated proof: each row
+	// exercises a real boolean outcome, both true and false.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { let h uint = 3; if h == 3 { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { let h uint = 3; if h == 4 { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { let h uint = 3; if h != 4 { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { let h uint = 3; if h != 3 { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { let h uint = 3; if h < 4 { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { let h uint = 3; if h < 3 { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { let h uint = 3; if h <= 3 { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { let h uint = 3; if h <= 2 { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { let h uint = 3; if h > 2 { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { let h uint = 3; if h > 3 { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { let h uint = 3; if h >= 3 { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { let h uint = 3; if h >= 4 { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitF32AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// All six comparison operators on f32 values in an int-entry main. The
+	// operands are two f32 locals so both sides resolve to the identical f32
+	// type (the checker rejects a genuinely mixed f32/f64 comparison), and
+	// every row asserts a real boolean outcome — completing the float matrix
+	// beyond the single f64 `<` the existing float-comparison test covers.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { var a f32 = 1.5; var b f32 = 1.5; if a == b { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; if a == b { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; if a != b { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { var a f32 = 1.5; var b f32 = 1.5; if a != b { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; if a < b { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { var a f32 = 2.5; var b f32 = 1.5; if a < b { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { var a f32 = 1.5; var b f32 = 1.5; if a <= b { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { var a f32 = 2.5; var b f32 = 1.5; if a <= b { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { var a f32 = 2.5; var b f32 = 1.5; if a > b { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; if a > b { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { var a f32 = 1.5; var b f32 = 1.5; if a >= b { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { var a f32 = 1.5; var b f32 = 2.5; if a >= b { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitF64AllComparisonOperatorsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f64 twin of the f32 matrix above: all six operators on two f64
+	// locals in an int-entry main. This is the full proof behind the audit
+	// row's float claim — the existing TestEmitFloatComparisonBetweenLocals
+	// only exercised `<`.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal", "fn main() int { var a f64 = 1.5; var b f64 = 1.5; if a == b { return 1; } else { return 2; } }", 1},
+		{"equal false", "fn main() int { var a f64 = 1.5; var b f64 = 2.5; if a == b { return 1; } else { return 2; } }", 2},
+		{"notEqual", "fn main() int { var a f64 = 1.5; var b f64 = 2.5; if a != b { return 1; } else { return 2; } }", 1},
+		{"notEqual false", "fn main() int { var a f64 = 1.5; var b f64 = 1.5; if a != b { return 1; } else { return 2; } }", 2},
+		{"less", "fn main() int { var a f64 = 1.5; var b f64 = 2.5; if a < b { return 1; } else { return 2; } }", 1},
+		{"less false", "fn main() int { var a f64 = 2.5; var b f64 = 1.5; if a < b { return 1; } else { return 2; } }", 2},
+		{"lessEqual", "fn main() int { var a f64 = 1.5; var b f64 = 1.5; if a <= b { return 1; } else { return 2; } }", 1},
+		{"lessEqual false", "fn main() int { var a f64 = 2.5; var b f64 = 1.5; if a <= b { return 1; } else { return 2; } }", 2},
+		{"greater", "fn main() int { var a f64 = 2.5; var b f64 = 1.5; if a > b { return 1; } else { return 2; } }", 1},
+		{"greater false", "fn main() int { var a f64 = 1.5; var b f64 = 2.5; if a > b { return 1; } else { return 2; } }", 2},
+		{"greaterEqual", "fn main() int { var a f64 = 1.5; var b f64 = 1.5; if a >= b { return 1; } else { return 2; } }", 1},
+		{"greaterEqual false", "fn main() int { var a f64 = 1.5; var b f64 = 2.5; if a >= b { return 1; } else { return 2; } }", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitF64FloatLiteralComparisonOperandsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Ordering and equality where the float literal itself is an operand (not
+	// two pre-declared locals): the checker anchors the literal to the local's
+	// own float type, so the comparison resolves both sides at the same f64
+	// width. 1.5 < 2.5 is true (exit 1) and 2.5 < 1.5 is false (exit 2),
+	// proving the literal operand builds at the f64 grammar, not as a
+	// mistyped integer.
+	emitAndRun(t, "fn main() int { var a f64 = 1.5; if a < 2.5 { return 1; } else { return 2; } }", false, 1, false)
+	emitAndRun(t, "fn main() int { var a f64 = 2.5; if a < 1.5 { return 1; } else { return 2; } }", false, 2, false)
 }
 
 func TestEmitGlobalLetConstantAsFixedWidthArgumentCompilesAndRuns(t *testing.T) {
