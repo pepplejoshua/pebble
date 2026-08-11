@@ -4436,6 +4436,72 @@ func TestEmitArrayLiteralDirectlyInitializesSliceWritesC(t *testing.T) {
 	compileAndRun(t, buf.Bytes(), 2, false)
 }
 
+func TestEmitSliceLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a whole slice-typed local from another slice-typed
+	// local (`let second []int = first;`): the Initialize's initializer is a
+	// SymbolValue naming an in-scope slice-typed local of the same type,
+	// emitted as a plain C declaration-with-initializer
+	// `pebble_slice_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — a slice is itself a struct ({data, len}) whose typedef makes the
+	// by-value copy trivially valid C. The copied local's element must reflect
+	// first's content (1), the declared copy.
+	emitAndRun(t, "fn main() int { let first []int = [1, 2, 3]; let second []int = first; return second[0]; }", false, 1, false)
+}
+
+func TestEmitChainedSliceLocalCopyInitializationCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A chained slice copy-initialization (`let b []int = a; let c []int = b;`)
+	// proves the SymbolValue initializer branch composes across successive
+	// copies: c's view must reflect a's backing array (element 2), not a
+	// zeroed or truncated slice header.
+	emitAndRun(t, "fn main() int { let a []int = [1, 2, 3]; let b []int = a; let c []int = b; return c[1]; }", false, 2, false)
+}
+
+func TestEmitSliceLocalCopyFromSlicedArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a slice local from a slice built by the checked-slice
+	// construction path (not an array-literal direct initializer): t = s where
+	// s = a[1:3] views the array's middle two elements, so t[0] reads a[1].
+	emitAndRun(t, "fn main() int { var a [5]int = [10, 20, 30, 40, 50]; let s []int = a[1:3]; let t []int = s; return t[0]; }", false, 20, false)
+}
+
+func TestEmitSliceLocalCopySharesBackingArrayCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Copy-initializing a slice local copies only the slice HEADER ({data,
+	// len}), sharing the source's backing array — the reference/view semantics
+	// a slice value carries everywhere else in this backend (a slice passed by
+	// value to a helper observes the same backing array the caller owns, see
+	// the slice-parameter write tests). A write through the copy (second[0] =
+	// 9) must therefore be visible through the original (first[0] reads 9),
+	// proving the copy is a view, not a deep element copy.
+	emitAndRun(t, "fn main() int { let first []int = [1, 2, 3]; let second []int = first; second[0] = 9; return first[0]; }", false, 9, false)
+}
+
+func TestEmitSliceLocalCopyInitializationWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the plain-local copy-initialization: the local
+	// declaration lowers to a declaration-with-initializer
+	// `pebble_slice_<typeID>_t pebble_local_<second> = pebble_local_<first>;`
+	// — the slice's own pebble_slice_<typeID>_t typedef ({data, len}) makes
+	// the by-value copy trivially valid C, so no member-wise lowering is
+	// needed (mirroring the tuple/struct/str local-copy siblings).
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let first []int = [1, 2, 3]; let second []int = first; return second[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	copyRE := regexp.MustCompile(`pebble_slice_\d+_t pebble_local_\d+ = pebble_local_\d+;`)
+	if !copyRE.MatchString(out) {
+		t.Errorf("emitted C contains no whole-slice local copy declaration %q:\n%s", copyRE, out)
+	}
+	if !strings.Contains(out, "pebble_slice_") {
+		t.Errorf("emitted C missing the slice typedef:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 1, false)
+}
+
 func TestEmitU64SliceConstructionInHelperCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The slice-start gap this slice closes: constructing an ordinary INT

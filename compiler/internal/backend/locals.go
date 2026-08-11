@@ -379,14 +379,17 @@ func buildArrayRepeatLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *t
 // buildSliceLocalDeclaration builds a slice-typed local's declaration from a
 // CheckedSlice initializer (a slice expression like `var s []i32 = a[1:3];`)
 // or, since 10.38, a DirectCall to a slice-returning helper (`var s []i32 =
-// helperReturningSlice();`). The emitted C constructs a small struct with a
-// data pointer (offset from the base array by the checked start) and a len
-// field (end - start). The start bound is validated by
-// pebble_rt_checked_slice_start_i32/i64, which panics if the range is
-// invalid. Bounds omitted in source are resolved to their defaults: 0 for
-// an absent start, the base array's compile-time element count for an absent
-// end. The local's scope entry records its slice type (localInfo.sliceType)
-// so a later index read resolves through the slice-indexing machinery.
+// helperReturningSlice();`), or, since slice-local copy-initialization, a
+// SymbolValue naming an in-scope slice-typed local of exactly the local's
+// type (`var second []i32 = first;`). The CheckedSlice/DirectCall emitted C
+// constructs a small struct with a data pointer (offset from the base array
+// by the checked start) and a len field (end - start). The start bound is
+// validated by pebble_rt_checked_slice_start_i32/i64, which panics if the
+// range is invalid. Bounds omitted in source are resolved to their defaults:
+// 0 for an absent start, the base array's compile-time element count for an
+// absent end. The local's scope entry records its slice type
+// (localInfo.sliceType) so a later index read resolves through the
+// slice-indexing machinery.
 //
 // The construction is emitted as two C statements rather than one compound-
 // literal initializer because the data pointer depends on the result of the
@@ -456,6 +459,32 @@ func buildSliceLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		}
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
+	}
+	if initValue.Kind == tir.SymbolValue {
+		// A reference to an in-scope slice-typed local of exactly the local's
+		// type used as the direct initializer — `let second []i32 = first;`, a
+		// whole-slice local copy, the sibling of the reassignment shape the
+		// slice-typed Store machinery accepts. The referenced local's declared
+		// type must be exactly the local's type: the scope lookup records the
+		// slice type each local was declared with (localInfo.sliceType), so a
+		// non-slice local, an undeclared symbol, or a slice local of a
+		// different type is a clean rejection naming what was found. The
+		// emitted C is a declaration-with-initializer
+		// `pebble_slice_<typeID>_t pebble_local_<new> = pebble_local_<other>;`
+		// — a slice is itself a struct ({data, len}) whose typedef makes the
+		// by-value copy trivially valid C, the same convention slice call
+		// arguments and returns already use. Copying the struct header shares
+		// the source local's backing array (view/reference semantics over the
+		// backing array, not a deep copy of the elements) — the same semantics
+		// a slice passed by value to a helper has, where a write through the
+		// copy is observed by the original (see the slice-parameter write
+		// tests).
+		valueInfo, declared := scope[initValue.Symbol]
+		if !declared || valueInfo.sliceType != initValue.Type {
+			return "", fmt.Errorf("%s declares a slice-typed local of type %s from symbol %d, which is not a slice-typed local in scope of that type", context, sliceTypeName(initValue.Type), initValue.Symbol)
+		}
+		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
 	}
 	tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol), fmt.Sprintf("pebble_slice_backing_%d", statement.Symbol))
 	if err != nil {
