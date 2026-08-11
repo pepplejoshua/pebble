@@ -44,6 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #55 (ordinary optional enum payload construction)
+closed in `1bf785d`. 23 P1s and P0s resolved this window: tasks
+#33-55. A new, separate, pre-existing gap was DISCOVERED (not fixed)
+during verification: an enum-typed struct field's construction fails
+with a missing-typedef `cc` error even for a bare non-optional enum
+value (`Holder.{ c = Color.blue }`, no optional wrapper) — looks like
+a `RecordConstruct.Fields` traversal gap in `collectEnumTypesWalk`
+(field values live in a separate `Fields` slice, not the generic
+`Children` the walk recurses through). Not yet a formal tracker item;
+worth opening one before the next enum/struct-field-adjacent task.
+Next up: #56, first-class narrow integer function type inconsistency.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: `some Color.blue` (an ordinary enum-variant literal as an
 optional's payload) is rejected — only an integer-to-optional-enum
 cast works.**
@@ -126,6 +140,23 @@ width)` — an exact match for what each switch case needs to call with
    the `NoneOptional` branch, not touched by this fix). Verify a
    tagged-union payload (the case immediately preceding the one
    you're adding in both functions) is completely unaffected.
+
+**Resolution (`1bf785d`, 2026-08-11).** Fixed exactly as scoped in
+both `buildOptionalLocalDeclaration` and `buildOptionalValueExpr`.
+Verified: local declaration, call argument, and helper return position
+all compile and run correctly for `some Color.blue`; the
+integer-to-optional-enum cast path is unaffected; the tagged-union
+case is unaffected. The struct-field position was independently
+checked and found to fail — but with a DIFFERENT, pre-existing error
+(`unknown type name pebble_struct_..._t`/`pebble_enum_..._t`) that
+reproduces identically for a bare, non-optional enum struct field
+(`Holder.{ c = Color.blue }`, no `some`/optional involved at all), so
+it's unrelated to this fix and was correctly left alone rather than
+folded in — noted above as a fresh discovery for a future item. Full
+suite (`go test ./... -count=1 -timeout 600s -parallel 16`, 11
+packages) clean, `gofmt`/`go vet` clean, causation check confirmed
+reverting reproduces the exact original rejection.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
