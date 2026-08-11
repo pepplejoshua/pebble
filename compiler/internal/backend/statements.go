@@ -2406,11 +2406,12 @@ func buildLeadingStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 			// A str-typed local: its type is the initializer value's Type
 			// (the Initialize node carries no Type itself, confirmed against
 			// a real fixture — same as the compound locals above). The
-			// supported initializer is a StringLiteral (a string literal), or
-			// since 10.36 a call to a str-returning helper (a DirectCall whose
-			// result type is str, the one supported call position for
-			// declaring a str local); every other str initializer shape is a
-			// clean rejection.
+			// supported initializer is a StringLiteral (a string literal), a
+			// call to a str-returning helper (a DirectCall whose result type
+			// is str, since 10.36), a SymbolValue naming an in-scope str
+			// local (a whole-str copy), or a Load of a str tuple element /
+			// str struct field (a whole-str read-back); every other str
+			// initializer shape is a clean rejection.
 			return buildStrLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
 		if isSlice(snapshot, initValue.Type) {

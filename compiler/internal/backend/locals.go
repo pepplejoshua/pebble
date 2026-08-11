@@ -1051,9 +1051,12 @@ func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
 // .len = <N> };` whose initializer is a StringLiteral (a string literal), a
 // call to a str-returning helper (a DirectCall whose result type is str —
-// `let s str = g();`, since 10.36), or — since str local copy-initialization —
-// a SymbolValue naming an in-scope str-typed local, emitted as
-// `PebbleStr pebble_local_<new> = pebble_local_<other>;` — a plain C struct
+// `let s str = g();`, since 10.36), a SymbolValue naming an in-scope
+// str-typed local (`let s str = first;`, since str local
+// copy-initialization), or a Load of a str tuple element or str struct field
+// (`let s str = t.0;` for a (str, int) tuple, or `let s str = b.v;` for a
+// Box.{ v = "hi" } struct) — the whole-str copy shapes, each emitted as a
+// plain C struct
 // declaration-with-initializer, valid because PebbleStr is a genuine C struct
 // ({data, len}) and so copies by value like tuple/struct/enum locals do (the
 // same acceptance logic buildStrOperand's SymbolValue case uses for the str
@@ -1068,8 +1071,8 @@ func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // can never be swallowed by C's maximal-munch escape rules); .len is the
 // decoded byte length, a compile-time constant known from the literal itself,
 // so no runtime strlen is involved. The initializer must be a StringLiteral,
-// a matching str-returning DirectCall, or a reference to a str-typed local in
-// scope:
+// a matching str-returning DirectCall, a reference to a str-typed local in
+// scope, or a Load of a str tuple element / str struct field:
 // initializing a str local from any other value — a copy of another str
 // local, anything else — is a clean rejection, keeping this slice's
 // supported initializer exactly the string literal, a call to a
@@ -1130,6 +1133,47 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		}
 		scope[statement.Symbol] = localInfo{isStr: true}
 		return fmt.Sprintf("%sPebbleStr pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
+	if initValue.Kind == tir.Load {
+		// A str value read back out of a compound local through a Load — a
+		// tuple-ordinal read (`let s str = t.0;` for a (str, int) tuple) or a
+		// struct-field read-back (`let s str = b.v;` for a Box.{ v = "hi" }
+		// struct) — lowered by the checker to Load(TuplePlace)/
+		// Load(FieldPlace), the same place shapes buildExpr's int Load case
+		// accepts, and both previously rejected together by this switch's
+		// final rejection (it had no Load case at all). The place is resolved
+		// via buildPlaceLValue, the same machinery buildTuplePlaceRead /
+		// buildStructFieldRead use, and the resolved element type must be
+		// str: str carries no per-declaration type ID the way
+		// tuple/struct/enum do — every str is the same PebbleStr C type — so
+		// the check is on the element type the place resolution returns from
+		// the tuple/struct type, mirroring how the SymbolValue case above
+		// validates its str local. The emitted C is a declaration-with-
+		// initializer `PebbleStr pebble_local_<new> = <lvalue>;` —
+		// pebble_local_<symbol>._<ordinal> for a tuple element,
+		// pebble_local_<symbol>.pebble_field_<member> for a struct field —
+		// PebbleStr is a genuine C struct ({data, len}), so the by-value copy
+		// is trivially valid C, the same convention str call arguments and
+		// returns already use.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares a str-typed local from a Load with %d child(ren), want exactly one place", context, len(initValue.Children))
+		}
+		placeNode, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares a str-typed local from a Load referencing invalid place node %d", context, initValue.Children[0])
+		}
+		if placeNode.Kind != tir.TuplePlace && placeNode.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("%s declares a str-typed local from a Load whose place is a %s, want a TuplePlace (a str tuple-element read) or a FieldPlace (a str struct-field read)", context, placeNode.Kind)
+		}
+		lvalue, elemType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isStr(snapshot, elemType) {
+			return "", fmt.Errorf("%s declares a str-typed local from a Load whose resolved element type is %s, want str", context, describeType(snapshot, elemType))
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
 	if initValue.Kind != tir.StringLiteral {
 		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal), a call to a str-returning helper, or a reference to a str-typed local in scope", context, initValue.Kind)

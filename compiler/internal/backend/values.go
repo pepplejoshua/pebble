@@ -1369,13 +1369,19 @@ func buildCharOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 		return buildIndirectCall(st, unit, snapshot, fileSet, node, locals, width)
 	case tir.Load:
 		// A char-typed element read of a char-element slice (`let c char =
-		// s[0];`). The checker lowers s[i] to Load(CheckedIndexPlace), exactly
-		// as an integer or bool element read does, and the Load's Type is the
-		// slice's char element type (already gated to char above). The read is
-		// emitted by the same buildArrayPlaceRead machinery an integer slice
-		// element read uses — .data[pebble_rt_checked_index_i32/_i64(...)] at
-		// the ENTRY width — whose resulting C type int32_t is the char value's
-		// C type everywhere.
+		// s[0];`) or a char tuple-element read (`let c char = t.0;`). A slice
+		// read is lowered by the checker to Load(CheckedIndexPlace), exactly
+		// as an integer or bool element read does, and emitted by the same
+		// buildArrayPlaceRead machinery an integer slice element read uses —
+		// .data[pebble_rt_checked_index_i32/_i64(...)] at the ENTRY width —
+		// whose resulting C type int32_t is the char value's C type
+		// everywhere. A tuple-element read is lowered to Load(TuplePlace), the
+		// same shape buildExpr's int Load case accepts, and resolved the same
+		// way via buildPlaceLValue — the tuple element's own type comes back
+		// from the place resolution and must be char (the Load's Type is
+		// already gated to char by the caller, but the element check here is
+		// defense for hand-built IR, mirroring buildTuplePlaceRead's own
+		// validation), and the emitted C is pebble_local_<symbol>._<ordinal>.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
 		}
@@ -1383,8 +1389,18 @@ func buildCharOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a Load referencing invalid place node %d", node.Children[0])
 		}
+		if place.Kind == tir.TuplePlace {
+			lvalue, elemType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", err
+			}
+			if !isChar(snapshot, elemType) {
+				return "", fmt.Errorf("entry function body expression contains a char Load whose tuple element has type %s, want char", describeType(snapshot, elemType))
+			}
+			return lvalue, nil
+		}
 		if place.Kind != tir.CheckedIndexPlace {
-			return "", fmt.Errorf("entry function body expression contains a char Load whose place is a %s, want a CheckedIndexPlace (a char-element slice read)", place.Kind)
+			return "", fmt.Errorf("entry function body expression contains a char Load whose place is a %s, want a CheckedIndexPlace (a char-element slice read) or a TuplePlace (a char tuple-element read)", place.Kind)
 		}
 		return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 	case tir.CheckedIndex:

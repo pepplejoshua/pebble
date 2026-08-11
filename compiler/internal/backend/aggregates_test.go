@@ -1027,6 +1027,37 @@ func TestEmitTupleElementZeroReadCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let t (i32, i32) = (20, 22); return t.0; }", false, 20, false)
 }
 
+func TestEmitCharTupleOrdinalReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A char tuple element read back into a char-typed local (`let x char =
+	// t.0;` for a (char, int) tuple): tuple CONSTRUCTION already worked, but
+	// the read-back was rejected — buildCharOperand's Load gate only accepted
+	// a CheckedIndexPlace (a char-element slice read), never a TuplePlace,
+	// rejecting the shape with "char Load whose place is a TuplePlace". The
+	// TuplePlace is now resolved through buildPlaceLValue like buildExpr's
+	// int Load case does, its element type validated as char, and the read
+	// lowers to the plain projection pebble_local_<sym>._<ordinal>. The
+	// comparison against the literal proves the char value actually came
+	// back (exit 1, else 0).
+	emitAndRun(t, "fn main() int { let t (char, int) = ('a', 1); let x char = t.0; if x == 'a' { return 1; } return 0; }", false, 1, false)
+}
+
+func TestEmitStrTupleOrdinalReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str tuple element read back into a str-typed local (`let x str =
+	// t.0;` for a (str, int) tuple): str tuple STORAGE already worked, but
+	// reading the str value back out into a local was rejected — the
+	// str-local-declaration switch in buildStrLocalDeclaration had no Load
+	// case at all. The Load(TuplePlace) is now resolved through
+	// buildPlaceLValue, its element type validated as str, and emitted as
+	// the plain C declaration-with-initializer
+	// `PebbleStr pebble_local_<x> = pebble_local_<t>._0;` — PebbleStr is a
+	// genuine C struct ({data, len}), so the by-value copy is trivially
+	// valid C. The equality against the literal proves the str value landed
+	// in the local (exit 1, else 0).
+	emitAndRun(t, "fn main() int { let t (str, int) = (\"hi\", 1); let x str = t.0; if x == \"hi\" { return 1; } return 0; }", false, 1, false)
+}
+
 func TestEmitTupleThreeElementWritesC(t *testing.T) {
 	t.Parallel()
 	// The emitted C for the three-element tuple: one struct typedef with three
@@ -2791,6 +2822,24 @@ func TestEmitStrStructFieldReadEqualityCompilesAndRuns(t *testing.T) {
 	// pebble_local_<sym>.pebble_field_<member>. The field holds "hi", so
 	// x.s == "hi" is true and the process exits 7 (the else arm would exit 3).
 	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; if x.s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrStructFieldReadBackIntoLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The str struct field read-back into a str-typed LOCAL (`let y str =
+	// x.s;` for a Box.{ v = "hi" } struct): the Load(FieldPlace) of the str
+	// field already worked in str VALUE positions (a comparison operand, a
+	// call argument — buildStrOperand's Load case), but declaring a str
+	// local from it was rejected — the str-local-declaration switch in
+	// buildStrLocalDeclaration had no Load case at all, rejecting the shape
+	// with "declares a str-typed local initialized from a Load". The
+	// FieldPlace is now resolved through buildPlaceLValue, its resolved
+	// element type validated as str, and emitted as the plain C
+	// declaration-with-initializer `PebbleStr pebble_local_<y> =
+	// pebble_local_<x>.pebble_field_<member>;` — the same projection the
+	// str field read in a comparison operand emits. The equality against the
+	// literal proves the str value landed in the local (exit 7, else 3).
+	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; let y str = x.s; if y == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
 }
 
 func TestEmitStrStructFieldReadGenericKeyCompilesAndRuns(t *testing.T) {
