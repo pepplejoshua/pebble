@@ -44,6 +44,16 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #57 (enum-typed struct field construction) closed in
+`d19717c`. A THIRD related, still-open gap surfaced during
+verification: a tagged-union-typed struct field constructed via
+`VariantConstruct` (`Holder.{ u = Choice.value(5) }`) fails
+identically, independently causation-checked as pre-existing and
+unaffected by this fix — not yet a formal tracker item. Next up: #58,
+bare `sizeof(T,U)`/`sizeof ?T` with no array wrapper.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: an enum-typed struct field's construction fails — the
 enum's typedef and variant constant are never collected when the
 field's construction value is only reachable through
@@ -107,6 +117,22 @@ declaration) are completely unaffected. Verify a tagged-union-typed
 struct field constructed via `VariantConstruct` (not `RecordConstruct`
 — a different node kind) is unaffected, since this fix only touches
 the `RecordConstruct` case.
+
+**Resolution (`d19717c`, 2026-08-11).** Added the `RecordConstruct`
+case to `collectEnumTypesWalk` exactly as scoped, mirroring the three
+sibling collectors precisely. Verified: the reproduction compiles and
+runs; a nested struct-within-a-struct construction round-trips the
+enum value correctly (exit 42); the pre-existing enum field read/
+assign/compare paths and enum-typed locals are unaffected. A
+tagged-union struct field via `VariantConstruct` was independently
+checked and causation-checked to fail IDENTICALLY before and after
+this fix — a separate, still-open, pre-existing gap (noted above),
+correctly left untouched rather than folded in. Full suite (`go test
+./... -count=1 -timeout 600s -parallel 16`, 11 packages) clean,
+`gofmt`/`go vet` clean, causation check confirmed reverting reproduces
+the exact original `cc` failure (both the missing typedef and the
+missing variant constant).
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 

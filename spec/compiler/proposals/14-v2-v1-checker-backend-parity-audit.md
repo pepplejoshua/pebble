@@ -320,6 +320,8 @@ small source reproduction before it moves to the issue tracker.
 | Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Enum-typed slice element | `sliceElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
 | Ordinary `some Color.red` optional enum payload | ~~accepts only the integer-to-optional-enum cast path~~ **Resolved (`1bf785d`)** | **Closed** |
+| Enum-typed struct field construction (`Holder.{ c = Color.blue }`) | ~~`collectEnumTypesWalk` had no `RecordConstruct` case, so the enum's typedef and variant constant were never collected when only reachable via a field's construction value~~ **Resolved (`d19717c`)** | **Closed** |
+| Tagged-union-typed struct field construction (`Holder.{ u = Choice.value(5) }`) | fails identically to the enum case above, independently causation-checked as a separate, pre-existing gap not touched by `d19717c` | **Confirmed absent**, not yet a formal tracker item |
 | Aggregate nesting deeper than one dependency level | ~~aggregate ordering rejects a plain `Outer -> Middle -> Inner` chain~~ **Resolved (`e649476`)** | **Closed** |
 | Whole dereferenced struct as a value | local-initializer and argument paths | **Resolved (`a242181`)** |
 | Runtime `Allocator`/`Context` argument, result, field assignment, and local initializer | ordinary-struct redesign, proposal 15 | **RESOLVED** — all 4 slices complete (`b54d79d`/`dee9b0f`/`a404f14`/`64d2e2b`), both types verified in every value position |
