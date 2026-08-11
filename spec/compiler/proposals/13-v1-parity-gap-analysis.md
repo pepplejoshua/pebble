@@ -44,16 +44,58 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — slice local copy initialization landed as `22ceab8`. This
-closes ALL 6 "local copy initialization" slices from Sol's fourth-
-pass audit (tuple/array/struct/enum/string/slice). 13 of 19 original
-P1 slices done overnight. 11 items remain: TupleCoerce, three-level
-aggregate dependencies, direct array-literal return, slice struct
-field as call argument, existing slice as variadic tail, direct cast
-of sizeof, sizeof [N]Struct typedef ordering, narrow checked
-arithmetic, narrow optional unwrap, ordinary optional enum payload,
-first-class narrow integer function types — pick the next one from
-proposal 14's fourth-pass gap table.)*
+**Item: a `TupleCoerce` node (per-element implicit tuple coercion)
+reaches the backend and fails.**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1. Independently reproduced and root-caused before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+fn main() int {
+    let a i32 = 1;
+    let b i32 = 2;
+    let value (i64, f64) = (a, b);
+    return value.0 as i32;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares a tuple-typed local of type pebble_tuple_26_t initialized
+from a TupleCoerce, want a TupleValue (a tuple literal), a call to a
+tuple-returning helper, or a reference to a tuple-typed local in scope
+of that type`.
+
+**Known cause and exact node shape — already traced, don't
+re-investigate from scratch.** The checker
+(`compiler/internal/check/ir_builder_value.go:185-211`) builds a
+`TupleCoerce` node whenever a tuple LITERAL's per-element source types
+don't already match the destination tuple type's element types
+(`(a, b)` here: `i32, i32` source elements coerced to `i64, f64`
+destination elements). Confirmed via `internal/tir/verify.go:764-770`:
+`TupleCoerce.Children` has AT LEAST 2 entries — `Children[0]` is a
+synthesized `TupleValue` node holding the ORIGINAL, pre-coercion
+element expressions (kept for tooling/verification, not needed for
+codegen), and `Children[1:]` are the ALREADY-COERCED per-element
+expression nodes (each individually cast/wrapped to its correct
+destination type) that should actually be emitted — `TypeArgs` holds
+the destination element types, one per coerced child, same order.
+
+**Scope:** add a `TupleCoerce` case to `buildTupleLocalDeclaration`
+(`compiler/internal/backend/locals.go`) that builds a tuple brace list
+using `initValue.Children[1:]` as the element value nodes — reuse
+`buildTupleBraceList`'s existing element-building logic (or the
+underlying per-element expression builder it calls), sourcing from the
+coerced children (index 1 onward), NOT `Children[0]` (the uncoerced
+tuple) and NOT the raw node's own `Children` (index 0 onward, which
+would be wrong for this node kind). Confirm element count consistency
+(`len(initValue.Children) - 1` should equal the destination tuple
+type's element count). Verify the reproduction above compiles and
+runs, returning 1 (`(i64)1 as i32`). Also verify: a 3-element tuple
+needing coercion on only SOME elements (not all), and that ordinary
+tuple literal initialization (no coercion needed) and tuple local copy
+initialization (`834927e`) are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
