@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — item #49 (slice struct field as call argument) closed in
+`d33060e`. 17 P1s and P0s resolved this window: tasks #33-49. Next
+up: #50, existing slice as sole variadic tail.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
 **Item: a slice-typed struct field cannot be passed directly as a
 call argument.**
 
@@ -107,6 +113,22 @@ a slice field passed to a variadic call's sole tail argument (if that
 shape reaches `buildSliceArgument` rather than
 `buildVariadicSliceArgument` — check which function actually handles
 it and note the answer in the report either way).
+
+**Resolution (`d33060e`, 2026-08-11).** `buildSliceArgument` gained a
+`tir.Load` case reusing `buildPlaceLValue`, exactly as scoped. Verified:
+the reproduction compiles and runs (6); a nested field read
+(`o.inner.values`) also works; the emitted C for the reproduction was
+inspected directly and confirmed the field projection
+(`pebble_local_<h>.pebble_field_<values>`) is passed straight to the
+callee with no temp declaration and no GNU statement-expression. A
+slice field as a variadic call's sole tail argument turned out to be
+rejected by the CHECKER (`C0601`) before reaching either
+slice-argument builder — a separate, checker-level shape question, not
+a backend gap, correctly left out of scope. Full suite
+(`go test ./... -count=1 -timeout 600s -parallel 16`, 11 packages)
+clean, `gofmt`/`go vet` clean, causation check confirmed reverting
+reproduces the original rejection exactly.
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
