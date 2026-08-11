@@ -1282,19 +1282,24 @@ func buildWhile(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 // loop whose loop counter IS the iterator, the representation this backend's
 // design decides:
 //
-//	<indent>for (int32_t pebble_local_<iterSym> = <start>; pebble_local_<iterSym> < <end>; pebble_local_<iterSym>++) {
-//	<loop body statements, one level deeper>
-//	<indent>}
+// <indent><cType> pebble_temp_<startNodeID> = <start>;
+// <indent><cType> pebble_temp_<endNodeID> = <end>;
+// <indent>int32_t pebble_step_<iterSym> = (pebble_temp_<startNodeID> <= pebble_temp_<endNodeID>) ? 1 : -1;
+// <indent>for (<cType> pebble_local_<iterSym> = pebble_temp_<startNodeID>; (pebble_step_<iterSym> > 0) ? (pebble_local_<iterSym> < pebble_temp_<endNodeID>) : (pebble_local_<iterSym> > pebble_temp_<endNodeID>); pebble_local_<iterSym> += pebble_step_<iterSym>) {
+// <loop body statements, one level deeper>
+// <indent>}
 //
-// `<` for the exclusive form (`..`), `<=` for the inclusive form (`..=`),
-// from the node's RangeInclusive field. When the end bound is not an integer
-// literal, a `pebble_temp_<endNodeID>` C local holding the end value is
-// declared before the loop (at the same indent, as the loop's own leading
-// statement) and the condition compares against that local instead of
-// re-splicing the raw end expression — so a side-effecting or expensive end
-// bound is evaluated exactly once, not once per condition check. A literal end
-// bound is spliced directly (re-splicing a decimal number has no
-// evaluation-order consequence). The iterator's own C type is the entry's
+// This is V1's actual production lowering (src/codegen.c, AST_STMT_LOOP)
+// verbatim: the loop direction is computed at runtime from the two bounds'
+// values rather than at compile time. Both bounds are evaluated exactly once,
+// START first then END, into C locals (so a side-effecting or expensive bound
+// runs once, in source order, not once per condition check); the step is
+// computed once from comparing them; and the for-loop condition is a ternary
+// on the step so one uniform shape handles ascending, descending,
+// zero-length, negative-literal, and runtime-computed ranges identically —
+// there is no compile-time literal detection at all. `<`/`>` for the exclusive
+// form (`..`), `<=`/`>=` for the inclusive form (`..=`), from the node's
+// RangeInclusive field. The iterator's own C type is the entry's
 // resolved width (cType(width)); the start/end are ordinary integer
 // expressions built by buildRangeBound (an int-typed integer literal lowered
 // as its decimal text, anything else via buildExpr at the entry's width — the
@@ -1365,60 +1370,47 @@ func buildRangeLoop(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 	if err != nil {
 		return "", err
 	}
-	// Determine loop direction. When both bounds are compile-time integer
-	// literals (their buildRangeBound text is a plain decimal), compare them
-	// statically to choose the comparison operator and step direction. This
-	// handles descending ranges correctly (start > end emits `>` and `--`
-	// instead of the old unconditional `<` and `++` which caused zero
-	// iterations). Non-literal bounds (variables, expressions, function calls)
-	// keep the existing ascending behavior unchanged.
-	startVal, startIsLiteral := strconv.Atoi(startText)
-	endVal, endIsLiteral := strconv.Atoi(endText)
-	var rangeOp, step string
-	if startIsLiteral == nil && endIsLiteral == nil && startVal > endVal {
-		// Descending range: condition checks `>` (or `>=` for inclusive),
-		// step decrements.
-		rangeOp = ">"
-		if rangeNode.RangeInclusive {
-			rangeOp = ">="
-		}
-		step = "--"
-	} else {
-		// Ascending, zero-length, or non-literal bounds: condition checks `<`
-		// (or `<=` for inclusive), step increments.
-		rangeOp = "<"
-		if rangeNode.RangeInclusive {
-			rangeOp = "<="
-		}
-		step = "++"
-	}
+	// The loop direction is decided at runtime, exactly as V1's codegen does
+	// (src/codegen.c, AST_STMT_LOOP): both bounds are evaluated once, START
+	// first then END, into C locals declared before the loop; a step local is
+	// computed once from comparing them; and the for-loop condition is a
+	// ternary on the step. One uniform lowering therefore handles
+	// compile-time-ascending, compile-time-descending, negative-literal, and
+	// runtime-computed ranges identically, with no compile-time literal
+	// detection at all — a range loop whose bounds are only known at runtime
+	// (a call, a local, a checked negation of a literal) descends exactly as a
+	// literal descending range does, instead of silently running zero
+	// iterations under a hardcoded ascending condition. Materializing both
+	// bounds into locals also makes each bound run exactly once (not once per
+	// condition check) and in source order (start before end), the
+	// evaluation-order the V1 lowering guarantees. The start/end locals are
+	// declared at the loop's own bound type — the checker anchors the start
+	// bound to the end bound's type, so boundType is both bounds' type and a
+	// uint-bounded range (std/hmap.peb's `loop 0..new_cap : i { ... }`) keeps
+	// its uint64_t locals and compares them against the uint64_t iterator
+	// without tripping -Wsign-compare under the mandated -Wall -Wextra -Werror.
+	// The step local is deliberately always signed: it holds only -1/+1, and
+	// the condition branches on its sign, so an unsigned step would both trip
+	// -Wsign-compare and wrap -1 to a huge positive value on a descending
+	// unsigned range. The increment `i += step` needs no signedness care — the
+	// step's implicit conversion into the iterator's type wraps the -1 down to
+	// the right value for unsigned iterators.
 	indent := strings.Repeat("    ", depth+1)
-	// A non-literal end bound is evaluated exactly once, into its own C local
-	// declared before the loop, rather than spliced directly into the for-loop
-	// condition (where ordinary C for semantics would re-evaluate it before
-	// every iteration — a side-effecting or expensive end expression would run
-	// once per iteration check instead of once total). The start bound needs no
-	// such treatment: it is assigned into the C loop-variable initializer,
-	// which C evaluates exactly once already. A plain integer literal end bound
-	// keeps the existing fast path (re-splicing a decimal number has no
-	// evaluation-order consequence), mirroring the literal/non-literal split
-	// the descending-range direction logic above already makes. The temp's C
-	// type is the loop's own bound type — the checker anchors the start bound
-	// to the end bound's type, so boundType is the end expression's type too
-	// and the cached local compares against the iterator without any new
-	// signedness or width concern.
-	endExpr := endText
-	var endPre string
-	if endIsLiteral != nil {
-		endTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[1])
-		endPre = fmt.Sprintf("%s%s %s = %s;", indent, cType(boundType), endTemp, endText)
-		endExpr = endTemp
+	iterCType := cType(boundType)
+	startTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[0])
+	endTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[1])
+	stepTemp := fmt.Sprintf("pebble_step_%d", rangeNode.Symbol)
+	iter := fmt.Sprintf("pebble_local_%d", rangeNode.Symbol)
+	ascOp, descOp := "<", ">"
+	if rangeNode.RangeInclusive {
+		ascOp, descOp = "<=", ">="
 	}
-	forText := fmt.Sprintf("%sfor (%s pebble_local_%d = %s; pebble_local_%d %s %s; pebble_local_%d%s) {\n%s\n%s}", indent, cType(boundType), rangeNode.Symbol, startText, rangeNode.Symbol, rangeOp, endExpr, rangeNode.Symbol, step, bodyText, indent)
-	if endPre != "" {
-		return endPre + "\n" + forText, nil
-	}
-	return forText, nil
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s %s = %s;\n", indent, iterCType, startTemp, startText)
+	fmt.Fprintf(&b, "%s%s %s = %s;\n", indent, iterCType, endTemp, endText)
+	fmt.Fprintf(&b, "%sint32_t %s = (%s <= %s) ? 1 : -1;\n", indent, stepTemp, startTemp, endTemp)
+	fmt.Fprintf(&b, "%sfor (%s %s = %s; (%s > 0) ? (%s %s %s) : (%s %s %s); %s += %s) {\n%s\n%s}", indent, iterCType, iter, startTemp, stepTemp, iter, ascOp, endTemp, iter, descOp, endTemp, iter, stepTemp, bodyText, indent)
+	return b.String(), nil
 }
 
 // buildRangeBound builds one bound (the start or the end) of a range loop. A

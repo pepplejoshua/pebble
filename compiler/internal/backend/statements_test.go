@@ -1355,6 +1355,78 @@ func TestEmitRangeLoopNestedIteratorAsInnerBoundCompilesAndRuns(t *testing.T) {
 	emitAndRunBounded(t, "fn main() i32 { var total i32 = 0; loop 0..3 : i { loop 0..i : j { total = total + 1; } } return total; }", false, 3, false)
 }
 
+func TestEmitRangeLoopRuntimeBoundsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The two reproductions of the silent-zero-iteration defect. A descending
+	// range whose bounds are only known at runtime must still descend: a
+	// descending range where start is 3 and end is 0 runs 3 iterations (i =
+	// 3, 2, 1), not zero. Both repros return the iteration count as the exit
+	// code, proving the body ran the right number of times. Bounded execution.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"runtime function bounds", "fn start_val() int { return 3; } fn end_val() int { return 0; } fn main() int { var total int = 0; loop start_val()..end_val() : i { total = total + 1; } return total; }", 3},
+		{"negative literal end bound", "fn main() int { var total int = 0; loop 0..-5 : i { total = total + 1; } return total; }", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRunBounded(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitRangeLoopNegativeLiteralEndBoundValuesCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The negative-literal descending reproduction, checking the iterator's
+	// actual values as well as the count by printing each one: `loop 0..-5`
+	// visits 0, -1, -2, -3, -4 (exclusive of -5) in that order and `loop
+	// 0..=-5` adds -5, so the captured output is "0-1-2-3-4" and
+	// "0-1-2-3-4-5" and the exit code is the iteration count (5 and 6).
+	// Bounded execution.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+		out  string
+	}{
+		{"exclusive", "fn main() int { var total int = 0; loop 0..-5 : i { print i; total = total + 1; } return total; }", 5, "0-1-2-3-4"},
+		{"inclusive", "fn main() int { var total int = 0; loop 0..=-5 : i { print i; total = total + 1; } return total; }", 6, "0-1-2-3-4-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCaptureBounded(t, tc.src, false, tc.want, false)
+			if got := strings.ReplaceAll(out, "\n", ""); got != tc.out {
+				t.Errorf("iterator values printed %q, want %q", got, tc.out)
+			}
+		})
+	}
+}
+
+func TestEmitRangeLoopBoundsEvaluatedStartBeforeEndCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The evaluation-order bug Sol's audit flagged separately: the old lowering
+	// materialized the END bound's call before the loop's own for-header, so a
+	// side-effecting end bound ran before a side-effecting start bound. The
+	// runtime-direction lowering evaluates the START bound into its local
+	// first, then the END bound second, as two sequential C statements, so
+	// mark_start() must print before mark_end(). The captured output is
+	// asserted to be exactly "se", and the loop still counts 0..3 = 3
+	// iterations (exit code 3). Bounded execution.
+	src := "fn mark_start() int { print \"s\"; return 0; } fn mark_end() int { print \"e\"; return 3; } fn main() int { var count int = 0; loop mark_start()..mark_end() : i { count = count + 1; } return count; }"
+	out := emitAndRunCaptureBounded(t, src, false, 3, false)
+	if got := strings.Count(out, "s"); got != 1 {
+		t.Errorf("mark_start() printed %d time(s), want exactly once; output:\n%s", got, out)
+	}
+	if got := strings.Count(out, "e"); got != 1 {
+		t.Errorf("mark_end() printed %d time(s), want exactly once; output:\n%s", got, out)
+	}
+	if si := strings.Index(out, "s"); si < 0 || strings.Index(out, "e") < si {
+		t.Errorf("start bound did not run before the end bound; output:\n%s", out)
+	}
+}
+
 func TestEmitRangeLoopI64EntryCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A range loop inside an i64 entry: the iterator's C type follows the
@@ -1366,14 +1438,18 @@ func TestEmitRangeLoopI64EntryCompilesAndRuns(t *testing.T) {
 
 func TestEmitRangeLoopWritesC(t *testing.T) {
 	t.Parallel()
-	// The emitted C for the flagship fixture must be a C for loop whose
-	// init/condition/increment all use the iterator's own
-	// pebble_local_<symbol> name as an ordinary C loop counter at the entry's
-	// width: `for (int32_t pebble_local_26 = 0; pebble_local_26 < 3;
-	// pebble_local_26++)`. Symbols 25 (sum) and 26 (the iterator) come from
-	// the real fixture dump. The inclusive form's condition must instead be
-	// `<=` (RangeLoop.RangeInclusive), so the two operators are distinguishable
-	// in the emitted text.
+	// The emitted C for the flagship fixture must be the always-runtime-direction
+	// lowering (V1's src/codegen.c AST_STMT_LOOP shape): both bounds materialized
+	// into C locals first (start, then end, at the loop's bound type), the step
+	// local computed once by comparing them, and the for loop's init/condition/
+	// increment all referencing those locals with a ternary-on-the-step
+	// condition: `for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28
+	// > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 >
+	// pebble_temp_23); pebble_local_28 += pebble_step_28)`. Symbols 22/23 (the
+	// bound literal nodes), 27 (sum), and 28 (the iterator) come from the real
+	// fixture dump. The inclusive form's conditions must instead be `<=`/`>=`
+	// (RangeLoop.RangeInclusive), so the two operators are distinguishable in
+	// the emitted text.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -1381,7 +1457,10 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (int32_t pebble_local_28 = 0; pebble_local_28 < 3; pebble_local_28++) {\n",
+		"    int32_t pebble_temp_22 = 0;\n",
+		"    int32_t pebble_temp_23 = 3;\n",
+		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
 		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 56});",
 	} {
 		if !strings.Contains(out, want) {
@@ -1394,8 +1473,14 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, "    for (int32_t pebble_local_28 = 0; pebble_local_28 <= 3; pebble_local_28++) {\n") {
-		t.Errorf("emitted C missing the inclusive for-loop header:\n%s", out)
+	for _, want := range []string{
+		"    int32_t pebble_temp_22 = 0;\n",
+		"    int32_t pebble_temp_23 = 3;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 <= pebble_temp_23) : (pebble_local_28 >= pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -2613,59 +2698,130 @@ func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceCompilesAndRuns(t *testing.
 
 func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceWritesC(t *testing.T) {
 	t.Parallel()
-	// The emitted C must cache a non-literal end bound in a pebble_temp_<id>
-	// local declared before the loop, and the for-loop condition must compare
-	// against that local rather than re-splicing the raw end expression — the
-	// shape of the once-only evaluation fix. The temp line initializes from
-	// the helper call (pebble_fn_...), and the for-header references the temp
-	// name instead of that call.
+	// The always-runtime-direction lowering materializes BOTH bounds into
+	// pebble_temp_<id> locals declared before the loop, so the end bound's call
+	// (pebble_fn_...) appears exactly once, in the end-temp declaration line,
+	// and the for-loop condition compares against those locals rather than
+	// re-splicing the raw end expression — the shape of the once-only, in-order
+	// (start then end) evaluation guarantee.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn bound() int { print \"bound called\\n\"; return 3; } fn main() int { var count = 0; loop 0..bound() : i { count = count + 1; } return count; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	var tempLine, forLine string
-	foundTemp, foundFor := false, false
+	var startTempLine, endTempLine, forLine string
+	foundStartTemp, foundEndTemp, foundFor := false, false, false
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "pebble_temp_") && strings.Contains(line, " = ") && strings.HasSuffix(line, ";") {
-			tempLine = line
-			foundTemp = true
+		if strings.Contains(line, "pebble_temp_") && strings.Contains(line, " = ") && !strings.Contains(line, " ? ") && strings.HasSuffix(line, ";") {
+			if strings.Contains(line, "pebble_fn_") {
+				endTempLine = line
+				foundEndTemp = true
+			} else {
+				startTempLine = line
+				foundStartTemp = true
+			}
 		}
 		if strings.Contains(line, "for (int32_t pebble_local_") {
 			forLine = line
 			foundFor = true
 		}
 	}
-	if !foundTemp {
-		t.Fatalf("emitted C missing a pebble_temp_<id> declaration for the end bound:\n%s", out)
+	if !foundStartTemp {
+		t.Fatalf("emitted C missing the start-bound pebble_temp_<id> declaration:\n%s", out)
 	}
-	if !strings.Contains(tempLine, "pebble_fn_") {
-		t.Errorf("pebble_temp_ line does not initialize from the bound() call:\n%s", tempLine)
+	if !strings.Contains(startTempLine, "= 0") {
+		t.Errorf("start-temp line does not initialize from the literal start bound:\n%s", startTempLine)
+	}
+	if !foundEndTemp {
+		t.Fatalf("emitted C missing an end-bound pebble_temp_<id> declaration from the bound() call:\n%s", out)
+	}
+	if !strings.Contains(endTempLine, "pebble_fn_") {
+		t.Errorf("end-temp line does not initialize from the bound() call:\n%s", endTempLine)
 	}
 	if !foundFor {
 		t.Fatalf("emitted C missing the range-loop for-header:\n%s", out)
 	}
 	if !strings.Contains(forLine, "pebble_temp_") {
-		t.Errorf("for-header compares against the raw end expression instead of the pebble_temp_<id> local:\n%s", forLine)
+		t.Errorf("for-header compares against the raw bound expressions instead of the pebble_temp_<id> locals:\n%s", forLine)
 	}
 	if strings.Contains(forLine, "pebble_fn_") {
 		t.Errorf("for-header still re-splices the end-bound call expression:\n%s", forLine)
 	}
 }
 
-func TestEmitRangeLoopNonLiteralDescendingBoundStaysAscendingCompilesAndRuns(t *testing.T) {
+func TestEmitRangeLoopRuntimeDirectionWritesC(t *testing.T) {
+	t.Parallel()
+	// The runtime-direction lowering with call-valued bounds: both bound calls
+	// land in pebble_temp_<id> locals in source order (start line first, then
+	// end line), the step local is computed at runtime from comparing them,
+	// and the for-loop header is a ternary on the step so the same lowering
+	// serves ascending and descending runtime bounds alike. The start-temp line
+	// must precede the end-temp line (the evaluation-order guarantee), and the
+	// for-header must reference the temps, not the raw pebble_fn_ calls.
+	src := "fn start_val() int { return 3; } fn end_val() int { return 0; } fn main() int { var total int = 0; loop start_val()..end_val() : i { total = total + 1; } return total; }"
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// The two bound-call temps are the two lines that reference pebble_fn_ and
+	// end in `;`; they appear in source order (start first, end second). Helpers
+	// lower to pebble_fn_<symbolID>, so the lines are distinguished by order,
+	// not by source name.
+	var boundTempLines []string
+	stepIdx, forIdx := -1, -1
+	var forLine string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, "pebble_temp_") && strings.Contains(line, "pebble_fn_") && strings.HasSuffix(line, ";"):
+			boundTempLines = append(boundTempLines, line)
+		case strings.Contains(line, " ? 1 : -1;"):
+			stepIdx = strings.Index(out, line)
+		case strings.Contains(line, "for (int32_t pebble_local_") && strings.Contains(line, "pebble_step_"):
+			forIdx = strings.Index(out, line)
+			forLine = line
+		}
+	}
+	if len(boundTempLines) != 2 {
+		t.Fatalf("emitted C has %d bound-call temp line(s), want exactly 2 (start then end):\n%s", len(boundTempLines), out)
+	}
+	startIdx := strings.Index(out, boundTempLines[0])
+	endIdx := strings.Index(out, boundTempLines[1])
+	if startIdx < 0 || endIdx < 0 || startIdx > endIdx {
+		t.Errorf("start bound not evaluated before end bound (start at %d, end at %d):\n%s", startIdx, endIdx, out)
+	}
+	if stepIdx < 0 {
+		t.Errorf("emitted C missing the runtime step local ((start <= end) ? 1 : -1):\n%s", out)
+	}
+	if forIdx < 0 {
+		t.Errorf("emitted C missing the ternary-on-step for-loop header:\n%s", out)
+	}
+	if forIdx >= 0 {
+		if !strings.Contains(forLine, "> 0) ? (") || !strings.Contains(forLine, ") : (") {
+			t.Errorf("for-header is not the ternary-on-step runtime-direction shape:\n%s", forLine)
+		}
+		if strings.Contains(forLine, "pebble_fn_") {
+			t.Errorf("for-header re-splices the bound calls instead of the temps:\n%s", forLine)
+		}
+	}
+}
+
+func TestEmitRangeLoopNonLiteralDescendingBoundCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A non-literal descending scenario (start > runtime end value): the
-	// checker allows it (it cannot know the end value at compile time), and
-	// the descending-range fix is deliberately scoped to literal bounds only,
-	// so a non-literal end bound keeps the ascending `<` + `++` lowering.
-	// bound() returns 3, so 5..3 is an ascending range that is false on the
-	// first check: zero iterations (count = 0, exit code 0), and the
-	// once-only evaluation fix still holds (bound() called exactly once, by
-	// the single condition check). Bounded execution.
+	// runtime-direction lowering decides the direction from the bounds'
+	// runtime values, so `loop 5..bound()` with bound() returning 3 descends
+	// 5, 4 — 2 iterations (count = 2, exit code 2), instead of the old
+	// hardcoded ascending `<` + `++` lowering that ran zero iterations. This
+	// is the exact silent-zero-iteration defect the always-runtime-direction
+	// lowering fixes: a descending bound only known at runtime no longer
+	// falls through to the ascending default. bound() is still evaluated
+	// exactly once (once-only evaluation of both bounds holds). Bounded
+	// execution.
 	src := "fn bound() int { print \"bound called\\n\"; return 3; } fn main() int { var count = 0; loop 5..bound() : i { count = count + 1; } return count; }"
-	out := emitAndRunCaptureBounded(t, src, false, 0, false)
+	out := emitAndRunCaptureBounded(t, src, false, 2, false)
 	if got := strings.Count(out, "bound called"); got != 1 {
 		t.Fatalf("bound() called %d time(s), want exactly 1; output:\n%s", got, out)
 	}
@@ -2695,32 +2851,43 @@ func TestEmitZeroLengthRangeLoopCompilesAndRuns(t *testing.T) {
 
 func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	t.Parallel()
-	// The emitted C for a descending range loop must use `>` (or `>=` for
-	// inclusive) as the condition and `--` as the step, confirming the
-	// direction fix is reflected in the generated code.
+	// The runtime-direction lowering expresses a descending range through the
+	// runtime step local and the ternary condition — never a hardcoded `--` or
+	// `>`: both bounds land in pebble_temp_<id> locals, the step local is
+	// computed from comparing them, and the for-loop condition's descending
+	// branch reads `pebble_local_28 > pebble_temp_23` (exclusive) or `>=`
+	// (inclusive), with the increment `pebble_local_28 += pebble_step_28`.
+	// Symbols 22/23 (the bound literal nodes), 27 (count), and 28 (the
+	// iterator) come from the real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var count i32 = 0; loop 5..0 : i { count = count + 1; } return count; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "for (int32_t pebble_local_") {
-		t.Errorf("emitted C missing for-loop header:\n%s", out)
+	for _, want := range []string{
+		"    int32_t pebble_temp_22 = 5;\n",
+		"    int32_t pebble_temp_23 = 0;\n",
+		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
 	}
-	if !strings.Contains(out, "pebble_local_") || !strings.Contains(out, "--") {
-		t.Errorf("emitted C missing decrement step for descending range:\n%s", out)
-	}
-	// Inclusive descending: must use `>=` and `--`.
+	// Inclusive descending: the ternary's branches must be `<=` / `>=`.
 	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var count i32 = 0; loop 5..=0 : i { count = count + 1; } return count; }", "main", false)
 	buf.Reset()
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, ">=") {
-		t.Errorf("emitted C missing `>=` for inclusive descending range:\n%s", out)
-	}
-	if !strings.Contains(out, "--") {
-		t.Errorf("emitted C missing decrement step for inclusive descending range:\n%s", out)
+	for _, want := range []string{
+		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 <= pebble_temp_23) : (pebble_local_28 >= pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
 	}
 }
