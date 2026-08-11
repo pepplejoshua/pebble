@@ -44,9 +44,53 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — struct local copy initialization landed as `2179ebf`. 10 of
-19 P1 slices done. Next: enum local copy initialization (slice 4 of 6
-in this family), same one-type-per-task discipline.)*
+**Item: an enum-typed local cannot be initialized from another enum
+value (`let second Color = first;`).**
+
+Sourced from Sol's fourth-pass audit (2026-08-10, commit `3047352`),
+P1, fourth of 6 "local copy initialization" slices. Independently
+reproduced before dispatch.
+
+**Reproduction** (confirmed against current HEAD):
+
+```
+type Color = enum { red, green, blue };
+fn main() int {
+    let first = Color.green;
+    let second Color = first;
+    if second == Color.green { return 0; }
+    return 1;
+}
+```
+
+`go run ./cmd/pebc <file.peb>` fails with: `entry function body block
+declares an enum-typed local of type pebble_enum_19_t initialized from
+a SymbolValue, want a variant literal (e.g. Color.green) or an integer
+cast to the enum type (e.g. 5 as Color); initializing an enum local
+from another value is not supported yet`.
+
+**Known cause and required approach.** `buildEnumLocalDeclaration`
+(`compiler/internal/backend/locals.go:781`) rejects a `SymbolValue`
+initializer. An enum-typed local is a plain C `enum`
+(`pebble_enum_<id>_t`), trivially declaration-initializable from
+another enum value in plain C — same shape as the already-fixed tuple
+(`834927e`) and struct (`2179ebf`) siblings, no `memcpy` needed. NOTE:
+this same function already gained a `Load(CheckedIndexPlace)` case
+earlier TODAY (commit `94a2a39`, the enum-typed-array/slice-element
+fix) — read that diff too, so the new `SymbolValue` case doesn't
+duplicate or conflict with the existing cases in this function.
+
+**Scope:** widen `buildEnumLocalDeclaration` to accept a `SymbolValue`
+naming an in-scope enum-typed local of the exact matching type,
+mirroring the tuple/struct local-copy fixes' acceptance-logic shape
+(scope lookup, type-match guard, single-statement declaration-with-
+initializer plus `(void)` cast — check this function's own `localInfo`
+field name for enum type, likely something like `enumType`, don't
+assume it matches tuple/struct's field names). Verify the reproduction
+above compiles and runs, returning 0. Also verify: a different variant
+(not just the first one declared), and that enum-typed struct fields,
+enum-typed array/slice elements (from `94a2a39`), and enum equality
+comparisons are unaffected.
 
 <!-- Previous item, resolved 2026-08-10:
 
