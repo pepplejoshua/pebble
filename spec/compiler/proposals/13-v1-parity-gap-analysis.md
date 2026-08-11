@@ -44,6 +44,12 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
+*(empty — str local copy initialization landed as `7747aaa`. 12 of 19
+P1 slices done. Next: slice local copy initialization — the LAST of
+the 6 "local copy initialization" slices.)*
+
+<!-- Previous item, resolved 2026-08-10:
+
 **Item: a `str`-typed local cannot be initialized from another `str`
 value (`let second str = first;`).**
 
@@ -88,6 +94,15 @@ returning 0. Also verify: a `str` local copied from a helper-call
 result stored in an intermediate local (chained copy), and that `str`
 reassignment, `str` equality, and `str`-typed struct fields are
 unaffected.
+
+**Resolution (`7747aaa`, 2026-08-10).** Added a `SymbolValue` branch to
+`buildStrLocalDeclaration` guarded on `localInfo.isStr` (str has no
+per-declaration type ID, unlike the aggregate cases) — `PebbleStr` is
+a genuine C struct, no `memcpy` needed. Verified the repro and a
+chained copy (`a → b → c`); reassignment, equality, and str-typed
+struct fields unaffected. Causation-checked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-10:
 

@@ -314,7 +314,7 @@ small source reproduction before it moves to the issue tracker.
 | Initialize an array local from another array value | **RESOLVED (`8c72f36`, 2026-08-10)** — `let second [3]int = first;` now works via a bare declaration + `memcpy`, verified for 5-element and bool-element arrays, causation-checked | — |
 | Initialize a struct local from another struct value | **RESOLVED (`2179ebf`, 2026-08-10)** — `let second Point = first;` now works, verified for a 3-field struct and a nested-struct field, causation-checked | — |
 | Initialize an enum local from another enum value | **RESOLVED (`7f1db25`, 2026-08-10)** — `let second Color = first;` now works, verified for a second variant proving tag round-tripping, causation-checked | — |
-| Initialize a `str` local from another `str` value | `buildStrLocalDeclaration` rejects `SymbolValue` | **Confirmed absent source shape** |
+| Initialize a `str` local from another `str` value | **RESOLVED (`7747aaa`, 2026-08-10)** — `let second str = first;` now works, verified for a chained copy, causation-checked | — |
 | Initialize a slice local from another slice value | the slice local path treats the initializer as a new `CheckedSlice` and rejects `SymbolValue` | **Confirmed absent source shape** |
 | Materialize an interpolated string as a local, argument, result, or ordinary value | `InterpolatedString` is handled only inside `buildPrint`; general string builders reject it | **Absent** |
 | Enum-typed fixed-array element | `arrayElementCType`, `types.go` | **RESOLVED** (`94a2a39`, 2026-08-10) |
