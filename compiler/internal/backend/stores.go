@@ -239,6 +239,20 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			}
 			return store(storeValue), nil
 		}
+		if isFloat(snapshot, elementType) {
+			// A float-typed field (or indexed element) write — `p.x = 3.5;`:
+			// the C field is declared at its plain C float/double (see
+			// structFieldCType), and the new value is built by buildFloatExpr at
+			// the field's OWN float kind — a float literal or a reference to an
+			// in-scope float-typed local of that same kind — so `lvalue = 3.5;`
+			// is the direct, uncoerced C store, exactly as a float local's
+			// reassignment builds its new value (see the F32/F64 Store case).
+			storeValue, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, resolvedFloatKind(snapshot, elementType), width)
+			if err != nil {
+				return "", err
+			}
+			return store(storeValue), nil
+		}
 		if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			// An integer element of any fixed-width builtin, not just the
 			// entry's own: the new value is built at the ELEMENT's own resolved

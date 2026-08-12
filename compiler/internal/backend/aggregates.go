@@ -879,6 +879,21 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 				return "", "", err
 			}
 			expr = built
+		case isFloat(snapshot, fieldType):
+			// A float-typed field's construction value is built by
+			// buildFloatExpr at the field's OWN float kind (resolvedFloatKind —
+			// f32 or f64) and the entry width, exactly as a float call argument,
+			// a float local's declaration initializer, and a float comparison
+			// operand are built (task #22, slice 86a): a float literal, a
+			// reference to an in-scope float-typed local, or a call to a
+			// float-returning helper. The C field's type is the plain C
+			// float/double (see structFieldCType), so the built expression
+			// matches the field type with no cast.
+			built, err := buildFloatExpr(st, unit, snapshot, fileSet, field.Value, scope, resolvedFloatKind(snapshot, fieldType), width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isStr(snapshot, fieldType):
 			// A str-typed field's construction value (Entry's `key = k`,
 			// std/hmap.peb's insert) is one of the same three shapes

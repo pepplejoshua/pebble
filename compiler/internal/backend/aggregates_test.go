@@ -2802,6 +2802,82 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitStructF64FieldConstructionAndReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct whose fields are f64 (floats as aggregate members, slice 86b):
+	// the struct typedef now declares each float field at its plain C double
+	// (see structFieldCType), the RecordConstruct field values are built by
+	// buildFloatExpr at the field's own f64 kind (aggregates.go), and a field
+	// read used in arithmetic/comparison flows through buildFloatExpr's Load
+	// case (already in place since slice 86a). 1.5 + 2.5 = 4.0, so the exact
+	// f64 equality comparison drives exit 42; any one of the three paths
+	// (typedef, construction, read) failing breaks the run.
+	emitAndRun(t, "type Point = struct { x f64; y f64; };\nfn main() int { var p Point = Point.{ x = 1.5, y = 2.5 }; if p.x + p.y == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitStructF32FieldConstructionAndReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 cousin of the f64 field test: the typedef declares the fields at
+	// the plain C float (floatCType(F32) = "float"), and construction + read
+	// run through the same buildFloatExpr-at-own-kind path at the f32 kind.
+	// 1.5 + 2.5 is exactly 4.0 in f32 too, so the comparison drives exit 42.
+	emitAndRun(t, "type Tiny = struct { x f32; y f32; };\nfn main() int { var t Tiny = Tiny.{ x = 1.5, y = 2.5 }; if t.x + t.y == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitStructFloatFieldWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct field WRITE / reassignment (`p.x = 3.5;`): the Store's place is
+	// a FieldPlace whose resolved element type is f64, and stores.go's field
+	// dispatch now builds the new value with buildFloatExpr at the field's own
+	// f64 kind, so `pebble_local_<id>.pebble_field_<x> = 3.5;` is the direct C
+	// store. The reassigned value must win the subsequent arithmetic comparison
+	// (3.5 + 2.5 = 6.0) — proving the write, not just the construction, works.
+	// The f32 variant exercises the same write path at the f32 kind.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "type Point = struct { x f64; y f64; };\nfn main() int { var p Point = Point.{ x = 1.5, y = 2.5 }; p.x = 3.5; if p.x + p.y == 6.0 { return 42; } return 1; }"},
+		{"f32", "type Tiny = struct { x f32; y f32; };\nfn main() int { var t Tiny = Tiny.{ x = 1.5, y = 2.5 }; t.x = 3.5; if t.x + t.y == 6.0 { return 42; } return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 42, false)
+		})
+	}
+}
+
+func TestEmitStructFloatFieldWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for an f64-field fixture (construction + read + write): the
+	// struct typedef declares both fields at the plain C double (no per-TypeID
+	// float typedef), the local's initializer is a designated compound literal
+	// carrying the float literals, the arithmetic read is plain C double
+	// addition/comparison, and the field write is a direct C store
+	// `pebble_local_<id>.pebble_field_<x> = 3.5;` — exactly the shape a
+	// double-typed scalar local's declaration/reassignment produces. Symbols 25
+	// (x), 26 (y), 30 (p), and struct type 19 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x f64; y f64; };\nfn main() int { var p Point = Point.{ x = 1.5, y = 2.5 }; p.x = 3.5; if p.x + p.y == 6.0 { return 42; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    double pebble_field_25;\n    double pebble_field_26;\n} pebble_struct_19_t;",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = 1.5, .pebble_field_26 = 2.5 };",
+		"pebble_local_30.pebble_field_25 = 3.5;",
+		"if ((pebble_local_30.pebble_field_25 + pebble_local_30.pebble_field_26) == 6.0) {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "float pebble_field_") {
+		t.Errorf("emitted C declared a C float struct field for an f64 entry:\n%s", out)
+	}
+}
+
 func TestEmitStrStructFieldLiteralC(t *testing.T) {
 	t.Parallel()
 	// A struct whose field type is str now emits: the struct typedef declares

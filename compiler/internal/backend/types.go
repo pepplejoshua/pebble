@@ -1357,6 +1357,12 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
+	// A float field (f32/f64) is declared with its plain C float/double type —
+	// no typedef needed, exactly like a bool/str field — mirroring how
+	// floatCType is already used for helper parameters/results (task #22).
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
+	}
 	if isStr(snapshot, id) {
 		return "PebbleStr", nil
 	}
