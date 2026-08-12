@@ -44,30 +44,33 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 8 ("Tagged union", tracker 14) closed in
-`9a5342e`. Confirmed NOT stale (unlike Struct/Type declaration): the
-i32/bool/str-only payload restriction was real. Fixed via a checker
-anchor bug (prepareVariant never grounded a literal aggregate payload
-to its declared type, mirroring prepareDirect's fix) plus a backend
-admission gate widened to every scalar shape (fixed-width integers at
-their own width, bool, char, str, float, plain enum, nested union) —
-aggregate payloads (struct/tuple/array/slice/optional) remain
-deliberately out of scope, blocked by the union-leads-aggregate
-typedef emission order, not a bug. One real gap found and logged, not
-fixed: an INLINE nested-union construction
-(`Outer.value(Inner.b(7))`) hits a genuine typedef-ordering bug (the
-construct-then-reference form works fine). This task needed 3 orc
-dispatches: the first left a non-compiling diff despite a `completed`
-status whose response read as thorough but cut off mid-sentence with
-no closing verification — the sharpest reminder yet that `completed`
-proves nothing without checking the actual diff; resumed once, which
-fixed the compile error and made a sound scope-narrowing call; a third
-dispatch (scoped to "tests only, do not touch source") wrote the proof
-tests but left one message-text mismatch, fixed directly as a one-line
-string correction. Picking up the next Phase 3 item: "Function type
-and function value" (tracker 14, "Partial; V1 supports a wider
-convention and signature surface" — check current state for staleness
-first, per the now-established pattern) next.)*
+*(Investigating, NOT yet dispatched: Phase 3 item 9 ("Function type
+and function value", tracker 14 line 143, "Partial; V1 supports a
+wider convention and signature surface"). Read
+`validateFunctionTypeSignature` (`internal/backend/validate.go:306`)
+directly: it rejects (1) non-Pebble calling convention — this is the
+SAME already-decided scope limit as the "Calling-convention
+annotation" row (line 108, "Intentional difference"); (2) a variadic
+signature — the same category as "C variadic extern call" (line 313,
+"Decision needed"); (3) any parameter that isn't an
+integer/uint/u64/bool/char/str/pointer — no float, no aggregate
+(struct/tuple/enum/union/optional/array/slice) parameters; (4) any
+result that isn't entry-width/u64/bool/char/void/pointer — no float,
+no other integer widths, no aggregate results. Items 1-2 look like
+rollup restatements of decisions already made elsewhere, not new work.
+Items 3-4 (float/aggregate parameter and result support for
+first-class function VALUES, i.e. widening what a `fn(...)` type can
+mention) are a genuinely open, but potentially large-scope, gap —
+first-class function values route through indirect-call dispatch
+machinery this effort hasn't touched yet, unlike the incremental
+struct-field/optional-payload/array-element widenings done so far.
+Paused here without dispatching, close to the 2026-08-12 07:00 local
+alarm, rather than start an uncertain-scope investigation right before
+it. Next session: scope items 3-4 narrowly (likely start with float
+parameters only, the smallest slice) before dispatching, and correct
+tracker 14 line 143 to distinguish "already covered by other rows"
+(1-2) from "genuinely open" (3-4) regardless of whether a fix is
+attempted next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
