@@ -44,20 +44,21 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 10 ("Generic type and specialization", tracker
-14) closed in `4ae1ac6`. A 20+-shape empirical sweep found every deep-
-aggregate/value-source shape already working; the one real
-generics-specific bug found (a generic method's own type param
-inferable only from a function-value argument, e.g. `o.convert(twice)`
-with no explicit type args) is fixed in the solver's `callMember`
-(internal/infer/instantiate.go) — a first attempt in the walker's
-`callMethod` branch could never have worked (the callee symbol isn't
-known there for a method call) and was correctly diagnosed and
-reverted before landing the real fix. Picking up the next Phase 3
-item: "Struct field and instance method selection" (tracker 14,
-"Partial by value-source shape; generic and runtime-owner gaps listed
-here are resolved" — check current state for staleness first, per the
-established pattern) next.)*
+*(empty — Phase 3 item 11 ("Struct field and instance method
+selection", tracker 14) closed in `e09f9f8`. A new shared value-builder
+(buildStructValueNode/buildStructFieldValueRead, places.go) covers
+every non-local receiver shape for both field reads and method-call
+receivers: a call result, a nested field read, an array/slice/tuple
+element, a force-unwrap, a parenthesized expression. Two rejection
+tests converted to proofs as a direct, correct consequence of the
+uniform builder (a paren-wrapped struct-literal call argument; a field
+read directly off a struct literal). One harmless test regression
+(deref-argument parenthesization) fixed alongside 2 genuine positive
+ones. Picking up the next Phase 3 item: "Enum and union variant
+selection" (tracker 14, "Partial for untagged unions and unsupported
+payload/container shapes; generic-self selection is resolved" — check
+current state for staleness first, per the established pattern)
+next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
