@@ -44,13 +44,39 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #89 (negative-MIN literal checked-negation) closed in
-`2bfbfc4`. Fourth fix in the consolidated gap-filling pass over the
-proof-batch findings. The user made the design call on #88 (2026-08-11):
-reject a pointer cast to a narrower-than-pointer integer destination
-cleanly, rather than truncate to match V1. #88, #92 (struct
-call-result/field-read as argument/receiver), and #93 (bare
-string-literal arrow-body T0501) remain queued.)*
+*(empty — item #88 (narrow pointer-to-int cast) closed in `297e162`.
+Fifth fix in the consolidated gap-filling pass over the proof-batch
+findings. Only #92 (struct call-result/field-read as
+argument/receiver) and #93 (bare string-literal arrow-body T0501)
+remain queued; once those land, gap-filling is done and #86
+(float-as-aggregate-member, deferred) is next, per the user's earlier
+instruction.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: pointer cast to an integer destination narrower than a
+pointer (`u8`/`u16`/`u32`/`i8`/`i16`/`i32`/`int`) was checker-accepted
+then failed `cc` under `-Wpointer-to-int-cast`.**
+
+Only pointer-width-or-wider destinations (`u64`/`uint`/`i64`, all
+64-bit on this ABI) actually compiled. The project owner made the
+design call: reject the narrow case cleanly at the checker rather than
+truncate to match V1's behavior (2026-08-11).
+
+**Resolution (`297e162`, 2026-08-11).** New `isPointerWidthInteger`
+helper (`internal/check/compatibility.go`) gates both
+`classifyComposite`'s and `coercionFor`'s pointer-to-integer rules —
+gating `coercionFor` alone would NOT have produced a clean rejection,
+since `validateCastRecords` checks `classify()` before IR construction
+and a narrow destination would otherwise leak into the C0619
+internal-error catch-all; the real gate had to be at
+`classifyComposite`. All seven narrow destinations now get a single
+clean C0601; the three wide destinations are unaffected, proven by a
+new end-to-end no-regression test. Causation-checked: reverting
+`compatibility.go` alone reproduces the original silent acceptance for
+all seven narrow destinations exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
