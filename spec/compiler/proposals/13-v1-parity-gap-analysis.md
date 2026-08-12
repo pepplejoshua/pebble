@@ -44,13 +44,42 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — slice 86b (struct field float support: typedef,
-construction, write) closed in `8bd34f6`. Task #86's struct-field
-sub-task is done; remaining sub-tasks: optional payload float support
-(86c, not yet dispatched) and slice-of-float construction (a
-separately confirmed gap, not yet sliced). Also still open: #95
-(inline tuple-literal struct field construction type mismatch, found
-during #94) and the parked `int`-width architectural question.)*
+*(empty — slice 86c (optional payload float support: typedef,
+construction, force-unwrap, plus new runtime unwrap helpers) closed in
+`11e9b83`. Task #86's tuple/array, struct-field, and optional-payload
+sub-tasks are all done. Remaining: slice-of-float construction (a
+separately confirmed gap, not yet sliced) — likely the last piece of
+#86. Also still open: #95 (inline tuple-literal struct field
+construction type mismatch, found during #94) and the parked
+`int`-width architectural question.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: `?f64`/`?f32` failed to compile at all — the third slice of
+task #86 (float as an aggregate member).**
+
+`optionalPayloadCType` had no case for a float builtin, so the
+optional's own C typedef couldn't be built; nothing downstream
+(construction, force-unwrap) was reachable.
+
+**Resolution (`11e9b83`, 2026-08-11, slice 86c).** Added a float case
+to `optionalPayloadCType` (typedef), `buildOptionalLocalDeclaration`/
+`buildOptionalValueExpr` (construction, both positions), and
+`optionalUnwrapSuffix` (helper selection) — each mirroring the pattern
+slice 86b established for struct fields. Force-unwrap (`o!`) was a
+genuine backend gap beyond dispatch: no runtime checked-unwrap helper
+existed for a float payload at all, so
+`pebble_rt_checked_unwrap_f32`/`f64` were added to the C runtime
+(`pebble_rt.h`/`optional.c`), mirroring the existing integer/bool/
+pointer unwrap helpers exactly, and covered in the SAFE-mode smoke
+test's normal + panics-on-absent-optional checks (verified in both
+SAFE and RELEASE mode). New tests prove construction, unwrap-in-
+arithmetic, presence checks, none-unwrap panics, and a helper-returned
+optional, for both f64 and f32. Causation-checked: reverting all 6
+touched files (4 Go, 2 C) together reproduces the original "payload
+type f64 is not supported" rejection exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
