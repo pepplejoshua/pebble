@@ -44,18 +44,43 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 16 ("Indirect call", tracker 14) closed in
-`e8672f7`. Confirmed distinct from the "Function type and function
-value" row's signature restriction: a function-typed struct field of a
-non-addressable struct value (a call result, `mk().op(1, 2)`) as the
-callee, local init, argument, or field-construction value was
-checker-accepted but Emit-rejected — buildFunctionValue's FieldValue
-case only accepted a SymbolValue receiver. Fixed by routing through
-buildStructValueNode, the same Phase 3 #11 struct-VALUE builder. An
-11-shape sweep found no other call-site gaps. Picking up the next
-Phase 3 item: "Method call" (tracker 14, "Partial by owner and
-argument shape" — check current state for staleness first, per the
-established pattern) next.)*
+*(empty — Phase 3 item 17 ("Method call", tracker 14) closed in
+`0f97ff8`. The owner/receiver-shape half was already fully covered by
+Phase 3 #11's `buildStructValueNode` fix (`e09f9f8`). The
+argument-shape half had a distinct, real gap: a method call's argument
+destinations are fresh unconstrained solver slots (an instance
+method's symbol resolves only in the solver's `callMember`, unlike a
+direct call's walk-time KNOWN-parameter anchor in `prepareDirect`), so
+an inline array/tuple/`some`-literal argument kept its own self-typed
+structure and failed classify() against the concrete parameter type —
+C0601 at the checker for array/optional literals, an emit-time
+TupleValue/parameter mismatch for tuple literals. Fixed by unifying
+any argument whose source cell still carries an unresolved aggregate
+shape with its destination once selectMethod has substituted the
+concrete parameter types. An empirical sweep of
+struct/tuple/array/slice/enum/optional/fn-value arguments (literal,
+call-result, and field-read sources), plus generic methods, found no
+other method-specific gap; a scalar-width-widening gap (u8->u32, bare
+int->i64 without a literal) reproduces identically for plain calls —
+general, already out of scope. Picking up the next Phase 3 item next:
+"Array literal and repeat" (tracker 14, "Partial by element and
+destination shape" — check current state for staleness first, per the
+established pattern).)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Indirect call (Phase 3 #16), tracker 14.**
+
+Closed in `e8672f7`. Confirmed distinct from the "Function type and
+function value" row's signature restriction: a function-typed struct
+field of a non-addressable struct value (a call result, `mk().op(1,
+2)`) as the callee, local init, argument, or field-construction value
+was checker-accepted but Emit-rejected — buildFunctionValue's
+FieldValue case only accepted a SymbolValue receiver. Fixed by routing
+through buildStructValueNode, the same Phase 3 #11 struct-VALUE
+builder. An 11-shape sweep found no other call-site gaps.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
