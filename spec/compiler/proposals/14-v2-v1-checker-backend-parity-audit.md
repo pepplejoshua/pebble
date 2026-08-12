@@ -200,7 +200,7 @@ in `checker.c:2437-2529`. V2 classification is in
 | Float width change | implicit | explicit only | **Intentional stricter rule** |
 | Float to integer | explicit | explicit, checked runtime conversion | **Partial** by destination width |
 | Integer to integer | explicit and implicit | explicit, plus contextual literal fit | **Implemented**, backend proof needed by pair |
-| Character to integer | explicit | explicit | **Verified** (`20efd9a`) for int/i8/i16/i32/i64/u8/u16/u32/u64, boundary values, overflow semantics, and non-literal sources. **New finding**: `char as uint` is broken (`buildUintExpr` has no `CharToInteger` case) — see the gap table below. |
+| Character to integer | explicit | explicit | **Verified** (`20efd9a`) for int/i8/i16/i32/i64/u8/u16/u32/u64, boundary values, overflow semantics, and non-literal sources. `char as uint` was broken (`buildUintExpr` had no `CharToInteger` case) — **Resolved** (`60a3346`) |
 | Integer to character | explicit | forbidden | **Intentional difference** until Unicode scalar validation is specified |
 | Enum to integer | explicit | explicit | **Verified** |
 | Integer to enum | absent as a general V1 cast; V1 has partial enum inference | explicit checked cast, plus optional checked form | **Verified V2 extension** |
