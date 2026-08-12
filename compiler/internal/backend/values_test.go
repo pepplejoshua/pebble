@@ -2445,19 +2445,19 @@ fn main() int {
 // toolchain with the mandated -Wall -Wextra -Werror, so a literal that fails
 // to fit the width's own C type would fail here.
 //
-// The SIGNED MINIMUM literals are deliberately absent for i32/int/i64 (and
-// only those three): `-2147483648` (i32/int) and `-9223372036854775808`
-// (i64) pass the checker (correctly — each IS that width's minimum) but the
-// backend lowers a negative-literal initializer to
-// pebble_rt_checked_neg_i32(2147483648) / _i64(9223372036854775808), and the
-// positive magnitude 2^(n-1) cannot be spelled as a signed C constant of that
-// width, so cc fails under -Werror with -Wconstant-conversion /
-// -Wimplicitly-unsigned-literal. i8 (-128) and i16 (-32768) min literals work
-// because they take the constant-fold path instead. This is recorded as a NEW
-// FINDING (checker/backend literal-lowering defect), not fixed here. The
-// int max row also pins the backend's int32_t width for int (2147483647 works;
-// 2147483648 is checker-accepted and then fails at cc — a separate NEW FINDING
-// about the int literal range, recorded with the checker tests).
+// The SIGNED MINIMUM literals for i32/int/i64 (`-2147483648` and
+// `-9223372036854775808`) are included too: each is that width's exact
+// minimum, and the backend's CheckedNegate case folds a literal negation at
+// the width's minimum directly to the minimum's C constant (the decimal
+// `-2147483648` for i32/int, the stdint.h `INT64_MIN` macro for i64) instead
+// of emitting pebble_rt_checked_neg_i32(2147483648) / _i64(9223372036854775808),
+// whose positive magnitude 2^(n-1) cannot be spelled as a signed C constant of
+// that width and would fail cc under -Werror with -Wconstant-conversion /
+// -Wimplicitly-unsigned-literal. The int min row also pins the backend's
+// int32_t width for int (a POSITIVE `let x int = 2147483648;` is still
+// checker-accepted and fails at cc — a separate NEW FINDING about the int
+// literal range, recorded with the checker tests; only the negated minimum
+// form is folded here).
 func TestEmitIntegerLiteralBoundariesAtEachWidthCompilesAndRuns(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -2470,8 +2470,11 @@ func TestEmitIntegerLiteralBoundariesAtEachWidthCompilesAndRuns(t *testing.T) {
 		{"i16 max", "i16", "32767", "32767\n"},
 		{"i16 min", "i16", "-32768", "-32768\n"},
 		{"i32 max", "i32", "2147483647", "2147483647\n"},
+		{"i32 min", "i32", "-2147483648", "-2147483648\n"},
 		{"i64 max", "i64", "9223372036854775807", "9223372036854775807\n"},
+		{"i64 min", "i64", "-9223372036854775808", "-9223372036854775808\n"},
 		{"int max", "int", "2147483647", "2147483647\n"},
+		{"int min", "int", "-2147483648", "-2147483648\n"},
 		{"u8 max", "u8", "255", "255\n"},
 		{"u8 min", "u8", "0", "0\n"},
 		{"u16 max", "u16", "65535", "65535\n"},

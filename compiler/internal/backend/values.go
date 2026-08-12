@@ -2019,6 +2019,26 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			name, _ := builtinName(width)
 			return "", fmt.Errorf("entry function body expression contains a CheckedNegate at %s, a width with no checked-neg runtime helper and a non-constant operand", name)
 		}
+		// A literal negation at a width WITH a checked-neg runtime helper is
+		// usually emitted as pebble_rt_checked_neg_<suffix>(<magnitude>, ...),
+		// where <magnitude> is the operand's own positive literal text. At the
+		// width's exact signed minimum that positive magnitude is not a
+		// spellable C constant of the width (INT32_MAX is 2147483647, so
+		// 2147483648 is not a valid int32_t literal; 9223372036854775808
+		// exceeds even long long), so cc fails the mandated -Wall -Wextra
+		// -Werror build with -Wconstant-conversion (i32/int) or
+		// -Wimplicitly-unsigned-literal (i64). That one literal is folded to
+		// its negated value — the same checkedNegateLiteral folding the
+		// no-helper width path above uses — emitting the width's minimum
+		// constant directly instead of an unspellable magnitude. Every other
+		// literal and every non-literal operand keeps the runtime-helper path
+		// unchanged; unsigned widths are untouched (their minimum is 0, never
+		// the result of a negative literal).
+		if folded, ok := checkedNegateLiteral(unit, node.Children[0], width); ok && !isUnsignedWidth(width) {
+			if min, _, rangeOK := integerKindRange(width); rangeOK && folded == integerLiteralText(min.String(), width) {
+				return checkedNegateMinimumText(width), nil
+			}
+		}
 		return "pebble_rt_checked_neg_" + checkedSuffix(width) + "(" + child + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.CheckedArithmetic:
 		if len(node.Children) != 2 {
@@ -2289,7 +2309,10 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // i32/i64/u64 family): a literal `-5` at i16 emits the C constant `-5` — the
 // same negative spelling integerLiteralText gives a negative switch case label
 // — and a non-constant operand is left for the caller to reject cleanly
-// rather than be emitted as a call to a nonexistent helper.
+// rather than be emitted as a call to a nonexistent helper. The same folding
+// is also applied at a width WITH a helper for the one literal whose positive
+// magnitude is not a spellable C constant of that width: a negation at the
+// width's exact signed minimum (see buildExpr's CheckedNegate case).
 func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.BuiltinKind) (string, bool) {
 	operand, ok := unit.Node(operandID)
 	if !ok || operand.Kind != tir.IntegerLiteral {
@@ -2309,6 +2332,26 @@ func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.Buil
 		return "", false
 	}
 	return integerLiteralText(value.String(), width), true
+}
+
+// checkedNegateMinimumText returns the C constant spelling of a signed width's
+// exact minimum that compiles cleanly under -Wall -Wextra -Werror — the value
+// buildExpr's CheckedNegate case emits when a literal negation folds to the
+// width's minimum. The i32/int minimum is spellable as its plain decimal text
+// (`-2147483648`, whose positive magnitude 2147483648 fits in a C long, so the
+// negated constant never overflows a signed C type); the i64 minimum is NOT
+// spellable as a decimal literal — C parses `-9223372036854775808` as the
+// negation of `9223372036854775808`, which exceeds every signed C integer type
+// including long long, so the constant is interpreted as unsigned and cc
+// rejects it with -Wimplicitly-unsigned-literal — and the spellable spelling
+// is the stdint.h INT64_MIN macro (the emitted C always includes <inttypes.h>,
+// which pulls in <stdint.h>; the runtime uses INT64_MIN the same way).
+func checkedNegateMinimumText(width types.BuiltinKind) string {
+	if width == types.I64 {
+		return "INT64_MIN"
+	}
+	min, _, _ := integerKindRange(width)
+	return integerLiteralText(min.String(), width)
 }
 
 // buildFunctionValue builds the C expression text for one function-typed VALUE:

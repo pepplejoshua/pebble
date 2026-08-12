@@ -2269,6 +2269,104 @@ func TestEmitCheckedNegateLiteralNarrowWidthCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { let x i8 = -5; return x as int; }", false, 251, false)
 }
 
+func TestEmitCheckedNegateLiteralMinimumWidthCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A negative literal at the exact signed minimum of a width WITH a
+	// pebble_rt_checked_neg_* runtime helper (i32/int/i64) folds at emission
+	// to the width's own minimum C constant instead of calling the helper with
+	// the unspellable positive magnitude (2147483648/9223372036854775808 is
+	// not a valid int32_t/int64_t constant, so cc fails under -Werror). Each
+	// row reads the value back and compares it against its own minimum to
+	// prove the full magnitude survives the compile-link-run round trip — the
+	// OS process exit code cannot carry it, so the program returns 1 only if
+	// the comparison holds.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"i32", "fn main() int { let x i32 = -2147483648; if x == -2147483648 { return 1; } return 0; }"},
+		{"i64", "fn main() int { let x i64 = -9223372036854775808; if x == -9223372036854775808 { return 1; } return 0; }"},
+		{"int", "fn main() int { let x int = -2147483648; if x == -2147483648 { return 1; } return 0; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 1, false)
+		})
+	}
+}
+
+func TestEmitCheckedNegateLiteralMinimumWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for a literal negation at the width's exact signed minimum
+	// must be the minimum's own C constant — `-2147483648` at i32/int,
+	// `INT64_MIN` at i64 — never a pebble_rt_checked_neg_*(2147483648) call
+	// whose positive magnitude is unspellable at that width. The no-regression
+	// rows assert a NON-minimum negative literal at the same widths still
+	// routes through the runtime helper exactly as before (only the minimum
+	// magnitude is unspellable as a positive literal, so only it folds), and a
+	// non-constant negation (`-y`) is unchanged too (still a helper call, not
+	// folded).
+	for _, tc := range []struct {
+		name    string
+		src     string
+		want    string
+		mustNot string
+	}{
+		{
+			name:    "i32 minimum folds to its decimal constant",
+			src:     "fn main() int { let x i32 = -2147483648; return 0; }",
+			want:    "= -2147483648;",
+			mustNot: "pebble_rt_checked_neg_i32",
+		},
+		{
+			name:    "i64 minimum folds to INT64_MIN",
+			src:     "fn main() int { let x i64 = -9223372036854775808; return 0; }",
+			want:    "= INT64_MIN;",
+			mustNot: "pebble_rt_checked_neg_i64",
+		},
+		{
+			name:    "int minimum folds to its decimal constant",
+			src:     "fn main() int { let x int = -2147483648; return 0; }",
+			want:    "= -2147483648;",
+			mustNot: "pebble_rt_checked_neg_i32",
+		},
+		{
+			name:    "i32 non-minimum literal stays on the runtime helper",
+			src:     "fn main() int { let x i32 = -100; return 0; }",
+			want:    "pebble_rt_checked_neg_i32(100",
+			mustNot: "= -100;",
+		},
+		{
+			name:    "i64 non-minimum literal stays on the runtime helper",
+			src:     "fn main() int { let x i64 = -100; return 0; }",
+			want:    "pebble_rt_checked_neg_i64(100",
+			mustNot: "= -100;",
+		},
+		{
+			name:    "non-constant negation stays on the runtime helper",
+			src:     "fn main() int { var y i32 = 5; var z i32 = -y; return 0; }",
+			want:    "pebble_rt_checked_neg_i32(pebble_local_",
+			mustNot: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			unit, snapshot, entryID, sources := buildFixture(t, tc.src, "main", false)
+			var buf bytes.Buffer
+			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+				t.Fatalf("Emit failed: %v", err)
+			}
+			out := buf.String()
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("emitted C missing %q:\n%s", tc.want, out)
+			}
+			if tc.mustNot != "" && strings.Contains(out, tc.mustNot) {
+				t.Errorf("emitted C unexpectedly contains %q:\n%s", tc.mustNot, out)
+			}
+		})
+	}
+}
+
 func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 	t.Parallel()
 	// buildCaseLabel is the single place a negative integer case-label text
