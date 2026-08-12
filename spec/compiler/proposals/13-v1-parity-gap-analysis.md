@@ -44,30 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 5 ("Slice `[]T`" plus the two overlapping rows
-"Slice expression" and "Fixed array to slice", tracker 14) closed in
-`36c47ff`. Fixed 5 checker-accepted/backend-rejected source-position
-gaps found by an empirical position x element-type sweep: a
-slice-returning call as a call argument, a slice-typed struct field
-read or a slice-returning call forwarded as a return, re-slicing an
-already-declared slice LOCAL (not just a slice-typed field), and —
-closing the `836fbea`-documented gap — a struct literal with an inline
-slice-construction field used in a pure expression position (folded
-into a GNU statement-expression over the WHOLE struct literal). Found
-and converted one now-stale rejection test
-(`TestEmitSliceStructFieldInlineConstructionAsCallArgumentRejects`)
-that the dispatched session had not touched. Two genuine remaining
-gaps logged as their own tracker 14 rows, not fixed: a slice-typed
-optional payload (`?[]T`) and a `str`-element slice are both rejected
-at `Emit`. This orc session stalled once after completing and
-self-verifying all 5 fixes (its own tool timeout on the long-running
-full backend suite, not a code problem) — the supervisor took over
-final verification directly. Picking up the next Phase 3 item:
-"Struct" (tracker 14 line 127, "Partial; local copy initialization and
-deep aggregate dependencies still reject" — note this specific wording
-may already be stale, since local copy initialization for struct was
-resolved as task #42 earlier in this effort; verify current state
-before scoping the dispatch) next.)*
+*(empty — Phase 3 item 6 ("Struct", tracker 14) checked 2026-08-12:
+confirmed stale, not a real gap. Both reasons the row was marked
+Partial were already resolved by earlier work (local copy
+initialization at `2179ebf`, deep aggregate dependencies at
+`e649476`); no dispatch needed, row corrected to Verified with a
+pointer to the two struct-specific rows that still track real
+remaining shapes ("Struct field and instance method selection", line
+151; "Struct literal field conversion", line 227). Picking up the next
+Phase 3 item: "Optional `?T`, `some`, `none`, force unwrap" (tracker 14
+line 137, "Partial by payload type") — scope to include the two
+already-known optional-payload gaps found during Phase 3 #4/#5
+(array-typed optional payload `?[N]T`, T0505 unification failure; and
+slice-typed optional payload `?[]T`, rejected at `Emit`) rather than
+re-discovering them.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
