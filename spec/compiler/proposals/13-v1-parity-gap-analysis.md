@@ -44,14 +44,47 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — slice 86c (optional payload float support: typedef,
-construction, force-unwrap, plus new runtime unwrap helpers) closed in
-`11e9b83`. Task #86's tuple/array, struct-field, and optional-payload
-sub-tasks are all done. Remaining: slice-of-float construction (a
-separately confirmed gap, not yet sliced) — likely the last piece of
-#86. Also still open: #95 (inline tuple-literal struct field
-construction type mismatch, found during #94) and the parked
-`int`-width architectural question.)*
+*(empty — slice 86d (slice element float support: typedef,
+construction; index read/write already worked for free) closed in
+`c39b553`. This closes proposal-14 task #86 ENTIRELY: tuple/array
+element reads (86a), struct fields (86b), optional payloads (86c),
+and slice elements (86d) all now support f32/f64. Two new,
+narrowly-scoped follow-up tasks were logged from findings surfaced
+during 86d, both confirmed NOT float-specific: #100 (slice
+construction inside a float-returning entry) and #101 (slicing a
+wrapped array parameter inside a helper). Still open, unrelated to
+#86: #95 (inline tuple-literal struct field construction type
+mismatch, found during #94) and the parked `int`-width architectural
+question. With #86 done, no more items remain from the original
+"handle the deferred stuff" instruction — next is whatever the user
+directs, or Phase 3 (the 35 "Partial" rows) per the standing
+instruction sequence.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: slice-of-float construction (`[]f64`/`[]f32`) failed to
+compile at all — the fourth and FINAL slice of task #86 (float as an
+aggregate member).**
+
+`isSupportedSliceElementType`/`sliceElementCType` had no case for a
+float builtin, so the slice's own C typedef couldn't be built.
+
+**Resolution (`c39b553`, 2026-08-11, slice 86d).** Added float cases
+to both gating functions plus `pointerTypeNameForUnit` (needed for the
+`slice &arr[0], N` SliceFromRaw shape's `*f32`/`*f64` pointee). A
+slice index read and write both already worked for free — they
+resolve through the same generic place-resolution machinery slices
+86a/86b already fixed for arrays/structs, with no float-specific gate
+of their own. New tests prove construction, read, write, a slice
+parameter, and the SliceFromRaw shape, for both widths. Two
+pre-existing general gaps were found and confirmed NOT float-specific
+during the investigation (each reproduces identically with an
+int-element slice) — logged as new tasks #100/#101, not fixed here
+(out of scope). Causation-checked: reverting `types.go` alone
+reproduces the original "slice element type f64 is not supported"
+rejection exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
