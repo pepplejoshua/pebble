@@ -790,6 +790,69 @@ fn fallsOff() void {
 	}
 }
 
+// TestValidateControlFlowAnonymousVoidFallthroughNoFalseC0607 verifies that an
+// anonymous void function whose block body falls through without an explicit
+// return is accepted (no false-positive C0607), matching both a named void
+// function with the same shape and an anonymous void function carrying an
+// explicit trailing `return;`. The control-flow pass previously misclassified
+// the anonymous literal as non-void because its callable's signature was never
+// prepared (its SyntaxRef pointed at a FunctionTerm, which prepareSignatures
+// skipped), so isVoidResult fell back to non-void and the fall-through check
+// wrongly fired.
+func TestValidateControlFlowAnonymousVoidFallthroughNoFalseC0607(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn call_it(f fn () void) void {
+    f();
+}
+fn main() int {
+    call_it(fn () void {});
+    return 0;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("anonymous void fallthrough was wrongly rejected: %+v", diagnostics.Items())
+	}
+
+	diagnostics, valid = validateControlFixture(t, `
+fn call_it(f fn (int) void, x int) void {
+    f(x);
+}
+fn main() int {
+    call_it(fn (x int) void {}, 1);
+    return 0;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("anonymous void with parameters fallthrough was wrongly rejected: %+v", diagnostics.Items())
+	}
+
+	diagnostics, valid = validateControlFixture(t, `
+fn main() int {
+    let f = fn () void { return; };
+    return 0;
+}
+`)
+	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("anonymous void with explicit return was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestValidateControlFlowAnonymousNonVoidFallthroughStillRejected verifies
+// that the fix does not weaken the real fall-through check: an anonymous
+// non-void function that falls through without returning is still correctly
+// rejected with C0607.
+func TestValidateControlFlowAnonymousNonVoidFallthroughStillRejected(t *testing.T) {
+	diagnostics, valid := validateControlFixture(t, `
+fn main() int {
+    let f = fn () int { };
+    return 0;
+}
+`)
+	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
+		t.Fatalf("anonymous non-void fallthrough was not rejected: %+v", diagnostics.Items())
+	}
+}
+
 // TestValidateControlFlowRejectsUnboundRangeLoop verifies that a range loop
 // authored without the explicit `: name` iterator is rejected at the checker
 // with C0622, reported at the loop statement's own source span — the omission

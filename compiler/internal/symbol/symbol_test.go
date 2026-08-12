@@ -159,7 +159,7 @@ func TestAnonymousFunctionHasStableFunctionSymbol(t *testing.T) {
 	}
 	parameters := 0
 	for _, candidate := range result.Symbols.All() {
-		if candidate.Kind == SymbolParameter && candidate.Containing == 0 && candidate.Declaration.Module == item.ID {
+		if candidate.Kind == SymbolParameter && candidate.Containing == literal.ID {
 			parameters++
 		}
 	}

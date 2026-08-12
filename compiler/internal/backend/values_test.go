@@ -2210,6 +2210,36 @@ fn main() int {
 }`, false, 42, false)
 }
 
+// TestEmitAnonymousVoidFunctionFallthroughCompilesAndRuns is the end-to-end
+// proof for the anonymous-void C0607 fix: an anonymous void function whose
+// block body falls through without an explicit `return` must both check clean
+// and emit runnable C. The control-flow pass previously classified the
+// anonymous literal as non-void (its signature was never prepared), firing a
+// false C0607 before emit was ever reached; with the signature now prepared,
+// the IR builder also emits the void fall-through ImplicitReturn, so the
+// hoisted helper returns cleanly.
+func TestEmitAnonymousVoidFunctionFallthroughCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `
+fn call_it(f fn () void) void {
+    f();
+}
+fn main() int {
+    call_it(fn () void {});
+    return 42;
+}
+`, true, 42, false)
+	emitAndRun(t, `
+fn call_it(f fn (int) void, x int) void {
+    f(x);
+}
+fn main() int {
+    call_it(fn (x int) void {}, 1);
+    return 42;
+}
+`, true, 42, false)
+}
+
 // TestEmitAnonymousFunctionHoistedToModuleScopeWritesC makes the V1 parity
 // claim concrete in the emitted C: the anonymous function literal is hoisted
 // to MODULE scope as its own `static int32_t pebble_fn_<id>(PebbleContext *ctx,

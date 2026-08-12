@@ -148,9 +148,6 @@ func (p *Program) prepareSignatures() {
 			p.signatures[sym.ID] = Signature{Symbol: sym.ID, State: DeclarationError}
 			continue
 		}
-		if node.Kind() == syntax.FunctionTerm {
-			continue
-		}
 		params := p.parametersFor(sym.ID)
 		typeParams := append([]symbol.SymbolID(nil), p.owners[sym.ID]...)
 		if sym.Kind == symbol.SymbolMethod && sym.Containing != 0 {
@@ -396,7 +393,7 @@ func signatureNodes(tree *syntax.Tree, node syntax.Node) ([]syntax.NodeID, synta
 	children := semanticNodeIDs(tree, node.Children())
 	var params []syntax.NodeID
 	result := syntax.NodeID(0)
-	seenName := false
+	seenName := node.Kind() == syntax.FunctionTerm
 	for _, id := range children {
 		n, _ := tree.Node(id)
 		switch n.Kind() {

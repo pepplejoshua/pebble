@@ -498,7 +498,7 @@ func (r *resolver) resolveAnonymousFunction(ctx walkContext, nodeID syntax.NodeI
 					continue
 				}
 				name := r.nodeText(ctx.file, part)
-				parameterID := r.addSymbol(Symbol{Name: name, Kind: SymbolParameter, Span: part.Span(), Module: ctx.module.ID, Scope: fnScope, Declaration: SyntaxRef{Module: ctx.module.ID, Node: childID}, Error: name == ""}, true, 0)
+				parameterID := r.addSymbol(Symbol{Name: name, Kind: SymbolParameter, Span: part.Span(), Module: ctx.module.ID, Scope: fnScope, Declaration: SyntaxRef{Module: ctx.module.ID, Node: childID}, Containing: id, Error: name == ""}, true, id)
 				if parameterID != 0 {
 					r.symbolFunctions[parameterID] = ref
 				}
