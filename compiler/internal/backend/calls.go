@@ -1227,19 +1227,22 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		// plain pebble_enum_<typeID>_t for a plain-enum parameter, or the
 		// union's pebble_union_<typeID>_t for a tagged-union parameter — the
 		// C type helperSignature declares the parameter with). For a plain
-		// enum the only supported argument is a reference to an
+		// enum the supported arguments are a reference to an
 		// already-declared enum-typed local in scope of exactly the
 		// parameter's type (a SymbolValue — e.g. unwrap_or(a, 0) passing the
-		// union local a); for a tagged union the argument may additionally be
+		// union local a) or a variant literal directly (check(Color.green) /
+		// check(Color.green()), an EnumVariantValue / payload-less
+		// VariantConstruct built by buildEnumValue, the same grammar an
+		// enum-typed local's declaration uses); for a tagged union the
+		// argument may additionally be
 		// a union-typed struct field read (h.tag), a union-payload optional
 		// force-unwrap (o!), or an inline variant construction, all built by
 		// the same buildUnionValueExpr a tagged-union payload uses (see
 		// buildCallArgument's isTaggedUnionType branch below). The type's own
 		// typedef makes passing the whole value by value trivially valid C,
 		// matching the C type the parameter is declared with. Anything else —
-		// a nonmatching local, a variant literal to a plain-enum parameter
-		// without binding it into a local first — is a clean rejection, never
-		// a guessed lowering.
+		// a nonmatching local, or an unsupported value-source shape — is a
+		// clean rejection, never a guessed lowering.
 		if isTaggedUnionType(unit, snapshot, param.Type) {
 			expr, err := buildUnionValueExpr(st, unit, snapshot, fileSet, argID, locals, fmt.Sprintf("call to symbol %d parameter %d (symbol %d) of union type %s", calleeSymbol, position, param.Symbol, unionTypeName(param.Type)), param.Type, width)
 			if err != nil {
@@ -1250,6 +1253,25 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		argNode, ok := unit.Node(argID)
 		if !ok {
 			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) references invalid node %d", calleeSymbol, position, param.Symbol, argID)
+		}
+		if argNode.Kind == tir.EnumVariantValue || argNode.Kind == tir.VariantConstruct {
+			// A variant literal used directly as a plain-enum call argument —
+			// `check(Color.green)` (an EnumVariantValue) or the zero-payload
+			// parenthesized form `check(Color.green())` (a VariantConstruct) —
+			// the reported Phase 3 #13 gap. The argument is delegated to
+			// buildEnumValue's variant-literal case, the same grammar an
+			// enum-typed local's declaration initializer uses, which emits the
+			// variant's own C enum constant pebble_variant_<member> — trivially
+			// valid at the parameter's own pebble_enum_<typeID>_t typedef, the
+			// same C type helperSignature declares the parameter with (binding
+			// the literal into a local first, the prior workaround, emits the
+			// exact same constant). A payload-carrying construction is cleanly
+			// rejected by buildEnumValue as a tagged-union construction.
+			expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", expr, nil
 		}
 		if argNode.Kind == tir.Load && len(argNode.Children) == 1 {
 			// A whole enum read through a pointer deref used directly as the
