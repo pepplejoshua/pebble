@@ -411,7 +411,7 @@ func buildTupleBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 		case isStr(snapshot, elementType):
 			elementExpr, err = buildStrOperand(st, unit, snapshot, fileSet, children[i], scope, width)
 		case isFloat(snapshot, elementType):
-			elementExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, children[i], scope, resolvedFloatKind(snapshot, elementType))
+			elementExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, children[i], scope, resolvedFloatKind(snapshot, elementType), width)
 		case isTuple(snapshot, elementType), isStruct(snapshot, elementType), isOptional(snapshot, elementType):
 			elementExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, children[i], scope, elementType, context, width)
 		case isAbstractInt(snapshot, elementType):

@@ -106,7 +106,7 @@ func buildScalarInitializeCore(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		// records the local's own float kind (localInfo{kind: kind}, exactly
 		// as an integer local records its own width) so a later reference or
 		// reassignment is validated and emitted as that kind's float.
-		initExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, kind)
+		initExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[0], scope, kind, width)
 		if err != nil {
 			return "", "", err
 		}
@@ -450,7 +450,7 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		// to an in-scope float-typed local of that same kind), so `x = 2.5;`
 		// emits `pebble_local_<sym> = 2.5;` at the local's own C type. A value
 		// of any other shape or type is a clean rejection by buildFloatExpr.
-		storeValue, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind)
+		storeValue, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, targetInfo.kind, width)
 		if err != nil {
 			return "", err
 		}
@@ -942,7 +942,7 @@ func buildCompoundStore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			core, err := buildCompoundUintCore(st, unit, snapshot, fileSet, statement, lvalue, scope, context, width)
 			return "", core, err
 		case types.F32, types.F64:
-			core, err := buildCompoundFloatCore(st, unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context)
+			core, err := buildCompoundFloatCore(st, unit, snapshot, fileSet, statement, lvalue, targetInfo.kind, scope, context, width)
 			return "", core, err
 		default:
 			return "", "", fmt.Errorf("%s compound assignment combines into symbol %d, a %s local; compound assignment is supported only for integer and float locals", context, place.Symbol, describeType(snapshot, place.Type))
@@ -1018,12 +1018,12 @@ func buildCompoundIntegerCore(st *emitState, unit *tir.Unit, snapshot *types.Sna
 // fault and no checked float runtime primitives exist. %= on a float is
 // rejected (the checker's operatorIntegralSame family never admits a float to
 // %=, so a real fixture cannot produce it).
-func buildCompoundFloatCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string) (string, error) {
+func buildCompoundFloatCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, placeWidth types.BuiltinKind, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	if statement.Operator == syntax.Percent {
 		return "", fmt.Errorf("%s compound assignment uses %%%% on a float local, want +, -, *, or / (%% is integral-only)", context)
 	}
 	op, _ := arithmeticOperator(statement.Operator)
-	value, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, placeWidth)
+	value, err := buildFloatExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
 	if err != nil {
 		return "", err
 	}

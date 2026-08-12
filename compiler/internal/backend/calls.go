@@ -1198,7 +1198,7 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		// directly (f(3.5)), or a call to a float-returning helper (f(g()))
 		// — emitted at the same C float type (floatCType) the parameter is
 		// declared with, so passing a float by value is trivially valid C.
-		expr, err := buildFloatExpr(st, unit, snapshot, fileSet, argID, locals, resolvedFloatKind(snapshot, param.Type))
+		expr, err := buildFloatExpr(st, unit, snapshot, fileSet, argID, locals, resolvedFloatKind(snapshot, param.Type), width)
 		if err != nil {
 			return "", "", err
 		}
@@ -2078,7 +2078,7 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 		} else if isChar(snapshot, elementType) {
 			valueExpr, err = buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], locals, width)
 		} else if isFloat(snapshot, elementType) {
-			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, elementType))
+			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, elementType), width)
 		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, elementWidth, width)
 		} else {

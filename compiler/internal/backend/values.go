@@ -1113,11 +1113,11 @@ func buildComparison(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fi
 		// Float arithmetic and comparisons have defined C semantics, including
 		// overflow, infinities, NaNs, and division by zero. Emit the comparison
 		// directly after building both operands at their shared float width.
-		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, leftOperand.Type))
+		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, leftOperand.Type), width)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, resolvedFloatKind(snapshot, rightOperand.Type))
+		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, resolvedFloatKind(snapshot, rightOperand.Type), width)
 		if err != nil {
 			return "", err
 		}
@@ -1986,7 +1986,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if childWidth == 0 {
 			return "", fmt.Errorf("entry function body FloatToInteger child has non-float type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body float-to-integer cast child: %v", err)
 		}
@@ -2930,7 +2930,13 @@ func buildBoolExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 // for an f64 position) and every node in an accepted expression tree must
 // carry exactly that builtin — a node carrying the other float kind, or a
 // non-float value, is a clean rejection naming the wanted kind, never a
-// coercion. Since this slice widened float helper parameters and results, a
+// coercion. entryWidth is the enclosing function's resolved integer width
+// (the same value buildExpr receives as its own entryWidth parameter):
+// buildFloatExpr never uses it for the float value itself — the float kind
+// is always width — but a float place read's Load case resolves its place
+// through buildPlaceLValue, whose CheckedIndexPlace subscript selects its
+// bounds-checked index helper at the ENTRY width, never the float kind.
+// Since this slice widened float helper parameters and results, a
 // DirectCall/MethodCall to a float-returning helper is a supported float
 // value (a float local's call initializer, a float call argument, a float
 // comparison operand, a print operand, or a float-returning helper's
@@ -2943,7 +2949,7 @@ func buildBoolExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 // operand (buildPrint), and a float-returning entry's or helper's
 // tail-position return value (buildBlock / buildSwitchCaseBody dispatch on
 // resultInfo.kind).
-func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, entryWidth types.BuiltinKind) (string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
 		return "", fmt.Errorf("entry function body expression references invalid node %d", id)
@@ -2980,13 +2986,40 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a %s local declared earlier in the body", node.Symbol, wantName(width))
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.Load:
+		// A by-value read of a float-typed place — a float tuple element read
+		// (`t.0`, lowered to Load(TuplePlace)), a float element of an array
+		// (`a[0]`, lowered to Load(CheckedIndexPlace)), or a float element of
+		// a slice (also CheckedIndexPlace) — used as a float value. The Load's
+		// Type is already gated to this same float kind by the entry check
+		// above, so the whole read is the place's C lvalue built by
+		// buildPlaceLValue (the same projection a float element write or
+		// address-of targets), whose resolved element type must be that same
+		// float kind (defense for hand-built IR). A float place read is a
+		// plain C member/index/deref expression exactly like an integer place
+		// read, so no runtime helper call is involved — the checked_index
+		// bounds probe inside a CheckedIndexPlace's C subscript (the one
+		// runtime call an array/slice read emits) is selected at the ENTRY
+		// width (entryWidth), never the float kind, exactly as buildExpr's
+		// integer Load case resolves its CheckedIndexPlace.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a Load with %d children, want exactly one place", len(node.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, entryWidth)
+		if err != nil {
+			return "", fmt.Errorf("entry function body expression place: %v", err)
+		}
+		if resolvedFloatKind(snapshot, placeType) != width {
+			return "", fmt.Errorf("entry function body expression contains a Load whose place has element type %s, want %s", describeType(snapshot, placeType), wantName(width))
+		}
+		return lvalue, nil
 	case tir.SourceAlias:
 		// A SourceAlias is transparent — it records grouped-expression parens
 		// and nothing else — so it is unwrapped and its single child built.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))
 		}
-		return buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		return buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 	case tir.PrefixValue:
 		// A unary minus on a float (`-x`, `-3.5`) arrives as a PrefixValue
 		// with operator -: the checker only lowers a negate to CheckedNegate
@@ -3001,7 +3034,7 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if node.Operator != syntax.Minus {
 			return "", fmt.Errorf("entry function body expression contains a PrefixValue with operator %s, want -", node.Operator)
 		}
-		child, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		child, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -3024,11 +3057,11 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if !ok || node.Operator == syntax.Percent {
 			return "", fmt.Errorf("entry function body float arithmetic uses operator %s, want +, -, *, or /", node.Operator)
 		}
-		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		left, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
-		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
+		right, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width, entryWidth)
 		if err != nil {
 			return "", err
 		}
@@ -3104,7 +3137,7 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if childWidth == 0 {
 			return "", fmt.Errorf("entry function body expression contains a FloatCast with non-float child type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth)
+		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body float cast child: %v", err)
 		}

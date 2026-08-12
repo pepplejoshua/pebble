@@ -277,7 +277,7 @@ func buildArrayBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 		} else if isChar(snapshot, elementType) {
 			expr, err = buildCharOperand(st, unit, snapshot, fileSet, child, scope, width)
 		} else if isFloat(snapshot, elementType) {
-			expr, err = buildFloatExpr(st, unit, snapshot, fileSet, child, scope, resolvedFloatKind(snapshot, elementType))
+			expr, err = buildFloatExpr(st, unit, snapshot, fileSet, child, scope, resolvedFloatKind(snapshot, elementType), width)
 		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			// An integer element of any fixed-width builtin, not just the
 			// entry's own: each element is built at the element's OWN resolved
@@ -379,7 +379,7 @@ func buildArrayRepeatLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *t
 	} else if isChar(snapshot, elementType) {
 		valueExpr, err = buildCharOperand(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 	} else if isFloat(snapshot, elementType) {
-		valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType))
+		valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType), width)
 	} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 		valueExpr, err = buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
 	} else {

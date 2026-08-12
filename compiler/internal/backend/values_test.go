@@ -508,6 +508,72 @@ func TestEmitFloatToIntegerBoundaryPanics(t *testing.T) {
 	emitAndRun(t, "fn main() i64 { let x f64 = 9223372036854775808.0; return x as i64; }", false, 0, true)
 }
 
+func TestEmitFloatTupleOrdinalReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An f64 tuple element read (t.0 / t.1): tuple CONSTRUCTION with float
+	// elements already worked, but reading an element back out was rejected —
+	// buildFloatExpr's switch had no Load case at all, so any by-value read of
+	// a float through a place node failed with "want a float literal, a
+	// reference to a f64 local...". The Load(TuplePlace) is now resolved
+	// through buildPlaceLValue and emitted as the plain C projection
+	// pebble_local_<sym>._<ordinal> (a double), exactly like an integer tuple
+	// element read. The arithmetic comparison proves the read values came back
+	// (1.5 + 2.5 == 4.0, exit 42, else 1).
+	emitAndRun(t, "fn main() int { let t (f64, f64) = (1.5, 2.5); if t.0 + t.1 == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitFloatTupleOrdinalF32ReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 twin of TestEmitFloatTupleOrdinalReadCompilesAndRuns: reading
+	// an f32 tuple element through the same Load(TuplePlace) path. The
+	// comparison against the 4.0 literal is exact (1.5f + 2.5f == 4.0f), so
+	// the then-arm runs and the process exits 42.
+	emitAndRun(t, "fn main() int { let t (f32, f32) = (1.5, 2.5); if t.0 + t.1 == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitFloatArrayIndexReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An f64 array element read (a[0] / a[1]): the Load(CheckedIndexPlace)
+	// read of a [2]f64 local's element, the float twin of an integer array
+	// element read. The place resolves through buildPlaceLValue's
+	// CheckedIndexPlace case to the bounds-checked C subscript
+	// pebble_local_<sym>[pebble_rt_checked_index_i32(<idx>, <len>, <loc>)] at
+	// the ENTRY width (never the float kind — checkedSuffix(F64) is empty, so
+	// passing the float kind would emit the broken pebble_rt_checked_index_
+	// helper name), and the element type must resolve to the same f64 kind.
+	// 1.5 + 2.5 == 4.0 proves both reads came back (exit 42, else 1).
+	emitAndRun(t, "fn main() int { let a [2]f64 = [1.5, 2.5]; if a[0] + a[1] == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitFloatArrayIndexF32ReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 twin of TestEmitFloatArrayIndexReadCompilesAndRuns: reading an
+	// f32 element of a [2]f32 array local. 1.5f + 2.5f == 4.0f exactly, so the
+	// then-arm runs and the process exits 42.
+	emitAndRun(t, "fn main() int { let a [2]f32 = [1.5, 2.5]; if a[0] + a[1] == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitFloatTupleElementReadIntoLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A float tuple element read as a float local's declaration initializer
+	// (`let a f64 = t.0;` — buildScalarInitializeCore, a distinct float value
+	// position from the comparison operand above). Both f64 elements are read
+	// into f64 locals and compared, proving the by-value read flows through the
+	// float-local declaration path (exit 42, else 1).
+	emitAndRun(t, "fn main() int { let t (f64, f64) = (1.5, 2.5); let a f64 = t.0; let b f64 = t.1; if a + b == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitFloatArrayIndexReadBoundsCheckPanics(t *testing.T) {
+	t.Parallel()
+	// The bounds-checked index helper on a float array element read fires at
+	// RUNTIME for a symbolic out-of-range index (the checker rejects only
+	// constant out-of-range indices, so a[5] with `let i i32 = 5` is
+	// reachable): a[5] on a [2]f64 array aborts via pebble_rt_checked_index,
+	// proving the read is still bounds-checked through the new Load path and
+	// not an unchecked raw C subscript.
+	emitAndRun(t, "fn main() int { let a [2]f64 = [1.5, 2.5]; let i i32 = 5; if a[i] == 2.5 { return 42; } return 1; }", false, 0, true)
+}
+
 func TestEmitIndexedStrElementAssignmentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitRuntimeAndRun(t, `type Entry = struct { key str; }; fn main() i32 { var first Entry = Entry.{ key = "old" }; let values []Entry = slice &first, 1; var replacement str = "new"; values[0].key = replacement; if values[0].key == "new" { return 0; } return 1; }`, 0)

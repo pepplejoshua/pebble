@@ -461,7 +461,7 @@ func buildReturnStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		// than buildExpr, which rejects a float-typed value. Supported
 		// return shapes are a float literal or a SymbolValue naming a
 		// float-typed local in scope of the same float kind.
-		returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind)
+		returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, returnNode.Children[0], scope, result.kind, width)
 	} else if result.kind == types.Uint {
 		// A uint-returning helper (a reachable helper whose ResultType is
 		// uint — helperSignature records resultInfo{kind: types.Uint} and
@@ -1168,7 +1168,7 @@ func buildSwitchCaseBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 			// returning a float value: built under the float grammar by
 			// buildFloatExpr, exactly like buildBlock's tail-position Return
 			// case.
-			returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind)
+			returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind, width)
 		} else {
 			returnValue, err = buildExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width, width)
 		}
@@ -2863,7 +2863,7 @@ func buildScalarPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	case kind == types.Str:
 		expr, err = buildStrOperand(st, unit, snapshot, fileSet, operandID, scope, width)
 	case kind == types.F32 || kind == types.F64:
-		expr, err = buildFloatExpr(st, unit, snapshot, fileSet, operandID, scope, kind)
+		expr, err = buildFloatExpr(st, unit, snapshot, fileSet, operandID, scope, kind, width)
 	default:
 		return "", "", nil, fmt.Errorf("%s print operand is a %s of type %s, want bool, char, str, an integer, or a float", context, child.Kind, describeType(snapshot, child.Type))
 	}
