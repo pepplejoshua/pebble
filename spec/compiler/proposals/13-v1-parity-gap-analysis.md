@@ -44,16 +44,39 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — slice 86a (buildFloatExpr Load case, unblocking tuple/array
-float element reads) closed in `e5add48`. Task #86 (float as an
-aggregate member) is probe-scoped into slices: struct field type
-acceptance and optional payload type acceptance still need full
-support (type + construction + write + read); slice-of-float
-construction is a newly confirmed separate gap ("slice element type
-f64 is not supported"). Next slice: struct field support (86b). Also
-still open: #95 (inline tuple-literal struct field construction type
-mismatch, found during #94) and the parked `int`-width architectural
-question.)*
+*(empty — slice 86b (struct field float support: typedef,
+construction, write) closed in `8bd34f6`. Task #86's struct-field
+sub-task is done; remaining sub-tasks: optional payload float support
+(86c, not yet dispatched) and slice-of-float construction (a
+separately confirmed gap, not yet sliced). Also still open: #95
+(inline tuple-literal struct field construction type mismatch, found
+during #94) and the parked `int`-width architectural question.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: a struct field declared `f32`/`f64` failed to compile at
+all — the second slice of task #86 (float as an aggregate member).**
+
+`structFieldCType` had no case for a float builtin, so the struct's
+own C typedef couldn't be built at all; nothing downstream
+(construction, read, write) was reachable.
+
+**Resolution (`8bd34f6`, 2026-08-11, slice 86b).** Added a float case
+to `structFieldCType` (unblocking the typedef), `buildStructBraceList`
+(fixing construction), and `buildStoreCore`'s field/index/deref
+dispatch (fixing field write) — each mirroring the existing per-type
+dispatch pattern already used for bool/str/enum fields, calling
+`buildFloatExpr` at the field's own resolved float kind. A struct
+field READ already worked for free once slice 86a landed (its `Load`
+case resolves through `buildPlaceLValue`, which already handled
+`FieldPlace` generically) — confirmed empirically before dispatch, so
+no read-side change was needed. New tests prove construction, read,
+and write for both f64 and f32, plus an emitted-C shape check
+confirming the f64 case never emits a C `float` field. Causation-
+checked: reverting the three touched files together reproduces the
+original "field type f64/f32 is not supported" rejection exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
