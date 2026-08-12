@@ -44,33 +44,25 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(Investigating, NOT yet dispatched: Phase 3 item 9 ("Function type
-and function value", tracker 14 line 143, "Partial; V1 supports a
-wider convention and signature surface"). Read
-`validateFunctionTypeSignature` (`internal/backend/validate.go:306`)
-directly: it rejects (1) non-Pebble calling convention — this is the
-SAME already-decided scope limit as the "Calling-convention
-annotation" row (line 108, "Intentional difference"); (2) a variadic
-signature — the same category as "C variadic extern call" (line 313,
-"Decision needed"); (3) any parameter that isn't an
-integer/uint/u64/bool/char/str/pointer — no float, no aggregate
-(struct/tuple/enum/union/optional/array/slice) parameters; (4) any
-result that isn't entry-width/u64/bool/char/void/pointer — no float,
-no other integer widths, no aggregate results. Items 1-2 look like
-rollup restatements of decisions already made elsewhere, not new work.
-Items 3-4 (float/aggregate parameter and result support for
-first-class function VALUES, i.e. widening what a `fn(...)` type can
-mention) are a genuinely open, but potentially large-scope, gap —
-first-class function values route through indirect-call dispatch
-machinery this effort hasn't touched yet, unlike the incremental
-struct-field/optional-payload/array-element widenings done so far.
-Paused here without dispatching, close to the 2026-08-12 07:00 local
-alarm, rather than start an uncertain-scope investigation right before
-it. Next session: scope items 3-4 narrowly (likely start with float
-parameters only, the smallest slice) before dispatching, and correct
-tracker 14 line 143 to distinguish "already covered by other rows"
-(1-2) from "genuinely open" (3-4) regardless of whether a fix is
-attempted next.)*
+*(empty — Phase 3 item 9 ("Function type and function value", tracker
+14 line 143) narrowed and closed for its float slice in `cd6e604`, per
+the scoping plan from the paused investigation: float (f32/f64)
+parameters and results are now admitted for first-class function
+values, mirroring the entryWidth-vs-width care from earlier float
+passes in buildFloatExpr's new IndirectCall case. Aggregate parameter/
+result support remains a genuine, separate, larger follow-up (unlike
+struct fields/optional payloads/slice elements, first-class function
+values route through indirect-call dispatch machinery this effort
+hasn't widened before) — not fixed here, logged in tracker 14. This
+dispatch's diff initially looked like it had unrelated scope creep (a
+`-short` test-mode convention, a checker refactor); root cause was a
+SECOND, independent Claude Code session concurrently auditing the test
+suite in the same working tree (user-confirmed, not an orphaned orc
+worker) — its legitimate work is committed separately (`6f9e503`).
+Picking up the next Phase 3 item: "Generic type and specialization"
+(tracker 14, "Partial by deep aggregate and value-source shape; owner
+inheritance resolved in `ddbe454`" — check current state for staleness
+first, per the now-established pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
