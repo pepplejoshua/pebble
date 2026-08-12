@@ -5606,6 +5606,69 @@ func TestEmitSliceF32ElementConstructionAndReadCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { var arr [3]f32 = [1.5, 2.5, 3.5]; var s []f32 = arr[:]; if s[0] + s[1] == 4.0 { return 42; } return 1; }", false, 42, false)
 }
 
+func TestEmitSliceConstructionInF64ReturningEntryIntElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The bug this test guards: constructing any slice inside a float-
+	// returning function emitted a malformed bounds-check helper call —
+	// `pebble_rt_checked_slice_start_` with an EMPTY suffix and an empty
+	// temp C type — because the entry's float result kind (f64/f32) was
+	// threaded through as the integer `width` every checked helper's suffix
+	// and C type are selected from (checkedSuffix/cType are integer-only,
+	// returning "" for a float builtin). The int-element slice inside an
+	// f64-returning main exercises both the construction (`arr[:]`) and the
+	// index read (`s[1]`): 20 + 0.5 = 20.5 exits 20 by C truncation, so a
+	// malformed construction or read fails the compile-and-run loudly.
+	emitAndRun(t, "fn main() f64 { var arr [3]i32 = [10, 20, 30]; var s []i32 = arr[:]; return (s[1] as f64) + 0.5; }", false, 20, false)
+}
+
+func TestEmitSliceConstructionInF32ReturningEntryIntElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 twin of the f64 int-element case: the same broken shape one
+	// width down. 30 + 0.5 = 30.5 exits 30.
+	emitAndRun(t, "fn main() f32 { var arr [3]i32 = [10, 20, 30]; var s []i32 = arr[:]; return (s[2] as f32) + 0.5; }", false, 30, false)
+}
+
+func TestEmitSliceConstructionInF64ReturningEntryFloatElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The float-element twin: a []f64 slice constructed from a [3]f64 array
+	// inside an f64-returning entry. Construction and both index reads flow
+	// through the float grammar; 1.5 + 2.5 = 4.0 exits 4.
+	emitAndRun(t, "fn main() f64 { var arr [3]f64 = [1.5, 2.5, 3.5]; var s []f64 = arr[:]; return s[0] + s[1]; }", false, 4, false)
+}
+
+func TestEmitSliceConstructionInF32ReturningEntryFloatElementCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 float-element cousin: 1.5 + 2.5 is exactly 4.0 in f32 too,
+	// exiting 4.
+	emitAndRun(t, "fn main() f32 { var arr [3]f32 = [1.5, 2.5, 3.5]; var s []f32 = arr[:]; return s[0] + s[1]; }", false, 4, false)
+}
+
+func TestEmitSliceConstructionInFloatReturningHelperInsideFloatEntryCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// helperSignature's bodyWidth starts from the ENTRY's width, so a
+	// float-returning helper inside a float-returning entry previously also
+	// built its body at the float kind and broke identically (its own float
+	// result does not change bodyWidth, since the override only fires for an
+	// INTEGER result). The helper's int-element slice construction plus an
+	// index read driving float arithmetic (1 + 2 + 3 = 6) prove the whole
+	// entry-width -> bodyWidth -> construction chain.
+	emitAndRun(t, "fn f() f64 { var arr [3]i32 = [1, 2, 3]; var s []i32 = arr[:]; return (s[0] + s[1] + s[2]) as f64; } fn main() f64 { return f(); }", false, 6, false)
+}
+
+func TestEmitIntegerToFloatSliceReadInFloatReturningHelperCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A second, independent break in the same class: buildFloatExpr's
+	// IntegerToFloat case threaded its OWN float kind as buildExpr's
+	// entryWidth instead of the enclosing function's integer entryWidth, so
+	// an integer-to-float cast whose child is a slice index read inside ANY
+	// float-returning function emitted `pebble_rt_checked_index_` with an
+	// empty suffix. A float-returning helper inside an ordinary int entry —
+	// whose slice construction was already correct — is the minimal repro:
+	// the s[1] read inside the cast is what fails. 2 + 0.5 = 2.5, and the
+	// comparison drives exit 42.
+	emitAndRun(t, "fn f() f64 { var arr [3]i32 = [1, 2, 3]; var s []i32 = arr[:]; return (s[1] as f64) + 0.5; } fn main() i32 { if f() == 2.5 { return 42; } return 1; }", false, 42, false)
+}
+
 func TestEmitSliceFloatElementWriteCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A slice index WRITE of a float element (`s[0] = 3.5;`): the Store's

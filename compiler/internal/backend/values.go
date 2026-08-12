@@ -3268,7 +3268,7 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if !ok || cType(childWidth) == "" {
 			return "", fmt.Errorf("entry function body IntegerToFloat child has non-integer type %s", describeType(snapshot, child.Type))
 		}
-		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, entryWidth)
 		if err != nil {
 			return "", fmt.Errorf("entry function body integer-to-float cast child: %v", err)
 		}

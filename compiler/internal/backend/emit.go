@@ -555,7 +555,28 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		}
 		return emitEntryC(w, "", "", "", "", voidEntryUserMain, voidEntryMainBody, hasCExterns(unit), false, false)
 	}
-	helpers, err := discoverReachableHelpers(st, unit, snapshot, decl, blockID, result)
+	// width is the INTEGER width the entry's body and its reachable helpers
+	// build at — the entry's own declared integer result type (types.Int,
+	// i32, or i64) for an integer-returning entry. A float-returning entry
+	// (f32/f64) has no integer result type of its own, but every
+	// integer-width consumer this backend threads width into — the checked
+	// slice-start/index helper suffixes and C types (checkedSuffix/cType,
+	// both integer-only), a helper body's width (helperSignature's
+	// bodyWidth), and the aggregate element gates (arrayElementCType,
+	// collectUnionTypesWalk's isWidth) — needs a real integer width, never
+	// the float kind. The language's default int builtin (types.Int, the
+	// same width a `fn main() int` entry resolves to, int32_t / the i32
+	// checked-helper family) supplies that integer context, mirroring how
+	// helperSignature keeps a float-returning helper's bodyWidth at the
+	// enclosing entry's integer width. result (the entry's own result kind)
+	// stays separate: it is the C return type (entryReturnType) and the
+	// tail-return dispatch (resultInfo{kind: result}), which must keep the
+	// float kind.
+	width := result
+	if cType(result) == "" {
+		width = types.Int
+	}
+	helpers, err := discoverReachableHelpers(st, unit, snapshot, decl, blockID, width)
 	if err != nil {
 		return err
 	}
@@ -639,7 +660,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	unionInfos, err := collectUnionTypes(unit, snapshot, result, blockID, helpers)
+	unionInfos, err := collectUnionTypes(unit, snapshot, width, blockID, helpers)
 	if err != nil {
 		return err
 	}
@@ -716,7 +737,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			functionTypes = append(functionTypes, field.typ)
 		}
 	}
-	functionTypedefs, err := buildFunctionTypedefs(st, snapshot, result, functionTypes)
+	functionTypedefs, err := buildFunctionTypedefs(st, snapshot, width, functionTypes)
 	if err != nil {
 		return err
 	}
@@ -742,11 +763,11 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// The definitions then carry the matching struct or enum tag (see
 	// sliceElementForwardDeclaredTypes), so the forward declaration and the
 	// definition complete the same C type.
-	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, result, ordered.all, ordered.structs, sliceElementForwardDeclared)
+	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, ordered.all, ordered.structs, sliceElementForwardDeclared)
 	if err != nil {
 		return err
 	}
-	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, result, unionInfos)
+	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, width, unionInfos)
 	if err != nil {
 		return err
 	}
@@ -804,32 +825,32 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			standaloneArrayTypes = append(standaloneArrayTypes, id)
 		}
 	}
-	fieldArrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, fieldArrayTypes)
+	fieldArrayTypedefs, err := buildArrayTypedefs(unit, snapshot, width, fieldArrayTypes)
 	if err != nil {
 		return err
 	}
 	typedefs = appendTypedefBlock(typedefs, fieldArrayTypedefs)
 	typedefs = appendTypedefBlock(typedefs, aggTypedefs)
-	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, result, standaloneArrayTypes)
+	arrayTypedefs, err := buildArrayTypedefs(unit, snapshot, width, standaloneArrayTypes)
 	if err != nil {
 		return err
 	}
 	typedefs = appendTypedefBlock(typedefs, arrayTypedefs)
-	sliceTypedefs, err := buildSliceTypedefs(unit, snapshot, sliceInfos, result)
+	sliceTypedefs, err := buildSliceTypedefs(unit, snapshot, sliceInfos, width)
 	if err != nil {
 		return err
 	}
 	sliceForwardDecls := buildSliceElementForwardDeclarations(unit, snapshot, sliceElementForwardDeclared)
 	typedefs = appendTypedefBlock(sliceForwardDecls, appendTypedefBlock(sliceTypedefs, typedefs))
-	helperPrototypes, err := buildHelperPrototypes(st, unit, snapshot, helpers, result)
+	helperPrototypes, err := buildHelperPrototypes(st, unit, snapshot, helpers, width)
 	if err != nil {
 		return err
 	}
-	helpersText, err := buildHelperFunctions(st, unit, snapshot, fileSet, helpers, result, unions)
+	helpersText, err := buildHelperFunctions(st, unit, snapshot, fileSet, helpers, width, unions)
 	if err != nil {
 		return err
 	}
-	statements, err := buildBlock(st, unit, snapshot, fileSet, blockID, entryLocals, 0, result, resultInfo{kind: result}, unions)
+	statements, err := buildBlock(st, unit, snapshot, fileSet, blockID, entryLocals, 0, width, resultInfo{kind: result}, unions)
 	if err != nil {
 		return err
 	}
