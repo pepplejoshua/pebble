@@ -450,6 +450,41 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 							}
 						}
 					}
+					// An aggregate-literal argument — an array literal, a tuple
+					// literal, or a `some` construction — infers its OWN
+					// structural type at walk time, because a method call's
+					// argument destinations are fresh slots (an instance
+					// method's symbol is resolvable only here in the solver, so
+					// prepareCall cannot anchor them as KNOWN the way
+					// prepareDirect anchors a direct call's parameters). Left
+					// alone, the literal's self-typed structure (`[3]int` from
+					// int elements, `?int`, `(int, int)`) survives into the
+					// compatibility record and fails classify() as
+					// array/optional/tuple vs the concrete parameter type
+					// (`[3]i32`, `?i32`, `(i32, i32)`), the same C0601 a plain
+					// `take([1, 2, 3])` call would get without an anchor. The
+					// parameter types ARE concretely known here — selectMethod
+					// just substituted them — so grounding an argument whose
+					// source cell still carries an unresolved aggregate SHAPE
+					// to its destination binds the literal's element/payload
+					// types to the parameter type, exactly the grounding a
+					// direct call's walk-time anchor produces. The shape gate
+					// keeps already-typed values untouched: a non-literal
+					// argument of a mismatched scalar width (u8 into u32, i32
+					// into i64) has no shape and stays on the ordinary
+					// compatibility/coercion path — that widening gap is
+					// general (it reproduces for a plain call) and separately
+					// tracked, not a method-specific shape gap.
+					for _, argument := range value.arguments {
+						sourceRoot := s.find(argument.Source.id)
+						if sourceRoot == 0 || s.cells[sourceRoot-1].shape == nil {
+							continue
+						}
+						if _, unifyOK := s.unify(argument.Source, argument.Destination, childOrigin(value.origin, 0)); !unifyOK {
+							s.failMethodArguments(value.site)
+							return changed, false, false
+						}
+					}
 				}
 			}
 		}
