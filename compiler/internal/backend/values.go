@@ -2793,7 +2793,16 @@ func buildFunctionValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		// where self is a `*HashMap` method parameter) is supported too: the
 		// C projection uses `->` instead of `.`, exactly as buildPlaceLValue's
 		// FieldPlace case and buildStructFieldRead resolve a pointer receiver.
-		// Anything else is a clean rejection naming what was found.
+		// A NON-ADDRESSABLE struct VALUE receiver (a call result, `mk().op`;
+		// also a nested field read, force-unwrap, aggregate element read, or
+		// grouped expression — the checker reads a function-typed field off a
+		// call result as a bare FieldValue whose single child is the struct
+		// value, confirmed via a real fixture) is lowered through
+		// buildStructValueNode, the same struct-VALUE builder the
+		// struct-typed field-read path (buildStructFieldValueRead, Phase 3
+		// #11) uses for exactly these receiver shapes, and projected with the
+		// same designated-field name. Anything else is a clean rejection
+		// naming what was found.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a FieldValue with %d child(ren), want exactly one (the struct receiver)", context, len(node.Children))
 		}
@@ -2802,7 +2811,11 @@ func buildFunctionValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			return "", fmt.Errorf("%s contains a FieldValue referencing invalid receiver node %d", context, node.Children[0])
 		}
 		if receiver.Kind != tir.SymbolValue {
-			return "", fmt.Errorf("%s reads a function-typed field from a %s receiver, want a reference to a struct-typed local declared earlier in the body", context, receiver.Kind)
+			receiverExpr, _, err := buildStructValueNode(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", fmt.Errorf("%s reads a function-typed field: %v", context, err)
+			}
+			return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
 		}
 		info, declared := locals[receiver.Symbol]
 		if !declared {
