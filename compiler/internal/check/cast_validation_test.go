@@ -150,6 +150,51 @@ func TestValidateCastRecordsAcceptsPointerToUint(t *testing.T) {
 	}
 }
 
+func TestValidateCastRecordsAcceptsPointerToI64(t *testing.T) {
+	// i64 is pointer-width-or-wider (int64_t, exactly as wide as a pointer), so
+	// the forward pointer -> i64 direction stays accepted alongside u64 and uint.
+	source := `fn f(ptr *i32) i64 { return ptr as i64; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal pointer->i64 cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsNarrowPointerToInteger(t *testing.T) {
+	// A pointer cast to any integer destination narrower than the pointer
+	// (u8/u16/u32/i8/i16/i32/int, each a 32-bit-or-narrower C type) must be a
+	// clean C0601 checker rejection BEFORE IR construction — the backend's plain
+	// (destType)(ptr) C cast for such a pair fails the mandated
+	// -Wall -Wextra -Werror build with -Wpointer-to-int-cast, so the checker
+	// refuses it up front. Regression guards for the exact repro shapes: no
+	// silent acceptance, no C0619 internal-error leak.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"u8", "fn f(ptr *i32) u8 { return ptr as u8; }"},
+		{"u16", "fn f(ptr *i32) u16 { return ptr as u16; }"},
+		{"u32", "fn f(ptr *i32) u32 { return ptr as u32; }"},
+		{"i8", "fn f(ptr *i32) i8 { return ptr as i8; }"},
+		{"i16", "fn f(ptr *i32) i16 { return ptr as i16; }"},
+		{"i32", "fn f(ptr *i32) i32 { return ptr as i32; }"},
+		{"int", "fn f(ptr *i32) int { return ptr as int; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics, result := run06bFixture(t, tc.src)
+			if result.Successful() {
+				t.Fatalf("narrow pointer->%s cast was accepted", tc.name)
+			}
+			if got := countCode(diagnostics, CodeConversion); got != 1 {
+				t.Fatalf("expected exactly one C0601, got %d: %+v", got, diagnostics.Items())
+			}
+			if hasCode(diagnostics, CodeGeneration) {
+				t.Fatalf("narrow pointer->%s cast leaked the C0619 internal-error path: %+v", tc.name, diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestValidateCastRecordsRejectsIntegerToPointer(t *testing.T) {
 	// The reverse pointer direction, integer -> pointer, is deliberately out
 	// of scope and must STILL be rejected with a clean C0601 — an arbitrary

@@ -1272,6 +1272,18 @@ func TestEmitPointerToIntegerI64DestinationCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var x i32 = 42; let p *i32 = &x; let n i64 = p as i64; return *p; }", false, 42, false)
 }
 
+func TestEmitPointerToIntegerWideDestinationNoRegression(t *testing.T) {
+	t.Parallel()
+	// No-regression proof on the working path: the exact task repro shape but
+	// with a wide (pointer-width-or-wider) destination. The cast must still
+	// compile clean under the mandated -Wall -Wextra -Werror build and run
+	// correctly: two casts of the same pointer must produce the same non-zero
+	// address (a wrong or truncated cast would diverge or collapse to NULL),
+	// and the pointer must still dereference afterwards. Success returns 42
+	// (the deref); 1 names the only failure mode.
+	emitAndRun(t, "fn main() i32 { var x i32 = 42; var p *i32 = &x; let n u64 = p as u64; let m u64 = p as u64; if n == m && n != 0 { return *p; } return 1; }", false, 42, false)
+}
+
 func TestEmitPointerToIntegerStructPointeeCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A struct pointee at both pointer-width destinations (uint and u64). The

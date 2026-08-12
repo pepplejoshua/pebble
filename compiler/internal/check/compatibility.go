@@ -41,6 +41,23 @@ func isFloatBuiltin(k types.BuiltinKind) bool {
 	return k == types.F32 || k == types.F64
 }
 
+// isPointerWidthInteger reports whether the integer builtin is at least as wide
+// as a pointer on this compiler's ABI. It mirrors the backend's cType width
+// convention (internal/backend/types.go): Uint and U64 map to uint64_t and I64
+// to int64_t, each exactly pointer-width, while every other integer builtin
+// (Int/I32 -> int32_t, I8, I16, U8, U16, U32) maps to a 32-bit-or-narrower C
+// type. A pointer-to-integer cast is accepted only for these pointer-width
+// destinations: a narrower destination would force a truncating C cast that the
+// mandated -Wall -Wextra -Werror build rejects with -Wpointer-to-int-cast, so
+// such a cast is a clean checker rejection instead of a backend-only failure.
+func isPointerWidthInteger(k types.BuiltinKind) bool {
+	switch k {
+	case types.Uint, types.U64, types.I64:
+		return true
+	}
+	return false
+}
+
 // classifyPrimitive returns the compatibility class for a primitive
 // (Builtin-kind) source and destination. The second return value is false
 // when either source or destination is not a Builtin kind, signalling that
@@ -104,7 +121,13 @@ func classifyComposite(snapshot *infer.SemanticSnapshot, sourceID, destinationID
 
 	sourceBuiltin, sourceIsBuiltin := source.Builtin()
 	destinationBuiltin, destinationIsBuiltin := destination.Builtin()
-	if source.Kind() == types.Pointer && destinationIsBuiltin && isIntegerBuiltin(destinationBuiltin) {
+	// A pointer value cast to an integer is accepted only when the integer
+	// destination is at least as wide as a pointer (u64, uint, i64); a narrower
+	// destination (int, i8/i16/i32, u8/u16/u32) falls through to
+	// compatibleForbidden so validateCastRecords rejects it with the clean C0601
+	// before IR construction — a truncating pointer-to-int C cast would fail the
+	// mandated -Wall -Wextra -Werror build with -Wpointer-to-int-cast.
+	if source.Kind() == types.Pointer && destinationIsBuiltin && isIntegerBuiltin(destinationBuiltin) && isPointerWidthInteger(destinationBuiltin) {
 		return compatibleExplicit, true
 	}
 	if isEnumType(snapshot, sourceID) && destinationIsBuiltin && isIntegerBuiltin(destinationBuiltin) {
@@ -228,7 +251,7 @@ func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sou
 		return coercionPointerCast
 	}
 
-	if sourceKey.Kind() == types.Pointer && dstIsBuiltin && isIntegerBuiltin(dstBuiltin) {
+	if sourceKey.Kind() == types.Pointer && dstIsBuiltin && isIntegerBuiltin(dstBuiltin) && isPointerWidthInteger(dstBuiltin) {
 		return coercionPointerToInteger
 	}
 
