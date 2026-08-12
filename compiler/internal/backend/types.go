@@ -1693,7 +1693,9 @@ func unionPayloadCTypeAdmissible(unit *tir.Unit, snapshot *types.Snapshot, id ty
 // functionTypeParamCType resolves one function type's parameter to the C type
 // an ordinary Pebble-convention helper's parameter of that type is declared
 // with (see buildHelperFunctions): uint64_t for uint/u64, bool for bool,
-// int32_t for char, PebbleStr for str, the pointee's own `<pointee> *` via
+// int32_t for char, PebbleStr for str, a float parameter's plain C float/double
+// type (floatCType — float for f32, double for f64, exactly how an ordinary
+// helper's f32/f64 parameter is declared), the pointee's own `<pointee> *` via
 // pointerTypeName for a pointer parameter (the same spelling helperSignature
 // gives an ordinary helper's pointer parameter), and cType(ownWidth) for any
 // other integer — including the entry's own width and the narrow fixed-width
@@ -1719,6 +1721,12 @@ func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types
 		return "int32_t", nil
 	case isStr(snapshot, param):
 		return "PebbleStr", nil
+	case isFloat(snapshot, param):
+		// A float parameter is declared with the plain C float/double type of
+		// its own kind, exactly as an ordinary helper's f32/f64 parameter is
+		// (see buildHelperFunctions) — no typedef needed, the same way a
+		// bool/str parameter needs none.
+		return floatCType(resolvedFloatKind(snapshot, param)), nil
 	case isPointer(snapshot, param):
 		// A pointer parameter is spelled the same way helperSignature spells
 		// an ordinary helper's pointer parameter: pointerTypeName takes the
@@ -1743,18 +1751,20 @@ func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types
 	if integerParam && cType(paramWidth) != "" {
 		return cType(paramWidth), nil
 	}
-	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, or a pointer type", describeType(snapshot, param), wantName(width))
+	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, f32, f64, or a pointer type", describeType(snapshot, param), wantName(width))
 }
 
 // functionTypeResultCType resolves one function type's result to the C return
 // type an ordinary Pebble-convention helper with that result is declared with
 // (see buildHelperFunctions): the entry's cType(width) for a width result,
-// bool, int32_t for char, the pointee's own `<pointee> *` via pointerTypeName
-// for a pointer result (the same spelling helperSignature gives an ordinary
-// helper's pointer result), and void — the exact self-contained set
-// validateFunctionTypeSignature admits. Anything else is a clean rejection,
-// defense for hand-built IR (the validation has already ruled every reachable
-// result shape out).
+// bool, int32_t for char, a float result's plain C float/double type
+// (floatCType — float for f32, double for f64, exactly how an ordinary
+// helper's f32/f64 result is declared), the pointee's own `<pointee> *` via
+// pointerTypeName for a pointer result (the same spelling helperSignature
+// gives an ordinary helper's pointer result), and void — the exact
+// self-contained set validateFunctionTypeSignature admits. Anything else is a
+// clean rejection, defense for hand-built IR (the validation has already ruled
+// every reachable result shape out).
 func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
 	switch {
 	case isWidth(snapshot, width, result):
@@ -1765,6 +1775,12 @@ func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width type
 		return "bool", nil
 	case isChar(snapshot, result):
 		return "int32_t", nil
+	case isFloat(snapshot, result):
+		// A float result is declared with the plain C float/double type of its
+		// own kind, exactly as an ordinary helper's f32/f64 result is (see
+		// buildHelperFunctions) — no typedef needed, the same way a bool/str
+		// result needs none.
+		return floatCType(resolvedFloatKind(snapshot, result)), nil
 	case isVoid(snapshot, result):
 		return "void", nil
 	case isPointer(snapshot, result):
@@ -1781,7 +1797,7 @@ func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width type
 		}
 		return "", fmt.Errorf("function type result type %s has a pointee %s whose C type is unsupported", describeType(snapshot, result), describeType(snapshot, pointeeTypeID))
 	}
-	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, void, or a pointer type", describeType(snapshot, result), wantName(width))
+	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, f32, f64, void, or a pointer type", describeType(snapshot, result), wantName(width))
 }
 
 // resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names

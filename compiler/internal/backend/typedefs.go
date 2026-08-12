@@ -681,7 +681,8 @@ func buildFunctionTypedefs(st *emitState, snapshot *types.Snapshot, width types.
 // clean rejection — see validateFunctionTypeSignature), so the typedef always
 // carries the trailing PebbleContext *ctx parameter. Every parameter/result C
 // type is self-contained (the entry's cType, uint64_t, bool, int32_t,
-// PebbleStr, a pointer's own `<pointee> *` spelling via pointerTypeName, or
+// PebbleStr, a float/double via floatCType, a pointer's own `<pointee> *`
+// spelling via pointerTypeName, or
 // void), so the typedef never references an aggregate typedef
 // that might be emitted after it.
 func buildFunctionTypedef(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {

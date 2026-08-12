@@ -1551,8 +1551,9 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 // validated against this slice's supported shapes by
 // validateFunctionTypeSignature before the typedef or declaration is emitted
 // (a function type whose parameters/result mention anything other than the
-// entry's width, uint, bool, char, or str parameters and the entry's width,
-// bool, char, or void result is a clean rejection naming what is unsupported).
+// entry's width, uint, u64, or another fixed-width integer, bool, char, str,
+// or f32/f64 parameters and the entry's width, u64, bool, char, f32/f64, or
+// void result is a clean rejection naming what is unsupported).
 // The scope entry records functionType so a later reference, reassignment, or
 // indirect call resolves the local's declared function type. Like every local,
 // the declaration is followed by a (void) cast against -Wunused-variable.

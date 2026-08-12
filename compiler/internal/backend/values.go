@@ -3428,6 +3428,22 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		// scalar-width call uses, so context and argument handling are
 		// identical.
 		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+	case tir.IndirectCall:
+		// A call through a function-typed value whose result is a float of
+		// this same kind (`let x f64 = f(2.5);`, a float-returning helper's
+		// tail-position return of an indirect call's float result, a float
+		// call argument, a float comparison/print operand — the same IndirectCall
+		// shape buildFloatExpr's siblings handle for bool and char). The call
+		// itself is built by the same buildIndirectCall machinery a
+		// scalar-width indirect call uses — the callee and every argument are
+		// built under the callee's own function type — and the result is the
+		// callee fnptr typedef's float/double C return type, which this
+		// position accepts directly. The ambient ENTRY width (entryWidth,
+		// never the float kind `width` — checkedSuffix(F32/F64) is empty, so
+		// a nested slice/array element read inside an argument must pick the
+		// entry's own checked_index helper) is threaded exactly as buildExpr's
+		// IndirectCall case does.
+		return buildIndirectCall(st, unit, snapshot, fileSet, node, locals, entryWidth)
 	case tir.BinaryValue:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body float arithmetic has %d operands, want exactly two", len(node.Children))

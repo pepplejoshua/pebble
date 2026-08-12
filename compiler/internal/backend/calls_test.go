@@ -1801,13 +1801,14 @@ func TestEmitOtherFunctionTypeParamShapesCompilesAndRuns(t *testing.T) {
 
 func TestEmitNarrowU8FunctionTypeResultStillRejected(t *testing.T) {
 	t.Parallel()
-	// The RESULT side of the same gap is deliberately OUT of scope and must
-	// keep rejecting exactly as before: a fn() u8 type passes parameter
-	// validation but its RESULT u8 is not among the result shapes this backend
-	// can consume an indirect call's result in (entry width, u64, bool, char,
-	// void, pointer). The regression guards against the parameter fix leaking
-	// into functionTypeResultCType, which is intentionally narrower.
-	emitAndRunRejects(t, "fn get_u8() u8 { return 5; } fn main() int { var f fn() u8 = get_u8; return f() as int; }", "has result type u8, want int, u64, bool, char, void, or a pointer type")
+	// The RESULT side of the gap (beyond the f32/f64 widening this phase adds)
+	// is deliberately OUT of scope and must keep rejecting exactly as before:
+	// a fn() u8 type passes parameter validation but its RESULT u8 is not among
+	// the result shapes this backend can consume an indirect call's result in
+	// (entry width, u64, bool, char, f32, f64, void, pointer). The regression
+	// guards against the float widening leaking into an unrestricted result
+	// gate — the narrow fixed-width integer results stay rejected.
+	emitAndRunRejects(t, "fn get_u8() u8 { return 5; } fn main() int { var f fn() u8 = get_u8; return f() as int; }", "has result type u8, want int, u64, bool, char, f32, f64, void, or a pointer type")
 }
 
 func TestCheckStdModuleGenericMethodIndexedFieldWrite(t *testing.T) {
@@ -2218,6 +2219,7 @@ fn main() int {
 // with wantCode.
 func compileAndRunWithShimFirst(t *testing.T, emitted []byte, shimSource string, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
@@ -2547,6 +2549,7 @@ fn main() int { return apply(helper, 41); }`, false, 42, false)
 // that cc accepts under -Wall -Wextra -Werror and runs to the right exit code.
 func emitAndRunProvider(t *testing.T, provider fixtureProvider, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 	graph := module.Build(module.BuildConfig{EntryPath: "main.peb", Package: "app", StandardRoot: "std"}, provider, sources, diagnostics)
