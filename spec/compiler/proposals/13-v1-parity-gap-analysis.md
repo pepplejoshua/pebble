@@ -44,20 +44,25 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 6 ("Struct", tracker 14) checked 2026-08-12:
-confirmed stale, not a real gap. Both reasons the row was marked
-Partial were already resolved by earlier work (local copy
-initialization at `2179ebf`, deep aggregate dependencies at
-`e649476`); no dispatch needed, row corrected to Verified with a
-pointer to the two struct-specific rows that still track real
-remaining shapes ("Struct field and instance method selection", line
-151; "Struct literal field conversion", line 227). Picking up the next
-Phase 3 item: "Optional `?T`, `some`, `none`, force unwrap" (tracker 14
-line 137, "Partial by payload type") — scope to include the two
-already-known optional-payload gaps found during Phase 3 #4/#5
-(array-typed optional payload `?[N]T`, T0505 unification failure; and
-slice-typed optional payload `?[]T`, rejected at `Emit`) rather than
-re-discovering them.)*
+*(empty — Phase 3 item 7 ("Optional `?T`, `some`, `none`, force
+unwrap", tracker 14 line 137) closed in `08ce755`. Fixed the two
+remaining optional-payload gaps: array-typed (`?[N]T`) and slice-typed
+(`?[]T`), both across construction/every position/presence
+check/force-unwrap/every element width. The array case's checker-side
+T0505 gap (logged during Phase 3 #4) turned out to be already fixed by
+prior work — only the backend `Emit` rejection needed closing for
+either payload type. Added a new runtime helper,
+`pebble_rt_checked_unwrap_present`, for aggregate-payload force-unwrap
+(no scalar to return through the existing checked-unwrap family),
+verified in both SAFE and RELEASE mode. This orc session stalled
+twice, each time immediately after landing real self-verified progress
+(its own tool timeout, not a code problem) — resumed once, then the
+supervisor took over final verification directly. Picking up the next
+Phase 3 item: "Tagged union" (tracker 14, "Partial by payload and
+container C shape; generic-self narrowing resolved...; struct-field
+construction resolved" — check current state for staleness before
+scoping the dispatch, per the pattern found with the "Struct" and
+"Type declaration" rows) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
