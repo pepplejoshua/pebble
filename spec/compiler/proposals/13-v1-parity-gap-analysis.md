@@ -44,19 +44,19 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 14 ("`none` and `some value`", tracker 14)
-closed in `ffb365b`. Found a real correctness bug, not just an
-unproven shape: `none`/`some` for an otherwise-unreferenced enum/union
-payload crashed cc with "unknown type name pebble_enum_N_t", because
-collectEnumTypes/collectUnionTypes discover types by walking
-VALUE-producing shapes and a NoneOptional carries no value at all.
-Both collectors gained an optional-payload scan mirroring
-collectStructTypes' existing one. `some` wrapping a non-trivial
-expression (call result, field read, tuple ordinal) confirmed already
-working across every position. Picking up the next Phase 3 item:
-"Identifier, module member, partial member" (tracker 14, "Partial by
-declaration category" — check current state for staleness first, per
-the established pattern) next.)*
+*(empty — Phase 3 item 15 ("Identifier, module member, partial
+member", tracker 14) closed in `7dec3fc`. Found a real bug: a
+module-member/global/extern-variable read used as a struct field's
+construction value was checker-accepted but Emit-rejected, because
+collectReferencedGlobals/collectReferencedExternData both walked only
+node.Children, missing a RecordConstruct's field values (stored in
+node.Fields — the same gap class as the enum/union optional-payload
+fix in item 14 and several other Fields-vs-Children misses this
+session). Plain identifiers and the base-less `.name` shorthand
+confirmed already working everywhere. Picking up the next Phase 3
+item: "Indirect call" (tracker 14, "Partial by function signature" —
+check current state for staleness first, per the established
+pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
