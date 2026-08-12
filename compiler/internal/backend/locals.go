@@ -565,6 +565,14 @@ func buildArrayRepeatLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *t
 		valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, elementType), width)
 	} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 		valueExpr, err = buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, elementWidth, width)
+	} else if isStruct(snapshot, elementType) || isTuple(snapshot, elementType) || isOptional(snapshot, elementType) {
+		// An aggregate repeat value — `[Point.{ x = 1, y = 2 }; 2]`, the
+		// repeat twin of the aggregate ELEMENTS buildArrayBraceElements builds.
+		// The single value is an aggregate literal (or an aggregate-typed
+		// SymbolValue) built by the same buildNestedAggregateValue an
+		// aggregate element of the array's element type uses, emitted into the
+		// repeat temp and copied into every slot by the fill loop.
+		valueExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, elementType, context, width)
 	} else {
 		valueExpr, err = buildExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, width, width)
 	}

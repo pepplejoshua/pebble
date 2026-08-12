@@ -163,7 +163,19 @@ func (w *walker) finishArray(ref symbol.SyntaxRef, node syntax.Node, ctx walkCon
 		if child.ID == 0 {
 			continue
 		}
-		w.addConstraint(infer.Equal(child.Term, plan.arrayElement.Term, w.originForRef(childRef, "array element", ctx.typeOwner, ctx.genericOwner)))
+		// With a KNOWN element slot the child is grounded by its own
+		// expectation (a literal's LiteralFits, an aggregate's receiver
+		// projection) and the retained compatibility record below, exactly as
+		// a scalar local initializer is — a hard Equal here would demand the
+		// child's term literally be the element term, which wrongly rejects a
+		// same-width-but-distinct-kind value like an int call result in a
+		// [N]i32 destination (the scalar control `var x i32 = f()` accepts
+		// the identical pair through its compatibility record). The Equal is
+		// kept only when the element slot is an unknown Variable, where it is
+		// what ties the children together into the array's shape.
+		if plan.arrayElement.Known == 0 {
+			w.addConstraint(infer.Equal(child.Term, plan.arrayElement.Term, w.originForRef(childRef, "array element", ctx.typeOwner, ctx.genericOwner)))
+		}
 		w.retainCompatibility(ref, ctx.genericOwner, child.ID, plan.arrayElement.ID, compatibilityTupleComponent, uint32(ordinal), 0, spanForRef(w.generation.inputs, childRef), false)
 	}
 	w.addConstraint(infer.ConstrainShape(result.Term, infer.ArrayShape(uint64(len(plan.children)), infer.Leaf(plan.arrayElement.Term)), origin))
@@ -189,6 +201,7 @@ func (w *walker) prepareArrayRepeat(ref symbol.SyntaxRef, node syntax.Node, ctx 
 							w.knownValues[destination.ID] = element
 							w.expectations[items[i].ref] = w.expectationFor(items[i].ref, destination.ID, compatibilityTupleComponent)
 						}
+						plan.arrayElement = destination
 					}
 				}
 			}
@@ -206,7 +219,20 @@ func (w *walker) finishArrayRepeat(ref symbol.SyntaxRef, node syntax.Node, ctx w
 	result := w.expressionResult(ref, w.session.Variable(origin), origin)
 	child := w.firstChildValue(plan)
 	if plan.arrayKnown {
-		w.addConstraint(infer.ConstrainShape(result.Term, infer.ArrayShape(plan.arrayLength, infer.Leaf(child.Term)), origin))
+		// The array's shape is fixed by the KNOWN element slot when the
+		// destination was array-typed at walk time (prepareArrayRepeat grounded
+		// it), not by the child's own term — a repeat VALUE is a single
+		// expression checked independently against the element (a literal by
+		// LiteralFits, a call result by the retained compatibility record
+		// below), and the array's result must be [N]element even when that
+		// value is a distinct same-width-kind term like an int call result in
+		// a [3]i32 destination. Otherwise (an unknown destination) the child
+		// term defines the element, as before.
+		elementTerm := child.Term
+		if plan.arrayElement.Known != 0 {
+			elementTerm = w.session.Known(plan.arrayElement.Known)
+		}
+		w.addConstraint(infer.ConstrainShape(result.Term, infer.ArrayShape(plan.arrayLength, infer.Leaf(elementTerm)), origin))
 	}
 	if len(plan.children) != 0 {
 		if expected, ok := w.expectations[plan.children[0]]; ok && expected.Destination != 0 {

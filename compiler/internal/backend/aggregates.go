@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
@@ -1250,9 +1251,12 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			// C field is declared at the array's OWN typedef (see
 			// structFieldCType), so the built expression matches the field type
 			// with no cast.
-			built, err := buildStructArrayFieldValue(st, unit, snapshot, fileSet, field.Value, scope, fieldType, context, width)
+			fieldPre, built, err := buildStructArrayFieldValue(st, unit, snapshot, fileSet, field.Value, scope, indent, fieldType, context, width)
 			if err != nil {
 				return "", "", err
+			}
+			if fieldPre != "" {
+				pres = append(pres, fieldPre)
 			}
 			expr = built
 		case isPointer(snapshot, fieldType):
@@ -1301,55 +1305,127 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 // structFieldCType), so the built expression matches with no cast. Anything
 // else is a clean rejection naming what was found. fieldType is the field's own
 // array type, whose length and element type come from the type snapshot.
-func buildStructArrayFieldValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueID tir.NodeID, scope map[symbol.SymbolID]localInfo, fieldType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+func buildStructArrayFieldValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueID tir.NodeID, scope map[symbol.SymbolID]localInfo, indent string, fieldType types.TypeID, context string, width types.BuiltinKind) (string, string, error) {
 	key, ok := snapshot.Key(fieldType)
 	if !ok {
-		return "", fmt.Errorf("%s array field type %s is not in the type snapshot", context, describeType(snapshot, fieldType))
+		return "", "", fmt.Errorf("%s array field type %s is not in the type snapshot", context, describeType(snapshot, fieldType))
 	}
 	length, element, ok := key.Array()
 	if !ok {
-		return "", fmt.Errorf("%s array field type %s has no length and element type", context, describeType(snapshot, fieldType))
+		return "", "", fmt.Errorf("%s array field type %s has no length and element type", context, describeType(snapshot, fieldType))
 	}
 	if _, err := arrayLengthLiteral(length, width); err != nil {
-		return "", fmt.Errorf("%s: %v", context, err)
+		return "", "", fmt.Errorf("%s: %v", context, err)
 	}
 	node, ok := unit.Node(valueID)
 	if !ok {
-		return "", fmt.Errorf("%s array field references invalid value node %d", context, valueID)
+		return "", "", fmt.Errorf("%s array field references invalid value node %d", context, valueID)
 	}
 	switch node.Kind {
 	case tir.ArrayValue:
 		if node.Type != fieldType {
-			return "", fmt.Errorf("%s array field initialized from an ArrayValue of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
+			return "", "", fmt.Errorf("%s array field initialized from an ArrayValue of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
 		}
 		if uint64(len(node.Children)) != length {
-			return "", fmt.Errorf("%s array field has %d element expression(s), want %d", context, len(node.Children), length)
+			return "", "", fmt.Errorf("%s array field has %d element expression(s), want %d", context, len(node.Children), length)
 		}
 		elementExprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, node, scope, context, width, element)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(elementExprs, ", ")), nil
+		return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(elementExprs, ", ")), nil
+	case tir.ArrayRepeat:
+		// A direct [v; N] repeat as the field's construction value —
+		// `Box.{ data = [7; 3] }`, the ArrayRepeat twin of the ArrayValue case
+		// above (which Phase 3 #4's 249995d fixed). The count child is
+		// validated exactly as buildArrayRepeatLocalDeclaration validates it (a
+		// compile-time uint integer literal equal to the field's declared
+		// length), and the single value expression is built once and assigned
+		// to an indented C temp whose name is then repeated `length` times in
+		// the field's array compound literal — the same evaluate-once,
+		// copy-N-times lowering buildArrayReturnValue and buildArrayArgument use
+		// for a direct ArrayRepeat. The temp declaration is returned as a
+		// pre-statement for the caller (buildStructBraceList) to emit before
+		// the enclosing struct compound literal (which, like a slice-field
+		// pre, folds the whole struct literal into a GNU statement-expression
+		// at the value level). The temp name derives from the field value
+		// node's own NodeID — a struct field has no local symbol to name it
+		// from — distinct from pebble_repeat_<symbol> (local declarations),
+		// pebble_repeat_ret_<nodeID> (returns), and pebble_repeat_arg_<nodeID>
+		// (call arguments), so the four can never collide even when a symbol
+		// ID numerically equals a node ID.
+		if node.Type != fieldType {
+			return "", "", fmt.Errorf("%s array field initialized from an ArrayRepeat of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
+		}
+		if len(node.Children) != 2 {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat with %d child(ren), want exactly two (the repeated value and the count)", context, len(node.Children))
+		}
+		countNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat referencing invalid count node %d", context, node.Children[1])
+		}
+		if countNode.Kind != tir.IntegerLiteral {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat whose count is a %s, want a compile-time integer literal equal to the array's declared length %d", context, countNode.Kind, length)
+		}
+		if countNode.Type != snapshot.Builtins().Uint {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat whose count has type %s, want uint (the count is a synthesized integer literal)", context, describeType(snapshot, countNode.Type))
+		}
+		count, err := strconv.ParseUint(countNode.Literal.IntegerNum, 10, 64)
+		if err != nil {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat whose count %q is not a valid non-negative integer", context, countNode.Literal.IntegerNum)
+		}
+		if count != length {
+			return "", "", fmt.Errorf("%s array field is an ArrayRepeat whose count %d does not equal the array's declared length %d", context, count, length)
+		}
+		var valueExpr string
+		if isBool(snapshot, element) {
+			valueExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		} else if elementWidth, integer := resolvedBuiltin(snapshot, element); integer && cType(elementWidth) != "" {
+			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, elementWidth, width)
+		} else if isFloat(snapshot, element) {
+			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], scope, resolvedFloatKind(snapshot, element), width)
+		} else if isChar(snapshot, element) {
+			valueExpr, err = buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		} else if isStruct(snapshot, element) || isTuple(snapshot, element) || isOptional(snapshot, element) {
+			valueExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, node.Children[0], scope, element, context, width)
+		} else {
+			return "", "", fmt.Errorf("%s array field element type %s is unsupported", context, describeType(snapshot, element))
+		}
+		if err != nil {
+			return "", "", err
+		}
+		ctype, err := arrayElementCType(unit, snapshot, width, element)
+		if err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		tempName := fmt.Sprintf("pebble_field_repeat_%d", valueID)
+		pre := fmt.Sprintf("%s%s %s = %s;", indent, ctype, tempName, valueExpr)
+		values := make([]string, length)
+		for i := range values {
+			values[i] = tempName
+		}
+		return pre, fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(values, ", ")), nil
 	case tir.SymbolValue:
 		info, declared := scope[node.Symbol]
 		if !declared || info.array != fieldType {
-			return "", fmt.Errorf("%s array field initialized from symbol %d, which is not an array-typed local of type %s in scope", context, node.Symbol, arrayTypeName(fieldType))
+			return "", "", fmt.Errorf("%s array field initialized from symbol %d, which is not an array-typed local of type %s in scope", context, node.Symbol, arrayTypeName(fieldType))
 		}
 		if info.arrayWrapped {
-			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+			return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 		}
 		values := make([]string, 0, int(length))
 		for i := uint64(0); i < length; i++ {
 			values = append(values, fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i))
 		}
-		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(values, ", ")), nil
+		return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(fieldType), strings.Join(values, ", ")), nil
 	case tir.DirectCall:
 		if node.Type != fieldType {
-			return "", fmt.Errorf("%s array field initialized from a call of type %s, want an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
+			return "", "", fmt.Errorf("%s array field initialized from a call of type %s, want an array-typed value of type %s", context, describeType(snapshot, node.Type), arrayTypeName(fieldType))
 		}
-		return buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
+		expr, err := buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
+		return "", expr, err
 	}
-	return "", fmt.Errorf("%s array field initialized from a %s, want an array literal, an array-typed local in scope, or a call to an array-returning helper", context, node.Kind)
+	return "", "", fmt.Errorf("%s array field initialized from a %s, want an array literal, an ArrayRepeat, an array-typed local in scope, or a call to an array-returning helper", context, node.Kind)
 }
 
 // buildUnionConstruction builds the C expression text for one tagged-union

@@ -1306,11 +1306,11 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		}
 		return "", expr, nil
 	case isArray(snapshot, param.Type):
-		expr, err := buildArrayArgument(st, unit, snapshot, fileSet, width, param.Type, argID, locals, calleeSymbol, position)
+		pre, expr, err := buildArrayArgument(st, unit, snapshot, fileSet, width, param.Type, argID, locals, calleeSymbol, position, nested)
 		if err != nil {
 			return "", "", err
 		}
-		return "", expr, nil
+		return pre, expr, nil
 	case isStr(snapshot, param.Type):
 		// A str parameter: the argument is a str value built by
 		// buildStrOperand — a reference to a str-typed local in scope, a
@@ -1397,34 +1397,35 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 	}
 }
 
-func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, width types.BuiltinKind, arrayType types.TypeID, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, calleeSymbol symbol.SymbolID, position int) (string, error) {
+func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, width types.BuiltinKind, arrayType types.TypeID, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, calleeSymbol symbol.SymbolID, position int, nested bool) (string, string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d references invalid argument node %d", calleeSymbol, position, argID)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d references invalid argument node %d", calleeSymbol, position, argID)
 	}
 	key, ok := snapshot.Key(arrayType)
 	if !ok {
-		return "", fmt.Errorf("array parameter type %s is not in the type snapshot", describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array parameter type %s is not in the type snapshot", describeType(snapshot, arrayType))
 	}
 	length, element, ok := key.Array()
 	if !ok {
-		return "", fmt.Errorf("array parameter type %s has no length and element type", describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("array parameter type %s has no length and element type", describeType(snapshot, arrayType))
 	}
 	if node.Kind == tir.DirectCall {
 		if node.Type != arrayType {
-			return "", fmt.Errorf("array argument call has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+			return "", "", fmt.Errorf("array argument call has type %s, want %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
 		}
-		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+		expr, err := buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+		return "", expr, err
 	}
 	if node.Kind == tir.ArrayValue {
 		if uint64(len(node.Children)) != length {
-			return "", fmt.Errorf("array argument has %d element(s), want %d", len(node.Children), length)
+			return "", "", fmt.Errorf("array argument has %d element(s), want %d", len(node.Children), length)
 		}
 		values := make([]string, len(node.Children))
 		for i, childID := range node.Children {
 			child, ok := unit.Node(childID)
 			if !ok {
-				return "", fmt.Errorf("array argument references invalid element node %d", childID)
+				return "", "", fmt.Errorf("array argument references invalid element node %d", childID)
 			}
 			var value string
 			var err error
@@ -1433,30 +1434,97 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			} else if elementWidth, integer := resolvedBuiltin(snapshot, element); integer && cType(elementWidth) != "" {
 				value, err = buildExpr(st, unit, snapshot, fileSet, childID, locals, elementWidth, width)
 			} else {
-				return "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, child.Type))
+				return "", "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, child.Type))
 			}
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			values[i] = value
 		}
-		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+		return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	}
+	if node.Kind == tir.ArrayRepeat {
+		// A direct [v; N] repeat as a call argument — `sum([7; 3])`. The count
+		// child is validated exactly as buildArrayRepeatLocalDeclaration and
+		// buildArrayReturnValue validate it (a compile-time uint integer literal
+		// equal to the parameter's declared length), and the single value
+		// expression is built once and assigned to a C temp whose name is then
+		// repeated `length` times in the parameter's array compound literal —
+		// the same evaluate-once, copy-N-times lowering a direct ArrayRepeat
+		// return uses (buildArrayReturnValue), because a brace-list
+		// `{ f(), f(), f() }` would re-evaluate the value once per slot. The
+		// temp declaration is returned as a pre-statement for the caller to
+		// place before the call (or, in nested mode, folded into a GNU
+		// statement-expression), mirroring the inline slice-construction
+		// argument's delivery. The temp name derives from the argument node's
+		// own NodeID — an argument has no local symbol to name it from —
+		// distinct from pebble_repeat_<symbol> (local declarations) and
+		// pebble_repeat_ret_<nodeID> (returns), so the three can never collide
+		// even when a symbol ID numerically equals a node ID.
+		if len(node.Children) != 2 {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat with %d child(ren), want exactly two (the repeated value and the count)", len(node.Children))
+		}
+		countNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat referencing invalid count node %d", node.Children[1])
+		}
+		if countNode.Kind != tir.IntegerLiteral {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat whose count is a %s, want a compile-time integer literal equal to the array's declared length %d", countNode.Kind, length)
+		}
+		if countNode.Type != snapshot.Builtins().Uint {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat whose count has type %s, want uint (the count is a synthesized integer literal)", describeType(snapshot, countNode.Type))
+		}
+		count, err := strconv.ParseUint(countNode.Literal.IntegerNum, 10, 64)
+		if err != nil {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat whose count %q is not a valid non-negative integer", countNode.Literal.IntegerNum)
+		}
+		if count != length {
+			return "", "", fmt.Errorf("array argument is an ArrayRepeat whose count %d does not equal the array's declared length %d", count, length)
+		}
+		var valueExpr string
+		if isBool(snapshot, element) {
+			valueExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		} else if elementWidth, integer := resolvedBuiltin(snapshot, element); integer && cType(elementWidth) != "" {
+			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, elementWidth, width)
+		} else if isFloat(snapshot, element) {
+			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, element), width)
+		} else {
+			return "", "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, element))
+		}
+		if err != nil {
+			return "", "", err
+		}
+		ctype, err := arrayElementCType(unit, snapshot, width, element)
+		if err != nil {
+			return "", "", fmt.Errorf("array argument: %v", err)
+		}
+		tempName := fmt.Sprintf("pebble_repeat_arg_%d", argID)
+		pre := fmt.Sprintf("%s %s = %s;", ctype, tempName, valueExpr)
+		values := make([]string, length)
+		for i := range values {
+			values[i] = tempName
+		}
+		expr := fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", "))
+		if nested {
+			return "", sliceConstructionStatementExpr(pre, expr), nil
+		}
+		return pre, expr, nil
 	}
 	if node.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is a %s, want an array local or array-returning call", calleeSymbol, position, node.Kind)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is a %s, want an array local, an array literal, an ArrayRepeat, or an array-returning call", calleeSymbol, position, node.Kind)
 	}
 	info, declared := locals[node.Symbol]
 	if !declared || info.array != arrayType {
-		return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is not a local of type %s", calleeSymbol, position, describeType(snapshot, arrayType))
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is not a local of type %s", calleeSymbol, position, describeType(snapshot, arrayType))
 	}
 	if info.arrayWrapped {
-		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
 	values := make([]string, length)
 	for i := range values {
 		values[i] = fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i)
 	}
-	return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	return "", fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
 }
 
 // buildVariadicSliceArgument builds the ONE C argument expression a variadic
