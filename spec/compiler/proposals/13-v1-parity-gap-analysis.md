@@ -44,21 +44,23 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty. Phase 3 item 2 ("Type declaration", tracker 14 line 105)
-investigated 2026-08-12 and found to be a rollup row, not a standalone
-gap: it points to the "Type and member ledger" (tracker 14 lines
-118-145), whose Partial entries (Pointer, Fixed array, Slice, Struct,
-Optional, Tagged union, Function type, Generic type, Struct/enum
-selection) are the exact same rows already tracked separately
-elsewhere in the main gap table — working it here would duplicate
-those items. The one genuinely distinct entry in the ledger,
-**Untagged union** (line 132, "V2 rejects construction/read/write...
-Decision needed"), is a design decision like the parked `int`-width
-question, not a bug to fix unilaterally. No dispatch needed; moving to
-the next real item. Picking up "Pointer `*T`, address-of, dereference,
-`nil`" (tracker 14 line 123, "Partial; whole dereferenced structs are
-resolved... but other aggregate shapes remain position-specific")
-next.)*
+*(empty — Phase 3 item 3 ("Pointer `*T`, address-of, dereference,
+`nil`", tracker 14 line 123) closed in `a80a707`. Array, tuple, enum,
+and optional pointees now support whole-value read through a deref,
+address-of, whole-value write, nil comparison, and pointer equality.
+Also fixed along the way: a real C operator-precedence bug in the
+deref lvalue (postfix `.field`/`[i]` was binding to the checked-pointer
+call result, not the dereferenced value), and a checker expectation
+bug where `*p`/`o!` assigned to an optional-typed destination picked
+the wrong (or no) projection depending on whether the result was the
+whole optional or its payload. One new "Decision needed" item logged
+(escape analysis for `return &localVar` — a general, pre-existing gap,
+not array-specific, matching the Untagged-union row's class, not fixed
+here). Picking up the next Phase 3 item: "Fixed array `[N]T`" (tracker
+14 line 124, "Partial. Struct fields, local/literal reassignment, enum
+elements, ordinary sizeof, direct array-literal/repeat return, and
+sizeof [N]Struct/tuple/optional element collection landed" — check
+what's still missing) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
