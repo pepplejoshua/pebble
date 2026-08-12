@@ -44,13 +44,41 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #88 (narrow pointer-to-int cast) closed in `297e162`.
-Fifth fix in the consolidated gap-filling pass over the proof-batch
-findings. Only #92 (struct call-result/field-read as
-argument/receiver) and #93 (bare string-literal arrow-body T0501)
-remain queued; once those land, gap-filling is done and #86
-(float-as-aggregate-member, deferred) is next, per the user's earlier
-instruction.)*
+*(empty — item #92 (struct call-result/field-read as argument/receiver)
+closed in `008b6fd`. Sixth fix in the consolidated gap-filling pass
+over the proof-batch findings. Only #93 (bare string-literal
+arrow-body T0501) remains queued; once it lands, gap-filling is done
+and #86 (float-as-aggregate-member, deferred) is next, per the user's
+earlier instruction. A new, untracked finding surfaced during #92: the
+tuple-argument branch has the identical call-result gap
+(`f(makeT())` still rejects) — not yet a formal task.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: a struct-typed call result or field read used directly as a
+call argument or method receiver was checker-accepted, Emit-rejected.**
+
+`read(mk())` and `read(h.p)` (and, since a method receiver is
+argument 0 of the underlying call, `mk().get()` and `h.p.get()` too —
+all four routed through the same code) failed at Emit even though the
+checker accepted them.
+
+**Resolution (`008b6fd`, 2026-08-11).** `buildAggregateArgument`'s
+struct branch (`internal/backend/calls.go`) gained a
+`DirectCall`/`MethodCall` case delegating to `buildDirectCallNested`
+(the existing pure-expression-position call builder, already used for
+a nested call in any other value position), and its `Load` case was
+extended to accept `FieldPlace` alongside the existing
+`DereferencePlace`, via `buildPlaceLValue` — both mirroring the
+already-correct precedent `buildStructLocalDeclaration` established
+for the LOCAL DECLARATION position. The tuple-argument branch is
+untouched (out of scope) but has the identical gap, noted above as a
+new finding. A stale negative test for the exact call-result repro was
+converted to a positive test; its tuple sibling is unchanged and still
+correctly rejects. Causation-checked: reverting `calls.go` alone
+reproduces all four original Emit failures exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
