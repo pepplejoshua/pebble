@@ -424,6 +424,35 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 		if delayed || !success {
 			return changed, success, delayed
 		}
+		// A generic method — one declaring type parameters of its own beyond
+		// the containing type's inherited ones — needs every argument tied to
+		// its instantiated parameter, mirroring the direct-call rule in the
+		// walker (call_facts.go finishCall): a non-literal argument (a bare
+		// function value, a call result, a field read) grounds the method's own
+		// inferred type argument. Without this, a method-local type parameter
+		// that appears only inside a function-typed parameter (e.g. `fn
+		// convert[K, R](self Outer[K], conv fn(K) R)`) stays a free inference
+		// cell even when the argument's concrete signature names it (fn(int)
+		// int grounds R), and the solve reports it as unresolvable. The direct
+		// call adds Equal(source, destination) at the walker because its callee
+		// symbol is known there; an instance method call's callee symbol is
+		// resolved only here in the solver, so the same grounding is added
+		// here, once the resolved method is known to declare its own type
+		// parameters.
+		if state, stateOK := s.methodStates[value.site]; stateOK && state.ready {
+			if signature, sigOK := s.program.Signature(state.method); sigOK && signature.State == DeclarationReady {
+				if decl, declOK := s.program.TypeDeclaration(declaration); declOK && decl.State == DeclarationReady {
+					if len(signature.TypeParams) > len(decl.Parameters) {
+						for _, argument := range value.arguments {
+							if _, unifyOK := s.unify(argument.Source, argument.Destination, childOrigin(value.origin, 0)); !unifyOK {
+								s.failMethodArguments(value.site)
+								return changed, false, false
+							}
+						}
+					}
+				}
+			}
+		}
 		receiverShape := Leaf(value.a)
 		receiverPointer := false
 		if receiverType, known := s.resolvedType(value.a); known {
