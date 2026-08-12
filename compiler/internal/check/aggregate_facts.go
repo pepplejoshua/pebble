@@ -259,9 +259,98 @@ func (w *walker) prepareRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		if resolved, ok := w.generation.inputs.Resolution.Reference(field.name); ok && resolved.State == symbol.ResolutionResolved {
 			field.member = resolved.Symbol
 		}
+		if field.member != 0 {
+			if declaredType, ok := w.recordFieldDeclaredType(ctx, rp, field.member); ok {
+				w.knownValues[field.destination.ID] = declaredType
+			}
+		}
 		rp.fields = append(rp.fields, field)
 		fieldOrdinal++
 	}
+}
+
+// recordFieldDeclaredType resolves the declared concrete type of one record
+// field from the record's known receiver declaration and concrete type
+// arguments, when the field's member template is fully materializable. It is
+// the walk-time counterpart to the solver's hasField resolution: instead of
+// waiting for solve, it grounds the field's destination value as known so a
+// composite-literal field value's element types are inferred from the DECLARED
+// field type rather than their default widths. Only an ARRAY-typed field is
+// grounded — the narrow shape this task closes (struct construction of a
+// [3]i32 array field from a literal failed C0601 while [3]int worked, because
+// the literal stayed [3]int against the [3]i32 field) — so every other field
+// type (a scalar, tuple, optional, enum, struct) keeps its existing behavior
+// and its existing emitted IR exactly as before. The receiver's declaration
+// and concrete arguments come from either the record literal's own base name
+// (`Box.{ ... }`, resolved during prepareRecord) or the expected destination
+// type (`.{ ... }` under a typed binding); a generic declaration's concrete
+// arguments are the instantiation's own (the NominalKey args), so `Box[i32].{
+// data = [1, 2, 3] }` grounds data to [3]i32 through the same substitution
+// mapping the backend's structSubstitutions builds. Anything not fully
+// concrete — a type-parameterized member with no resolvable argument, a
+// generic nominal — yields no grounding and falls back to the pre-existing
+// solve-time path.
+func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member symbol.SymbolID) (types.TypeID, bool) {
+	if member == 0 {
+		return 0, false
+	}
+	declaration := rp.declaration
+	var arguments []types.TypeID
+	if id, ok := w.knownDestination(ctx.expected); ok {
+		if key, found := w.generation.inputs.Types.Key(id); found {
+			if decl, args, nominal := key.Nominal(); nominal {
+				declaration = decl
+				arguments = append([]types.TypeID(nil), args...)
+			}
+		}
+	}
+	if declaration == 0 {
+		return 0, false
+	}
+	decl, ok := w.program.TypeDeclaration(declaration)
+	if !ok || decl.State != infer.DeclarationReady {
+		return 0, false
+	}
+	var memberTemplate infer.TemplateID
+	for _, candidate := range decl.Members {
+		if candidate.Symbol == member {
+			memberTemplate = candidate.Type
+			break
+		}
+	}
+	if memberTemplate == 0 {
+		return 0, false
+	}
+	template, found := w.program.Template(memberTemplate)
+	if !found {
+		return 0, false
+	}
+	if template.Kind == infer.TemplateKnown {
+		key, found := w.generation.inputs.Types.Key(template.Known)
+		if !found || key.Kind() != types.Array {
+			return 0, false
+		}
+		return template.Known, true
+	}
+	if template.Kind != infer.TemplateArray {
+		return 0, false
+	}
+	mapping := make(map[symbol.SymbolID]types.TypeID, len(decl.Parameters))
+	if len(arguments) != len(decl.Parameters) {
+		return 0, false
+	}
+	for i, parameter := range decl.Parameters {
+		mapping[parameter] = arguments[i]
+	}
+	fieldType, ok := w.program.MaterializeTemplate(memberTemplate, mapping)
+	if !ok {
+		return 0, false
+	}
+	key, found := w.generation.inputs.Types.Key(fieldType)
+	if !found || key.Kind() != types.Array {
+		return 0, false
+	}
+	return fieldType, true
 }
 
 func (w *walker) recordReceiverTerm(ctx walkContext, plan *recordPlan, origin infer.Origin) infer.Term {

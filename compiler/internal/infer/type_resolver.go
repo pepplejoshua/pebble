@@ -284,6 +284,25 @@ func (p *Program) compositeTemplate(value TypeTemplate) TemplateID {
 	return temporary
 }
 
+// MaterializeTemplate resolves one template to a concrete TypeID given the
+// concrete type arguments (mapping) for its declaration's type parameters, when
+// every constituent is concrete — a TemplateKnown yields its own type, a
+// TemplateParameter is replaced by its mapped argument, and every composite
+// template (pointer/array/slice/tuple/optional/function/nominal) is interned
+// from its materialized children. It is the exported, read-only counterpart to
+// the snapshot builder's internal materialization, used by the checker's
+// walker to recover a record field's declared concrete type from its member
+// template (grounding the field's destination so array-literal element widths
+// follow the declared field type before solve). A false result means the
+// template is not fully concrete (a parameter with no mapped argument, or a
+// composite of one) and the caller must not guess a type.
+func (p *Program) MaterializeTemplate(id TemplateID, mapping map[symbol.SymbolID]types.TypeID) (types.TypeID, bool) {
+	if p == nil {
+		return 0, false
+	}
+	return p.materializeTemplate(id, mapping, false)
+}
+
 func (p *Program) materializeTemplate(id TemplateID, mapping map[symbol.SymbolID]types.TypeID, report bool) (types.TypeID, bool) {
 	value, ok := p.Template(id)
 	if !ok {
