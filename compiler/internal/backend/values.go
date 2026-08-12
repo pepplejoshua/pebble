@@ -445,6 +445,74 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 	}
 }
 
+// buildOptionalAggregateUnwrapExpr builds the C expression text for a
+// force-unwrap of an optional whose payload is a fixed array or a slice — the
+// one payload family with no by-value scalar to return through the runtime's
+// pebble_rt_checked_unwrap_<suffix> helpers. The lowering is a GNU
+// statement-expression whose first statement is the presence-only runtime
+// check (pebble_rt_checked_unwrap_present, which panics on an absent optional
+// with PEBBLE_PANIC_UNWRAP_FAILED) and whose value is the optional's own
+// .value field — the payload's pebble_array_<typeID>_t or
+// pebble_slice_<typeID>_t struct read by value, the same C type the optional
+// typedef declares the field with (see optionalPayloadCType). The base is a
+// SymbolValue naming an optional-typed local or a Load of an optional-typed
+// place; a freshly-computed base (a call result) would need a
+// temp-declaration statement this pure-expression position has nowhere to
+// place, so it is a clean rejection. The node's own Type (the unwrap result)
+// must be exactly the optional's payload.
+func buildOptionalAggregateUnwrapExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if len(node.Children) != 1 {
+		return "", fmt.Errorf("force-unwrap of an aggregate-payload optional has %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+	}
+	child, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("force-unwrap of an aggregate-payload optional references invalid child node %d", node.Children[0])
+	}
+	for child.Kind == tir.SourceAlias {
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("force-unwrap of an aggregate-payload optional has a base SourceAlias with %d child(ren), want exactly one", len(child.Children))
+		}
+		child, ok = unit.Node(child.Children[0])
+		if !ok {
+			return "", fmt.Errorf("force-unwrap of an aggregate-payload optional references invalid alias child node %d", child.Children[0])
+		}
+	}
+	var baseExpr string
+	var optionalType types.TypeID
+	if child.Kind == tir.SymbolValue {
+		info, declared := scope[child.Symbol]
+		if !declared {
+			return "", fmt.Errorf("force-unwrap of an aggregate-payload optional references symbol %d, which is not a local declared earlier in the body", child.Symbol)
+		}
+		if info.optional == 0 {
+			return "", fmt.Errorf("force-unwrap of an aggregate-payload optional references symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		optionalType = info.optional
+		baseExpr = fmt.Sprintf("pebble_local_%d", child.Symbol)
+	} else if child.Kind == tir.Load && len(child.Children) == 1 {
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isOptional(snapshot, placeType) {
+			return "", fmt.Errorf("force-unwrap of an aggregate-payload optional reads a place of type %s, want an optional-typed place", describeType(snapshot, placeType))
+		}
+		optionalType = placeType
+		baseExpr = lvalue
+	} else {
+		return "", fmt.Errorf("force-unwrap of an aggregate-payload optional unwraps a %s, want a SymbolValue naming an optional-typed local or a Load of an optional-typed place", child.Kind)
+	}
+	payloadKey, ok := snapshot.Key(optionalType)
+	if !ok || payloadKey.Kind() != types.Optional {
+		return "", fmt.Errorf("force-unwrap of an aggregate-payload optional unwraps type %d, which is not an optional type in the type snapshot", optionalType)
+	}
+	payload, ok := payloadKey.Child()
+	if !ok || payload != node.Type {
+		return "", fmt.Errorf("force-unwrap of an aggregate-payload optional unwraps an optional whose payload %s is not the %s type %s the unwrap yields", describeType(snapshot, payload), describeType(snapshot, node.Type), describeType(snapshot, node.Type))
+	}
+	return fmt.Sprintf("({ pebble_rt_checked_unwrap_present(%s.has_value, %s); %s.value; })", baseExpr, buildSourceLoc(fileSet, node.Span), baseExpr), nil
+}
+
 func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
 	key, ok := snapshot.Key(node.Type)
 	if !ok {
@@ -511,6 +579,28 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		value, err = buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isStruct(snapshot, payload):
 		value, err = buildStructValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+	case isArray(snapshot, payload):
+		// An array-typed payload's some/injected value is an array value (an
+		// array literal, a reference to an array-typed local, a by-value read
+		// of an array-typed place, or a call to an array-returning helper),
+		// built by buildOptionalArrayPayload into the optional's .value field
+		// — the same C type the optional typedef declares the field with (see
+		// optionalPayloadCType).
+		value, err = buildOptionalArrayPayload(st, unit, snapshot, fileSet, node.Children[0], scope, context, width)
+	case isSlice(snapshot, payload):
+		// A slice-typed payload's some/injected value is a slice value (a
+		// reference to a slice-typed local, a by-value read of a slice-typed
+		// place, a fresh slice construction, a call to a slice-returning
+		// helper, or a raw slice construction), built by
+		// buildOptionalSlicePayload into the optional's .value field — the
+		// same C type the optional typedef declares the field with (see
+		// optionalPayloadCType). nested == true folds an inline
+		// checked-slice construction's checked-start temp into a GNU
+		// statement-expression, since this builder is called from pure
+		// expression positions with nowhere for a pre-statement.
+		var payloadExpr string
+		_, payloadExpr, err = buildOptionalSlicePayload(st, unit, snapshot, fileSet, node.Children[0], scope, context, width, true)
+		value = payloadExpr
 	case isPointer(snapshot, payload):
 		// A pointer payload's value is built by the same buildExpr path a
 		// pointer-typed value takes anywhere else (AddressOf, NilPointer, a
@@ -1886,6 +1976,28 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			return "", fmt.Errorf("entry function body expression contains a %s of pointer type %s, which this backend does not lower", node.Kind, describeType(snapshot, node.Type))
 		}
 	}
+	// An array-typed or slice-typed node's Type is never the entry's width, so
+	// it must bypass the width gate below the same way a pointer-typed node
+	// does. The one array/slice value this backend lowers in a pure value
+	// position is a force-unwrap of an array/slice-payload optional (`o!`
+	// where o is `?[N]T` or `?[]T`): the aggregate payload has no by-value
+	// scalar to return through the runtime's pebble_rt_checked_unwrap_<suffix>
+	// helpers, so the unwrap lowers to a GNU statement-expression whose first
+	// statement is the presence-only check (pebble_rt_checked_unwrap_present,
+	// which panics on an absent optional) and whose value is the optional's
+	// own .value field — the payload's pebble_array_<typeID>_t or
+	// pebble_slice_<typeID>_t struct read by value. The base is a SymbolValue
+	// naming an optional-typed local or a Load of an optional-typed place; a
+	// freshly-computed base (a call result) would need a temp-declaration
+	// statement this pure-expression position has nowhere to place, so it is a
+	// clean rejection.
+	if node.Kind == tir.CheckedOptionalUnwrap && (isArray(snapshot, node.Type) || isSlice(snapshot, node.Type)) {
+		unwrapExpr, err := buildOptionalAggregateUnwrapExpr(st, unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", err
+		}
+		return unwrapExpr, nil
+	}
 	// A function-typed node's Type is never the entry's width, so it must
 	// bypass the width gate below the same way a pointer-typed node does. This
 	// covers the shapes a function value can take: a reference to an
@@ -2404,19 +2516,26 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		return buildTupleElement(unit, snapshot, base.Symbol, node.Ordinal, locals, width, false)
 	case tir.CheckedIndex:
 		// A bare CheckedIndex in a pure scalar-expression position — a
-		// slice-element read of a value with no addressable place
-		// (`view()[0]` in a comparison, arithmetic, or call argument), whose
-		// element type is the entry's width (the width gate above has already
-		// required it). The base here can only be a pure projection safe to
-		// reference twice — a SymbolValue naming a slice-typed local, or a
-		// Load of a slice-typed place — since a freshly-computed base (a call
-		// result) needs a temp-declaration statement this pure-expression
-		// position has nowhere to place (the positions that CAN host a temp —
-		// a print, a local declaration, a return — intercept the shape before
-		// reaching this case and thread buildSliceIndexValue's pre). A str
-		// index's result is char, never the entry's integer width, so a str
-		// base cannot reach this case from real source; if one does (hand-built
-		// IR) it is a clean rejection.
+		// slice/array-element read of a value with no addressable place
+		// (`view()[0]` in a comparison, arithmetic, or call argument, or
+		// `o![0]` where o is an array/slice-payload optional). The element
+		// read is built at the ENTRY width: the runtime bounds-check helper
+		// family (pebble_rt_checked_index_<suffix>) and the `.len` width cast
+		// are entry-width operations, exactly as buildArrayPlaceRead and the
+		// CheckedIndexPlace path use entryWidth for the same read — never the
+		// element's own width, which can be narrower than the entry (an i8
+		// element of a `?[3]i8` optional read inside `o![i] as int` builds its
+		// child at the element's own width). The base here can only be a pure
+		// projection safe to reference twice — a SymbolValue naming a
+		// slice-typed local, a Load of a slice-typed place, or an
+		// array/slice-payload optional force-unwrap — since a freshly-computed
+		// base (a call result) needs a temp-declaration statement this
+		// pure-expression position has nowhere to place (the positions that CAN
+		// host a temp — a print, a local declaration, a return — intercept the
+		// shape before reaching this case and thread buildSliceIndexValue's
+		// pre). A str index's result is char, never the entry's integer width,
+		// so a str base cannot reach this case from real source; if one does
+		// (hand-built IR) it is a clean rejection.
 		strBase, err := checkedIndexBaseIsStr(unit, snapshot, node)
 		if err != nil {
 			return "", err
@@ -2424,7 +2543,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if strBase {
 			return "", fmt.Errorf("entry function body expression contains a str index whose result type is %s, want %s", describeType(snapshot, node.Type), wantName(width))
 		}
-		pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, width, false)
+		pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, entryWidth, false)
 		if err != nil {
 			return "", err
 		}

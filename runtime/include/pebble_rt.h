@@ -371,6 +371,16 @@ uint64_t pebble_rt_checked_unwrap_u64(bool has_value, uint64_t value, PebbleSour
 void *pebble_rt_checked_unwrap_ptr(bool has_value, void *value, PebbleSourceLoc loc);
 float pebble_rt_checked_unwrap_f32(bool has_value, float value, PebbleSourceLoc loc);
 double pebble_rt_checked_unwrap_f64(bool has_value, double value, PebbleSourceLoc loc);
+/* An aggregate payload (a fixed array or slice) has no by-value scalar to
+ * return through the helpers above, so its force-unwrap is lowered by the
+ * compiler to a call to this presence-only check followed by a read of the
+ * optional's own .value field: the call panics with
+ * PEBBLE_PANIC_UNWRAP_FAILED when the optional holds no value and returns
+ * nothing otherwise, leaving the compiler's emitted C to read the payload
+ * out of the optional struct. Same not-mode-gated contract as the scalar
+ * family (there is no defined payload for an absent optional in either
+ * mode). */
+void pebble_rt_checked_unwrap_present(bool has_value, PebbleSourceLoc loc);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend

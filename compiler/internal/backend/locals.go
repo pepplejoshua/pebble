@@ -212,8 +212,8 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // loop) so the repeat value is evaluated exactly once, not once per slot
 // (10.27).
 func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat && initValue.Kind != tir.SymbolValue && initValue.Kind != tir.Load {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal), an ArrayRepeat (a [v; N] repeat initializer), a reference to an array-typed local in scope of that type, or a by-value whole-array read through a pointer (a Load of a DereferencePlace)", context, describeType(snapshot, initValue.Type), initValue.Kind)
+	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat && initValue.Kind != tir.SymbolValue && initValue.Kind != tir.Load && initValue.Kind != tir.CheckedOptionalUnwrap {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal), an ArrayRepeat (a [v; N] repeat initializer), a reference to an array-typed local in scope of that type, a by-value whole-array read through a pointer (a Load of a DereferencePlace), or a force-unwrap of an array-payload optional", context, describeType(snapshot, initValue.Type), initValue.Kind)
 	}
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
@@ -342,6 +342,93 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 			fmt.Sprintf("%smemcpy(pebble_local_%d, %s, sizeof(pebble_local_%d));", indent, statement.Symbol, srcPtr, statement.Symbol),
 			fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
 		}, "\n"), nil
+	}
+	if initValue.Kind == tir.CheckedOptionalUnwrap {
+		// A force-unwrap of an optional whose payload is an array used as the
+		// direct initializer of a matching array-typed local — `let t [3]i32 =
+		// o!;`. The optional's .value field is the wrapped pebble_array_<id>_t
+		// struct (see optionalPayloadCType) whose raw `.data` member is the
+		// array, and C cannot initialize a raw array variable from another
+		// array in its declarator, so the unwrap lowers to the presence-only
+		// runtime check followed by the same bare-declaration + memcpy shape a
+		// whole-array local copy uses (memcpy from the unwrapped .value's
+		// `.data`). When the unwrapped optional is a call result, the call is
+		// hoisted into a pebble_temp_<id> optional local first so its
+		// .has_value and .value fields are read from a single evaluation, the
+		// same evaluate-once pattern the slice/pointer-payload unwrap
+		// initializers use.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s force-unwrap initializer has %d child(ren), want exactly one optional value", context, len(initValue.Children))
+		}
+		child, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s force-unwrap initializer references invalid child node %d", context, initValue.Children[0])
+		}
+		for child.Kind == tir.SourceAlias {
+			if len(child.Children) != 1 {
+				return "", fmt.Errorf("%s force-unwrap initializer SourceAlias has %d child(ren), want exactly one", context, len(child.Children))
+			}
+			child, ok = unit.Node(child.Children[0])
+			if !ok {
+				return "", fmt.Errorf("%s force-unwrap initializer references invalid alias child node %d", context, child.Children[0])
+			}
+		}
+		var optionalCExpr string
+		var pre string
+		if child.Kind == tir.DirectCall || child.Kind == tir.MethodCall {
+			callPre, callText, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, child, scope, width)
+			if err != nil {
+				return "", err
+			}
+			tempName := fmt.Sprintf("pebble_temp_%d", statement.Children[0])
+			optionalCExpr = tempName
+			pre = callPre
+			if pre != "" {
+				pre = pre + "\n"
+			}
+			pre = pre + fmt.Sprintf("%s%s = %s;", optionalTypeName(child.Type), tempName, callText)
+		} else if child.Kind == tir.SymbolValue {
+			info, declared := scope[child.Symbol]
+			if !declared || info.optional == 0 {
+				return "", fmt.Errorf("%s force-unwrap initializer references symbol %d, which is not an optional-typed local declared earlier in the body", context, child.Symbol)
+			}
+			optionalCExpr = fmt.Sprintf("pebble_local_%d", child.Symbol)
+		} else if child.Kind == tir.Load && len(child.Children) == 1 {
+			lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			if !isOptional(snapshot, placeType) {
+				return "", fmt.Errorf("%s force-unwrap initializer reads a place of type %s, want an optional-typed place", context, describeType(snapshot, placeType))
+			}
+			optionalCExpr = lvalue
+		} else {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps a %s, want an optional-typed local, an optional-typed place read, or a call to an optional-returning helper", context, child.Kind)
+		}
+		payloadKey, ok := snapshot.Key(child.Type)
+		if !ok || payloadKey.Kind() != types.Optional {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps type %d, which is not an optional type in the type snapshot", context, child.Type)
+		}
+		payload, ok := payloadKey.Child()
+		if !ok || payload != initValue.Type {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps an optional whose payload %s is not the local's array type %s", context, describeType(snapshot, payload), describeType(snapshot, initValue.Type))
+		}
+		elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
+		if err != nil {
+			return "", fmt.Errorf("%s: %v", context, err)
+		}
+		st.hasArrayStore = true
+		check := fmt.Sprintf("%spebble_rt_checked_unwrap_present(%s.has_value, %s);", indent, optionalCExpr, buildSourceLoc(fileSet, initValue.Span))
+		body := strings.Join([]string{
+			fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, elementCType, statement.Symbol, length),
+			fmt.Sprintf("%smemcpy(pebble_local_%d, &%s.value.data, sizeof(pebble_local_%d));", indent, statement.Symbol, optionalCExpr, statement.Symbol),
+			fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+		}, "\n")
+		scope[statement.Symbol] = localInfo{array: initValue.Type}
+		if pre != "" {
+			return indent + pre + "\n" + check + "\n" + body, nil
+		}
+		return check + "\n" + body, nil
 	}
 	if len(initValue.Children) != int(length) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s with %d element expression(s), want %d", context, describeType(snapshot, initValue.Type), len(initValue.Children), length)
@@ -609,6 +696,78 @@ func buildSliceLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, sliceTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.CheckedOptionalUnwrap {
+		// A force-unwrap of an optional whose payload is a slice used as the
+		// direct initializer of a matching slice-typed local — `let t []i32 =
+		// o!;`. The slice's .value field is a by-value slice header (the
+		// optional's own pebble_slice_<typeID>_t, see optionalPayloadCType),
+		// so the unwrap lowers to the presence-only runtime check followed by
+		// the .value read — no scalar helper family exists for an aggregate
+		// payload. When the unwrapped optional is a call result (`let t =
+		// find(x)!;`), the call is hoisted into a pebble_temp_<id> optional
+		// local first so its .has_value and .value fields are read from a
+		// single evaluation, the same evaluate-once pattern the pointer-payload
+		// unwrap initializer uses. A SymbolValue/Load child (an unwrap of an
+		// optional-typed local or optional-typed field) needs no hoisting.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s force-unwrap initializer has %d child(ren), want exactly one optional value", context, len(initValue.Children))
+		}
+		child, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s force-unwrap initializer references invalid child node %d", context, initValue.Children[0])
+		}
+		for child.Kind == tir.SourceAlias {
+			if len(child.Children) != 1 {
+				return "", fmt.Errorf("%s force-unwrap initializer SourceAlias has %d child(ren), want exactly one", context, len(child.Children))
+			}
+			child, ok = unit.Node(child.Children[0])
+			if !ok {
+				return "", fmt.Errorf("%s force-unwrap initializer references invalid alias child node %d", context, child.Children[0])
+			}
+		}
+		var optionalCExpr string
+		if child.Kind == tir.DirectCall || child.Kind == tir.MethodCall {
+			callPre, callText, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, child, scope, width)
+			if err != nil {
+				return "", err
+			}
+			tempName := fmt.Sprintf("pebble_temp_%d", statement.Children[0])
+			optionalCExpr = tempName
+			if callPre != "" {
+				pre := fmt.Sprintf("%s%s %s = %s;", indent, optionalTypeName(child.Type), tempName, callText)
+				body := fmt.Sprintf("%spebble_rt_checked_unwrap_present(%s.has_value, %s);\n%s%s pebble_local_%d = %s.value;\n%s(void)pebble_local_%d;", indent, optionalCExpr, buildSourceLoc(fileSet, initValue.Span), indent, sliceTypeName(initValue.Type), statement.Symbol, optionalCExpr, indent, statement.Symbol)
+				scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+				return callPre + "\n" + pre + "\n" + body, nil
+			}
+		} else if child.Kind == tir.SymbolValue {
+			info, declared := scope[child.Symbol]
+			if !declared || info.optional == 0 {
+				return "", fmt.Errorf("%s force-unwrap initializer references symbol %d, which is not an optional-typed local declared earlier in the body", context, child.Symbol)
+			}
+			optionalCExpr = fmt.Sprintf("pebble_local_%d", child.Symbol)
+		} else if child.Kind == tir.Load && len(child.Children) == 1 {
+			lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+			if err != nil {
+				return "", err
+			}
+			if !isOptional(snapshot, placeType) {
+				return "", fmt.Errorf("%s force-unwrap initializer reads a place of type %s, want an optional-typed place", context, describeType(snapshot, placeType))
+			}
+			optionalCExpr = lvalue
+		} else {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps a %s, want an optional-typed local, an optional-typed place read, or a call to an optional-returning helper", context, child.Kind)
+		}
+		payloadKey, ok := snapshot.Key(child.Type)
+		if !ok || payloadKey.Kind() != types.Optional {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps type %d, which is not an optional type in the type snapshot", context, child.Type)
+		}
+		payload, ok := payloadKey.Child()
+		if !ok || payload != initValue.Type {
+			return "", fmt.Errorf("%s force-unwrap initializer unwraps an optional whose payload %s is not the local's slice type %s", context, describeType(snapshot, payload), sliceTypeName(initValue.Type))
+		}
+		scope[statement.Symbol] = localInfo{sliceType: initValue.Type}
+		return fmt.Sprintf("%spebble_rt_checked_unwrap_present(%s.has_value, %s);\n%s%s pebble_local_%d = %s.value;\n%s(void)pebble_local_%d;", indent, optionalCExpr, buildSourceLoc(fileSet, initValue.Span), indent, sliceTypeName(initValue.Type), statement.Symbol, optionalCExpr, indent, statement.Symbol), nil
+	}
 	tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, initValue, scope, indent, context, width, fmt.Sprintf("pebble_slice_start_%d", statement.Symbol), fmt.Sprintf("pebble_slice_backing_%d", statement.Symbol))
 	if err != nil {
 		return "", err
@@ -771,6 +930,39 @@ func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 			expr, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {
 				return "", err
+			}
+			valueExpr = expr
+		case isArray(snapshot, payloadType):
+			// An array-typed payload (`?[N]T`) initialized from `some <array>`:
+			// the payload is an array value (an array literal, a reference to an
+			// array-typed local, a by-value read of an array-typed place, or a
+			// call to an array-returning helper), built by
+			// buildOptionalArrayPayload into the optional struct's .value field —
+			// which the optional typedef declares with the array's own
+			// pebble_array_<typeID>_t (see optionalPayloadCType).
+			expr, err := buildOptionalArrayPayload(st, unit, snapshot, fileSet, initValue.Children[0], scope, context, width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
+		case isSlice(snapshot, payloadType):
+			// A slice-typed payload (`?[]T`) initialized from `some <slice>`: the
+			// payload is a slice value (a reference to a slice-typed local, a
+			// by-value read of a slice-typed place, a fresh slice construction, a
+			// call to a slice-returning helper, or a raw slice construction), built
+			// by buildOptionalSlicePayload into the optional struct's .value field
+			// — which the optional typedef declares with the slice's own
+			// pebble_slice_<typeID>_t. An inline checked-slice construction's
+			// checked-start temp comes back as the pre (nested == false, a local
+			// declaration is a leading-statement position), threaded ahead of the
+			// declaration line below.
+			pre, expr, err := buildOptionalSlicePayload(st, unit, snapshot, fileSet, initValue.Children[0], scope, context, width, false)
+			if err != nil {
+				return "", err
+			}
+			scope[statement.Symbol] = localInfo{optional: initValue.Type}
+			if pre != "" {
+				return fmt.Sprintf("%s%s\n%s%s pebble_local_%d = { .has_value = true, .value = %s };\n%s(void)pebble_local_%d;", indent, pre, indent, optionalTypeName(initValue.Type), statement.Symbol, expr, indent, statement.Symbol), nil
 			}
 			valueExpr = expr
 		case isPointer(snapshot, payloadType):

@@ -694,6 +694,35 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			}
 		}
 	}
+	// An optional whose payload is a slice (`?[]T`) names the slice's own
+	// pebble_slice_<typeID>_t typedef as the optional struct's .value field
+	// (see optionalPayloadCType), exactly like a struct field of slice type
+	// does — so every slice an optional payload references must have its
+	// typedef collected, mirroring the struct-field backfill immediately
+	// above. The slice typedef block leads the aggregate block that contains
+	// the optional typedef (see Emit's typedef ordering), so C always sees the
+	// slice's name before the optional that references it.
+	for _, optionalType := range optionalTypes {
+		key, ok := snapshot.Key(optionalType)
+		if !ok || key.Kind() != types.Optional {
+			continue
+		}
+		payload, ok := key.Child()
+		if !ok || !isSlice(snapshot, payload) {
+			continue
+		}
+		known := false
+		for _, sliceInfo := range sliceInfos {
+			known = known || sliceInfo.typ == payload
+		}
+		if !known {
+			info, resolveErr := resolveSliceInfo(snapshot, payload)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			sliceInfos = append(sliceInfos, info)
+		}
+	}
 	ordered, err := orderAggregateTypes(unit, snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
@@ -818,6 +847,30 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			inFieldArrays[field.typ] = true
 			fieldArrayTypes = append(fieldArrayTypes, field.typ)
 		}
+	}
+	// An optional whose payload is an array (`?[N]T`) names the array's OWN
+	// typedef (pebble_array_<typeID>_t, see optionalPayloadCType) as the
+	// optional struct's .value field, exactly like a struct field of array
+	// type does — so every array an optional payload references must have its
+	// typedef emitted BEFORE the aggregate block that contains the optional
+	// typedef, the same pre-aggregate position field-referenced arrays occupy.
+	// An optional-payload array's element is never an aggregate:
+	// orderAggregateTypes' depth>1-through-array nesting check rejects
+	// `?[N]struct`/`?[N]tuple`/`?[N]optional` just as it rejects a struct field
+	// that is an array of an aggregate, so every such array is self-contained
+	// (scalar/bool/char/float/str element) and safe to emit ahead of the
+	// aggregate block.
+	for _, optionalType := range optionalTypes {
+		key, ok := snapshot.Key(optionalType)
+		if !ok || key.Kind() != types.Optional {
+			continue
+		}
+		payload, ok := key.Child()
+		if !ok || !isArray(snapshot, payload) || inFieldArrays[payload] {
+			continue
+		}
+		inFieldArrays[payload] = true
+		fieldArrayTypes = append(fieldArrayTypes, payload)
 	}
 	standaloneArrayTypes := make([]types.TypeID, 0, len(arrayTypes))
 	for _, id := range arrayTypes {

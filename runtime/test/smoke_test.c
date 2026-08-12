@@ -711,6 +711,10 @@ static void test_checked_unwrap_normal(void) {
     assert(pebble_rt_checked_unwrap_ptr(true, NULL, (PebbleSourceLoc){0}) == NULL);
     assert(pebble_rt_checked_unwrap_f32(true, 1.5f, (PebbleSourceLoc){0}) == 1.5f);
     assert(pebble_rt_checked_unwrap_f64(true, 2.5, (PebbleSourceLoc){0}) == 2.5);
+    /* The presence-only aggregate helper returns nothing and must not panic
+     * when the optional holds a value; its absent-panic path is forked below
+     * like every other unwrap family member. */
+    pebble_rt_checked_unwrap_present(true, (PebbleSourceLoc){0});
 }
 
 static void trigger_unwrap_absent_i32(void) {
@@ -759,6 +763,10 @@ static void trigger_unwrap_absent_f32(void) {
 
 static void trigger_unwrap_absent_f64(void) {
     (void)pebble_rt_checked_unwrap_f64(false, 0.0, (PebbleSourceLoc){0});
+}
+
+static void trigger_unwrap_absent_present(void) {
+    pebble_rt_checked_unwrap_present(false, (PebbleSourceLoc){0});
 }
 
 /* The overflow-panic fork checks are SAFE-mode-only: in RELEASE mode the
@@ -1218,6 +1226,10 @@ int main(void) {
     }
     if (verify_checked_overflow_panics("f64 unwrap of absent optional", trigger_unwrap_absent_f64) != 0) {
         fprintf(stderr, "smoke_test: checked f64 unwrap subprocess check FAILED\n");
+        return 1;
+    }
+    if (verify_checked_overflow_panics("presence unwrap of absent optional", trigger_unwrap_absent_present) != 0) {
+        fprintf(stderr, "smoke_test: checked presence-unwrap subprocess check FAILED\n");
         return 1;
     }
     printf("ok: unwrap of absent optional panics in subprocess\n");

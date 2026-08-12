@@ -396,6 +396,72 @@ func buildSliceIndexValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			pre = callPre + "\n" + pre
 		}
 		baseExpr = tempName
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional whose payload is an array or slice
+		// used directly as the index base (`o![0]` where o is `?[N]T` or
+		// `?[]T`). The payload has no by-value scalar to return through the
+		// runtime's checked-unwrap helper family, so the unwrap is the same
+		// GNU statement-expression value buildOptionalAggregateUnwrapExpr
+		// produces (the presence-only check followed by the .value read) and
+		// the element read indexes that value: an array base's wrapped
+		// pebble_array_<typeID>_t .value indexes through its raw `.data`
+		// member against the compile-time length, and a slice base's .value —
+		// a pebble_slice_<typeID>_t header — indexes through `.data` against
+		// its runtime `.len`, exactly as a slice local base does. The base
+		// must be a stable optional local or optional-typed place (a
+		// call-result base would need a temp this bare-Index position has
+		// nowhere to place).
+		unwrapExpr, err := buildOptionalAggregateUnwrapExpr(st, unit, snapshot, fileSet, baseNode, locals, width)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression indexes an optional force-unwrap: %v", err)
+		}
+		if isArray(snapshot, baseNode.Type) {
+			arrayKey, ok := snapshot.Key(baseNode.Type)
+			if !ok {
+				return "", "", fmt.Errorf("entry function body expression indexes an array value whose type %d is not in the type snapshot", baseNode.Type)
+			}
+			length, element, ok := arrayKey.Array()
+			if !ok {
+				return "", "", fmt.Errorf("entry function body expression indexes a non-array unwrap of type %s", describeType(snapshot, baseNode.Type))
+			}
+			if wantBool {
+				if !isBool(snapshot, element) {
+					return "", "", fmt.Errorf("entry function body expression indexes an unwrapped array whose element type is %s, want bool", describeType(snapshot, element))
+				}
+			} else if !isSupportedSliceElementType(unit, snapshot, element) {
+				return "", "", fmt.Errorf("entry function body expression indexes an unwrapped array whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
+			}
+			literal, err := arrayLengthLiteral(length, width)
+			if err != nil {
+				return "", "", err
+			}
+			index, err := buildSliceIndexOperand(st, unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, %s, %s)]", unwrapExpr, checkedSuffix(width), index, literal, buildSourceLoc(fileSet, node.Span)), nil
+		}
+		sliceKey, ok := snapshot.Key(baseNode.Type)
+		if !ok {
+			return "", "", fmt.Errorf("entry function body expression indexes a slice value whose type %d is not in the type snapshot", baseNode.Type)
+		}
+		element, ok := sliceKey.Child()
+		if !ok {
+			return "", "", fmt.Errorf("entry function body expression indexes an unwrapped slice of type %s, which has no element type", describeType(snapshot, baseNode.Type))
+		}
+		if wantBool {
+			if !isBool(snapshot, element) {
+				return "", "", fmt.Errorf("entry function body expression indexes an unwrapped slice whose element type is %s, want bool", describeType(snapshot, element))
+			}
+		} else if !isSupportedSliceElementType(unit, snapshot, element) {
+			return "", "", fmt.Errorf("entry function body expression indexes an unwrapped slice whose element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
+		}
+		index, err := buildSliceIndexOperand(st, unit, snapshot, fileSet, node.Children[1], indexNode, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		read := fmt.Sprintf("%s.data[pebble_rt_checked_index_%s(%s, (%s)%s.len, %s)]", unwrapExpr, checkedSuffix(width), index, cType(width), unwrapExpr, buildSourceLoc(fileSet, node.Span))
+		return "", read, nil
 	default:
 		return "", "", fmt.Errorf("entry function body expression indexes a %s of type %s, want a slice-typed value (a slice-typed local, a slice-typed place, a call returning a slice, or a slice-typed field of a call result); indexing an array literal or array-typed call result directly is not lowered", baseNode.Kind, describeType(snapshot, baseNode.Type))
 	}

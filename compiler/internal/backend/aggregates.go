@@ -771,6 +771,18 @@ func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloa
 	if isTuple(snapshot, payloadType) {
 		return "{0}"
 	}
+	// An array-typed or slice-typed payload's .value field is a C struct
+	// typedef (pebble_array_<typeID>_t with a `.data` member, or
+	// pebble_slice_<typeID>_t with `.data`/`.len` — see optionalPayloadCType),
+	// never a scalar: it needs the aggregate {0} zero-initializer exactly like
+	// a tuple/struct payload, so a bare 0 would trigger
+	// -Wmissing-field-initializers / -Wmissing-braces under -Werror.
+	if isArray(snapshot, payloadType) {
+		return "{0}"
+	}
+	if isSlice(snapshot, payloadType) {
+		return "{0}"
+	}
 	// A tagged-union payload's C type is the union's own tag-plus-payload
 	// struct (see optionalPayloadCType), not a scalar: it needs the aggregate
 	// {0} zero-initializer exactly like a tuple/struct payload, so it is
@@ -791,6 +803,178 @@ func zeroOptionalPayloadLiteral(unit *tir.Unit, snapshot *types.Snapshot, payloa
 		return "{0}"
 	}
 	return "0"
+}
+
+// buildOptionalArrayPayload builds the C expression text for an array-typed
+// optional payload's construction value — the value assigned to the optional
+// struct's .value field, whose C type is the array's own
+// pebble_array_<typeID>_t typedef (see optionalPayloadCType). It mirrors the
+// array-value shapes buildArrayPrintValueExpr accepts, with the array-type
+// typedef wrapping a plain raw-C-array local: a reference to an array-typed
+// local that was itself declared as the wrapped typedef (a call-initialized
+// local, emitted as its own pebble_local_<symbol> name directly), a reference
+// to a plain literal-initialized array local (a raw C array that must be
+// wrapped element-by-element into `(pebble_array_<typeID>_t){ .data = {
+// <elem>, ... } }`), a by-value read of an array-typed place, a freshly
+// constructed array literal (an ArrayValue, wrapped the same way), or a call
+// to an array-returning helper (whose C result type IS the array typedef, so
+// the call expression is the whole value). Any other shape is a clean
+// rejection, never a guessed lowering.
+func buildOptionalArrayPayload(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("%s references invalid array payload node %d", context, id)
+	}
+	key, ok := snapshot.Key(node.Type)
+	if !ok {
+		return "", fmt.Errorf("%s array payload of type %d is not in the type snapshot", context, node.Type)
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("%s payload is a %s, want an array-typed value", context, describeType(snapshot, node.Type))
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", err
+	}
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := scope[node.Symbol]
+		if !declared || info.array != node.Type {
+			return "", fmt.Errorf("%s references symbol %d, which is not an array-typed local of type %s in scope", context, node.Symbol, describeType(snapshot, node.Type))
+		}
+		if info.arrayWrapped {
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+		values := make([]string, 0, int(length))
+		for i := uint64(0); i < length; i++ {
+			values = append(values, fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i))
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(node.Type), strings.Join(values, ", ")), nil
+	case tir.Load:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s payload is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isArray(snapshot, placeType) || placeType != node.Type {
+			return "", fmt.Errorf("%s payload is a Load of a place of type %s, want an array-typed place of type %s", context, describeType(snapshot, placeType), describeType(snapshot, node.Type))
+		}
+		values := make([]string, 0, int(length))
+		for i := uint64(0); i < length; i++ {
+			values = append(values, fmt.Sprintf("%s[%d]", lvalue, i))
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(node.Type), strings.Join(values, ", ")), nil
+	case tir.ArrayValue:
+		if uint64(len(node.Children)) != length {
+			return "", fmt.Errorf("%s payload is an array literal of type %s with %d element(s), want %d", context, describeType(snapshot, node.Type), len(node.Children), length)
+		}
+		elementExprs, err := buildArrayBraceElements(st, unit, snapshot, fileSet, node, scope, context, width, element)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(node.Type), strings.Join(elementExprs, ", ")), nil
+	case tir.DirectCall:
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
+		if err != nil {
+			return "", err
+		}
+		if !isArray(snapshot, calleeDecl.ResultType) || calleeDecl.ResultType != node.Type {
+			return "", fmt.Errorf("%s payload is a call to symbol %d whose declared result type %s is not the array type %s", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType), describeType(snapshot, node.Type))
+		}
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, scope, width)
+		if err != nil {
+			return "", err
+		}
+		return callExpr, nil
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s payload SourceAlias has %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildOptionalArrayPayload(st, unit, snapshot, fileSet, node.Children[0], scope, context, width)
+	}
+	return "", fmt.Errorf("%s array payload is a %s, want a reference to an array-typed local, a by-value read of an array-typed place, an array literal, or a call to an array-returning helper", context, node.Kind)
+}
+
+// buildOptionalSlicePayload builds the two pieces of C text an optional's
+// slice-typed payload construction needs — a leading temp-declaration
+// statement (empty for every pure shape) and the slice VALUE expression
+// assigned to the optional struct's .value field, whose C type is the slice's
+// own pebble_slice_<typeID>_t typedef (see optionalPayloadCType). It accepts
+// the same slice-value shapes a slice-typed call argument accepts: a
+// reference to a slice-typed local, a by-value read of a slice-typed place, a
+// fresh checked slice (`some a[:]`, whose checked-start temp is returned as
+// the pre so a statement position can thread it, or folded into a GNU
+// statement-expression when nested), a call to a slice-returning helper, or a
+// raw-pointer-backed slice (a SliceFromRaw, a pure construction). nested
+// selects the delivery of a CheckedSlice's temp exactly as buildSliceArgument
+// does: a leading-statement position (nested == false) gets the temp
+// declaration returned as the pre, while a pure expression position
+// (nested == true) folds it into a GNU statement-expression primary expression
+// so the construction can live inline with an empty pre.
+func buildOptionalSlicePayload(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind, nested bool) (string, string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", "", fmt.Errorf("%s references invalid slice payload node %d", context, id)
+	}
+	if !isSlice(snapshot, node.Type) {
+		return "", "", fmt.Errorf("%s payload is a %s, want a slice-typed value", context, describeType(snapshot, node.Type))
+	}
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := scope[node.Symbol]
+		if !declared || info.sliceType != node.Type {
+			return "", "", fmt.Errorf("%s references symbol %d, which is not a slice-typed local of type %s in scope", context, node.Symbol, describeType(snapshot, node.Type))
+		}
+		return "", fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.Load:
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("%s payload is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		if err != nil {
+			return "", "", err
+		}
+		if !isSlice(snapshot, placeType) || placeType != node.Type {
+			return "", "", fmt.Errorf("%s payload is a Load of a place of type %s, want a slice-typed place of type %s", context, describeType(snapshot, placeType), describeType(snapshot, node.Type))
+		}
+		return "", lvalue, nil
+	case tir.CheckedSlice:
+		tempDecl, constructionExpr, err := buildSliceConstruction(st, unit, snapshot, fileSet, node, scope, "", context, width, fmt.Sprintf("pebble_slice_payload_%d", id), fmt.Sprintf("pebble_payload_backing_%d", id))
+		if err != nil {
+			return "", "", err
+		}
+		if nested {
+			return "", sliceConstructionStatementExpr(tempDecl, constructionExpr), nil
+		}
+		return tempDecl, constructionExpr, nil
+	case tir.DirectCall, tir.MethodCall:
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
+		if err != nil {
+			return "", "", err
+		}
+		if !isSlice(snapshot, calleeDecl.ResultType) || calleeDecl.ResultType != node.Type {
+			return "", "", fmt.Errorf("%s payload is a call to symbol %d whose declared result type %s is not the slice type %s", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType), describeType(snapshot, node.Type))
+		}
+		expr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, scope, width)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
+	case tir.SliceFromRaw:
+		expr, err := buildRawSliceConstruction(st, unit, snapshot, fileSet, node, scope, width, context)
+		if err != nil {
+			return "", "", err
+		}
+		return "", expr, nil
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("%s payload SourceAlias has %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildOptionalSlicePayload(st, unit, snapshot, fileSet, node.Children[0], scope, context, width, nested)
+	}
+	return "", "", fmt.Errorf("%s slice payload is a %s, want a reference to a slice-typed local, a by-value read of a slice-typed place, a fresh slice construction, a call to a slice-returning helper, or a raw slice construction", context, node.Kind)
 }
 
 // buildStructBraceList validates one RecordConstruct node's field list and

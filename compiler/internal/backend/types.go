@@ -1495,7 +1495,11 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 // the destination shape of an integer cast to an optional enum (`5 as
 // ?Color`), whose optional struct must carry the enum value field. A pointer
 // payload (the std/hmap.peb get_by_ref shape, `?*V`) is declared with the
-// pointee's own pointer C type, `<pointee> *` via pointerTypeName. Any other
+// pointee's own pointer C type, `<pointee> *` via pointerTypeName. An array
+// payload (`?[N]T`) is declared with the array's own pebble_array_<typeID>_t
+// typedef and a slice payload (`?[]T`) with the slice's own
+// pebble_slice_<typeID>_t typedef, exactly as a struct field of those types is
+// (see structFieldCType). Any other
 // payload type is a clean rejection naming what was found, since this backend
 // emits exactly those C types as optional value fields.
 func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
@@ -1541,6 +1545,22 @@ func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			return name, nil
 		}
 		return "", fmt.Errorf("payload type %s has a pointee %s whose C type is unsupported", describeType(snapshot, id), describeType(snapshot, pointee))
+	}
+	if isArray(snapshot, id) {
+		// An array-typed payload is declared with the array's OWN typedef
+		// (pebble_array_<typeID>_t), exactly as a struct field of array type is
+		// (see structFieldCType) — the wrapped struct whose `.data` member is
+		// the raw `elem data[length]` array. The array typedef is emitted
+		// BEFORE the aggregate block that contains this optional typedef (see
+		// Emit's optional-payload-array collection), so C always sees the name.
+		return arrayTypeName(id), nil
+	}
+	if isSlice(snapshot, id) {
+		// A slice-typed payload is declared with the slice's OWN typedef
+		// (pebble_slice_<typeID>_t), the same C type a slice local/parameter/
+		// result is declared with — a genuine C struct ({data, len}), so the
+		// optional's .value field is a by-value slice header.
+		return sliceTypeName(id), nil
 	}
 	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
 		if name, ok := builtinName(builtin); ok {

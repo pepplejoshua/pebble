@@ -102,3 +102,9 @@ double pebble_rt_checked_unwrap_f64(bool has_value, double value, PebbleSourceLo
     }
     return value;
 }
+
+void pebble_rt_checked_unwrap_present(bool has_value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+}
