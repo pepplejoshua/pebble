@@ -815,20 +815,24 @@ fn main() int {
 }`, false, 0, true)
 }
 
-func TestEmitSliceStructFieldInlineConstructionAsCallArgumentRejects(t *testing.T) {
+func TestEmitSliceStructFieldInlineConstructionAsCallArgumentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// An inline slice construction in a pure expression position — a struct
-	// value with such a field used as a call argument — is a clean rejection,
-	// the same discipline buildSliceArgument applies to a bare CheckedSlice
-	// call argument: a C function argument is a pure expression position with
-	// nowhere to place the temp-declaration statement the construction needs.
-	// The slice-typed-local-reference shape remains the supported spelling.
-	emitAndRunRejects(t, `type Bag = struct { items []int; };
+	// value with such a field used as a call argument — was previously a
+	// clean rejection (a C function argument is a pure expression position
+	// with nowhere to place the temp-declaration statement the construction
+	// needs). Phase 3 #5 closed this: buildStructValueExpr now folds the
+	// WHOLE struct literal into a GNU statement-expression, `({ <temp decl>;
+	// <struct literal>; })`, when any field's construction needs a
+	// pre-statement — the same primary-expression trick 836fbea applied to a
+	// bare CheckedSlice call argument, generalized to the enclosing struct
+	// literal. arr[:] = [1, 2, 3], so b.items[1] = 2.
+	emitAndRun(t, `type Bag = struct { items []int; };
 fn read(b Bag) int { return b.items[1]; }
 fn main() int {
     var arr [3]int = [1, 2, 3];
     return read(Bag.{ items = arr[:] });
-}`, "nowhere to place the temp-declaration statement")
+}`, false, 2, false)
 }
 
 func TestEmitSliceConstructionAsCallArgumentInReturnPositionCompilesAndRuns(t *testing.T) {

@@ -570,16 +570,27 @@ func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		// A slice-typed field whose construction value is an inline CheckedSlice
 		// needs its temp-declaration statement, and this is a pure expression
 		// position (a call argument, a return value, or a nested aggregate
-		// field) with nowhere to place it. Unlike a bare CheckedSlice call
-		// argument — which the GNU statement-expression lowering in
-		// buildSliceArgument / sliceConstructionStatementExpr now folds inline —
-		// this field value sits inside one brace-list element of the enclosing
-		// struct compound literal, so there is no single expression to wrap:
-		// the whole struct literal would have to become the trailing value of
-		// `({ ...; <struct literal> })`, a larger shape change this backend
-		// deliberately leaves out of scope. The slice-typed-local-reference
-		// shape (empty preStatements) is unaffected.
-		return "", fmt.Errorf("%s is a struct value with a slice field initialized from an inline slice construction, which is not supported in this position: a C expression has nowhere to place the temp-declaration statement the slice construction needs; construct the slice into a local first and reference that local", context)
+		// field) with nowhere to place it separately. Unlike a bare CheckedSlice
+		// call argument — which the GNU statement-expression lowering in
+		// buildSliceArgument / sliceConstructionStatementExpr folds inline — a
+		// struct literal's slice-construction FIELD sits inside one brace-list
+		// element of the enclosing struct compound literal, so the individual
+		// field cannot be wrapped on its own; instead the WHOLE struct value is
+		// folded into a single GNU statement-expression, `({ <temp decl>;
+		// <struct literal>; })`, whose value is the struct literal — the same
+		// primary-expression folding 836fbea applied to a bare CheckedSlice
+		// call argument, generalized from the single-construction case to the
+		// whole-struct case. GCC/Clang (this project's cc toolchain) support
+		// the extension, and a statement-expression is a primary expression, so
+		// it composes correctly inside a call argument list, a return
+		// statement, and a nested aggregate's compound literal. The slice
+		// temp-declaration statements are all emitted inside the statement
+		// expression's braces; the struct literal itself is the trailing
+		// expression statement (with its terminating semicolon, as documented
+		// for sliceConstructionStatementExpr). The slice-typed-local-reference
+		// shape (empty preStatements) is unaffected and keeps emitting the bare
+		// compound literal.
+		return fmt.Sprintf("({ %s (%s)%s; })", preStatements, structTypeName(node.Type), braceList), nil
 	}
 	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
 }

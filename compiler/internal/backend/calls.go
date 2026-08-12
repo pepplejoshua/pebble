@@ -1873,6 +1873,27 @@ func buildSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		}
 		return "", lvalue, nil
 	}
+	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
+		// A slice-returning call used directly as the argument — `f(mk())` —
+		// the slice-side mirror of the struct/tuple-returning-call argument
+		// shapes buildAggregateArgument's struct and tuple branches accept. A
+		// slice-returning call's C result type IS the slice's own typedef, so
+		// passing the whole result by value directly as the argument is
+		// trivially valid C — no runtime helper, no temp local needed. The
+		// call's result type is the node's own Type, which is the callee's
+		// resolved result type, and it must be exactly the parameter's slice
+		// type (defense for hand-built IR — the checker coerces every argument
+		// to its parameter's type), so the emitted C never passes a value of
+		// the wrong slice type. The call is built by buildDirectCallNested,
+		// the same pure-expression-position call machinery buildExpr's
+		// DirectCall case uses, since an argument position has nowhere for a
+		// leading pre-statement.
+		if node.Type != wantType {
+			return "", "", fmt.Errorf("%s is a %s of type %s, not a slice-typed value of type %s", context, node.Kind, describeType(snapshot, node.Type), sliceTypeName(wantType))
+		}
+		expr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
+		return "", expr, err
+	}
 	if node.Kind != tir.SymbolValue {
 		return "", "", fmt.Errorf("%s is a %s, want a reference to a slice-typed local in scope; only passing an already-declared slice-typed local is supported", context, node.Kind)
 	}
@@ -2257,8 +2278,8 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 // buildSliceReturnValue builds the C text pieces for a slice-returning
 // function's tail-position return (10.38). The enclosing function's result
 // type comes from result.sliceType (set by buildHelperFunctions from the
-// helper's own ResultType), and exactly two return-value shapes are supported
-// (both confirmed against real fixtures):
+// helper's own ResultType), and the supported return-value shapes are (all
+// confirmed against real fixtures):
 //
 //   - a plain SymbolValue naming an already-declared slice-typed local — or a
 //     slice-typed parameter, which seeds the callee's scope identically — in
@@ -2277,16 +2298,33 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 //     (buildBlock / buildSwitchCaseBody) to thread into its statement sequence
 //     before the final `return <expr>;` line — the same mechanical shape
 //     deferred statements already demonstrate, just for construction complexity
-//     rather than deferred cleanup.
+//     rather than deferred cleanup;
+//   - a fresh SliceFromRaw construction (`return slice ptr, n;`, the raw-slice
+//     builtin restricted to std-package source), whose construction is a single
+//     expression (buildRawSliceConstruction needs no temp), so preReturn is
+//     empty;
+//   - a by-value read of a slice-typed struct field used directly as the
+//     return — `return b.items;` — a Load whose place is a FieldPlace (the
+//     same Load(FieldPlace) shape buildSliceArgument accepts for a slice call
+//     argument), or a whole-slice read through a pointer deref (`return *ptr;`)
+//     — a Load of a DereferencePlace, the null-checked deref value
+//     buildDereferencePlaceRead produces — both emitted as the slice's own
+//     typedef, so returning the whole value by value is trivially valid C;
+//   - a DirectCall to another slice-returning helper (`return g();`), the
+//     return-forwarding shape io.peb's `return string::new();` uses for a
+//     struct result (10.26). The callee's declared ResultType is double-checked
+//     against the function's result type (defense for hand-built IR), then the
+//     call is built by buildDirectCallWithPre; if the call's own argument
+//     building produced a temp-declaration pre-statement (an inline
+//     slice-construction argument to the nested call), it is threaded as a
+//     pre-return statement ahead of the final `return <expr>;` line, the same
+//     (pre, expr) convention the CheckedSlice shape uses.
 //
-// A slice-returning helper's result may not itself be another slice-returning
-// call (`return g();`, a DirectCall) — that position is confirmed reachable
-// for tuple/struct returns and rejected there (10.26), and a slice call in a
-// return position is a clean rejection naming what was found here. Any other
-// return-value shape is likewise a clean rejection. indent indents the temp
-// declaration to match the surrounding statement text. width is the entry's
-// resolved integer width, threaded through so the temp is declared at the
-// correct width (the i64-entry width bug found and fixed in 10.37's review).
+// Any other return-value shape is likewise a clean rejection naming what was
+// found. indent indents the temp declaration to match the surrounding statement
+// text. width is the entry's resolved integer width, threaded through so the
+// temp is declared at the correct width (the i64-entry width bug found and
+// fixed in 10.37's review).
 func buildSliceReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, indent string, width types.BuiltinKind) (string, string, error) {
 	node, ok := unit.Node(id)
 	if !ok {
@@ -2324,6 +2362,66 @@ func buildSliceReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 		}
 		construction, err := buildRawSliceConstruction(st, unit, snapshot, fileSet, node, locals, width, context)
 		return "", construction, err
+	}
+	if node.Kind == tir.DirectCall {
+		// A slice-returning call forwarded as the return value — `return g();`
+		// — the slice-side mirror of the struct-return branch's DirectCall case
+		// in buildAggregateReturnValue. The callee's declared result type is
+		// double-checked against the function's result type (defense for
+		// hand-built IR), then the call is built by buildDirectCallWithPre; if
+		// the nested call's own argument building produced a temp-declaration
+		// pre-statement (an inline slice-construction argument to g), it is
+		// threaded before the final return line with the caller's indent.
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
+		if err != nil {
+			return "", "", err
+		}
+		if calleeDecl.ResultType != result.sliceType {
+			return "", "", fmt.Errorf("%s returns a call to symbol %d whose declared result type %s does not match the function's result type %s", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType), sliceTypeName(result.sliceType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", "", err
+		}
+		if callPre != "" {
+			callPre = indent + callPre
+		}
+		return callPre, callExpr, nil
+	}
+	if node.Kind == tir.Load {
+		// A whole slice read used directly as the return value, in the same
+		// shapes buildSliceArgument's Load case accepts: a whole slice read
+		// through a pointer deref — `return *ptr;` — lowered to a Load of a
+		// DereferencePlace, emitted as the null-checked whole-slice deref value
+		// buildDereferencePlaceRead produces, or a slice-typed field read —
+		// `return b.items;` — a Load of a FieldPlace, emitted as the field
+		// projection lvalue. Both are the slice's own pebble_slice_<typeID>_t,
+		// so returning the whole value by value is trivially valid C.
+		if node.Type != result.sliceType {
+			return "", "", fmt.Errorf("%s returns a Load of type %s, not a slice-typed value of type %s", context, describeType(snapshot, node.Type), sliceTypeName(result.sliceType))
+		}
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("%s returns a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", "", fmt.Errorf("%s returns a Load referencing invalid place node %d", context, node.Children[0])
+		}
+		if place.Kind == tir.DereferencePlace {
+			value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+			return "", value, err
+		}
+		if place.Kind == tir.FieldPlace {
+			lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", "", fmt.Errorf("%s slice read: %v", context, err)
+			}
+			if elementType != result.sliceType {
+				return "", "", fmt.Errorf("%s returns a read of element type %s, not a slice-typed value of type %s", context, describeType(snapshot, elementType), sliceTypeName(result.sliceType))
+			}
+			return "", lvalue, nil
+		}
+		return "", "", fmt.Errorf("%s returns a Load whose place is a %s, want a DereferencePlace (a by-value whole-slice read through a pointer) or a FieldPlace (a by-value read of a slice-typed field)", context, place.Kind)
 	}
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a slice-typed local in scope or a fresh slice construction (a CheckedSlice); only returning an already-declared slice-typed local or constructing a fresh slice from an array inline is supported", context, node.Kind)
 }

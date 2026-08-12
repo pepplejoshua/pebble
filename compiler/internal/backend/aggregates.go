@@ -498,7 +498,7 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	if !ok {
 		return "", "", fmt.Errorf("%s CheckedSlice references invalid base node %d", context, initValue.Children[0])
 	}
-	// Three base shapes are accepted:
+	// Four base shapes are accepted:
 	//
 	// 1. A SymbolValue naming an ARRAY-typed local in scope (the original,
 	//    unchanged path): the array local decays to a pointer to its first
@@ -506,12 +506,14 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	//    (arrayLengthLiteral) used both as the default end bound and as the
 	//    upper bound the runtime helper validates the range against.
 	//
-	// 2. A Load of a SLICE-typed place — re-slicing an EXISTING slice value
-	//    (`self.data[:self.len]`, std/string.peb's String::as_slice, lowered
-	//    to a Load(FieldPlace) reading the slice-typed struct field). There is
-	//    no compile-time length for a slice base: the new slice's .data
-	//    pointer must offset the EXISTING slice's own runtime .data, and the
-	//    upper bound is the EXISTING slice's runtime .len field.
+	// 2. A SLICE-typed value base — re-slicing an EXISTING slice — in two
+	//    lowered shapes: a Load of a slice-typed place (`self.data[:self.len]`,
+	//    std/string.peb's String::as_slice, lowered to a Load(FieldPlace)
+	//    reading the slice-typed struct field) or a SymbolValue naming an
+	//    already-declared slice-typed local in scope (`s[1:3]` where s is a
+	//    slice local). There is no compile-time length for a slice base: the
+	//    new slice's .data pointer must offset the EXISTING slice's own runtime
+	//    .data, and the upper bound is the EXISTING slice's runtime .len field.
 	//
 	// 3. An ArrayValue literal base — an array literal directly initializing a
 	//    slice-typed binding (`var s []int = [1, 2, 3];`, lowered by the
@@ -521,17 +523,26 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	//    workaround (`var arr [N]T = [...]; var s []T = arr[:];`) lowers to.
 	isSliceBase := baseNode.Kind == tir.Load && isSlice(snapshot, baseNode.Type)
 	isArrayLiteralBase := baseNode.Kind == tir.ArrayValue
+	baseSymbolIsSlice := false
 	var baseInfo localInfo
 	if !isSliceBase && !isArrayLiteralBase {
 		if baseNode.Kind != tir.SymbolValue {
-			return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array local", context, baseNode.Kind)
+			return "", "", fmt.Errorf("%s slice base is a %s, want a SymbolValue naming an array or slice local", context, baseNode.Kind)
 		}
 		var declared bool
 		baseInfo, declared = scope[baseNode.Symbol]
 		if !declared {
 			return "", "", fmt.Errorf("%s slice base references symbol %d, which is not a local in scope", context, baseNode.Symbol)
 		}
-		if baseInfo.array == 0 {
+		if baseInfo.sliceType != 0 {
+			// A SymbolValue naming a slice-typed local base — `s[1:3]` where s
+			// is a slice local. The base slice's own .data/.len fields are the
+			// new slice's data pointer and upper bound, exactly like the
+			// Load(FieldPlace) slice base below; only the C lvalue spelling of
+			// the base (the local's own name) differs.
+			isSliceBase = true
+			baseSymbolIsSlice = true
+		} else if baseInfo.array == 0 {
 			return "", "", fmt.Errorf("%s slice base is not an array-typed local", context)
 		}
 	}
@@ -616,20 +627,30 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			dataExpr += ".data"
 		}
 	} else {
-		// A Load of a slice-typed place: the base slice value's own C lvalue
-		// (built by buildPlaceLValue, the same projection a slice-typed struct
-		// field read in any other value position uses). Its .data and .len
-		// sub-fields are the base slice's own storage pointer and runtime
-		// length.
-		if len(baseNode.Children) != 1 {
-			return "", "", fmt.Errorf("%s slice base Load has %d child(ren), want exactly one place", context, len(baseNode.Children))
-		}
-		baseLvalue, baseType, err := buildPlaceLValue(st, unit, snapshot, fileSet, baseNode.Children[0], scope, width)
-		if err != nil {
-			return "", "", fmt.Errorf("%s slice base read: %v", context, err)
+		// A slice-typed base value: either a Load of a slice-typed place (the
+		// base slice value's own C lvalue, built by buildPlaceLValue, the same
+		// projection a slice-typed struct field read in any other value
+		// position uses) or a SymbolValue naming an already-declared slice
+		// local (whose C lvalue is its own pebble_local_<symbol> name). Either
+		// way the base's .data and .len sub-fields are the base slice's own
+		// storage pointer and runtime length.
+		var baseLvalue string
+		var baseType types.TypeID
+		if baseSymbolIsSlice {
+			baseLvalue = fmt.Sprintf("pebble_local_%d", baseNode.Symbol)
+			baseType = baseNode.Type
+		} else {
+			if len(baseNode.Children) != 1 {
+				return "", "", fmt.Errorf("%s slice base Load has %d child(ren), want exactly one place", context, len(baseNode.Children))
+			}
+			var err error
+			baseLvalue, baseType, err = buildPlaceLValue(st, unit, snapshot, fileSet, baseNode.Children[0], scope, width)
+			if err != nil {
+				return "", "", fmt.Errorf("%s slice base read: %v", context, err)
+			}
 		}
 		if !isSlice(snapshot, baseType) {
-			return "", "", fmt.Errorf("%s slice base Load reads a place of type %s, want a slice-typed place", context, describeType(snapshot, baseType))
+			return "", "", fmt.Errorf("%s slice base reads a value of type %s, want a slice-typed value", context, describeType(snapshot, baseType))
 		}
 		baseSliceKey, ok := snapshot.Key(baseType)
 		if !ok {
