@@ -44,21 +44,49 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — slice 86d (slice element float support: typedef,
-construction; index read/write already worked for free) closed in
-`c39b553`. This closes proposal-14 task #86 ENTIRELY: tuple/array
-element reads (86a), struct fields (86b), optional payloads (86c),
-and slice elements (86d) all now support f32/f64. Two new,
-narrowly-scoped follow-up tasks were logged from findings surfaced
-during 86d, both confirmed NOT float-specific: #100 (slice
-construction inside a float-returning entry) and #101 (slicing a
-wrapped array parameter inside a helper). Still open, unrelated to
-#86: #95 (inline tuple-literal struct field construction type
-mismatch, found during #94) and the parked `int`-width architectural
-question. With #86 done, no more items remain from the original
-"handle the deferred stuff" instruction — next is whatever the user
-directs, or Phase 3 (the 35 "Partial" rows) per the standing
-instruction sequence.)*
+*(empty — item #95 (inline tuple-literal struct field construction
+type mismatch) closed in `98ab9ae`. Per the user's instruction
+(2026-08-11): "tackle the tasks first then go to phase 3" — remaining
+before Phase 3: #100 (slice construction inside a float-returning
+entry) and #101 (slicing a wrapped array parameter inside a helper),
+both confirmed not float-specific, found during task #86 slice 86d.
+The parked `int`-width architectural question remains separate,
+awaiting the user's design decision. Once #100/#101 land, Phase 3
+begins: the 35 "Partial" rows in tracker 14, investigated and
+completed one at a time via orc dispatch, per the user's original
+three-phase instruction.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: constructing a struct whose field is a tuple type from an
+INLINE tuple literal (`Holder.{ p = (20, 22) }`) failed to compile.**
+
+The checker interns each tuple-literal occurrence its own structural
+TypeID; a struct field declared `(i32, i32)` and a construction
+literal `(20, 22)` at that field get separate IDs even with an
+identical C shape. `buildTupleValueExpr` named its compound-literal
+cast after the literal's OWN type, not the field's declared type, so
+the emitted C referenced a `pebble_tuple_<ID>_t` no typedef was ever
+collected for.
+
+**Resolution (`98ab9ae`, 2026-08-11).** Added a `wantType` parameter to
+`buildTupleValueExpr`; the cast now names the caller's declared target
+type. Added `tupleSameCShape`/`tupleElementSameCShape` as a defensive
+shape-equality check (a genuine mismatch is now a clean rejection, not
+a silent wrong cast). Empirically verified only the struct-field call
+site was actually broken — argument/return/store/optional positions
+already coerce the literal to the position's type via the checker, and
+the print operand has no distinct target type at all — so all 6 call
+sites were updated to pass an explicit target, but only one needed a
+behavioral change. Sanity-checked `buildStructValueExpr` for the
+identical bug: NOT affected, since nominal struct types canonicalize
+to exactly one TypeID per declaration in this checker. New tests prove
+the exact repro and a no-regression case for the plain tuple-local
+shape. Causation-checked: reverting the four touched files together
+reproduces the original "use of undeclared identifier" `cc` failure
+exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
