@@ -1505,7 +1505,7 @@ func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.S
 }
 
 // buildAggregateArgument builds one call-site argument for a tuple- or
-// struct-typed parameter. Two argument shapes are supported (10.25):
+// struct-typed parameter. The supported argument shapes are (10.25):
 //
 //   - a plain SymbolValue naming an already-declared aggregate-typed local in
 //     scope whose declared type is exactly the parameter's tuple/struct type
@@ -1525,7 +1525,17 @@ func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.S
 //     directly as the argument — f(*ptr) — a Load whose place is a
 //     DereferencePlace, emitted as the null-checked dereference value
 //     buildDereferencePlaceRead produces, a plain by-value struct copy through
-//     the pointer.
+//     the pointer;
+//   - (struct branch only) a struct-returning call used directly as the
+//     argument — f(mk()) — a DirectCall or MethodCall, emitted as the call
+//     expression itself (its C result type IS the struct's own typedef, so
+//     passing the whole result by value is trivially valid C), built by the
+//     same pure-expression-position call machinery buildDirectCallNested
+//     uses for a nested call in any other value position;
+//   - (struct branch only) a whole struct-typed field read used directly as
+//     the argument — f(h.p) — a Load whose place is a FieldPlace, emitted as
+//     the field-projection lvalue buildPlaceLValue produces, a plain by-value
+//     struct copy read out of the enclosing struct.
 //
 // An inline construct whose own Type is not exactly the
 // parameter's type (defense for hand-built IR — the checker coerces every
@@ -1575,19 +1585,54 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			}
 			return "(*ctx)", nil
 		}
+		if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
+			// A struct-returning call used directly as the argument — `read(mk())`
+			// — the argument-position sibling of the struct-typed local
+			// declaration initializer buildStructLocalDeclaration accepts (10.26),
+			// and also the shape a struct-typed METHOD RECEIVER routes through: a
+			// method call's receiver is argument 0, so `mk().get()` (a method
+			// called directly on a call result) builds its receiver as this
+			// argument. The call's result type is the node's own Type, which is
+			// the callee's resolved result type, and it must be exactly the
+			// parameter's struct type (defense for hand-built IR — the checker
+			// coerces every argument to its parameter's type), so the emitted C
+			// never passes a value of the wrong aggregate type. The call is built
+			// by buildDirectCallNested, the same pure-expression-position call
+			// machinery buildExpr's DirectCall case uses: an argument position has
+			// nowhere for a leading pre-statement, so an inline slice-construction
+			// argument inside the nested call folds into a GNU statement-expression
+			// exactly as a nested scalar call's argument does. The callee's C
+			// result type IS the struct's own typedef, so the call expression is
+			// directly a struct value, trivially valid C as the argument.
+			if node.Type != wantType {
+				return "", fmt.Errorf("%s is a %s of type %s, not a struct-typed value of type %s", context, node.Kind, describeType(snapshot, node.Type), structTypeName(wantType))
+			}
+			return buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
+		}
 		if node.Kind == tir.Load {
-			// A whole struct read through a pointer deref used directly as the
-			// call argument — `use_point(*ptr);`, the read-side twin of the
-			// `*self = other;` write — lowered by the checker to a Load of a
-			// DereferencePlace whose single child is the pointer expression.
-			// The Load's Type must be exactly the parameter's struct type
-			// (defense for hand-built IR — the checker coerces every argument
-			// to its parameter's type), and the emitted C is the null-checked
-			// dereference value buildDereferencePlaceRead produces,
-			// `*(pebble_struct_<typeID>_t)(pebble_rt_checked_deref_ptr(...))` —
-			// the struct's own typedef makes passing the whole dereferenced
-			// struct by value trivially valid C, the same by-value copy the
-			// symbol-reference and compound-literal argument shapes make.
+			// A by-value read of a whole struct used directly as the call
+			// argument, in two shapes:
+			//
+			//   - a whole struct read through a pointer deref — `use_point(*ptr);`,
+			//     the read-side twin of the `*self = other;` write — lowered by
+			//     the checker to a Load of a DereferencePlace whose single child
+			//     is the pointer expression. The emitted C is the null-checked
+			//     dereference value buildDereferencePlaceRead produces,
+			//     `*(pebble_struct_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`;
+			//   - a struct-typed field read — `use_point(h.p);` — lowered to a
+			//     Load of a FieldPlace, emitted as the field-projection lvalue
+			//     buildPlaceLValue produces (e.g.
+			//     `pebble_local_<sym>.pebble_field_<member>`), the same
+			//     whole-struct field read buildStructLocalDeclaration accepts for
+			//     a local's initializer.
+			//
+			// Either way the struct's own typedef makes passing the whole
+			// dereferenced/field-read struct by value trivially valid C, the same
+			// by-value copy the symbol-reference and compound-literal argument
+			// shapes make. The Load's Type must be exactly the parameter's struct
+			// type (defense for hand-built IR — the checker coerces every argument
+			// to its parameter's type), and the place's resolved element type is
+			// double-checked against it for the FieldPlace shape.
 			if node.Type != wantType {
 				return "", fmt.Errorf("%s is a Load of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
 			}
@@ -1598,10 +1643,20 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			if !ok {
 				return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
 			}
-			if place.Kind != tir.DereferencePlace {
-				return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-struct read through a pointer)", context, place.Kind)
+			if place.Kind == tir.DereferencePlace {
+				return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
 			}
-			return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+			if place.Kind == tir.FieldPlace {
+				lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+				if err != nil {
+					return "", fmt.Errorf("%s struct-field read: %v", context, err)
+				}
+				if elementType != wantType {
+					return "", fmt.Errorf("%s reads a place of element type %s, not a struct-typed value of type %s", context, describeType(snapshot, elementType), structTypeName(wantType))
+				}
+				return lvalue, nil
+			}
+			return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-struct read through a pointer) or a FieldPlace (a by-value read of a struct-typed field)", context, place.Kind)
 		}
 		return "", fmt.Errorf("%s is a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only passing an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
 	}

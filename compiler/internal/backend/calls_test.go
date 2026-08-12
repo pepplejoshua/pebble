@@ -184,6 +184,32 @@ func TestEmitValueMethodCallReadsReceiverField(t *testing.T) {
 	emitAndRun(t, `type Point = struct { x i32; fn get(self Point) i32 => self.x; }; fn main() i32 { let p Point = Point.{ x = 41 }; return p.get(); }`, false, 41, false)
 }
 
+func TestEmitStructCallResultAsMethodReceiverCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct-typed call result used directly as a METHOD RECEIVER —
+	// `mk().get()` where mk() returns a struct and get is a value-receiver
+	// method. The method call's receiver is argument 0 of the underlying
+	// DirectCall-shaped call, so it routes through buildAggregateArgument
+	// exactly as a plain struct-typed call argument does; its new
+	// DirectCall/MethodCall case builds the inner call with
+	// buildDirectCallNested and passes the call expression
+	// (`pebble_fn_<mk>(ctx)`) as the receiver argument. 20 + 22 = 42 is the
+	// process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; fn get(self Point) i32 => self.x + self.y; };\nfn mk() Point { return Point.{ x = 20, y = 22 }; } fn main() i32 { return mk().get(); }", false, 42, false)
+}
+
+func TestEmitStructFieldReadAsMethodReceiverCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct-typed field read used directly as a METHOD RECEIVER —
+	// `h.p.get()` where h.p is a struct-typed field. The receiver is argument
+	// 0 of the method call, so it routes through buildAggregateArgument as a
+	// Load(FieldPlace); its extended Load case lowers it via buildPlaceLValue
+	// to the plain C member-access expression
+	// `pebble_local_<sym>.pebble_field_<member>`, used directly as the
+	// receiver argument. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Inner = struct { x i32; y i32; fn get(self Inner) i32 => self.x + self.y; }; type Holder = struct { p Inner; };\nfn main() i32 { let h Holder = Holder.{ p = Inner.{ x = 20, y = 22 } }; return h.p.get(); }", false, 42, false)
+}
+
 func TestEmitQualifiedStaticMethodCallCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A method declared inside a nominal type body with no self parameter is a

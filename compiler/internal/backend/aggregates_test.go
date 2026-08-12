@@ -3034,6 +3034,66 @@ func TestEmitStructParameterBoolFieldDrivesIfCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Pair = struct { x i32; b bool; };\nfn f(p Pair) i32 { if p.b { return p.x; } else { return 99; } } fn main() i32 { let p Pair = Pair.{ x = 10, b = true }; return f(p); }", false, 10, false)
 }
 
+func TestEmitStructReturningCallResultAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct-typed call result used DIRECTLY as a call argument —
+	// `read(mk())` where mk() returns a struct and read takes it by value.
+	// The outer call's argument is the inner DirectCall node (confirmed
+	// checker-reachable from real source), which the aggregate-argument
+	// builder's new DirectCall/MethodCall case lowers by building the inner
+	// call with buildDirectCallNested and passing its call expression
+	// (`pebble_fn_<mk>(ctx)`, whose C result type IS the struct's own
+	// typedef) directly as the argument — no intermediate local. 20 + 22 = 42
+	// is the process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn mk() Point { return Point.{ x = 20, y = 22 }; } fn read(p Point) i32 { return p.x + p.y; } fn main() i32 { return read(mk()); }", false, 42, false)
+}
+
+func TestEmitStructReturningCallResultAsArgumentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the nested struct-returning call argument: the outer
+	// call passes the inner call's expression directly — no temp local, no
+	// construction — `return pebble_fn_<read>(ctx, pebble_fn_<mk>(ctx));`.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn mk() Point { return Point.{ x = 20, y = 22 }; } fn read(p Point) i32 { return p.x + p.y; } fn main() i32 { return read(mk()); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "return pebble_fn_28(ctx, pebble_fn_27(ctx));") {
+		t.Errorf("emitted C missing the nested call-result argument:\n%s", out)
+	}
+}
+
+func TestEmitStructFieldReadAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct-typed field read used DIRECTLY as a call argument — `read(h.p)`
+	// where h.p is a struct-typed field. The argument is a Load whose place is
+	// a FieldPlace, which the aggregate-argument builder's extended Load case
+	// lowers via buildPlaceLValue to the plain C member-access expression
+	// `pebble_local_<sym>.pebble_field_<member>` — a whole-struct by-value
+	// copy read out of the enclosing struct, no runtime helper call needed.
+	// 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Inner = struct { x i32; y i32; }; type Holder = struct { p Inner; };\nfn read(p Inner) i32 { return p.x + p.y; } fn main() i32 { let h Holder = Holder.{ p = Inner.{ x = 20, y = 22 } }; return read(h.p); }", false, 42, false)
+}
+
+func TestEmitStructFieldReadAsArgumentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the struct-field-read argument: the call site passes
+	// the field projection lvalue directly, `return pebble_fn_<read>(ctx,
+	// pebble_local_<sym>.pebble_field_<member>);` — no temp, no runtime
+	// helper, just a plain C member-access expression used as the by-value
+	// argument.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { x i32; y i32; }; type Holder = struct { p Inner; };\nfn read(p Inner) i32 { return p.x + p.y; } fn main() i32 { let h Holder = Holder.{ p = Inner.{ x = 20, y = 22 } }; return read(h.p); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, ".pebble_field_") {
+		t.Errorf("emitted C missing the field-projection lvalue argument:\n%s", out)
+	}
+}
+
 func TestEmitTupleReturningHelperCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The flagship tuple-return fixture: makeT returns a fresh (i32, i32)

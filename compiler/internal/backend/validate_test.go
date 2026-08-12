@@ -589,13 +589,16 @@ func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
 }
 
-func TestEmitRejectsStructReturningHelperAsArgument(t *testing.T) {
+func TestEmitStructReturningHelperAsArgumentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// The struct side of the argument-position rejection: f(makeP()) passes a
-	// struct-returning call as an argument, which the aggregate-argument
-	// builder rejects naming what was found.
-	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
+	// The struct side of the argument-position call-result gap: f(makeP())
+	// passes a struct-returning call as an argument. Before the fix this was a
+	// clean rejection ("argument 0 is a DirectCall, want a reference to a
+	// struct-typed local in scope or a struct literal") — the aggregate-
+	// argument builder had no DirectCall case, the same gap this task fixes
+	// (see buildAggregateArgument); now the call result is passed by value
+	// directly as the argument. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", false, 42, false)
 }
 
 func TestEmitRejectsTupleWholeReassignmentFromCallValue(t *testing.T) {
