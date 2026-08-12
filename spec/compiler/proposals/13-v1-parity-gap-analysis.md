@@ -44,15 +44,21 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 1 ("Module-level immutable constant" /
-"Constant declaration" rows in tracker 14) closed in `1e526cf`, test-only
-(no product bug found; see tracker 14 for the two rows and the new
-follow-up item logged from this investigation). Phase 3 is paused here
-per the user's instruction (2026-08-12): "dont start phase 3 yet. let
-me update the claude code client when u finish this task." Do not pick
-another item from the 34 remaining "Partial" rows until the user
-resumes Phase 3. The parked `int`-width architectural question remains
-separate, awaiting the user's design decision — not part of Phase 3.)*
+*(empty. Phase 3 item 2 ("Type declaration", tracker 14 line 105)
+investigated 2026-08-12 and found to be a rollup row, not a standalone
+gap: it points to the "Type and member ledger" (tracker 14 lines
+118-145), whose Partial entries (Pointer, Fixed array, Slice, Struct,
+Optional, Tagged union, Function type, Generic type, Struct/enum
+selection) are the exact same rows already tracked separately
+elsewhere in the main gap table — working it here would duplicate
+those items. The one genuinely distinct entry in the ledger,
+**Untagged union** (line 132, "V2 rejects construction/read/write...
+Decision needed"), is a design decision like the parked `int`-width
+question, not a bug to fix unilaterally. No dispatch needed; moving to
+the next real item. Picking up "Pointer `*T`, address-of, dereference,
+`nil`" (tracker 14 line 123, "Partial; whole dereferenced structs are
+resolved... but other aggregate shapes remain position-specific")
+next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
