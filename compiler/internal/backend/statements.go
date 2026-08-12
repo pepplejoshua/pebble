@@ -678,6 +678,31 @@ func buildSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 					return "", buildErr
 				}
 				subjectExpr = construction + ".tag"
+			case tir.Load, tir.FieldValue, tir.CheckedOptionalUnwrap, tir.SourceAlias:
+				// A tagged-union value read from any other source, used
+				// directly as the switch subject: a union-typed struct field
+				// read (`switch s.u { ... }`, a Load of a FieldPlace), a whole
+				// union read through a pointer deref (`switch *p { ... }`, a
+				// Load of a DereferencePlace), a union field of a non-
+				// addressable struct value (`switch mk().u { ... }`, a
+				// FieldValue), a force-unwrap of a union-payload optional
+				// (`switch o! { ... }`, a CheckedOptionalUnwrap), or a
+				// parenthesized union value (`switch (c) { ... }`, a
+				// SourceAlias, transparently unwrapped to its child). These are
+				// all lowered by the shared buildUnionValueExpr — the same
+				// builder a union-typed call argument, optional payload, and
+				// return forward use — to a value of the union's own C type,
+				// and the switch compares the stored discriminant, so the
+				// subject reads `.tag` exactly as the SymbolValue and
+				// VariantConstruct branches do. The value is parenthesized so
+				// the `.tag` projection applies to the WHOLE union expression
+				// (a force-unwrap's ternary and a deref's cast would otherwise
+				// let the postfix `.tag` bind to only their last operand).
+				unionValue, buildErr := buildUnionValueExpr(st, unit, snapshot, fileSet, switchNode.Children[0], locals, "switch subject", enumSubject, width)
+				if buildErr != nil {
+					return "", buildErr
+				}
+				subjectExpr = fmt.Sprintf("(%s).tag", unionValue)
 			default:
 				return "", fmt.Errorf("switch subject is a %s of tagged-union type %s, want a reference to a union-typed local in scope or a union variant construction", subjectNode.Kind, unionTypeName(enumSubject))
 			}

@@ -975,8 +975,11 @@ func buildCheckedIntegerToEnumExpr(st *emitState, unit *tir.Unit, snapshot *type
 // already returns the union's own C type, so the whole call expression is
 // directly a union value of exactly want), a read of a union-typed struct field
 // (a Load
-// of a FieldPlace, `h.tag`), a force-unwrap of a union-payload optional (a
-// CheckedOptionalUnwrap, `o!`), or a fresh variant construction
+// of a FieldPlace, `h.tag`), a whole union read through a pointer deref (a Load
+// of a DereferencePlace, `takes(*p)`), a read of a union-typed struct field off
+// a NON-ADDRESSABLE struct value (a FieldValue, `takes(mk().u)`), a
+// force-unwrap of a union-payload optional (a CheckedOptionalUnwrap, `o!`), or
+// a fresh variant construction
 // (Choice.value(5) / Choice.empty / Choice.empty(), built by the same
 // buildUnionConstruction a union local's declaration uses, with the union's
 // info resolved on demand by resolveUnionInfoForValue). A SourceAlias is
@@ -1053,11 +1056,16 @@ func buildUnionValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 		}
 		return buildUnionConstruction(st, unit, snapshot, fileSet, node, locals, context, info, width)
 	case tir.Load:
-		// A read of a union-typed struct field (`h.tag`, the struct-field
-		// read-back shape): a Load of a FieldPlace whose place's declared field
-		// type is the tagged union, lowered by buildStructFieldRead to the
-		// field's own C projection, which the struct's typedef declares with the
-		// union's own pebble_union_<typeID>_t (see structFieldCType).
+		// A read of a union-typed place used directly as a tagged-union value,
+		// in two shapes: a Load of a FieldPlace (a union-typed struct field
+		// read, `h.tag` / `takes(h.tag)` — lowered by buildStructFieldRead to
+		// the field's own C projection, which the struct's typedef declares
+		// with the union's own pebble_union_<typeID>_t, see structFieldCType)
+		// or a Load of a DereferencePlace (a whole union read through a
+		// pointer deref, `takes(*p)` — built by buildDereferencePlaceRead, the
+		// union's own typedef making the by-value deref read trivially valid
+		// C, the same whole-enum deref-read shape buildEnumValue's Load case
+		// supports).
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("%s contains a Load with %d child(ren), want exactly one place", context, len(node.Children))
 		}
@@ -1065,13 +1073,28 @@ func buildUnionValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 		if !ok {
 			return "", fmt.Errorf("%s contains a Load referencing invalid place node %d", context, node.Children[0])
 		}
-		if place.Kind != tir.FieldPlace {
-			return "", fmt.Errorf("%s contains a Load whose place is a %s, want a FieldPlace (a tagged-union struct field read)", context, place.Kind)
-		}
 		if node.Type != want {
-			return "", fmt.Errorf("%s contains a Load of type %s, want a field of the union type %s", context, describeType(snapshot, node.Type), unionTypeName(want))
+			return "", fmt.Errorf("%s contains a Load of type %s, want a value of the union type %s", context, describeType(snapshot, node.Type), unionTypeName(want))
 		}
-		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+		switch place.Kind {
+		case tir.FieldPlace:
+			return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+		case tir.DereferencePlace:
+			return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+		default:
+			return "", fmt.Errorf("%s contains a Load whose place is a %s, want a FieldPlace (a tagged-union struct field read) or a DereferencePlace (a whole union read through a pointer)", context, place.Kind)
+		}
+	case tir.FieldValue:
+		// A read of a union-typed struct field off a NON-ADDRESSABLE struct
+		// VALUE (`takes(mk().u)`, `switch mk().u { ... }`, or a nested
+		// `mk().inner.u`) — the union grammar's counterpart of buildEnumValue's
+		// FieldValue case. buildStructFieldValueRead with wantStruct=true emits
+		// the field's union-typed projection `(receiver).pebble_field_<m>`,
+		// which carries the union's own pebble_union_<typeID>_t C type.
+		if node.Type != want {
+			return "", fmt.Errorf("%s contains a FieldValue of union type %s, want %s", context, unionTypeName(node.Type), unionTypeName(want))
+		}
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, true)
 	case tir.CheckedOptionalUnwrap:
 		// A force-unwrap of a union-payload optional (`o!`, the optional
 		// read-back shape): the unwrap's own Type is the union, and the optional
