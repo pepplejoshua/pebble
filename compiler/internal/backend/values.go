@@ -69,6 +69,90 @@ func buildRuntimeValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 	return buildRuntimeValue(st, unit, snapshot, fileSet, node, scope, width)
 }
 
+// tupleSameCShape reports whether two tuple type IDs have the same structural
+// shape at the C-representation level: the same arity and, pairwise, elements
+// whose C types match (an integer element by its fixed-width C type — so the
+// abstract int and the anchored i32, both int32_t, are the same shape; a tuple
+// or optional element by recursive shape; every other element kind — bool,
+// char, str, f32/f64, and the nominal struct/enum types — by exact type ID).
+// The type store interns each occurrence of a structural tuple type
+// expression separately (confirmed against a real fixture: a field declared
+// (i32, i32) gets its own TypeID while a construction literal (20, 22) at that
+// field gets a second (int, int) TypeID — the checker never unifies the
+// literal's unanchored int elements onto the field's declared i32 elements),
+// so two tuples of the same C shape legitimately carry distinct TypeIDs and
+// the cast must target the DECLARED position's TypeID even though the two IDs
+// differ. The comparison exists so buildTupleValueExpr can reject a
+// genuinely different shape for hand-built IR — a different arity, or an
+// element of a different C type (an i8 element vs an i32 field would make the
+// compound literal's brace list a narrowing C initializer, and a bool element
+// vs an i32 field a wrong-type initializer) — instead of silently casting to
+// a typedef the brace list does not match.
+func tupleSameCShape(snapshot *types.Snapshot, a, b types.TypeID) bool {
+	keyA, ok := snapshot.Key(a)
+	if !ok {
+		return false
+	}
+	keyB, ok := snapshot.Key(b)
+	if !ok {
+		return false
+	}
+	elementsA, ok := keyA.Elements()
+	if !ok {
+		return false
+	}
+	elementsB, ok := keyB.Elements()
+	if !ok {
+		return false
+	}
+	if len(elementsA) != len(elementsB) {
+		return false
+	}
+	for i := range elementsA {
+		if !tupleElementSameCShape(snapshot, elementsA[i], elementsB[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func tupleElementSameCShape(snapshot *types.Snapshot, a, b types.TypeID) bool {
+	if a == b {
+		return true
+	}
+	if widthA, integerA := resolvedBuiltin(snapshot, a); integerA && cType(widthA) != "" {
+		widthB, integerB := resolvedBuiltin(snapshot, b)
+		return integerB && cType(widthB) != "" && cType(widthA) == cType(widthB)
+	}
+	if isBool(snapshot, a) || isBool(snapshot, b) {
+		return isBool(snapshot, a) && isBool(snapshot, b)
+	}
+	if isChar(snapshot, a) || isChar(snapshot, b) {
+		return isChar(snapshot, a) && isChar(snapshot, b)
+	}
+	if isStr(snapshot, a) || isStr(snapshot, b) {
+		return isStr(snapshot, a) && isStr(snapshot, b)
+	}
+	if isFloat(snapshot, a) || isFloat(snapshot, b) {
+		return isFloat(snapshot, a) && isFloat(snapshot, b) &&
+			resolvedFloatKind(snapshot, a) == resolvedFloatKind(snapshot, b)
+	}
+	if isTuple(snapshot, a) || isTuple(snapshot, b) {
+		return isTuple(snapshot, a) && isTuple(snapshot, b) && tupleSameCShape(snapshot, a, b)
+	}
+	if isOptional(snapshot, a) || isOptional(snapshot, b) {
+		if !isOptional(snapshot, a) || !isOptional(snapshot, b) {
+			return false
+		}
+		keyA, _ := snapshot.Key(a)
+		keyB, _ := snapshot.Key(b)
+		payloadA, okA := keyA.Child()
+		payloadB, okB := keyB.Child()
+		return okA && okB && tupleElementSameCShape(snapshot, payloadA, payloadB)
+	}
+	return false
+}
+
 // buildTupleValueExpr builds a freshly-constructed tuple value as an ordinary
 // C expression (10.25): a TupleValue node lowered to a positional C99 compound
 // literal, `(pebble_tuple_<typeID>_t){ <e0>, <e1>, ... }`, whose element
@@ -79,19 +163,37 @@ func buildRuntimeValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 // declaration initializer uses), so an element of any type other than the
 // entry's width or bool is rejected exactly the same way it would be in a
 // declaration. The cast makes the compound literal a value usable anywhere a
-// tuple-typed value is needed — in this slice, only as a call argument for a
-// tuple-typed parameter (buildAggregateArgument). The node must be a
-// TupleValue; the caller already guarantees this, so the kind check is defense
-// for hand-built IR.
-func buildTupleValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+// tuple-typed value is needed: a struct field's value
+// (buildNestedAggregateValue), an optional's tuple payload (some <tuple>), a
+// call argument for a tuple-typed parameter (buildAggregateArgument), a
+// tuple-returning function's tail return (buildAggregateReturnValue), a
+// whole-tuple reassignment (buildTupleStoreValue), and a tuple print operand
+// (buildTuplePrintValueExpr). The C cast must always name the CALLER'S
+// intended target type (wantType — the field's declared tuple type, the
+// optional payload's tuple type, the parameter's tuple type, the result type,
+// or the place's tuple type), never the literal node's own Type: the checker
+// interns each tuple-literal occurrence its own structural TypeID, so the
+// literal's own ID can diverge from the position's declared ID even when the
+// shapes are identical (see tupleSameCShape); naming the literal's ID would
+// emit a reference to a pebble_tuple_<ID>_t typedef that is never collected
+// when that ID is not the declared position's type (issue #95). The two IDs
+// must be the same C shape (defense for hand-built IR — the checker validates
+// a tuple literal's arity/element types against its target position for real
+// source); a genuinely different shape is a clean rejection, never a silent
+// wrong cast. The node must be a TupleValue; the caller already guarantees
+// this, so the kind check is defense for hand-built IR.
+func buildTupleValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s contains a %s, want a TupleValue (a tuple literal)", context, node.Kind)
+	}
+	if !tupleSameCShape(snapshot, node.Type, wantType) {
+		return "", fmt.Errorf("%s is a tuple literal of type %s, which does not match the target tuple type %s", context, tupleTypeName(node.Type), tupleTypeName(wantType))
 	}
 	braceList, err := buildTupleBraceList(st, unit, snapshot, fileSet, node, scope, context, width)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("(%s)%s", tupleTypeName(node.Type), braceList), nil
+	return fmt.Sprintf("(%s)%s", tupleTypeName(wantType), braceList), nil
 }
 
 func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, scope map[symbol.SymbolID]localInfo, typ types.TypeID, context string, width types.BuiltinKind) (string, error) {
@@ -111,7 +213,7 @@ func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	}
 	switch {
 	case isTuple(snapshot, typ):
-		return buildTupleValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, node, scope, typ, context, width)
 	case isStruct(snapshot, typ):
 		return buildStructValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isOptional(snapshot, typ):
@@ -380,7 +482,12 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		// expression matches the field type with no cast.
 		value, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], scope, resolvedFloatKind(snapshot, payload), width)
 	case isTuple(snapshot, payload):
-		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+		// A tuple-payload some/injected value is built by buildTupleValueExpr
+		// targeting the optional's DECLARED payload tuple type (payload, from
+		// the optional type's own key above) — the .value field's C type — not
+		// the literal's own structural tuple type ID, which can diverge (issue
+		// #95).
+		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, payload, context, width)
 	case isTaggedUnionType(unit, snapshot, payload):
 		// A tagged-union payload's some/injected value is a union value (a
 		// reference to an already-declared union-typed local, a variant

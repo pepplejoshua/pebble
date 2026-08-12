@@ -1571,7 +1571,7 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 				if node.Type != wantType {
 					return "", fmt.Errorf("%s is a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(wantType))
 				}
-				return buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
+				return buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, wantType, context, width)
 			}
 			if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
 				// A tuple-returning call used directly as the argument — `f(makeT())`
@@ -1941,7 +1941,7 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 			if node.Type != result.tuple {
 				return "", "", fmt.Errorf("%s returns a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
 			}
-			expr, err := buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
+			expr, err := buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, result.tuple, context, width)
 			return "", expr, err
 		}
 		return "", "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)

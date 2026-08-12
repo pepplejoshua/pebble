@@ -1027,6 +1027,17 @@ func TestEmitTupleElementZeroReadCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { let t (i32, i32) = (20, 22); return t.0; }", false, 20, false)
 }
 
+func TestEmitTupleLocalBothElementsAddedCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The plain tuple-local no-regression shape for the inline-tuple
+	// struct-field fix (#95): a tuple local declared from a tuple literal has
+	// no separate "declared field type" to diverge from — the literal IS the
+	// declared type — so buildTupleValueExpr's cast names the literal's own
+	// type and the whole shape must compile, link, and run unchanged.
+	// t.0 + t.1 = 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn main() i32 { let t (i32, i32) = (20, 22); return t.0 + t.1; }", false, 42, false)
+}
+
 func TestEmitCharTupleOrdinalReadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A char tuple element read back into a char-typed local (`let x char =
@@ -3319,6 +3330,20 @@ func TestEmitTupleReturningCallResultAsArgumentWritesC(t *testing.T) {
 	if !strings.Contains(out, "return pebble_fn_25(ctx, pebble_fn_24(ctx));") {
 		t.Errorf("emitted C missing the nested call-result argument:\n%s", out)
 	}
+}
+
+func TestEmitInlineTupleStructFieldConstructionCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact #95 repro: constructing a struct whose field is a tuple type
+	// from an INLINE tuple literal as the field's value. The checker assigns
+	// the literal its own fresh structural tuple TypeID, which differs from
+	// the field's DECLARED tuple TypeID even though the shape is identical
+	// ((i32, i32)); the backend must name the DECLARED position's type in the
+	// compound-literal cast, never the literal's own (before the fix the cast
+	// named the literal's never-collected pebble_tuple_<ID>_t and cc failed
+	// with "use of undeclared identifier"). h.p.0 + h.p.1 = 20 + 22 = 42 is
+	// the process exit code.
+	emitAndRun(t, "type Holder = struct { p (i32, i32); };\nfn main() int {\n    let h Holder = Holder.{ p = (20, 22) };\n    if h.p.0 + h.p.1 == 42 { return 42; }\n    return 1;\n}", false, 42, false)
 }
 
 func TestEmitTupleFieldReadAsArgumentCompilesAndRuns(t *testing.T) {

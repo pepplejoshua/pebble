@@ -753,7 +753,7 @@ func buildTupleStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		if valueNode.Type != wantType {
 			return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a TupleValue of type %s", context, tupleTypeName(wantType), describeType(snapshot, valueNode.Type))
 		}
-		return buildTupleValueExpr(st, unit, snapshot, fileSet, valueNode, scope, context, width)
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, valueNode, scope, wantType, context, width)
 	}
 	if valueNode.Kind == tir.DirectCall {
 		// A reassignment from a call to a tuple-returning helper —

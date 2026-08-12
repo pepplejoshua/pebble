@@ -3766,7 +3766,11 @@ func buildTuplePrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		}
 		return lvalue, nil
 	case tir.TupleValue:
-		return buildTupleValueExpr(st, unit, snapshot, fileSet, child, scope, context, width)
+		// A print operand has no declared target type of its own — the
+		// operand's type IS the tuple being printed — so the literal's own
+		// type is deliberately passed through unchanged as the cast's target
+		// (the same value a tuple-typed local's declaration records).
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, child, scope, child.Type, context, width)
 	case tir.DirectCall:
 		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
 	}
