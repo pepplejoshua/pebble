@@ -44,15 +44,44 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #93 (bare string-literal arrow-body T0501) closed in
-`dd56d9e`. This closes the consolidated gap-filling pass over the
-proof-batch findings — every routine gap from that pass (#87, #88,
-#89, #90, #91, #92, #93) is now resolved. Remaining: #94 (tuple
-call-result as argument, the mirror of #92 found while fixing it) and
-#86 (float as aggregate member, deferred, larger scope) — #86 is next
-per the user's earlier instruction to handle deferred items after gap
-filling. The `int`-width architectural question stays parked for the
-user's design decision, separate from this file's workflow.)*
+*(empty — item #94 (tuple call-result/field-read/deref as argument,
+the mirror of #92) closed in `181f7c6`. All known routine gaps from
+the proof-batch findings (#87-94) are now resolved. Only #86 (float
+as aggregate member, deferred, larger scope) remains — next up, per
+the user's earlier instruction to handle deferred items after gap
+filling. A new, untracked finding surfaced during #94: constructing a
+struct with an inline tuple-literal field (`Holder.{ p = (20, 22) }`)
+emits a compound literal typed with the literal's own structural
+tuple type ID instead of the field's declared type ID, so the C fails
+to compile even with no call involved — a separate, pre-existing
+aggregate-construction bug, not yet a formal task. The `int`-width
+architectural question stays parked for the user's design decision,
+separate from this file's workflow.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: a tuple-typed call result, field read, or pointer-deref read
+used directly as a call argument was checker-accepted, Emit-rejected
+— the tuple-side mirror of #92's struct fix.**
+
+`f(makeT())`, `f(h.p)`, and `f(*ptr)` all failed at Emit even though
+the checker accepted them — the tuple branch of
+`buildAggregateArgument` never got the `DirectCall`/`MethodCall` and
+`Load(FieldPlace)` additions #92 made to the struct branch, and also
+had a third, additional gap (`Load(DereferencePlace)`) the struct side
+didn't have at the time.
+
+**Resolution (`181f7c6`, 2026-08-11).** Mirrored #92's struct-side
+additions into the tuple branch line for line: a
+`DirectCall`/`MethodCall` case delegating to `buildDirectCallNested`,
+and a `Load` case handling both `DereferencePlace` (via
+`buildDereferencePlaceRead`) and `FieldPlace` (via `buildPlaceLValue`).
+The struct branch is untouched. New tests prove all three shapes;
+existing tuple-argument shapes (local reference, inline literal)
+unaffected. Causation-checked: reverting `calls.go` alone reproduces
+all three original Emit failures exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
