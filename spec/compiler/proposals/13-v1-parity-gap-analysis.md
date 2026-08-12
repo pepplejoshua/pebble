@@ -44,12 +44,42 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #90 (void anonymous function false C0607) closed in
-`9430881`. Third fix in the consolidated gap-filling pass over the
-proof-batch findings: #88 (narrow pointer-to-int, needs a design
-call), #89 (negative-MIN literal), #92 (struct call-result/field-read
-as argument/receiver), and #93 (bare string-literal arrow-body T0501)
-remain queued.)*
+*(empty — item #89 (negative-MIN literal checked-negation) closed in
+`2bfbfc4`. Fourth fix in the consolidated gap-filling pass over the
+proof-batch findings. The user made the design call on #88 (2026-08-11):
+reject a pointer cast to a narrower-than-pointer integer destination
+cleanly, rather than truncate to match V1. #88, #92 (struct
+call-result/field-read as argument/receiver), and #93 (bare
+string-literal arrow-body T0501) remain queued.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: negative literal at the exact signed minimum of i32/i64/int
+failed to compile.**
+
+`let x i32 = -2147483648;` (and i64/int's equivalents) were
+checker-accepted but the emitted C's `pebble_rt_checked_neg_*` call
+spelled the operand's positive magnitude directly — unspellable as a
+signed C constant of that width at exactly the minimum
+(`2147483648`/`9223372036854775808`), failing `cc` under `-Werror`
+with `-Wconstant-conversion` (i32/int) or
+`-Wimplicitly-unsigned-literal` (i64).
+
+**Resolution (`2bfbfc4`, 2026-08-11).** `buildExpr`'s `CheckedNegate`
+case now folds a literal operand that negates to EXACTLY the width's
+minimum to the minimum's own C constant, bypassing the runtime-helper
+call for that one case — reusing the existing `checkedNegateLiteral`
+folding the narrow-width (no-helper) path already had. New helper
+`checkedNegateMinimumText` spells i32/int's minimum as plain decimal
+(safe — the magnitude fits `long`) and i64's minimum as the stdint.h
+`INT64_MIN` macro (the plain decimal form is itself unspellable, since
+C parses it as negation of an unrepresentable magnitude). Every other
+literal and every non-constant negation keep the unchanged
+runtime-helper path — new tests prove both the fix and this
+no-regression boundary explicitly. Causation-checked: reverting
+`values.go` alone reproduces all three original `cc` failures exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
