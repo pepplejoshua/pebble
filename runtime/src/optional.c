@@ -88,3 +88,17 @@ void *pebble_rt_checked_unwrap_ptr(bool has_value, void *value, PebbleSourceLoc 
     }
     return value;
 }
+
+float pebble_rt_checked_unwrap_f32(bool has_value, float value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}
+
+double pebble_rt_checked_unwrap_f64(bool has_value, double value, PebbleSourceLoc loc) {
+    if (!has_value) {
+        pebble_rt_unwrap_panic(loc);
+    }
+    return value;
+}

@@ -368,6 +368,17 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		value, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isBool(snapshot, payload):
 		value, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+	case isFloat(snapshot, payload):
+		// A float-typed payload's some/injected value is built by
+		// buildFloatExpr at the payload's OWN float kind (resolvedFloatKind —
+		// f32 or f64) and the entry width, exactly as a float call argument, a
+		// float local's declaration initializer, and a float comparison
+		// operand are built (task #22, slice 86a): a float literal, a
+		// reference to an in-scope float-typed local, or a call to a
+		// float-returning helper. The optional struct's .value field is the
+		// plain C float/double (see optionalPayloadCType), so the built
+		// expression matches the field type with no cast.
+		value, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], scope, resolvedFloatKind(snapshot, payload), width)
 	case isTuple(snapshot, payload):
 		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	case isTaggedUnionType(unit, snapshot, payload):
@@ -2986,6 +2997,54 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", fmt.Errorf("entry function body expression references symbol %d, which is not a %s local declared earlier in the body", node.Symbol, wantName(width))
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	case tir.CheckedOptionalUnwrap:
+		// A force-unwrap of an optional whose payload is a float (`o!` where
+		// o is `?f64`, the `if o! == 1.5` shape this slice unblocks). The
+		// unwrap is bounds-checked via the runtime helper selected from the
+		// PAYLOAD's own type (optionalUnwrapSuffix maps a float payload to the
+		// f32/f64 helper, since a float payload's .value field is the plain C
+		// float/double — see optionalPayloadCType — which only
+		// pebble_rt_checked_unwrap_f32/f64 reads back at its true width) —
+		// passing the optional local's has_value and value fields, the same
+		// scalar-unwrap shape buildExpr's integer and bool payload unwraps
+		// emit. node.Type is the payload float builtin, already gated to width
+		// above, so a none unwrap panics with PEBBLE_PANIC_UNWRAP_FAILED
+		// exactly like every other payload type's unwrap. The single child is
+		// a SymbolValue naming the optional-typed local (a Load of an
+		// optional-typed place, the other shape buildExpr's unwrap accepts, is
+		// also handled).
+		unwrapSuffix := optionalUnwrapSuffix(snapshot, node.Type)
+		if unwrapSuffix == "" {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of a %s payload, which has no runtime unwrap helper", describeType(snapshot, node.Type))
+		}
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap with %d child(ren), want exactly one (the optional value being unwrapped)", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind == tir.Load && len(child.Children) == 1 {
+			expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, entryWidth)
+			if err != nil {
+				return "", err
+			}
+			if !isOptional(snapshot, typ) {
+				return "", fmt.Errorf("optional unwrap base is not optional")
+			}
+			return fmt.Sprintf("pebble_rt_checked_unwrap_%s(%s.has_value, %s.value, %s)", unwrapSuffix, expr, expr, buildSourceLoc(fileSet, node.Span)), nil
+		}
+		if child.Kind != tir.SymbolValue {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap whose child is a %s, want a SymbolValue naming an optional-typed local", child.Kind)
+		}
+		info, declared := locals[child.Symbol]
+		if !declared {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing symbol %d, which is not a local declared earlier in the entry body", child.Symbol)
+		}
+		if info.optional == 0 {
+			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
+		}
+		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", unwrapSuffix, child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
 	case tir.Load:
 		// A by-value read of a float-typed place — a float tuple element read
 		// (`t.0`, lowered to Load(TuplePlace)), a float element of an array

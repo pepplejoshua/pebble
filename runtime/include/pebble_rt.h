@@ -369,6 +369,8 @@ int16_t pebble_rt_checked_unwrap_i16(bool has_value, int16_t value, PebbleSource
 uint32_t pebble_rt_checked_unwrap_u32(bool has_value, uint32_t value, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_unwrap_u64(bool has_value, uint64_t value, PebbleSourceLoc loc);
 void *pebble_rt_checked_unwrap_ptr(bool has_value, void *value, PebbleSourceLoc loc);
+float pebble_rt_checked_unwrap_f32(bool has_value, float value, PebbleSourceLoc loc);
+double pebble_rt_checked_unwrap_f64(bool has_value, double value, PebbleSourceLoc loc);
 
 /* ---- string representation -------------------------------------------------
  * Length-prefixed, not NUL-terminated-dependent — the old backend

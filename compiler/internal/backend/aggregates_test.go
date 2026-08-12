@@ -2878,6 +2878,157 @@ func TestEmitStructFloatFieldWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitOptionalF64SomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The confirmation fixture for f64 optional payloads (floats as optional
+	// payloads, this slice): `some 1.5` constructs the optional, and the
+	// force-unwrap `o!` used in an f64 comparison flows through
+	// buildFloatExpr's CheckedOptionalUnwrap case to the runtime's
+	// pebble_rt_checked_unwrap_f64. The optional typedef's .value field is the
+	// plain C double (optionalPayloadCType), so construction + unwrap +
+	// comparison round-trip; 1.5 == 1.5 drives exit 42. This is exactly the
+	// bug-report fixture that failed with "payload type f64 is not supported"
+	// before the typedef accepted a float payload.
+	emitAndRun(t, "fn main() int { var o ?f64 = some 1.5; if o! == 1.5 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitOptionalF32SomeUnwrapCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 cousin of the f64 optional test: the typedef declares the .value
+	// field at the plain C float (floatCType(F32) = "float"), and construction
+	// + unwrap run through the same buildFloatExpr-at-own-kind path at the f32
+	// kind, lowering to pebble_rt_checked_unwrap_f32. 1.5 == 1.5 is exact in
+	// f32 too, so the comparison drives exit 42.
+	emitAndRun(t, "fn main() int { var o ?f32 = some 1.5; if o! == 1.5 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitOptionalFloatPayloadUnwrapInArithmeticCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The unwrapped float payload used as an arithmetic operand (`o! + 1.0`),
+	// not just in a comparison: buildFloatExpr builds the unwrap, feeds it to
+	// float addition, and the exact result check drives exit 42. 2.5 + 1.0 =
+	// 3.5 is exact in both f32 and f64. Both widths run the same shape.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "fn main() int { var o ?f64 = some 2.5; var r f64 = o! + 1.0; if r == 3.5 { return 42; } return 1; }"},
+		{"f32", "fn main() int { var o ?f32 = some 2.5; var r f32 = o! + 1.0; if r == 3.5 { return 42; } return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 42, false)
+		})
+	}
+}
+
+func TestEmitOptionalFloatPayloadNoneHasValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The presence-check side of a float-payload optional must be unaffected by
+	// the new payload shape: a `none`-initialized ?f64/?f32 local's .has_value
+	// is false (zeroOptionalPayloadLiteral supplies the 0 value for the
+	// float .value field, warning-clean), and a `some`-initialized one's is
+	// true. Both widths, both presence results — the same has_value round-trip
+	// the int/bool/uint optional tests pin.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"f64 none false", "fn main() int { var o ?f64 = none; if o.has_value { return 1; } return 42; }", 42},
+		{"f64 some true", "fn main() int { var o ?f64 = some 1.5; if o.has_value { return 42; } return 1; }", 42},
+		{"f32 none false", "fn main() int { var o ?f32 = none; if o.has_value { return 1; } return 42; }", 42},
+		{"f32 some true", "fn main() int { var o ?f32 = some 1.5; if o.has_value { return 42; } return 1; }", 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitOptionalFloatPayloadNoneUnwrapPanics(t *testing.T) {
+	t.Parallel()
+	// Force-unwrapping a none-initialized float optional must still abort with
+	// the checked unwrap panic (PEBBLE_PANIC_UNWRAP_FAILED), exactly like every
+	// other payload type's unwrap — the f32/f64 runtime helpers are real
+	// checked helpers, not stubs, so a `none` unwrap is a defined abort in
+	// both widths.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "fn main() int { var o ?f64 = none; var r f64 = o!; return 1; }"},
+		{"f32", "fn main() int { var o ?f32 = none; var r f32 = o!; return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 0, true)
+		})
+	}
+}
+
+func TestEmitOptionalFloatPayloadResultCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An optional-result helper returning `some 2.5` (buildOptionalValueExpr's
+	// float payload case) consumed by the entry through a force-unwrap: the
+	// helper-returned optional's .value field carries the double, and the
+	// unwrap reads it back through pebble_rt_checked_unwrap_f64. Exit 42.
+	emitAndRun(t, "fn f() ?f64 { return some 2.5; } fn main() int { var h ?f64 = f(); if h! == 2.5 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitOptionalFloatPayloadWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for an f64 optional payload fixture (construction +
+	// comparison unwrap): the optional typedef declares its .value field at the
+	// plain C double (no per-TypeID float typedef, and never a C float for an
+	// f64 payload), the local is initialized with the struct literal carrying
+	// the float literal, and the force-unwrap lowers to
+	// pebble_rt_checked_unwrap_f64 — the f64-shaped twin of the
+	// pebble_rt_checked_unwrap_i32/bool calls the int/bool optional tests pin.
+	// Symbol 27 and optional type 23 come from the real fixture dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var o ?f64 = some 1.5; if o! == 1.5 { return 42; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    double value;\n} pebble_optional_",
+		"pebble_optional_23_t pebble_local_27 = { .has_value = true, .value = 1.5 };",
+		"pebble_rt_checked_unwrap_f64(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "float value;") {
+		t.Errorf("emitted C declared a C float optional value field for an f64 payload:\n%s", out)
+	}
+}
+
+func TestEmitOptionalF32PayloadWritesC(t *testing.T) {
+	t.Parallel()
+	// The f32 twin of the f64 emitted-C test: the typedef declares its .value
+	// field at the plain C float (floatCType(F32) = "float"), and the unwrap
+	// lowers to pebble_rt_checked_unwrap_f32.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var o ?f32 = some 1.5; if o! == 1.5 { return 42; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    bool has_value;\n    float value;\n} pebble_optional_",
+		"pebble_optional_23_t pebble_local_27 = { .has_value = true, .value = 1.5 };",
+		"pebble_rt_checked_unwrap_f32(",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestEmitStrStructFieldLiteralC(t *testing.T) {
 	t.Parallel()
 	// A struct whose field type is str now emits: the struct typedef declares

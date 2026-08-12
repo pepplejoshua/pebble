@@ -201,12 +201,14 @@ func isCompatibleIntegerWidth(snapshot *types.Snapshot, width types.BuiltinKind,
 // for the narrow fixed-width payloads, "i32" for an int/i32 payload, "i64"
 // for an i64 payload, "u64" for a uint or u64 payload (both carry the C
 // type uint64_t, so one runtime helper reads both back at their true
-// width), and "bool" for a bool payload. Any other payload type (a char,
-// str, tuple, or struct) yields "", a clean rejection for the caller. The helper
-// must be selected from the PAYLOAD's own type rather than the ambient entry
-// width: a uint payload's .value field is uint64_t, which only
-// pebble_rt_checked_unwrap_u64 reads back at its true width, not the
-// entry-width helper.
+// width), "bool" for a bool payload, and "f32"/"f64" for a float payload
+// (since the float payload slices, the runtime has a
+// pebble_rt_checked_unwrap_f32/f64 pair mirroring the integer widths). Any
+// other payload type (a char, str, tuple, or struct) yields "", a clean
+// rejection for the caller. The helper must be selected from the PAYLOAD's
+// own type rather than the ambient entry width: a uint payload's .value
+// field is uint64_t, which only pebble_rt_checked_unwrap_u64 reads back at
+// its true width, not the entry-width helper.
 func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 	if isBool(snapshot, id) {
 		return "bool"
@@ -217,6 +219,14 @@ func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 		// unwrap result, so there is no dereference at this point) — one
 		// void *-based helper serves every pointee.
 		return "ptr"
+	}
+	if floatKind := resolvedFloatKind(snapshot, id); floatKind != 0 {
+		switch floatKind {
+		case types.F32:
+			return "f32"
+		case types.F64:
+			return "f64"
+		}
 	}
 	payloadWidth, ok := resolvedBuiltin(snapshot, id)
 	if !ok {

@@ -1442,21 +1442,28 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 // integer builtin (the entry's resolved width, uint, u64, or any other
 // fixed-width integer, each resolved to its OWN width by the generic
 // resolvedBuiltin/cType pattern — so a uint or u64 payload's .value field is
-// uint64_t), bool for a bool payload, the payload's own tuple/struct typedef
-// name, and, since the OptionalIntegerToEnum slice, the payload's own enum
-// typedef (pebble_enum_<typeID>_t) for an enum payload — the destination
-// shape of an integer cast to an optional enum (`5 as ?Color`), whose optional
-// struct must carry the enum value field. A pointer payload (the std/hmap.peb
-// get_by_ref shape, `?*V`) is declared with the pointee's own pointer C type,
-// `<pointee> *` via pointerTypeName. Any other payload type is a clean
-// rejection naming what was found, since this backend emits exactly those C
-// types as optional value fields.
+// uint64_t), bool for a bool payload, a float payload's plain C float/double
+// type (floatCType — float for f32, double for f64), the payload's own
+// tuple/struct typedef name, and, since the OptionalIntegerToEnum slice, the
+// payload's own enum typedef (pebble_enum_<typeID>_t) for an enum payload —
+// the destination shape of an integer cast to an optional enum (`5 as
+// ?Color`), whose optional struct must carry the enum value field. A pointer
+// payload (the std/hmap.peb get_by_ref shape, `?*V`) is declared with the
+// pointee's own pointer C type, `<pointee> *` via pointerTypeName. Any other
+// payload type is a clean rejection naming what was found, since this backend
+// emits exactly those C types as optional value fields.
 func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
 	if payloadWidth, integerPayload := resolvedBuiltin(snapshot, id); integerPayload && cType(payloadWidth) != "" {
 		return cType(payloadWidth), nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
+	}
+	// A float payload (f32/f64) is declared with its plain C float/double type —
+	// no typedef needed, exactly like a bool/str field — mirroring how
+	// floatCType is already used for helper parameters/results (task #22).
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
 	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil

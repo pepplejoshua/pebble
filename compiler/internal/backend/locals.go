@@ -587,6 +587,21 @@ func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 				return "", err
 			}
 			valueExpr = expr
+		case isFloat(snapshot, payloadType):
+			// A float-typed payload's construction value is built by
+			// buildFloatExpr at the payload's OWN float kind (resolvedFloatKind —
+			// f32 or f64) and the entry width, exactly as a float call argument,
+			// a float local's declaration initializer, and a float comparison
+			// operand are built (task #22, slice 86a): a float literal, a
+			// reference to an in-scope float-typed local, or a call to a
+			// float-returning helper. The optional struct's .value field is the
+			// plain C float/double (see optionalPayloadCType), so the built
+			// expression matches the field type with no cast.
+			expr, err := buildFloatExpr(st, unit, snapshot, fileSet, initValue.Children[0], scope, resolvedFloatKind(snapshot, payloadType), width)
+			if err != nil {
+				return "", err
+			}
+			valueExpr = expr
 		case isTuple(snapshot, payloadType):
 			expr, err := buildNestedAggregateValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, payloadType, context, width)
 			if err != nil {
