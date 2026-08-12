@@ -44,25 +44,30 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 7 ("Optional `?T`, `some`, `none`, force
-unwrap", tracker 14 line 137) closed in `08ce755`. Fixed the two
-remaining optional-payload gaps: array-typed (`?[N]T`) and slice-typed
-(`?[]T`), both across construction/every position/presence
-check/force-unwrap/every element width. The array case's checker-side
-T0505 gap (logged during Phase 3 #4) turned out to be already fixed by
-prior work — only the backend `Emit` rejection needed closing for
-either payload type. Added a new runtime helper,
-`pebble_rt_checked_unwrap_present`, for aggregate-payload force-unwrap
-(no scalar to return through the existing checked-unwrap family),
-verified in both SAFE and RELEASE mode. This orc session stalled
-twice, each time immediately after landing real self-verified progress
-(its own tool timeout, not a code problem) — resumed once, then the
-supervisor took over final verification directly. Picking up the next
-Phase 3 item: "Tagged union" (tracker 14, "Partial by payload and
-container C shape; generic-self narrowing resolved...; struct-field
-construction resolved" — check current state for staleness before
-scoping the dispatch, per the pattern found with the "Struct" and
-"Type declaration" rows) next.)*
+*(empty — Phase 3 item 8 ("Tagged union", tracker 14) closed in
+`9a5342e`. Confirmed NOT stale (unlike Struct/Type declaration): the
+i32/bool/str-only payload restriction was real. Fixed via a checker
+anchor bug (prepareVariant never grounded a literal aggregate payload
+to its declared type, mirroring prepareDirect's fix) plus a backend
+admission gate widened to every scalar shape (fixed-width integers at
+their own width, bool, char, str, float, plain enum, nested union) —
+aggregate payloads (struct/tuple/array/slice/optional) remain
+deliberately out of scope, blocked by the union-leads-aggregate
+typedef emission order, not a bug. One real gap found and logged, not
+fixed: an INLINE nested-union construction
+(`Outer.value(Inner.b(7))`) hits a genuine typedef-ordering bug (the
+construct-then-reference form works fine). This task needed 3 orc
+dispatches: the first left a non-compiling diff despite a `completed`
+status whose response read as thorough but cut off mid-sentence with
+no closing verification — the sharpest reminder yet that `completed`
+proves nothing without checking the actual diff; resumed once, which
+fixed the compile error and made a sound scope-narrowing call; a third
+dispatch (scoped to "tests only, do not touch source") wrote the proof
+tests but left one message-text mismatch, fixed directly as a one-line
+string correction. Picking up the next Phase 3 item: "Function type
+and function value" (tracker 14, "Partial; V1 supports a wider
+convention and signature surface" — check current state for staleness
+first, per the now-established pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
