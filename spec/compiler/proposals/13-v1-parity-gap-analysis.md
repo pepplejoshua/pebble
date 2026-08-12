@@ -44,14 +44,43 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #92 (struct call-result/field-read as argument/receiver)
-closed in `008b6fd`. Sixth fix in the consolidated gap-filling pass
-over the proof-batch findings. Only #93 (bare string-literal
-arrow-body T0501) remains queued; once it lands, gap-filling is done
-and #86 (float-as-aggregate-member, deferred) is next, per the user's
-earlier instruction. A new, untracked finding surfaced during #92: the
-tuple-argument branch has the identical call-result gap
-(`f(makeT())` still rejects) — not yet a formal task.)*
+*(empty — item #93 (bare string-literal arrow-body T0501) closed in
+`dd56d9e`. This closes the consolidated gap-filling pass over the
+proof-batch findings — every routine gap from that pass (#87, #88,
+#89, #90, #91, #92, #93) is now resolved. Remaining: #94 (tuple
+call-result as argument, the mirror of #92 found while fixing it) and
+#86 (float as aggregate member, deferred, larger scope) — #86 is next
+per the user's earlier instruction to handle deferred items after gap
+filling. The `int`-width architectural question stays parked for the
+user's design decision, separate from this file's workflow.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: a named function or method whose `=>` body is a bare string
+literal was wrongly rejected with T0501 "unknown calling
+convention".**
+
+`fn f() str => "hello";` failed even though a non-literal `=>` body
+and a block-body `str` return both worked. Root cause:
+`infer/declaration.go`'s `convention()` scanned every direct child of
+the `FunctionDecl` node for a `StringLiteral`, with no positional
+awareness — a genuine convention annotation is always a LEADING
+modifier (before the `Name` node), but a bare-string `=>` body is
+always a TRAILING child, and the unconditional scan found it and
+misread it as a malformed annotation.
+
+**Resolution (`dd56d9e`, 2026-08-11).** `convention()` now breaks at
+the first non-`Literal` child instead of scanning unconditionally —
+provably correct against the parser grammar (`parseFunctionModifiers`
+always runs before the `Name` node, which is never `Literal`-kind, so
+the trailing body can never be reached). Genuine convention
+annotations on a plain `fn` are unaffected; a real malformed
+annotation still reports T0501. New tests at the infer, check, and
+backend levels prove the fix and the no-regression matrix.
+Causation-checked: reverting `declaration.go` alone reproduces both
+original T0501 diagnostics exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
