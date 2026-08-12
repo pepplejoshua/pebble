@@ -44,25 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 9 ("Function type and function value", tracker
-14 line 143) narrowed and closed for its float slice in `cd6e604`, per
-the scoping plan from the paused investigation: float (f32/f64)
-parameters and results are now admitted for first-class function
-values, mirroring the entryWidth-vs-width care from earlier float
-passes in buildFloatExpr's new IndirectCall case. Aggregate parameter/
-result support remains a genuine, separate, larger follow-up (unlike
-struct fields/optional payloads/slice elements, first-class function
-values route through indirect-call dispatch machinery this effort
-hasn't widened before) — not fixed here, logged in tracker 14. This
-dispatch's diff initially looked like it had unrelated scope creep (a
-`-short` test-mode convention, a checker refactor); root cause was a
-SECOND, independent Claude Code session concurrently auditing the test
-suite in the same working tree (user-confirmed, not an orphaned orc
-worker) — its legitimate work is committed separately (`6f9e503`).
-Picking up the next Phase 3 item: "Generic type and specialization"
-(tracker 14, "Partial by deep aggregate and value-source shape; owner
-inheritance resolved in `ddbe454`" — check current state for staleness
-first, per the now-established pattern) next.)*
+*(empty — Phase 3 item 10 ("Generic type and specialization", tracker
+14) closed in `4ae1ac6`. A 20+-shape empirical sweep found every deep-
+aggregate/value-source shape already working; the one real
+generics-specific bug found (a generic method's own type param
+inferable only from a function-value argument, e.g. `o.convert(twice)`
+with no explicit type args) is fixed in the solver's `callMember`
+(internal/infer/instantiate.go) — a first attempt in the walker's
+`callMethod` branch could never have worked (the callee symbol isn't
+known there for a method call) and was correctly diagnosed and
+reverted before landing the real fix. Picking up the next Phase 3
+item: "Struct field and instance method selection" (tracker 14,
+"Partial by value-source shape; generic and runtime-owner gaps listed
+here are resolved" — check current state for staleness first, per the
+established pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
