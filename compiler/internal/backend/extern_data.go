@@ -101,6 +101,15 @@ func collectReferencedExternData(unit *tir.Unit, entryBlock tir.NodeID, helpers 
 					mark(place.Symbol, place.Type)
 				}
 			}
+		case tir.RecordConstruct:
+			// Mirror collectReferencedGlobals: a struct construction's field
+			// values live in node.Fields, not node.Children, so an extern
+			// variable read used only as a field's construction value (e.g.
+			// `lib::errno` in `Point.{ x = lib::errno }`) must be walked
+			// explicitly or its declaration is never emitted.
+			for _, field := range node.Fields {
+				walk(field.Value)
+			}
 		}
 		for _, child := range node.Children {
 			walk(child)

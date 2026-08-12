@@ -154,6 +154,19 @@ func collectReferencedGlobals(unit *tir.Unit, entryBlock tir.NodeID, helpers []h
 					mark(place.Symbol)
 				}
 			}
+		case tir.RecordConstruct:
+			// A struct construction's field values (`Point.{ x = counter }`,
+			// `Outer.{ wrap = lib::wrapped }`) are stored in node.Fields
+			// ([]FieldInit{Field, Value}), NOT node.Children (mirroring
+			// collectStructTypesWalk and collectDirectCalls) — so a mutable
+			// global read used only as a field's construction value (e.g.
+			// `lib::counter` in `Point.{ x = lib::counter }`) is walked
+			// explicitly here; otherwise the global is never discovered as
+			// referenced, its storage is never declared, and the emitted C
+			// references an undeclared pebble_global_<symbolID>.
+			for _, field := range node.Fields {
+				walk(field.Value)
+			}
 		}
 		for _, child := range node.Children {
 			walk(child)
