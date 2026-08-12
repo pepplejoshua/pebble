@@ -129,6 +129,7 @@ func TestRunPreludeFlagEmitsRunnableC(t *testing.T) {
 }
 
 func TestRunFlagCompilesAndRuns(t *testing.T) {
+	requireCIntegration(t)
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)
 	}
@@ -145,6 +146,7 @@ func TestRunFlagCompilesAndRuns(t *testing.T) {
 }
 
 func TestRunFlagWithOutputPath(t *testing.T) {
+	requireCIntegration(t)
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)
 	}
@@ -169,6 +171,7 @@ func TestRunFlagWithOutputPath(t *testing.T) {
 }
 
 func TestRunAutoDetectsRuntimeRoot(t *testing.T) {
+	requireCIntegration(t)
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)
 	}
@@ -197,6 +200,7 @@ func TestRunAutoDetectsRuntimeRoot(t *testing.T) {
 }
 
 func TestRunFlagReportsCompileError(t *testing.T) {
+	requireCIntegration(t)
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)
 	}
@@ -239,6 +243,7 @@ func writeFile(t *testing.T, path, contents string) {
 
 func compileEmittedC(t *testing.T, dir string, emitted []byte, name string, expectedCode int) error {
 	t.Helper()
+	requireCIntegration(t)
 	runtimeRoot := filepath.Join("..", "..", "..", "runtime")
 	outputPath := filepath.Join(dir, name)
 	cPath := filepath.Join(dir, name+".c")
@@ -261,6 +266,13 @@ func compileEmittedC(t *testing.T, dir string, emitted []byte, name string, expe
 		return &commandError{command: outputPath, err: err}
 	}
 	return &commandError{command: outputPath, err: os.ErrInvalid}
+}
+
+func requireCIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping C compile-and-run integration test in short mode")
+	}
 }
 
 type commandError struct {

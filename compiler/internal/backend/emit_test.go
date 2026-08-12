@@ -203,6 +203,7 @@ func buildStdMemFixture(t *testing.T, sourceText, entryName string) (*tir.Unit, 
 
 func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildStdFixture(t, sourceText, "main")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -218,6 +219,7 @@ func emitRuntimeAndRun(t *testing.T, sourceText string, wantCode int) {
 // any specific code.
 func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -233,6 +235,7 @@ func emitAndRun(t *testing.T, sourceText string, requireEntry bool, wantCode int
 // fails the test loudly and quickly instead of hanging the whole test run.
 func emitAndRunBounded(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -267,6 +270,7 @@ const loopExecutionTimeout = 5 * time.Second
 // the strict flags apply uniformly — there is no lenient path to opt into.
 func compileEmittedC(t *testing.T, emitted []byte) string {
 	t.Helper()
+	requireCIntegration(t)
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
@@ -307,6 +311,7 @@ func compileEmittedC(t *testing.T, emitted []byte) string {
 
 func compileEmittedCRelease(t *testing.T, emitted []byte) string {
 	t.Helper()
+	requireCIntegration(t)
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)
@@ -458,6 +463,7 @@ func compileAndRunCapture(t *testing.T, emitted []byte, wantCode int, wantAbnorm
 // and the end-to-end cc compile + run.
 func emitAndRunCapture(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) string {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -483,6 +489,7 @@ func compileAndRunCaptureBounded(t *testing.T, emitted []byte, wantCode int, wan
 // hanging the whole test run. It returns the captured stdout+stderr.
 func emitAndRunCaptureBounded(t *testing.T, sourceText string, requireEntry bool, wantCode int, wantAbnormal bool) string {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", requireEntry)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2425,6 +2432,7 @@ func enumFixture(t *testing.T, sourceText string) (*tir.Unit, *types.Snapshot, s
 // mode-dependent behavior can be asserted at both configurations.
 func emitAndRunRelease(t *testing.T, sourceText string, wantCode int, wantAbnormal bool) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2462,6 +2470,7 @@ func emitAndRunRejects(t *testing.T, sourceText, wantSubstring string) {
 // code.
 func emitAndRunWithSymbols(t *testing.T, sourceText string, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, sourceText)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
@@ -2604,6 +2613,7 @@ func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 // arguments or asserts the bare-run count.
 func emitArgvAndRun(t *testing.T, sourceText string, args []string, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	unit, snapshot, entryID, sources := buildFixture(t, sourceText, "main", true)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {

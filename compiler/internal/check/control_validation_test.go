@@ -1,12 +1,11 @@
 package check
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func hasControlDiagnostic(diagnostics *diagnostic.DiagnosticSet, code diagnostic.Code) bool {
@@ -997,70 +996,53 @@ fn classify(flag bool) i32 {
 	}
 }
 
-// generatedIntegerSwitch builds a switch on an integer-typed subject covering
-// every value in [start, end] inclusive with no else arm. The test suite
-// generates these rather than hand-writing them because the u8/i8 exhaustive
-// cases need the full 256-value domain.
-func generatedIntegerSwitch(subjectType string, start, end int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "fn classify(v %s) i32 {\n", subjectType)
-	b.WriteString("    switch v {\n")
-	for i := start; i <= end; i++ {
-		fmt.Fprintf(&b, "    case %d: return %d;\n", i, i)
+// TestIntegerSwitchIsExhaustive checks the complete domains used by control
+// flow validation without running five 256-value programs through the full
+// compiler pipeline. Other switch tests protect case-value collection and the
+// missing-return behavior around this rule.
+func TestIntegerSwitchIsExhaustive(t *testing.T) {
+	coveredRange := func(start, end int64) map[int64]bool {
+		covered := make(map[int64]bool, end-start+1)
+		for value := start; value <= end; value++ {
+			covered[value] = true
+		}
+		return covered
 	}
-	b.WriteString("    }\n")
-	b.WriteString("}\n")
-	return b.String()
+	cases := []struct {
+		name    string
+		builtin types.BuiltinKind
+		covered map[int64]bool
+		want    bool
+	}{
+		{name: "u8 complete", builtin: types.U8, covered: coveredRange(0, 255), want: true},
+		{name: "u8 missing upper bound", builtin: types.U8, covered: coveredRange(0, 254), want: false},
+		{name: "i8 complete", builtin: types.I8, covered: coveredRange(-128, 127), want: true},
+		{name: "i8 missing upper bound", builtin: types.I8, covered: coveredRange(-128, 126), want: false},
+		{name: "u16 is not enumerated", builtin: types.U16, covered: coveredRange(0, 255), want: false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := integerSwitchIsExhaustive(testCase.builtin, testCase.covered); got != testCase.want {
+				t.Fatalf("integerSwitchIsExhaustive() = %v, want %v", got, testCase.want)
+			}
+		})
+	}
 }
 
-// TestValidateControlFlowExhaustiveU8SwitchNoElse verifies that a u8 switch
-// covering ALL 256 values (0..255) without else, where every case returns, is
-// accepted (no false-positive C0607).
-func TestValidateControlFlowExhaustiveU8SwitchNoElse(t *testing.T) {
-	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u8", 0, 255))
-	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
-		t.Fatalf("exhaustive u8 switch without else was rejected: %+v", diagnostics.Items())
-	}
-}
-
-// TestValidateControlFlowNonExhaustiveU8SwitchNoElse verifies that a u8
-// switch covering only 255 of 256 values (missing exactly 255), without else,
-// is still correctly rejected with C0607.
+// TestValidateControlFlowNonExhaustiveU8SwitchNoElse keeps one source-level
+// check that connects integer case records to the domain rule. The direct test
+// above owns the expensive complete-domain matrix.
 func TestValidateControlFlowNonExhaustiveU8SwitchNoElse(t *testing.T) {
-	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u8", 0, 254))
+	diagnostics, valid := validateControlFixture(t, `
+fn classify(value u8) i32 {
+    switch value {
+    case 0: return 0;
+    case 1: return 1;
+    }
+}
+`)
 	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
 		t.Fatalf("non-exhaustive u8 switch without else was accepted: %+v", diagnostics.Items())
-	}
-}
-
-// TestValidateControlFlowExhaustiveI8SwitchNoElse verifies that an i8 switch
-// covering ALL 256 values (-128..127) without else, where every case returns,
-// is accepted (no false-positive C0607).
-func TestValidateControlFlowExhaustiveI8SwitchNoElse(t *testing.T) {
-	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("i8", -128, 127))
-	if !valid || hasControlDiagnostic(diagnostics, CodeMissingReturn) {
-		t.Fatalf("exhaustive i8 switch without else was rejected: %+v", diagnostics.Items())
-	}
-}
-
-// TestValidateControlFlowNonExhaustiveI8SwitchNoElse verifies that an i8
-// switch covering only 255 of 256 values (missing exactly 127), without else,
-// is still correctly rejected with C0607.
-func TestValidateControlFlowNonExhaustiveI8SwitchNoElse(t *testing.T) {
-	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("i8", -128, 126))
-	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
-		t.Fatalf("non-exhaustive i8 switch without else was accepted: %+v", diagnostics.Items())
-	}
-}
-
-// TestValidateControlFlowWiderIntegerSwitchStillNeedsFallback verifies that a
-// u16 switch covering as many values as the exhaustive u8 case (0..255) still
-// requires a fallback arm. Wider integer widths are intentionally not
-// enumerated for exhaustiveness, so C0607 must still fire.
-func TestValidateControlFlowWiderIntegerSwitchStillNeedsFallback(t *testing.T) {
-	diagnostics, valid := validateControlFixture(t, generatedIntegerSwitch("u16", 0, 255))
-	if valid || !hasControlDiagnostic(diagnostics, CodeMissingReturn) {
-		t.Fatalf("wider-integer switch should still require a fallback arm: %+v", diagnostics.Items())
 	}
 }
 

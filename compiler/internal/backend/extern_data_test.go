@@ -18,6 +18,7 @@ import (
 // emitted C, so neither translation unit trips -Wunused-variable.
 func compileAndRunWithShim(t *testing.T, emitted []byte, shimSource string, wantCode int) {
 	t.Helper()
+	requireCIntegration(t)
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		t.Skipf("skipping end-to-end check: cc not on PATH (%v)", err)

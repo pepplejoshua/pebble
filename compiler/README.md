@@ -49,21 +49,25 @@ The first vertical slice is complete:
 The parser corpus also runs the standard library and examples through the Go
 implementation so syntax migrations and parser regressions fail ordinary tests.
 
-Run the compiler tests from this directory:
+Run the fast development tests from this directory:
+
+```sh
+go test -short ./...
+```
+
+Short mode keeps lexer, parser, resolver, checker, typed-IR, and C-emission
+coverage. It skips tests that invoke `cc` or run a compiled binary. Run the
+full integration suite before a commit that changes backend or runtime
+behavior:
 
 ```sh
 go test ./... -parallel 16
 ```
 
-The backend package's tests are dominated by end-to-end cases that shell
-out to `cc` and run the resulting binary, so most of the wall time is
-spent waiting on subprocesses rather than burning CPU — `-parallel 16`
-(double the default 8-core `GOMAXPROCS`) cuts the backend suite from
-~227s to ~169s on an 8-core machine. Going higher (e.g. 24) compiles
-faster in aggregate but causes enough CPU contention that the
-bounded-loop tests' 5s execution timeout (`loopExecutionTimeout` in
-`internal/backend/emit_test.go`) starts false-failing — 16 is the
-highest value confirmed stable.
+The backend integration tests spend most of their time in subprocesses.
+`-parallel 16` is the highest value confirmed stable on an 8-core machine.
+Higher values can cause the bounded-loop tests' 5-second execution timeout to
+fail because of CPU contention.
 
 ## Implementation rules
 

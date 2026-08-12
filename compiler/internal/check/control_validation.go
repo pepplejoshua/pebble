@@ -127,27 +127,8 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 		return coveredBools[true] && coveredBools[false]
 	}
 
-	// u8/i8 exhaustiveness: every value in the width's exact range must be
-	// covered. Wider integer widths are intentionally excluded — their domains
-	// are too large to enumerate case-by-case, so they fall through to false.
 	if builtin, ok := typeKey.Builtin(); ok {
-		var min, max int64
-		switch builtin {
-		case types.U8:
-			min, max = 0, 255
-		case types.I8:
-			min, max = -128, 127
-		default:
-			min, max = 1, 0
-		}
-		if min <= max {
-			for value := min; value <= max; value++ {
-				if !coveredIntegers[value] {
-					return false
-				}
-			}
-			return true
-		}
+		return integerSwitchIsExhaustive(builtin, coveredIntegers)
 	}
 
 	// Enum/tagged-union exhaustiveness: every variant must be covered.
@@ -181,6 +162,27 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 	}
 
 	return false
+}
+
+// integerSwitchIsExhaustive reports whether the covered values contain the
+// complete domain of an integer type that the checker can enumerate. Wider
+// integer domains are intentionally not enumerated and always return false.
+func integerSwitchIsExhaustive(builtin types.BuiltinKind, covered map[int64]bool) bool {
+	var min, max int64
+	switch builtin {
+	case types.U8:
+		min, max = 0, 255
+	case types.I8:
+		min, max = -128, 127
+	default:
+		return false
+	}
+	for value := min; value <= max; value++ {
+		if !covered[value] {
+			return false
+		}
+	}
+	return true
 }
 
 // auditControlArena rechecks the 06a freeze invariants on the frozen control
