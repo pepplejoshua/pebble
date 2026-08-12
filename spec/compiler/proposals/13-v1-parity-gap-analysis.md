@@ -44,15 +44,46 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #100 (slice construction inside a float-returning
-entry) closed in `6f80778`. Only #101 (slicing a wrapped array
-parameter inside a helper) remains before Phase 3, per the user's
-instruction (2026-08-11): "tackle the tasks first then go to phase
-3". The parked `int`-width architectural question remains separate,
-awaiting the user's design decision. Once #101 lands, Phase 3 begins:
-the 35 "Partial" rows in tracker 14, investigated and completed one at
-a time via orc dispatch, per the user's original three-phase
-instruction.)*
+*(empty — item #101 (slicing a wrapped array parameter) closed in
+`91a50f4`. This was the last item from the user's instruction
+(2026-08-11): "tackle the tasks first then go to phase 3" — every
+task queued from the proof-batch/gap-filling/float-aggregate work is
+now resolved. Phase 3 starts next: the 35 "Partial" rows in tracker
+14, investigated and completed one at a time via orc dispatch, per
+the user's original three-phase instruction. The parked `int`-width
+architectural question remains separate, awaiting the user's design
+decision — not part of Phase 3.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: slicing an ARRAY PARAMETER (not a local array variable) inside
+a helper failed to compile.**
+
+`cc` rejected "invalid operands to binary expression
+('pebble_array_23_t' and 'int32_t')" — the slice's base pointer
+arithmetic added directly to a STRUCT value.
+
+**Root cause.** This compiler represents an array parameter
+differently from an array local: a local declares as a plain C array
+(`int32_t pebble_local_N[3] = {...};`, whose bare symbol decays to a
+pointer), but a PARAMETER is passed WRAPPED in a struct
+(`pebble_array_<id>_t pebble_local_N`, whose real C array lives at
+`.data`). `buildSliceConstruction`'s array-symbol-base case always
+used the bare symbol as the data pointer, correct for a local, wrong
+for a wrapped parameter.
+
+**Resolution (`91a50f4`, 2026-08-12).** `localInfo` already carries an
+`arrayWrapped` bool for exactly this distinction, and five other
+places in this codebase already check it and append `.data` to reach
+the real C array — `buildSliceConstruction`'s array-symbol case was
+the one place missing this same check, added here mirroring the exact
+existing style (`places.go:663`). New tests prove the exact repro (a
+helper slicing its own array parameter) and confirm the already-
+working local-array case is unaffected. Causation-checked: reverting
+`aggregates.go` alone reproduces the original "invalid operands" `cc`
+failure exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
