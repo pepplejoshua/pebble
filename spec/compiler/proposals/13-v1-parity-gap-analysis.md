@@ -44,19 +44,18 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 15 ("Identifier, module member, partial
-member", tracker 14) closed in `7dec3fc`. Found a real bug: a
-module-member/global/extern-variable read used as a struct field's
-construction value was checker-accepted but Emit-rejected, because
-collectReferencedGlobals/collectReferencedExternData both walked only
-node.Children, missing a RecordConstruct's field values (stored in
-node.Fields — the same gap class as the enum/union optional-payload
-fix in item 14 and several other Fields-vs-Children misses this
-session). Plain identifiers and the base-less `.name` shorthand
-confirmed already working everywhere. Picking up the next Phase 3
-item: "Indirect call" (tracker 14, "Partial by function signature" —
-check current state for staleness first, per the established
-pattern) next.)*
+*(empty — Phase 3 item 16 ("Indirect call", tracker 14) closed in
+`e8672f7`. Confirmed distinct from the "Function type and function
+value" row's signature restriction: a function-typed struct field of a
+non-addressable struct value (a call result, `mk().op(1, 2)`) as the
+callee, local init, argument, or field-construction value was
+checker-accepted but Emit-rejected — buildFunctionValue's FieldValue
+case only accepted a SymbolValue receiver. Fixed by routing through
+buildStructValueNode, the same Phase 3 #11 struct-VALUE builder. An
+11-shape sweep found no other call-site gaps. Picking up the next
+Phase 3 item: "Method call" (tracker 14, "Partial by owner and
+argument shape" — check current state for staleness first, per the
+established pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
