@@ -44,21 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 11 ("Struct field and instance method
-selection", tracker 14) closed in `e09f9f8`. A new shared value-builder
-(buildStructValueNode/buildStructFieldValueRead, places.go) covers
-every non-local receiver shape for both field reads and method-call
-receivers: a call result, a nested field read, an array/slice/tuple
-element, a force-unwrap, a parenthesized expression. Two rejection
-tests converted to proofs as a direct, correct consequence of the
-uniform builder (a paren-wrapped struct-literal call argument; a field
-read directly off a struct literal). One harmless test regression
-(deref-argument parenthesization) fixed alongside 2 genuine positive
-ones. Picking up the next Phase 3 item: "Enum and union variant
-selection" (tracker 14, "Partial for untagged unions and unsupported
-payload/container shapes; generic-self selection is resolved" — check
-current state for staleness first, per the established pattern)
-next.)*
+*(empty — Phase 3 item 12 ("Enum and union variant selection", tracker
+14) closed in `1414a3a`. buildUnionValueExpr and buildSwitchStatement's
+union-subject branch widened to accept a tagged-union value from every
+source enum selection already supported (struct field, force-unwrap,
+parens, deref, non-addressable field, nested aggregate), mirroring the
+existing enum-side coverage. Untagged unions and payload/container
+shapes remain correctly out of scope (separate rows). Picking up
+Phase 3 item 13: "Enum variant literal as a direct call argument"
+(tracker 14, logged during Phase 3 #1's module-level-constant
+investigation — `check(Color.green)` rejected: "want a reference to
+an enum-typed local... binding the value into a local first is
+required" — already confirmed general, not constant-specific, via a
+control case; not yet fixed) next, since it's directly related to the
+enum/union value-source work just closed.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
