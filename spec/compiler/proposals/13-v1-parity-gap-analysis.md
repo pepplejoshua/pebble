@@ -44,19 +44,43 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #94 (tuple call-result/field-read/deref as argument,
-the mirror of #92) closed in `181f7c6`. All known routine gaps from
-the proof-batch findings (#87-94) are now resolved. Only #86 (float
-as aggregate member, deferred, larger scope) remains — next up, per
-the user's earlier instruction to handle deferred items after gap
-filling. A new, untracked finding surfaced during #94: constructing a
-struct with an inline tuple-literal field (`Holder.{ p = (20, 22) }`)
-emits a compound literal typed with the literal's own structural
-tuple type ID instead of the field's declared type ID, so the C fails
-to compile even with no call involved — a separate, pre-existing
-aggregate-construction bug, not yet a formal task. The `int`-width
-architectural question stays parked for the user's design decision,
-separate from this file's workflow.)*
+*(empty — slice 86a (buildFloatExpr Load case, unblocking tuple/array
+float element reads) closed in `e5add48`. Task #86 (float as an
+aggregate member) is probe-scoped into slices: struct field type
+acceptance and optional payload type acceptance still need full
+support (type + construction + write + read); slice-of-float
+construction is a newly confirmed separate gap ("slice element type
+f64 is not supported"). Next slice: struct field support (86b). Also
+still open: #95 (inline tuple-literal struct field construction type
+mismatch, found during #94) and the parked `int`-width architectural
+question.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: no `Load` case existed in `buildFloatExpr`, so any place-based
+float read (tuple ordinal, array index) failed — the first slice of
+task #86 (float as an aggregate member).**
+
+Probed and confirmed before dispatch: tuple/array typedefs and
+float-elemented CONSTRUCTION already worked; only the by-value READ
+(`t.0`, `a[0]`) was broken.
+
+**Resolution (`e5add48`, 2026-08-11, slice 86a).** Added a `Load` case
+to `buildFloatExpr` resolving the place via `buildPlaceLValue`,
+mirroring the established pattern in `buildCharOperand`/`buildUintExpr`.
+Discovered and correctly fixed a real width-mismatch landmine along
+the way: `buildFloatExpr`'s own `width` param is the FLOAT kind, but
+`buildPlaceLValue` needs the ENTRY INTEGER width for its bounds-checked
+index helper's suffix — passing the float kind would have produced a
+call to a nonexistent helper name. Fixed by threading a new
+`entryWidth` parameter through `buildFloatExpr` and all 19 call sites,
+rather than papering over it. New tests prove tuple ordinal reads,
+array index reads (both f32/f64), a read into a float local, and that
+bounds checking still fires through the new path. Causation-checked:
+reverting all 6 touched files together reproduces both original
+Load-rejection failures exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
