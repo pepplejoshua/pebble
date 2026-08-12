@@ -44,23 +44,30 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 3 ("Pointer `*T`, address-of, dereference,
-`nil`", tracker 14 line 123) closed in `a80a707`. Array, tuple, enum,
-and optional pointees now support whole-value read through a deref,
-address-of, whole-value write, nil comparison, and pointer equality.
-Also fixed along the way: a real C operator-precedence bug in the
-deref lvalue (postfix `.field`/`[i]` was binding to the checked-pointer
-call result, not the dereferenced value), and a checker expectation
-bug where `*p`/`o!` assigned to an optional-typed destination picked
-the wrong (or no) projection depending on whether the result was the
-whole optional or its payload. One new "Decision needed" item logged
-(escape analysis for `return &localVar` — a general, pre-existing gap,
-not array-specific, matching the Untagged-union row's class, not fixed
-here). Picking up the next Phase 3 item: "Fixed array `[N]T`" (tracker
-14 line 124, "Partial. Struct fields, local/literal reassignment, enum
-elements, ordinary sizeof, direct array-literal/repeat return, and
-sizeof [N]Struct/tuple/optional element collection landed" — check
-what's still missing) next.)*
+*(empty — Phase 3 item 4 ("Fixed array `[N]T`", tracker 14 line 124)
+substantially closed in `249995d`: fixed the array-literal
+struct-field-construction width gap ([3]i32 etc. were rejected while
+[3]int worked, because the field destination is solve-time-only and
+the literal's elements never got grounded to the declared field
+width) — the checker now resolves a record field's declared type at
+walk time and grounds the array-literal's elements to it, narrowly
+scoped to array-typed fields only after an earlier broader version
+regressed the backend typedef golden tests. Confirmed already-working:
+local literals/repeats, parameters, returns, arrays of structs/tuples,
+at every integer width. Three genuine remaining array gaps split into
+their own tracker 14 rows rather than closing this row outright:
+nested arrays `[N][M]T` (rejected everywhere), `ArrayRepeat` as a
+struct-field value (`Box.{ data = [7; 3] }` still fails), and
+array-typed optional/tuple elements (checker unification failure, not
+isolated). Two unrelated, pre-existing, general gaps also logged but
+not fixed: anonymous `.{ ... }` construction (no base type name), and
+a scalar cast inside a generic function body. This orc session stalled
+three times specifically on the long-running full backend suite (its
+own tool timeout, not a code problem) — resumed twice, then escalated
+to luna once, then the supervisor took over final verification
+directly once the fix and tests were already complete and correct.
+Picking up the next Phase 3 item: "Slice `[]T`" (tracker 14 line 125,
+"Partial by source position and element type") next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
