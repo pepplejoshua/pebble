@@ -145,9 +145,30 @@ func collectArrayTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 			if isArray(snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
+			// A pointer-typed parameter whose pointee is an array (`fn read(p
+			// *[3]i32)` — the pointer-pointee array shape): the parameter is
+			// declared with the pointee's pebble_array_<typeID>_t * C type
+			// (see pointerTypeNameForUnit's array case), so the array typedef
+			// must be collected and emitted or the declaration names an
+			// undeclared C type. This mirrors collectStructTypes' own
+			// pointer-pointee rule.
+			if isPointer(snapshot, param.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isArray(snapshot, pointee) {
+					collected = append(collected, pointee)
+				}
+			}
 		}
 		if isArray(snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
+		}
+		if isPointer(snapshot, helper.decl.ResultType) {
+			// A pointer-returning helper whose result pointee is an array
+			// (`fn mk() *[3]i32`): the helper's C return type is the pointee's
+			// pebble_array_<typeID>_t *, so the array typedef must be
+			// collected exactly like the parameter case above.
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isArray(snapshot, pointee) {
+				collected = append(collected, pointee)
+			}
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -223,6 +244,27 @@ func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 			if value, ok := unit.Node(node.Children[1]); ok && value.Kind == tir.ArrayValue && isArray(snapshot, value.Type) {
 				*out = append(*out, value.Type)
 			}
+		}
+	}
+	if node.Kind == tir.DereferencePlace && isArray(snapshot, node.Type) {
+		// A dereference of a pointer to a whole array (`*p` where p is
+		// *[N]T): the dereference's lvalue/value lowers through a cast to the
+		// pointee's pebble_array_<typeID>_t * C type (see buildPlaceLValue's
+		// DereferencePlace case and pointerTypeNameForUnit's array case), so
+		// the array typedef must be collected and emitted or the cast names an
+		// undeclared C type.
+		*out = append(*out, node.Type)
+	}
+	if isPointer(snapshot, node.Type) {
+		// A pointer-typed node whose pointee is an array (`let p *[3]i32 =
+		// &a;`, an AddressOf, a NilPointer, a PointerCast, a pointer-returning
+		// call, or a pointer store): the pointer's C type name is the
+		// pointee's pebble_array_<typeID>_t * (see pointerTypeNameForUnit's
+		// array case), so the array typedef must be collected and emitted or
+		// the declaration/expression names an undeclared C type. This mirrors
+		// collectStructTypesWalk's own pointer-pointee rule.
+		if pointee, ok := pointerPointeeType(snapshot, node.Type); ok && isArray(snapshot, pointee) {
+			*out = append(*out, pointee)
 		}
 	}
 	for _, childID := range node.Children {

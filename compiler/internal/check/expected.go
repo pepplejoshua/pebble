@@ -83,6 +83,28 @@ func (w *walker) expectationFor(ref symbol.SyntaxRef, destination valueID, role 
 		syntax.RecordExpr, syntax.PartialMemberExpr, syntax.FunctionTerm:
 		return expectedType{Kind: expectShape, Destination: destination, Role: role}
 	case syntax.PrefixTerm, syntax.PostfixExpr, syntax.BinaryExpr:
+		if node.Kind() == syntax.PrefixTerm && node.Token() == syntax.Star {
+			// A dereference (`*p`) assigned to an optional-typed destination
+			// (`let o ?i32 = *p;`) is NOT a payload-producing operator: its
+			// result type is fully determined by the operand's pointee — a
+			// deref of a `*?i32` IS the whole optional, a deref of a `*i32`
+			// is the payload. Neither the payload-expectation projection below
+			// (which forces the result to the payload) nor an identity on the
+			// optional destination (which would force a payload deref to the
+			// optional) is correct for both cases, so no expectation is set and
+			// the binding's own compatibility record classifies each case at
+			// solve time — a `?i32` deref result is a compatible identity, an
+			// `i32` deref result is an implicit optional injection.
+			return none
+		}
+		if node.Kind() == syntax.PostfixExpr && node.Token() == syntax.Bang {
+			// A force-unwrap (`o!`) assigned to an optional-typed destination
+			// has the same duality as a dereference: unwrapping a `??i32`
+			// yields the whole `?i32`, unwrapping a `?i32` yields the `i32`
+			// payload. Same reasoning — no expectation, the binding's
+			// compatibility record classifies at solve time.
+			return none
+		}
 		if id, known := w.knownValues[destination]; known {
 			if key, found := w.generation.inputs.Types.Key(id); found && key.Kind() == types.Optional {
 				if payload, ok := key.Child(); ok {

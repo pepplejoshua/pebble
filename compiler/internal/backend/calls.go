@@ -1251,6 +1251,24 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		if !ok {
 			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) references invalid node %d", calleeSymbol, position, param.Symbol, argID)
 		}
+		if argNode.Kind == tir.Load && len(argNode.Children) == 1 {
+			// A whole enum read through a pointer deref used directly as the
+			// argument — `use_enum(*ptr);` — the read-side twin of the
+			// enum-typed `*p = v;` write. The argument is a Load whose place
+			// is a DereferencePlace, delegated to buildEnumValue's deref-read
+			// case, which emits the null-checked whole-enum deref value
+			// buildDereferencePlaceRead produces
+			// (`*(pebble_enum_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`)
+			// — the enum's own typedef makes the by-value argument trivially
+			// valid C.
+			if place, ok := unit.Node(argNode.Children[0]); ok && place.Kind == tir.DereferencePlace {
+				expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
+				if err != nil {
+					return "", "", err
+				}
+				return "", expr, nil
+			}
+		}
 		if argNode.Kind != tir.SymbolValue {
 			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) of type %s is a %s, want a reference to an enum-typed local of exactly that type in scope (binding the value into a local first is required)", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), argNode.Kind)
 		}
@@ -1944,6 +1962,44 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 			expr, err := buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, result.tuple, context, width)
 			return "", expr, err
 		}
+		if node.Kind == tir.Load {
+			// A whole tuple read used directly as the return value, in the same
+			// two shapes buildAggregateArgument's tuple-branch Load case accepts
+			// (mirroring the struct side's return handling): a whole tuple read
+			// through a pointer deref — `return *ptr;` — lowered to a Load of a
+			// DereferencePlace, emitted as the null-checked whole-tuple deref
+			// value buildDereferencePlaceRead produces
+			// (`*(pebble_tuple_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`),
+			// or a tuple-typed field read — `return h.p;` — a Load of a
+			// FieldPlace, emitted as the field projection lvalue. Both are the
+			// tuple's own pebble_tuple_<typeID>_t, so returning the whole value
+			// by value is trivially valid C.
+			if node.Type != result.tuple {
+				return "", "", fmt.Errorf("%s returns a Load of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(result.tuple))
+			}
+			if len(node.Children) != 1 {
+				return "", "", fmt.Errorf("%s returns a Load with %d child(ren), want exactly one place", context, len(node.Children))
+			}
+			place, ok := unit.Node(node.Children[0])
+			if !ok {
+				return "", "", fmt.Errorf("%s returns a Load referencing invalid place node %d", context, node.Children[0])
+			}
+			if place.Kind == tir.DereferencePlace {
+				value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+				return "", value, err
+			}
+			if place.Kind == tir.FieldPlace || place.Kind == tir.CheckedIndexPlace {
+				lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+				if err != nil {
+					return "", "", fmt.Errorf("%s tuple read: %v", context, err)
+				}
+				if elementType != result.tuple {
+					return "", "", fmt.Errorf("%s returns a read of element type %s, not a tuple-typed value of type %s", context, describeType(snapshot, elementType), tupleTypeName(result.tuple))
+				}
+				return "", lvalue, nil
+			}
+			return "", "", fmt.Errorf("%s returns a Load whose place is a %s, want a DereferencePlace (a by-value whole-tuple read through a pointer) or a FieldPlace (a by-value read of a tuple-typed field)", context, place.Kind)
+		}
 		return "", "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 	}
 	context := "entry function body return statement"
@@ -1984,6 +2040,43 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 			return "", "", fmt.Errorf("%s returns a ContextValue of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
 		}
 		return "", "(*ctx)", nil
+	}
+	if node.Kind == tir.Load {
+		// A whole struct read used directly as the return value, in the same
+		// shapes buildAggregateArgument's struct-branch Load case accepts: a
+		// whole struct read through a pointer deref — `return *ptr;` — lowered
+		// to a Load of a DereferencePlace, emitted as the null-checked
+		// whole-struct deref value buildDereferencePlaceRead produces, or a
+		// struct-typed field read — `return h.p;` — a Load of a FieldPlace,
+		// emitted as the field projection lvalue. Both are the struct's own
+		// pebble_struct_<typeID>_t, so returning the whole value by value is
+		// trivially valid C (the read-side twin of the resolved `*self =
+		// other;` reset write).
+		if node.Type != result.structType {
+			return "", "", fmt.Errorf("%s returns a Load of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
+		}
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("%s returns a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", "", fmt.Errorf("%s returns a Load referencing invalid place node %d", context, node.Children[0])
+		}
+		if place.Kind == tir.DereferencePlace {
+			value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+			return "", value, err
+		}
+		if place.Kind == tir.FieldPlace || place.Kind == tir.CheckedIndexPlace {
+			lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+			if err != nil {
+				return "", "", fmt.Errorf("%s struct read: %v", context, err)
+			}
+			if elementType != result.structType {
+				return "", "", fmt.Errorf("%s returns a read of element type %s, not a struct-typed value of type %s", context, describeType(snapshot, elementType), structTypeName(result.structType))
+			}
+			return "", lvalue, nil
+		}
+		return "", "", fmt.Errorf("%s returns a Load whose place is a %s, want a DereferencePlace (a by-value whole-struct read through a pointer) or a FieldPlace (a by-value read of a struct-typed field)", context, place.Kind)
 	}
 	return "", "", fmt.Errorf("%s returns a %s, want a reference to a struct-typed local in scope, a struct literal (a RecordConstruct), or a call to a struct-returning helper (a DirectCall); only returning an already-declared struct-typed local, constructing a fresh struct literal inline, or forwarding a struct-returning helper call is supported", context, node.Kind)
 }
@@ -2098,6 +2191,43 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 			values[i] = tempName
 		}
 		return preReturn, fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	}
+	if node.Kind == tir.Load {
+		// A whole array read through a pointer deref used directly as the
+		// return value — `return *p;` in an array-returning helper. The return
+		// value is a Load whose place is a DereferencePlace whose single child
+		// is the pointer expression. An array return is the wrapped
+		// pebble_array_<typeID>_t typedef (see the SymbolValue tail-return
+		// below), and the dereference yields exactly that wrapped struct (see
+		// pointerTypeNameForUnit's array case), so the whole dereference is
+		// returned directly — `*(pebble_array_<id>_t *)(checked)` — a single
+		// return expression with no pre-return statement.
+		if node.Type != arrayType {
+			return "", "", fmt.Errorf("array return is a Load of type %s, not an array-typed value of type %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+		}
+		if len(node.Children) != 1 {
+			return "", "", fmt.Errorf("array return is a Load with %d child(ren), want exactly one place", len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", "", fmt.Errorf("array return is a Load referencing invalid place node %d", node.Children[0])
+		}
+		if place.Kind != tir.DereferencePlace {
+			return "", "", fmt.Errorf("array return is a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer)", place.Kind)
+		}
+		if len(place.Children) != 1 {
+			return "", "", fmt.Errorf("array return deref read has %d child(ren), want exactly one (the pointer expression)", len(place.Children))
+		}
+		ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], locals, width, width)
+		if err != nil {
+			return "", "", fmt.Errorf("array return deref pointer expression: %v", err)
+		}
+		ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
+		if ptrCType == "" {
+			return "", "", fmt.Errorf("array return deref has unsupported pointee type %s", describeType(snapshot, place.Type))
+		}
+		checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
+		return "", fmt.Sprintf("*(%s)(%s)", ptrCType, checkedPtr), nil
 	}
 	if node.Kind != tir.SymbolValue {
 		return "", "", fmt.Errorf("array return is a %s, want an array literal (an ArrayValue), an ArrayRepeat, an array local, or an array-returning call", node.Kind)

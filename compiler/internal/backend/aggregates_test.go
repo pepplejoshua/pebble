@@ -2563,7 +2563,13 @@ func TestEmitStructPointerDerefLocalInitializerWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	derefRE := regexp.MustCompile(`pebble_struct_\d+_t pebble_local_\d+ = \*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
+	// The deref lvalue is parenthesized (`(*(...)(...))`, not `*(...)(...)`) so
+	// a later postfix projection (`.field`, `[i]`) on the whole dereference
+	// binds correctly rather than to the checked-pointer call result — see
+	// buildPlaceLValue's DereferencePlace case. Functionally a no-op here (a
+	// bare struct copy has no trailing projection), so the extra parens are
+	// optional in this regex.
+	derefRE := regexp.MustCompile(`pebble_struct_\d+_t pebble_local_\d+ = \(?\*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
 	if !derefRE.MatchString(out) {
 		t.Errorf("emitted C contains no whole-struct deref local initializer %q:\n%s", derefRE, out)
 	}

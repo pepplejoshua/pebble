@@ -1071,6 +1071,34 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	if isTuple(snapshot, pointee) {
 		return tupleTypeName(pointee) + " *"
 	}
+	if isOptional(snapshot, pointee) {
+		// An optional pointee (a pointer to an optional value — `&o` on an
+		// optional-typed local/parameter/field, so `let p *?i32 = &o;`) is
+		// declared with the optional's own pebble_optional_<typeID>_t struct
+		// typedef followed by ` *`, the same C type an optional-typed
+		// local/parameter/field is declared with — an optional is always the
+		// typedef'd struct in this backend, never a bare C form, so the
+		// address-of, dereference, nil, and equality round-trips are
+		// pointer-identical with the struct-pointee convention above.
+		return optionalTypeName(pointee) + " *"
+	}
+	if isArray(snapshot, pointee) {
+		// An array pointee (a pointer to a whole fixed array — `&a` on an
+		// array-typed local/field, so `let p *[3]i32 = &a;`) is declared with
+		// the array's own pebble_array_<typeID>_t struct typedef followed by
+		// ` *`, the SAME C type an array-typed parameter/result/field/global is
+		// declared with (arrayTypeName) — a pointer to the wrapped array
+		// struct, so the pointer type-name is valid in every C context that
+		// names it (a local declaration, a helper parameter, a helper return
+		// type, and a cast). A standalone array LOCAL is a raw C array
+		// (`int32_t pebble_local_<s>[3]`), so the address-of expression that
+		// produces this pointer value is cast at the emission site
+		// (`(pebble_array_<typeID>_t *)&pebble_local_<s>`), and dereferencing
+		// the pointer yields the wrapped struct whose `.data` member is the
+		// array — the whole-array read/write/index positions project `.data`
+		// the same way buildPlaceLValue projects an array field.
+		return arrayTypeName(pointee) + " *"
+	}
 	// An opaque extern type (type FILE;) is Nominal like a struct, so the
 	// extern-type case must come BEFORE the isStruct fall-through: the real C
 	// type name (FILE, from the already-included header) replaces the

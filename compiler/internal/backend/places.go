@@ -618,6 +618,15 @@ func buildDereferencePlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		return "", fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 	}
 	castExpr := fmt.Sprintf("*(%s)(%s)", pointeeCType, checkedPtr)
+	if isArray(snapshot, pointeeTypeID) {
+		// An array pointee dereferences to the wrapped pebble_array_<id>_t
+		// struct; the by-value whole-array read projects the struct's raw
+		// `.data` array member (the same projection buildPlaceLValue applies),
+		// so the value is `(*(pebble_array_<id>_t *)(checked)).data` — the
+		// parens keep the `.data` projection on the WHOLE dereference, since C
+		// postfix `.` binds tighter than the unary `*`/cast.
+		castExpr = fmt.Sprintf("(%s).data", castExpr)
+	}
 	if wantBool {
 		if !isBool(snapshot, pointeeTypeID) {
 			return "", fmt.Errorf("dereference read wants bool but pointee is %s", describeType(snapshot, pointeeTypeID))
@@ -834,7 +843,15 @@ func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 		// A dereference place: `*p` used as a write target (`*p = x;`). The
 		// child is the pointer expression. The emitted C builds the pointer,
 		// runs it through pebble_rt_checked_deref_ptr for null checking, and
-		// produces `(*<checked_ptr>)` as the lvalue.
+		// produces `(*<checked_ptr>)` as the lvalue — wrapped in parentheses
+		// so a later postfix projection (a `.field` member read like
+		// `(*p).has_value`, a `[i]` element read like `(*p)[i]`, or the
+		// `.value`/`.has_value` fields a force-unwrap reads) binds to the
+		// WHOLE dereference, not to the checked-pointer call result: C's
+		// postfix `.` and `[]` bind tighter than the unary `*`/cast, so a
+		// bare `*(<type> *)(pebble_rt_checked_deref_ptr(...)).field` would
+		// project the field off the void* call result, not off the
+		// dereferenced value.
 		if len(n.Children) != 1 {
 			return "", 0, fmt.Errorf("dereference place wants one child")
 		}
@@ -850,7 +867,15 @@ func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 		if pointeeCType == "" {
 			return "", 0, fmt.Errorf("dereference place has unsupported pointee type %s", describeType(snapshot, pointeeTypeID))
 		}
-		castExpr := fmt.Sprintf("*(%s)(%s)", pointeeCType, checkedPtr)
+		castExpr := fmt.Sprintf("(*(%s)(%s))", pointeeCType, checkedPtr)
+		if isArray(snapshot, pointeeTypeID) {
+			// An array pointee dereferences to the wrapped pebble_array_<id>_t
+			// struct; the lvalue an element-index, whole-array write, or
+			// whole-array read wants is the struct's raw `.data` array member
+			// (the same projection buildPlaceLValue applies to an array-typed
+			// struct field), so it is appended here before any postfix index.
+			castExpr += ".data"
+		}
 		return castExpr, pointeeTypeID, nil
 	}
 	return "", 0, fmt.Errorf("place base %s is unsupported", n.Kind)

@@ -770,6 +770,18 @@ func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if place.Kind == tir.FieldPlace {
 			return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
 		}
+		if place.Kind == tir.DereferencePlace {
+			// A whole enum read through a pointer deref used directly as an
+			// enum value — `read(*ptr)`, `*ptr == Color.green`, `return *ptr;`
+			// in an enum-returning helper. The argument is a Load whose place
+			// is a DereferencePlace, emitted as the null-checked dereference
+			// value buildDereferencePlaceRead produces
+			// (`*(pebble_enum_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`)
+			// — the enum's own typedef makes the by-value deref read trivially
+			// valid C, the same whole-enum read shape the struct and tuple
+			// sides' deref reads use.
+			return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+		}
 		if place.Kind != tir.CheckedIndexPlace {
 			return "", fmt.Errorf("entry function body expression contains a Load whose place is a %s, want a FieldPlace (an enum-typed struct field read) or a CheckedIndexPlace (an enum element of an array or slice)", place.Kind)
 		}
@@ -1808,6 +1820,16 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			if !ok {
 				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
 			}
+			if child.Kind == tir.SourceAlias && len(child.Children) == 1 {
+				// A grouped-expression alias around the unwrap's base —
+				// `(*p)!` unwrapping a dereferenced pointer-payload optional —
+				// is transparent: unwrap the alias and process the base
+				// exactly as if the parens were absent.
+				child, ok = unit.Node(child.Children[0])
+				if !ok {
+					return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid alias child node %d", child.Children[0])
+				}
+			}
 			if child.Kind == tir.Load && len(child.Children) == 1 {
 				if _, ok := unit.Node(child.Children[0]); !ok {
 					return "", fmt.Errorf("invalid optional place")
@@ -2261,6 +2283,16 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
 		}
+		if child.Kind == tir.SourceAlias && len(child.Children) == 1 {
+			// A grouped-expression alias around the unwrap's base — `(*p)!`
+			// unwraps the dereferenced optional `(*p)` — is transparent: the
+			// base is the alias's single child, so the alias is unwrapped and
+			// the base processed exactly as if the parens were absent.
+			child, ok = unit.Node(child.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid alias child node %d", child.Children[0])
+			}
+		}
 		if child.Kind == tir.Load && len(child.Children) == 1 {
 			expr, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], locals, width)
 			if err != nil {
@@ -2688,6 +2720,36 @@ func buildOptionalValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
 	}
+	if node.Kind == tir.Load {
+		// A whole optional read through a pointer deref used directly as the
+		// optional value — `return *p;` in an optional-returning helper, or
+		// `reset(*p);` passing the dereferenced optional. The value is a Load
+		// whose place is a DereferencePlace, emitted as the null-checked
+		// whole-optional deref value buildDereferencePlaceRead produces
+		// (`*(pebble_optional_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`)
+		// — the optional's own typedef makes the by-value read trivially valid
+		// C, the same whole-optional deref read shape the struct and tuple
+		// sides use. The Load's own Type must be exactly the target optional
+		// type (defense for hand-built IR).
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+		}
+		place, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
+		}
+		if place.Kind != tir.DereferencePlace {
+			return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-optional read through a pointer)", context, place.Kind)
+		}
+		if node.Type != optionalType {
+			return "", fmt.Errorf("%s is a Load of type %s, not an optional-typed value of type %s", context, describeType(snapshot, node.Type), optionalTypeName(optionalType))
+		}
+		value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+		if err != nil {
+			return "", err
+		}
+		return value, nil
+	}
 	if node.Kind == tir.SomeOptional || node.Kind == tir.NoneOptional || node.Kind == tir.OptionalInject {
 		// A fresh optional value built inline: `some x;`, `none`, or an
 		// implicit injection `(1, 2);` / a call site's `g(5)` (OptionalInject).
@@ -2877,6 +2939,15 @@ func buildBoolExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 		child, ok := unit.Node(node.Children[0])
 		if !ok {
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid child node %d", node.Children[0])
+		}
+		if child.Kind == tir.SourceAlias && len(child.Children) == 1 {
+			// A grouped-expression alias around the unwrap's base — `(*p)!` —
+			// is transparent: unwrap the alias and process the base exactly as
+			// if the parens were absent.
+			child, ok = unit.Node(child.Children[0])
+			if !ok {
+				return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap referencing invalid alias child node %d", child.Children[0])
+			}
 		}
 		if child.Kind == tir.Load && len(child.Children) == 1 {
 			if _, ok := unit.Node(child.Children[0]); !ok {

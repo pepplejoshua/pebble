@@ -399,6 +399,22 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			st.hasArrayStore = true
 			return fmt.Sprintf("memcpy(%s, %s, sizeof(%s))", lvalue, storeValue, lvalue), nil
 		}
+		if isOptional(snapshot, elementType) {
+			// A whole-optional-typed place write through a pointer deref or a
+			// field — `*p = v;` — the pointer-receiver reset shape for an
+			// optional-typed pointee: the target lvalue is the optional's own
+			// pebble_optional_<typeID>_t, and the new value is an optional
+			// value built by the same buildOptionalValue machinery an
+			// optional-typed local's reassignment uses (see the plain-local
+			// optional Store case), so `lvalue = <value>;` is the direct,
+			// uncoerced C store — a plain C struct assignment, the same
+			// by-value copy convention optional call arguments already use.
+			storeValue, err := buildOptionalValue(st, unit, snapshot, fileSet, statement.Children[1], scope, elementType, context, width)
+			if err != nil {
+				return "", err
+			}
+			return store(storeValue), nil
+		}
 		return "", fmt.Errorf("%s reassigns an element of type %s, want a fixed-width integer, char, bool, pointer, enum, str, or slice", context, describeType(snapshot, elementType))
 	}
 	targetInfo, declared := scope[place.Symbol]

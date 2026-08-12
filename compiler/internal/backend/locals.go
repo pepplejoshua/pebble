@@ -123,6 +123,48 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.Load {
+		// A by-value whole-tuple read used as the local's initializer, in two
+		// shapes mirroring the struct-typed local's Load case (buildStructLocal
+		// Declaration):
+		//
+		//   - one tuple element of an array or slice local — `let e =
+		//     entries[j];` — lowered by the checker to a Load of a
+		//     CheckedIndexPlace whose single child is the StoragePlace naming
+		//     the array/slice local;
+		//   - a whole tuple read through a pointer deref — `let q = *ptr;` —
+		//     lowered to a Load of a DereferencePlace whose single child is the
+		//     pointer expression.
+		//
+		// The emitted C is a whole-tuple copy declaration,
+		// `pebble_tuple_<typeID>_t pebble_local_<symbol> = <lvalue>;`, where
+		// the lvalue is the place's own C expression built by buildPlaceLValue
+		// (the bounds-checked element projection for a CheckedIndexPlace, or
+		// the null-checked dereference
+		// `*(pebble_tuple_<typeID>_t)(pebble_rt_checked_deref_ptr(...))` for a
+		// DereferencePlace) — the tuple's own typedef makes the by-value copy
+		// trivially valid C. The lvalue's resolved element type must be
+		// exactly the local's declared type (defense for hand-built IR).
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, tupleTypeName(initValue.Type), len(initValue.Children))
+		}
+		place, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a Load referencing invalid place node %d", context, tupleTypeName(initValue.Type), initValue.Children[0])
+		}
+		if place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value tuple-element read) or a DereferencePlace (a by-value whole-tuple read through a pointer)", context, tupleTypeName(initValue.Type), place.Kind)
+		}
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s tuple-element read: %v", context, err)
+		}
+		if elementType != initValue.Type {
+			return "", fmt.Errorf("%s declares a tuple-typed local of type %s initialized from a read of element type %s", context, tupleTypeName(initValue.Type), describeType(snapshot, elementType))
+		}
+		scope[statement.Symbol] = localInfo{tuple: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, tupleTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
+	}
 	if initValue.Kind == tir.TupleCoerce {
 		if len(initValue.Children) < 2 {
 			return "", fmt.Errorf("%s declares a tuple-typed local from a TupleCoerce with %d child(ren), want at least two", context, len(initValue.Children))
@@ -170,8 +212,8 @@ func buildTupleLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 // loop) so the repeat value is evaluated exactly once, not once per slot
 // (10.27).
 func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
-	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat && initValue.Kind != tir.SymbolValue {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal), an ArrayRepeat (a [v; N] repeat initializer), or a reference to an array-typed local in scope of that type", context, describeType(snapshot, initValue.Type), initValue.Kind)
+	if initValue.Kind != tir.ArrayValue && initValue.Kind != tir.ArrayRepeat && initValue.Kind != tir.SymbolValue && initValue.Kind != tir.Load {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a %s, want an ArrayValue (an array literal), an ArrayRepeat (a [v; N] repeat initializer), a reference to an array-typed local in scope of that type, or a by-value whole-array read through a pointer (a Load of a DereferencePlace)", context, describeType(snapshot, initValue.Type), initValue.Kind)
 	}
 	key, ok := snapshot.Key(initValue.Type)
 	if !ok {
@@ -244,6 +286,60 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		return strings.Join([]string{
 			fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, elementCType, statement.Symbol, length),
 			fmt.Sprintf("%smemcpy(pebble_local_%d, &pebble_local_%d, sizeof(pebble_local_%d));", indent, statement.Symbol, initValue.Symbol, statement.Symbol),
+			fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
+		}, "\n"), nil
+	}
+	if initValue.Kind == tir.Load {
+		// A whole array read through a pointer deref used directly as the
+		// local's initializer — `let q [3]i32 = *p;`, the read-side twin of
+		// the `*p = v;` write and the pointer-receiver reset shape
+		// `self.data = other;`. The initializer is a Load whose place is a
+		// DereferencePlace whose single child is the pointer expression. Like
+		// the SymbolValue copy-initializer case above, C cannot initialize a
+		// raw array variable from another array value in its declarator, so
+		// the copy is three statements — a bare declaration, then a
+		// byte-for-byte memcpy of the null-checked dereference pointer's
+		// storage into the new local's (the dereference yields the array
+		// object itself, whose address is the checked pointer cast to the
+		// pointer-to-array C type), then the (void) cast every local ends
+		// with.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, describeType(snapshot, initValue.Type), len(initValue.Children))
+		}
+		place, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load referencing invalid place node %d", context, describeType(snapshot, initValue.Type), initValue.Children[0])
+		}
+		if place.Kind != tir.DereferencePlace {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer)", context, describeType(snapshot, initValue.Type), place.Kind)
+		}
+		if place.Type != initValue.Type {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a read of a dereference place of type %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, place.Type))
+		}
+		if len(place.Children) != 1 {
+			return "", fmt.Errorf("%s array deref read has %d child(ren), want exactly one (the pointer expression)", context, len(place.Children))
+		}
+		ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], scope, width, width)
+		if err != nil {
+			return "", fmt.Errorf("%s array deref pointer expression: %v", context, err)
+		}
+		ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
+		if ptrCType == "" {
+			return "", fmt.Errorf("%s array deref has unsupported pointee type %s", context, describeType(snapshot, place.Type))
+		}
+		checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
+		// The dereference yields the wrapped pebble_array_<id>_t struct (see
+		// pointerTypeNameForUnit's array case); the memcpy source is the
+		// address of that struct's raw `.data` array member.
+		srcPtr := fmt.Sprintf("&(*(%s)(%s)).data", ptrCType, checkedPtr)
+		elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
+		if err != nil {
+			return "", fmt.Errorf("%s: %v", context, err)
+		}
+		st.hasArrayStore = true
+		return strings.Join([]string{
+			fmt.Sprintf("%s%s pebble_local_%d[%d];", indent, elementCType, statement.Symbol, length),
+			fmt.Sprintf("%smemcpy(pebble_local_%d, %s, sizeof(pebble_local_%d));", indent, statement.Symbol, srcPtr, statement.Symbol),
 			fmt.Sprintf("%s(void)pebble_local_%d;", indent, statement.Symbol),
 		}, "\n"), nil
 	}
@@ -551,6 +647,37 @@ func buildOptionalLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 	payloadType, ok := key.Child()
 	if !ok {
 		return "", fmt.Errorf("%s declares an optional-typed local of type %s, which has no payload type", context, optionalTypeName(initValue.Type))
+	}
+	if initValue.Kind == tir.Load {
+		// A by-value whole-optional read used as the local's initializer —
+		// `let q ?i32 = *p;` where p is a `*?i32`, the read-side twin of the
+		// optional-typed `*p = v;` write. The initializer is a Load whose
+		// place is a DereferencePlace, emitted as the null-checked whole-
+		// optional deref value buildDereferencePlaceRead produces
+		// (`*(pebble_optional_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`)
+		// — the optional's own typedef makes the by-value copy trivially valid
+		// C, the same whole-optional read shape the struct and tuple sides'
+		// deref reads use. The dereference place's resolved type must be
+		// exactly the local's declared type (defense for hand-built IR).
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, optionalTypeName(initValue.Type), len(initValue.Children))
+		}
+		place, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a Load referencing invalid place node %d", context, optionalTypeName(initValue.Type), initValue.Children[0])
+		}
+		if place.Kind != tir.DereferencePlace {
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-optional read through a pointer)", context, optionalTypeName(initValue.Type), place.Kind)
+		}
+		if place.Type != initValue.Type {
+			return "", fmt.Errorf("%s declares an optional-typed local of type %s initialized from a read of a dereference place of type %s", context, optionalTypeName(initValue.Type), describeType(snapshot, place.Type))
+		}
+		value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, scope, width, initValue.Span, false)
+		if err != nil {
+			return "", fmt.Errorf("%s optional deref read: %v", context, err)
+		}
+		scope[statement.Symbol] = localInfo{optional: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, optionalTypeName(initValue.Type), statement.Symbol, value, indent, statement.Symbol), nil
 	}
 	switch initValue.Kind {
 	case tir.SomeOptional, tir.OptionalInject:
@@ -880,6 +1007,24 @@ func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		place, ok := unit.Node(initValue.Children[0])
 		if !ok {
 			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a Load referencing invalid place node %d", context, enumTypeName(initValue.Type), initValue.Children[0])
+		}
+		if place.Kind == tir.DereferencePlace {
+			// A whole enum read through a pointer deref used directly as the
+			// local's initializer — `let q = *ptr;`, the read-side twin of the
+			// enum-typed `*p = v;` reset write. The emitted C is
+			// `pebble_enum_<typeID>_t pebble_local_<symbol> = <deref value>;`
+			// where the deref value is the null-checked whole-enum deref
+			// buildDereferencePlaceRead produces
+			// (`*(pebble_enum_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`).
+			if place.Type != initValue.Type {
+				return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a read of a dereference place of type %s", context, enumTypeName(initValue.Type), describeType(snapshot, place.Type))
+			}
+			value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, scope, width, initValue.Span, false)
+			if err != nil {
+				return "", fmt.Errorf("%s enum deref read: %v", context, err)
+			}
+			scope[statement.Symbol] = localInfo{enumType: initValue.Type}
+			return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, value, indent, statement.Symbol), nil
 		}
 		if place.Kind != tir.CheckedIndexPlace {
 			return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value enum-element read)", context, enumTypeName(initValue.Type), place.Kind)
@@ -1266,16 +1411,26 @@ func buildPointerLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 	case tir.AddressOf:
 		// An address-of expression: `let p *i32 = &y;`. The AddressOf node
 		// has one child (the place being addressed). The emitted C is
-		// `<ctype> pebble_local_<sym> = &<place_lvalue>;`.
+		// `<ctype> pebble_local_<sym> = &<place_lvalue>;`. An array-typed
+		// place is a raw C array in this backend (int32_t a[3]), whose
+		// address-of `&a` is `int32_t (*)[3]`, NOT the wrapped
+		// pebble_array_<id>_t * the pointer local is declared with — so the
+		// address is cast at the declaration site, the same
+		// `(pebble_array_<id>_t *)(&a)` cast buildExpr's AddressOf case
+		// emits for the value positions.
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s address-of initializer has %d children, want exactly one", context, len(initValue.Children))
 		}
-		placeLValue, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+		placeLValue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {
 			return "", fmt.Errorf("%s address-of place: %v", context, err)
 		}
+		addressExpr := "&" + placeLValue
+		if isArray(snapshot, placeType) {
+			addressExpr = fmt.Sprintf("(%s)(%s)", arrayTypeName(placeType)+" *", addressExpr)
+		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
-		return fmt.Sprintf("%s%s pebble_local_%d = &%s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, placeLValue, indent, statement.Symbol), nil
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, addressExpr, indent, statement.Symbol), nil
 	case tir.SymbolValue:
 		// A reference to another pointer-typed local: `let q *i32 = p;`.
 		// The emitted C is a plain assignment.
