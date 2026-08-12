@@ -5559,6 +5559,140 @@ func TestEmitCharSliceFromArrayCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { var arr [3]char = ['a', 'b', 'c']; var s []char = arr[:]; if s[1] == 'b' { return 1; } else { return 0; } }", false, 1, false)
 }
 
+func TestEmitSliceF64ElementConstructionAndReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f64-element slice, the float twin of the int/bool/u8 element tests:
+	// a []f64 slice constructed from a [3]f64 array via arr[:], with the index
+	// reads used in a float comparison — the slice typedef's .data now points
+	// at the plain C double (see sliceElementCType), the construction and the
+	// index read flow through the float grammar (buildFloatExpr at the
+	// element's own f64 kind, entryWidth threading from slice 86a). 1.5 + 2.5
+	// is exactly 4.0, so the equality drives exit 42; any of the three paths
+	// (typedef, construction, read) failing breaks the run.
+	emitAndRun(t, "fn main() int { var arr [3]f64 = [1.5, 2.5, 3.5]; var s []f64 = arr[:]; if s[0] + s[1] == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitSliceF32ElementConstructionAndReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The f32 cousin: the slice typedef's .data is the plain C float
+	// (floatCType(F32) = "float"), and construction + read run through the
+	// same buildFloatExpr-at-own-kind path at the f32 kind. 1.5 + 2.5 is
+	// exactly 4.0 in f32 too, so the comparison drives exit 42.
+	emitAndRun(t, "fn main() int { var arr [3]f32 = [1.5, 2.5, 3.5]; var s []f32 = arr[:]; if s[0] + s[1] == 4.0 { return 42; } return 1; }", false, 42, false)
+}
+
+func TestEmitSliceFloatElementWriteCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A slice index WRITE of a float element (`s[0] = 3.5;`): the Store's
+	// place is a CheckedIndexPlace over the slice, whose resolved element type
+	// is f64/f32, and stores.go's element dispatch (the isFloat case slice 86b
+	// added for struct fields) builds the new value with buildFloatExpr at the
+	// element's own float kind, so
+	// `.data[pebble_rt_checked_index_i32(...)] = 3.5;` is the direct C store.
+	// The reassigned value must win the subsequent comparison (3.5 + 2.5 =
+	// 6.0) — proving the write, not just the read, works.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "fn main() int { var arr [3]f64 = [1.5, 2.5, 3.5]; var s []f64 = arr[:]; s[0] = 3.5; if s[0] + s[1] == 6.0 { return 42; } return 1; }"},
+		{"f32", "fn main() int { var arr [3]f32 = [1.5, 2.5, 3.5]; var s []f32 = arr[:]; s[0] = 3.5; if s[0] + s[1] == 6.0 { return 42; } return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 42, false)
+		})
+	}
+}
+
+func TestEmitSliceFloatElementParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A float-element slice parameter, the float twin of
+	// TestEmitSliceParameterCompilesAndRuns: the helper signature's
+	// validateSliceElementType now admits f64/f32 elements (via the float case
+	// in the shared isSupportedSliceElementType gate), the parameter is seeded
+	// like a slice local, and the index read inside the helper resolves
+	// through the float grammar. The exit code proves the whole
+	// signature-gate + parameter-seed + read path.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "fn first(s []f64) int { if s[0] == 1.5 { return 42; } return 1; } fn main() int { var a [3]f64 = [1.5, 2.5, 3.5]; var s []f64 = a[:]; return first(s); }"},
+		{"f32", "fn first(s []f32) int { if s[0] == 1.5 { return 42; } return 1; } fn main() int { var a [3]f32 = [1.5, 2.5, 3.5]; var s []f32 = a[:]; return first(s); }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 42, false)
+		})
+	}
+}
+
+func TestEmitSliceFloatElementFromRawStdCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The SliceFromRaw shape (`slice &arr[0], n`) with a float element — how
+	// std/hmap.peb's rehash/with_capacity construct slices over pointers.
+	// SliceFromRaw is checker-restricted to the standard library package (a
+	// C0619 "slice is restricted to the standard library package" rejection
+	// for user modules), so this fixture builds in the std package like the
+	// existing TestEmitSliceFromRawCompilesAndRuns and the struct/enum twins.
+	// The slice's data field points at a contiguous [3]f64/[3]f32 array (via
+	// &arr[0], whose *f64/*f32 pointee pointerTypeNameForUnit now declares at
+	// the plain C double/float pointer) and indexes over it, so the exit code
+	// proves the whole SliceFromRaw construction plus a float-element index
+	// read work.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"f64", "fn main() int { var arr [3]f64 = [1.5, 2.5, 3.5]; let values []f64 = slice &arr[0], 3; if values[1] == 2.5 { return 42; } return 1; }"},
+		{"f32", "fn main() int { var arr [3]f32 = [1.5, 2.5, 3.5]; let values []f32 = slice &arr[0], 3; if values[1] == 2.5 { return 42; } return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			unit, snapshot, entryID, sources := buildStdFixture(t, tc.src, "main")
+			var buf bytes.Buffer
+			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+				t.Fatalf("Emit failed: %v", err)
+			}
+			compileAndRun(t, buf.Bytes(), 42, false)
+		})
+	}
+}
+
+func TestEmitSliceFloatElementEmittedCShape(t *testing.T) {
+	t.Parallel()
+	// The emitted C for an f64-element slice fixture (construction + read +
+	// write): the slice typedef declares .data at the plain C double (no
+	// per-TypeID float typedef), the local's declaration is the
+	// checked-slice-start temp plus the {data, len} compound literal, the
+	// index read is plain C double addition/comparison off the bounds-checked
+	// subscript, and the index write is a direct C store to that subscript.
+	// Symbols 27 (arr), 28 (s), and slice type 24 come from the real fixture
+	// dump.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var arr [3]f64 = [1.5, 2.5, 3.5]; var s []f64 = arr[:]; s[0] = 3.5; if s[0] + s[1] == 6.0 { return 42; } return 1; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"typedef struct {\n    double *data;\n    size_t len;\n} pebble_slice_24_t;",
+		"double pebble_local_27[3] = { 1.5, 2.5, 3.5 };",
+		"pebble_slice_24_t pebble_local_28 = (pebble_slice_24_t){ .data = pebble_local_27 + pebble_slice_start_28, .len = (size_t)(3 - pebble_slice_start_28) };",
+		"pebble_local_28.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_28.len,",
+		"== 6.0)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "float *data;") {
+		t.Errorf("emitted C declared a C float slice for an f64 entry:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 42, false)
+}
+
 func TestEmitI64SliceNonEntryWidthCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Unlike TestEmitSliceI64CompilesAndRuns (where i64 IS the entry width,

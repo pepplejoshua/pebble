@@ -12,7 +12,9 @@ import (
 // isSupportedSliceElementType reports whether a slice element type is one this
 // backend can emit: a fixed-width integer builtin (resolved to its own width by
 // resolvedBuiltin/cType — the entry's width, uint, u8, u16, u32, u64, i8, i16,
-// i32, or i64), char (the fixed int32_t), bool, or — matching the aggregate
+// i32, or i64), char (the fixed int32_t), bool, f32/f64 (each the plain C
+// float/double, the element support slice 86a already gave arrays and this
+// slice gives slices), or — matching the aggregate
 // element types arrayElementCType/sliceElementCType already accept — a tuple,
 // optional, struct, or plain enum element (a plain enum is a simple
 // integer-backed C enum typedef, emitted as the slice's `pebble_enum_<id>_t
@@ -33,7 +35,7 @@ func isSupportedSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, id ty
 	if elementWidth, integerElement := resolvedBuiltin(snapshot, id); integerElement && cType(elementWidth) != "" {
 		return true
 	}
-	if isChar(snapshot, id) || isBool(snapshot, id) {
+	if isChar(snapshot, id) || isBool(snapshot, id) || isFloat(snapshot, id) {
 		return true
 	}
 	if isDefinitelyEnumType(unit, snapshot, id) {
@@ -534,7 +536,8 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 
 // sliceElementCType resolves the C pointer target type for a slice's data
 // field: the element's C type. Any fixed-width integer builtin (resolved to its
-// own width by resolvedBuiltin/cType), char (the fixed int32_t), bool, tuple
+// own width by resolvedBuiltin/cType), char (the fixed int32_t), bool, float
+// (f32/f64, each the plain C float/double), tuple
 // (the tuple's own typedef), optional (the optional's own typedef), struct
 // (the struct's own typedef), and plain enum (the enum's own typedef
 // pebble_enum_<typeID>_t — the same C type an enum-typed local/field is
@@ -552,6 +555,13 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	}
 	if isChar(snapshot, id) {
 		return "int32_t", nil
+	}
+	// A float element (f32/f64) resolves its .data pointer target to the plain
+	// C float/double — no typedef needed, exactly like a bool/char element and
+	// mirroring arrayElementCType's float case (floatCType used for helper
+	// parameters/results, task #22).
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
 	}
 	if isTuple(snapshot, id) {
 		return tupleTypeName(id), nil
@@ -1040,6 +1050,14 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 				// always declared as int32_t in emitted C (see the
 				// char-typed-parameter case in buildHelperFunctions).
 				return "int32_t *"
+			case types.F32, types.F64:
+				// A float pointee (*f32, *f64) is declared with its plain C
+				// float/double pointer type, the pointer form of the same
+				// floatCType a float value/local uses — so `let p *f64 = &x;`
+				// on a float-typed local (or `slice &arr[0], N` over a
+				// [N]f64 array, the float-element SliceFromRaw shape) declares
+				// the pointer at the element's own float width.
+				return floatCType(bk) + " *"
 			}
 			if ctype := cType(bk); ctype != "" {
 				return ctype + " *"
