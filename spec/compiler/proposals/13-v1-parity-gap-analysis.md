@@ -44,9 +44,38 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 17 ("Method call", tracker 14) closed in
-`0f97ff8`. The owner/receiver-shape half was already fully covered by
-Phase 3 #11's `buildStructValueNode` fix (`e09f9f8`). The
+*(empty — Phase 3 item 18 ("Array literal and repeat", tracker 14)
+closed in `b3020aa`. Five real gaps found by a ~40-shape empirical
+sweep: (1) ArrayRepeat (`[v; N]`) as a call argument was entirely
+unsupported at Emit; (2) ArrayRepeat as a struct-field construction
+value was entirely unsupported at Emit (also closes tracker 14's
+now-stale "ArrayRepeat as a struct-field construction value" row);
+(3) both of those plus the existing local-declaration path were
+missing an aggregate-typed repeated-value branch (`[Point.{...}; N]`,
+`[(1,2); N]`); (4)-(5) the checker's finishArray/finishArrayRepeat
+forced a hard Equal between an array/repeat element and its KNOWN
+destination type, wrongly rejecting a same-width-but-distinct-kind
+value (an `int` call result into `[N]i32`/`[N]i64`) that a plain
+scalar local initializer already accepts through the ordinary
+compatibility record — this also closes tracker 14's "Array literal
+element conversion" row, which turned out to be the same root cause,
+not a missing conversion class. A follow-up dispatch caught and fixed
+one thing the main fix missed: the call-argument ArrayRepeat case's
+float-element branch. Confirmed out of scope (general, reproduce
+identically for non-array code): bare scalar-width widening without a
+literal, bool-as-int cast; confirmed still-open and separately tracked:
+nested array-of-array (tracker 14 line 125), array-typed tuple element
+(line 127). Picking up the next Phase 3 item: "Tagged-union variant
+literal" (tracker 14, "Partial by payload C shape; generic narrowing
+is resolved" — check current state for staleness first, per the
+established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Method call (Phase 3 #17), tracker 14.**
+
+Closed in `0f97ff8`. The owner/receiver-shape half was already fully
+covered by Phase 3 #11's `buildStructValueNode` fix (`e09f9f8`). The
 argument-shape half had a distinct, real gap: a method call's argument
 destinations are fresh unconstrained solver slots (an instance
 method's symbol resolves only in the solver's `callMember`, unlike a
@@ -62,10 +91,9 @@ struct/tuple/array/slice/enum/optional/fn-value arguments (literal,
 call-result, and field-read sources), plus generic methods, found no
 other method-specific gap; a scalar-width-widening gap (u8->u32, bare
 int->i64 without a literal) reproduces identically for plain calls —
-general, already out of scope. Picking up the next Phase 3 item next:
-"Array literal and repeat" (tracker 14, "Partial by element and
-destination shape" — check current state for staleness first, per the
-established pattern).)*
+general, already out of scope.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
