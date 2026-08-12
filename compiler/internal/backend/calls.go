@@ -1663,102 +1663,14 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			}
 			return "", fmt.Errorf("%s is a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only passing an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 		}
-		if node.Kind == tir.RecordConstruct {
-			if node.Type != wantType {
-				return "", fmt.Errorf("%s is a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
-			}
-			return buildStructValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
+		expr, structType, err := buildStructValueNode(st, unit, snapshot, fileSet, argID, locals, width)
+		if err != nil {
+			return "", fmt.Errorf("%s: %v", context, err)
 		}
-		if node.Kind == tir.ContextValue {
-			// The bare `context` expression used directly as a call argument —
-			// `use_context(context)`. ContextValue is the distinct TIR shape the
-			// `context` keyword lowers to (not a SymbolValue naming a local, and
-			// not a RecordConstruct, the shape the Allocator-in-value-position
-			// fix covers). Context is always the already-threaded hidden `ctx`
-			// parameter of the enclosing Pebble-convention function, never a
-			// value to construct from scratch, so the argument is the
-			// dereferenced parameter `(*ctx)` — a PebbleContext value matching
-			// the Context parameter's own C type (the same `(*ctx)` lowering
-			// buildExpr/buildRuntimeValueNode use for a ContextValue).
-			if node.Type != wantType {
-				return "", fmt.Errorf("%s is a ContextValue of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
-			}
-			return "(*ctx)", nil
+		if structType != wantType {
+			return "", fmt.Errorf("%s is a %s of type %s, not a struct-typed value of type %s", context, node.Kind, describeType(snapshot, structType), structTypeName(wantType))
 		}
-		if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
-			// A struct-returning call used directly as the argument — `read(mk())`
-			// — the argument-position sibling of the struct-typed local
-			// declaration initializer buildStructLocalDeclaration accepts (10.26),
-			// and also the shape a struct-typed METHOD RECEIVER routes through: a
-			// method call's receiver is argument 0, so `mk().get()` (a method
-			// called directly on a call result) builds its receiver as this
-			// argument. The call's result type is the node's own Type, which is
-			// the callee's resolved result type, and it must be exactly the
-			// parameter's struct type (defense for hand-built IR — the checker
-			// coerces every argument to its parameter's type), so the emitted C
-			// never passes a value of the wrong aggregate type. The call is built
-			// by buildDirectCallNested, the same pure-expression-position call
-			// machinery buildExpr's DirectCall case uses: an argument position has
-			// nowhere for a leading pre-statement, so an inline slice-construction
-			// argument inside the nested call folds into a GNU statement-expression
-			// exactly as a nested scalar call's argument does. The callee's C
-			// result type IS the struct's own typedef, so the call expression is
-			// directly a struct value, trivially valid C as the argument.
-			if node.Type != wantType {
-				return "", fmt.Errorf("%s is a %s of type %s, not a struct-typed value of type %s", context, node.Kind, describeType(snapshot, node.Type), structTypeName(wantType))
-			}
-			return buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
-		}
-		if node.Kind == tir.Load {
-			// A by-value read of a whole struct used directly as the call
-			// argument, in two shapes:
-			//
-			//   - a whole struct read through a pointer deref — `use_point(*ptr);`,
-			//     the read-side twin of the `*self = other;` write — lowered by
-			//     the checker to a Load of a DereferencePlace whose single child
-			//     is the pointer expression. The emitted C is the null-checked
-			//     dereference value buildDereferencePlaceRead produces,
-			//     `*(pebble_struct_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`;
-			//   - a struct-typed field read — `use_point(h.p);` — lowered to a
-			//     Load of a FieldPlace, emitted as the field-projection lvalue
-			//     buildPlaceLValue produces (e.g.
-			//     `pebble_local_<sym>.pebble_field_<member>`), the same
-			//     whole-struct field read buildStructLocalDeclaration accepts for
-			//     a local's initializer.
-			//
-			// Either way the struct's own typedef makes passing the whole
-			// dereferenced/field-read struct by value trivially valid C, the same
-			// by-value copy the symbol-reference and compound-literal argument
-			// shapes make. The Load's Type must be exactly the parameter's struct
-			// type (defense for hand-built IR — the checker coerces every argument
-			// to its parameter's type), and the place's resolved element type is
-			// double-checked against it for the FieldPlace shape.
-			if node.Type != wantType {
-				return "", fmt.Errorf("%s is a Load of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(wantType))
-			}
-			if len(node.Children) != 1 {
-				return "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
-			}
-			place, ok := unit.Node(node.Children[0])
-			if !ok {
-				return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
-			}
-			if place.Kind == tir.DereferencePlace {
-				return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
-			}
-			if place.Kind == tir.FieldPlace {
-				lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
-				if err != nil {
-					return "", fmt.Errorf("%s struct-field read: %v", context, err)
-				}
-				if elementType != wantType {
-					return "", fmt.Errorf("%s reads a place of element type %s, not a struct-typed value of type %s", context, describeType(snapshot, elementType), structTypeName(wantType))
-				}
-				return lvalue, nil
-			}
-			return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-struct read through a pointer) or a FieldPlace (a by-value read of a struct-typed field)", context, place.Kind)
-		}
-		return "", fmt.Errorf("%s is a %s, want a reference to a struct-typed local in scope or a struct literal (a RecordConstruct); only passing an already-declared struct-typed local or constructing a fresh struct literal inline is supported", context, node.Kind)
+		return expr, nil
 	}
 	info, declared := locals[node.Symbol]
 	if !declared {
@@ -2061,6 +1973,24 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 			return "", "", fmt.Errorf("%s returns a ContextValue of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
 		}
 		return "", "(*ctx)", nil
+	}
+	if node.Kind == tir.FieldValue {
+		// A struct-typed field read off a NON-ADDRESSABLE struct VALUE used
+		// directly as the return value — `return mk().inner;` — the
+		// value-source counterpart of the Load(FieldPlace)/Load(CheckedIndexPlace)
+		// whole-struct return shapes below (a struct LOCAL's field lowers to
+		// Load(FieldPlace); a field of a call result, force-unwrap, or element
+		// read lowers to this FieldValue). buildStructValueNode builds the
+		// whole-struct projection, whose type must be exactly the function's
+		// struct result type.
+		expr, structType, err := buildStructValueNode(st, unit, snapshot, fileSet, id, locals, width)
+		if err != nil {
+			return "", "", fmt.Errorf("%s: %v", context, err)
+		}
+		if structType != result.structType {
+			return "", "", fmt.Errorf("%s returns a field read of type %s, not a struct-typed value of type %s", context, describeType(snapshot, structType), structTypeName(result.structType))
+		}
+		return "", expr, nil
 	}
 	if node.Kind == tir.Load {
 		// A whole struct read used directly as the return value, in the same

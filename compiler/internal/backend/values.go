@@ -341,6 +341,13 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", err
 		}
 		return "(" + cType(types.Uint) + ")(" + childExpr + ")", nil
+	case tir.FieldValue:
+		// A uint-typed struct field read off a NON-ADDRESSABLE struct VALUE
+		// (`let u uint = mk().n;` where n is a uint field) — the uint
+		// grammar's counterpart of buildExpr's integer FieldValue case. The
+		// projection carries the field's own uint64_t C type (the same C type
+		// a uint value uses), so it is directly a uint value.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 	case tir.Load:
 		// A by-value read of a uint-typed place — a uint struct field read
 		// (`var old_cap = self.cap;`, the std/hmap.peb rehash shape, lowered
@@ -836,6 +843,13 @@ func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d whose payload %s is not the enum type %s the unwrap yields", child.Symbol, describeType(snapshot, payload), enumTypeName(node.Type))
 		}
 		return fmt.Sprintf("(%s)pebble_rt_checked_unwrap_i32(pebble_local_%d.has_value, pebble_local_%d.value, %s)", enumTypeName(node.Type), child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+	case tir.FieldValue:
+		// An enum-typed struct field read off a NON-ADDRESSABLE struct VALUE
+		// (`mk().e == Color.green`, `let c Color = mk().e`) — the enum
+		// grammar's counterpart of buildExpr's integer FieldValue case. The
+		// projection carries the field's own pebble_enum_<typeID>_t C type,
+		// directly comparable to an enum variant's constant.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 	case tir.Load:
 		// A read of an enum-typed place used directly as an enum value, in two
 		// shapes:
@@ -1529,6 +1543,12 @@ func buildStrOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fi
 			return "", fmt.Errorf("entry function body expression contains a call to symbol %d whose result type is %s, want str", node.Symbol, describeType(snapshot, node.Type))
 		}
 		return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
+	case tir.FieldValue:
+		// A str-typed struct field read off a NON-ADDRESSABLE struct VALUE
+		// (`let s str = mk().s;`, `mk().s == "hi"`) — the str grammar's
+		// counterpart of buildExpr's integer FieldValue case. The projection
+		// carries the field's own PebbleStr C type, directly a str value.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 	case tir.Load:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
@@ -1913,6 +1933,14 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 				}
 			}
 			return "", fmt.Errorf("entry function body expression contains an unsupported pointer Load")
+		case tir.FieldValue:
+			// A pointer-typed struct field read off a non-addressable struct
+			// VALUE (`*(mk().p)`, `let q *i32 = mk().p;`) — the pointer-typed
+			// counterpart of the integer FieldValue case below, reached through
+			// this pointer branch (a pointer-typed node's Type bypasses the
+			// width gate). The projection carries the field's own pointer C
+			// type.
+			return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 		case tir.DirectCall:
 			return buildDirectCall(st, unit, snapshot, fileSet, node, locals, width)
 		case tir.CheckedOptionalUnwrap:
@@ -2576,6 +2604,20 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			return buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, entryWidth)
 		}
 		return "", fmt.Errorf("entry function body expression contains a SourceAlias, which is not supported")
+	case tir.FieldValue:
+		// A field read off a NON-ADDRESSABLE struct VALUE — `mk().x`, `sp!.x`
+		// (a force-unwrap of a struct-payload optional), `mk().inner.x`,
+		// `o.inner.mk().x`, or `mk()[i].x` (a slice-typed call result's
+		// element) — the value-source counterpart of Load(FieldPlace), which
+		// only covers a struct LOCAL's field. The checker lowers these to a
+		// FieldValue whose single child is the struct-typed VALUE (the call,
+		// unwrap, field read, or element read), and the read is the projection
+		// `(<struct value>).pebble_field_<member>` built by
+		// buildStructFieldValueRead — the same designated-field name a
+		// place-based field read emits, just projected off a value expression.
+		// The FieldValue's own Type (the field type) is already gated to the
+		// entry's width above, exactly as a Load's is.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 	case tir.DirectCall, tir.MethodCall:
 		// A call to another Pebble-convention function whose result is the
 		// entry's own width. The width gate above already
@@ -3115,6 +3157,14 @@ func buildBoolExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
 		}
 		return fmt.Sprintf("pebble_rt_checked_unwrap_bool(pebble_local_%d.has_value, pebble_local_%d.value, %s)", child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+	case tir.FieldValue:
+		// A bool-typed struct field read off a NON-ADDRESSABLE struct VALUE —
+		// `if mk().flag`, `o.inner.flag`, `sp!.flag` — the bool grammar's
+		// counterpart of buildExpr's integer FieldValue case (the value-source
+		// twin of Load(FieldPlace), which only covers a struct local's field).
+		// buildStructFieldValueRead's wantBool selects the bool validation and
+		// emits the `(<struct value>).pebble_field_<member>` projection.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, true, false)
 	case tir.Load:
 		// A tuple-typed local's bool element read or a struct-typed local's
 		// bool field read (see buildExpr's Load case for the shape
@@ -3365,6 +3415,14 @@ func buildFloatExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", fmt.Errorf("entry function body expression contains a CheckedOptionalUnwrap of symbol %d, which is not an optional-typed local", child.Symbol)
 		}
 		return fmt.Sprintf("pebble_rt_checked_unwrap_%s(pebble_local_%d.has_value, pebble_local_%d.value, %s)", unwrapSuffix, child.Symbol, child.Symbol, buildSourceLoc(fileSet, node.Span)), nil
+	case tir.FieldValue:
+		// A float-typed struct field read off a NON-ADDRESSABLE struct VALUE
+		// (`let g f32 = mk().f;`, `mk().f > 1.0`) — the float grammar's
+		// counterpart of buildExpr's integer FieldValue case. The field's own
+		// C type is the float/double of the node's own Type (already gated to
+		// this float kind above), so the emitted projection is directly a
+		// float value, no cast.
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, false)
 	case tir.Load:
 		// A by-value read of a float-typed place — a float tuple element read
 		// (`t.0`, lowered to Load(TuplePlace)), a float element of an array

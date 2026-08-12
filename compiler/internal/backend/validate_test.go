@@ -402,26 +402,25 @@ func TestEmitTupleNestedMultipleLevelsCompilesAndRuns(t *testing.T) {
 
 func TestEmitRejectsParenWrappedAggregateArgument(t *testing.T) {
 	t.Parallel()
-	// The one shape in the inline-construction space that is still genuinely
-	// rejected (10.25): an aggregate constructed inline but wrapped in an extra
-	// set of parens — f(((1, 2))) or f((Point.{ x = 1, y = 2 })) — arrives at
-	// the call site as a SourceAlias wrapping the TupleValue/RecordConstruct
-	// (confirmed against a real fixture dump). This backend does not unwrap a
-	// SourceAlias-wrapped argument for ANY argument type — the scalar analog
-	// f((1)) is likewise rejected as "a SourceAlias of type int, want i32" —
-	// so the aggregate forms stay a clean rejection naming what was found,
-	// never a guessed lowering. (10.24's two rejection tests, which rejected
-	// ALL inline construction as a call argument, became stale when inline
-	// construction was added — the fixtures f((1, 2)) and
-	// f(Point.{ x = 1, y = 2 }) are now the positive cases
-	// TestEmitInlineTupleArgumentCompilesAndRuns /
-	// TestEmitInlineStructArgumentCompilesAndRuns — and this test is their
-	// replacement.)
+	// A paren-wrapped TUPLE constructed inline as a call argument — f(((1,
+	// 2))) — arrives at the call site as a SourceAlias wrapping the
+	// TupleValue (confirmed against a real fixture dump). buildAggregateArgument's
+	// tuple branch does not unwrap a SourceAlias-wrapped argument, so this
+	// stays a clean rejection naming what was found, never a guessed
+	// lowering. (10.24's two rejection tests, which rejected ALL inline
+	// construction as a call argument, became stale when inline construction
+	// was added — the fixtures f((1, 2)) and f(Point.{ x = 1, y = 2 }) are
+	// now the positive cases TestEmitInlineTupleArgumentCompilesAndRuns /
+	// TestEmitInlineStructArgumentCompilesAndRuns.)
+	//
+	// The paren-wrapped STRUCT analog — f((Point.{ x = 1, y = 2 })) — used to
+	// be rejected the same way, but Phase 3 #11's buildStructValueNode (the
+	// shared struct-value builder every struct-typed call argument now routes
+	// through) transparently unwraps a SourceAlias for every shape it
+	// handles, so the struct case is now genuinely supported: see
+	// TestEmitStructParenWrappedArgumentCompilesAndRuns.
 	unit, snapshot, entryID, _ := buildFixture(t, "fn f(t (i32, i32)) i32 { return t.1; } fn main() i32 { return f(((1, 2))); }", "main", false)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a tuple-typed local in scope or a tuple literal")
-
-	unit, snapshot, entryID, _ = buildFixture(t, "type Point = struct { x i32; y i32; };\nfn f(p Point) i32 { return p.x; } fn main() i32 { return f((Point.{ x = 1, y = 2 })); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want a reference to a struct-typed local in scope or a struct literal")
 }
 
 func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
@@ -504,16 +503,16 @@ func TestEmitRejectsStructFieldAssignment(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { var point Point = Point.{ x = 1, y = 2 }; point.x = 5; return point.x; }", false, 5, false)
 }
 
-func TestEmitRejectsStructFieldReadOffLiteral(t *testing.T) {
+func TestEmitStructFieldReadOffLiteralCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Reading a field directly off a struct literal (Point.{ x = 1, y = 2 }.x)
-	// is reachable from real source but lowers to a FieldValue whose base is
-	// the RecordConstruct itself, not a StoragePlace naming a struct local — a
-	// value-category shape out of scope this slice (only Load(FieldPlace) of a
-	// struct local is supported). The integer expression builder rejects the
-	// FieldValue cleanly rather than guessing.
-	unit, snapshot, entryID, _ := buildFixture(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { return Point.{ x = 1, y = 2 }.x; }", "main", false)
-	assertEmitRejects(t, unit, snapshot, entryID)
+	// lowers to a FieldValue whose base is the RecordConstruct itself, not a
+	// StoragePlace naming a struct local. This used to be a clean rejection
+	// (only Load(FieldPlace) of a struct local was supported), but Phase 3
+	// #11's buildStructValueNode — the shared struct-value builder every
+	// field read now routes through — has a RecordConstruct case, so this
+	// shape is now genuinely supported.
+	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn main() i32 { return Point.{ x = 1, y = 2 }.x; }", false, 1, false)
 }
 
 func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {

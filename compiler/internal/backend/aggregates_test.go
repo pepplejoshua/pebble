@@ -2584,14 +2584,18 @@ func TestEmitStructPointerDerefCallArgumentWritesC(t *testing.T) {
 	// argument lowers to the null-checked dereference value passed directly in
 	// the call `pebble_fn_<id>(ctx, *(pebble_struct_<typeID>_t)
 	// (pebble_rt_checked_deref_ptr(pebble_local_<ptr>, <loc>)))` — a plain
-	// by-value struct argument.
+	// by-value struct argument. Since Phase 3 #11 routed this argument shape
+	// through buildStructValueNode's Load case (buildPlaceLValue), the
+	// dereference is defensively parenthesized (`(*(...)(...))`, see
+	// buildPlaceLValue's DereferencePlace case from Phase 3 #3) — functionally
+	// a no-op here, so the extra parens are optional in this regex.
 	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn use_point(p Point) int { return p.x; }\nfn main() int { var p = Point.{ x = 5, y = 6 }; let ptr = &p; return use_point(*ptr); }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	derefRE := regexp.MustCompile(`return pebble_fn_\d+\(ctx, \*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
+	derefRE := regexp.MustCompile(`return pebble_fn_\d+\(ctx, \(?\*\(pebble_struct_\d+_t \*\)\(pebble_rt_checked_deref_ptr\(pebble_local_\d+,`)
 	if !derefRE.MatchString(out) {
 		t.Errorf("emitted C contains no whole-struct deref call argument %q:\n%s", derefRE, out)
 	}

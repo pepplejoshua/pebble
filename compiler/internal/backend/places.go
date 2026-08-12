@@ -658,6 +658,202 @@ func buildStructFieldRead(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum, or str", place.Member, describeType(snapshot, fieldType))
 }
 
+// buildStructValueNode builds the C expression text for a struct-typed VALUE
+// (an rvalue, never a place) directly from a TIR node — the shape family a
+// non-addressable struct value takes: a struct-typed call result (`mk()`), a
+// struct-typed field read off another value (`h.p`, `mk().inner`), a
+// force-unwrap of a struct-payload optional (`sp!`), a whole-struct read of an
+// array/slice element or tuple ordinal, a struct literal, a struct-typed local
+// reference, a dereference read, or a bare CheckedIndex over a slice-typed
+// call result (`mk()[i]`). It is the value-position counterpart of
+// buildPlaceLValue, and the one builder both a struct-typed METHOD RECEIVER /
+// call argument (buildAggregateArgument) and a struct-typed FIELD READ's
+// receiver (buildStructFieldValueRead) route through. Every shape is a pure
+// expression: a receiver that would need a temp-declaration statement (a
+// slice-typed call result being indexed — the one case buildSliceIndexValue
+// materializes) is folded into a GNU statement-expression primary expression,
+// exactly as buildStructValueExpr and buildSliceArgument already fold inline
+// constructions. The returned TypeID is the struct-typed value's own type (the
+// call result type for a call, the resolved element type for a Load/CheckedIndex,
+// the unwrap payload for a force-unwrap), for the caller's type validation.
+func buildStructValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, types.TypeID, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", 0, fmt.Errorf("struct value references invalid node %d", id)
+	}
+	switch node.Kind {
+	case tir.SymbolValue:
+		info, declared := locals[node.Symbol]
+		if !declared || info.structType == 0 {
+			return "", 0, fmt.Errorf("struct value node references symbol %d, which is not a struct-typed local declared earlier in the body", node.Symbol)
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), info.structType, nil
+	case tir.RecordConstruct:
+		expr, err := buildStructValueExpr(st, unit, snapshot, fileSet, node, locals, "struct value", width)
+		if err != nil {
+			return "", 0, err
+		}
+		return expr, node.Type, nil
+	case tir.ContextValue:
+		return "(*ctx)", node.Type, nil
+	case tir.DirectCall, tir.MethodCall:
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		return callExpr, node.Type, nil
+	case tir.Load:
+		if len(node.Children) != 1 {
+			return "", 0, fmt.Errorf("struct value Load has %d child(ren), want exactly one place", len(node.Children))
+		}
+		lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		return lvalue, elementType, nil
+	case tir.CheckedOptionalUnwrap:
+		unwrapExpr, err := buildOptionalAggregateUnwrapExpr(st, unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", 0, err
+		}
+		return unwrapExpr, node.Type, nil
+	case tir.FieldValue:
+		fieldExpr, err := buildStructFieldValueRead(st, unit, snapshot, fileSet, id, locals, width, false, true)
+		if err != nil {
+			return "", 0, err
+		}
+		return fieldExpr, node.Type, nil
+	case tir.CheckedIndex:
+		pre, read, err := buildSliceIndexValue(st, unit, snapshot, fileSet, id, node, locals, width, false)
+		if err != nil {
+			return "", 0, err
+		}
+		if pre != "" {
+			return sliceConstructionStatementExpr(pre, read), node.Type, nil
+		}
+		return read, node.Type, nil
+	case tir.SourceAlias:
+		if len(node.Children) != 1 {
+			return "", 0, fmt.Errorf("struct value SourceAlias has %d child(ren), want exactly one", len(node.Children))
+		}
+		return buildStructValueNode(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+	default:
+		return "", 0, fmt.Errorf("struct value node is a %s, want a struct-typed local reference, a struct literal (a RecordConstruct), a call to a struct-returning helper, a whole-struct read of a place or aggregate element, a force-unwrap of a struct-payload optional, or a field read off any of those", node.Kind)
+	}
+}
+
+// buildStructFieldValueRead builds the C text for reading one field of a
+// struct VALUE (a tir.FieldValue: the shape a non-addressable struct receiver
+// — a call result, a field read, a force-unwrap, an aggregate element read —
+// produces, as opposed to Load(FieldPlace), the shape a struct LOCAL's field
+// read uses; the checker lowers `mk().x`, `sp!.x`, `mk().inner.x`,
+// `a[i].x`-off-a-call, etc. to a FieldValue whose single child is the struct
+// value). The receiver is built by buildStructValueNode and the field is
+// projected with a `.` member access (a struct value is never a pointer), and
+// the field's own type is resolved and validated: wantBool selects the bool
+// grammar (mirroring buildStructFieldRead's wantBool), wantStruct accepts a
+// struct/aggregate-typed field (the whole-struct read shapes — a struct field
+// as a method receiver, whole-struct local initializer, or another field's
+// receiver), and otherwise any fixed-width integer, uint, float, pointer, enum,
+// or str field is accepted — the caller's own grammar has already gated the
+// FieldValue's own Type (the field type) to what it accepts. Structural
+// members (`.len`/`.data`/`.has_value` off a slice/str/optional call result)
+// and a narrowed tagged-union variant payload member are handled first, exactly
+// as buildStructFieldRead handles them for a place.
+func buildStructFieldValueRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, wantBool, wantStruct bool) (string, error) {
+	node, ok := unit.Node(id)
+	if !ok {
+		return "", fmt.Errorf("struct field value read references invalid node %d", id)
+	}
+	if node.Kind != tir.FieldValue || len(node.Children) != 1 {
+		return "", fmt.Errorf("struct field value read wants a FieldValue with exactly one receiver child")
+	}
+	receiverExpr, structType, err := buildStructValueNode(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+	if err != nil {
+		return "", err
+	}
+	if node.Member == tir.StructuralFieldLen || node.Member == tir.StructuralFieldData || node.Member == tir.StructuralFieldHasValue {
+		name := "len"
+		if node.Member == tir.StructuralFieldData {
+			name = "data"
+		} else if node.Member == tir.StructuralFieldHasValue {
+			name = "has_value"
+		}
+		key, found := snapshot.Key(structType)
+		if !found {
+			return "", fmt.Errorf("structural field receiver type %d is not in the type snapshot", structType)
+		}
+		if key.Kind() == types.Slice && (name == "len" || name == "data") {
+			return fmt.Sprintf("(%s).%s", receiverExpr, name), nil
+		}
+		if name == "len" {
+			if builtin, ok := key.Builtin(); ok && builtin == types.Str {
+				return fmt.Sprintf("(%s).%s", receiverExpr, "len"), nil
+			}
+		}
+		if name == "has_value" && key.Kind() == types.Optional {
+			return fmt.Sprintf("(%s).%s", receiverExpr, name), nil
+		}
+		return "", fmt.Errorf("unsupported structural field %s", name)
+	}
+	if unionVariantPayloadMember(unit, snapshot, structType, node.Member) {
+		return fmt.Sprintf("(%s).payload.pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	fieldType, ok := declaredFieldType(unit, snapshot, structType, node.Member)
+	if runtimeType(unit, snapshot, structType) != 0 {
+		fieldType = node.Type
+		ok = true
+	}
+	if !ok {
+		return "", fmt.Errorf("field %d is not declared", node.Member)
+	}
+	if runtimeType(unit, snapshot, structType) != 0 {
+		field, found := runtimeFieldName(unit, structType, node.Member)
+		if !found {
+			return "", fmt.Errorf("runtime field %d is not declared", node.Member)
+		}
+		return fmt.Sprintf("(%s).%s", receiverExpr, field), nil
+	}
+	if runtimeType(unit, snapshot, fieldType) != 0 {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if wantBool {
+		if !isBool(snapshot, fieldType) {
+			return "", fmt.Errorf("field %d has type %s, want bool", node.Member, describeType(snapshot, fieldType))
+		}
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if wantStruct {
+		// A whole struct/aggregate-typed field read (a struct field as a
+		// method receiver, whole-struct local initializer, return value, or
+		// another field's receiver). A nominal type is a struct unless its
+		// declared members are enum variants; isDefinitelyEnumType (no
+		// no-evidence fallback) excludes both a plain enum AND a tagged union
+		// from the struct branch — the tagged union is accepted via its own
+		// predicate below.
+		if isTuple(snapshot, fieldType) || isTaggedUnionType(unit, snapshot, fieldType) || (isStruct(snapshot, fieldType) && !isDefinitelyEnumType(unit, snapshot, fieldType)) {
+			return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+		}
+		return "", fmt.Errorf("field %d has type %s, want a struct-typed field", node.Member, describeType(snapshot, fieldType))
+	}
+	if fieldWidth, integerField := resolvedBuiltin(snapshot, fieldType); integerField && cType(fieldWidth) != "" {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if isFloat(snapshot, fieldType) {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if isPointer(snapshot, fieldType) {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if isEnumType(unit, snapshot, fieldType) {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if isStr(snapshot, fieldType) {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum, or str", node.Member, describeType(snapshot, fieldType))
+}
+
 // buildDereferencePlaceRead builds the C text for reading through a
 // DereferencePlace: `*pebble_rt_checked_deref_ptr(<ptr_expr>, <loc>)`. The
 // pointer expression is built by buildExpr, the null check is performed by the

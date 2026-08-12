@@ -1107,6 +1107,27 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 		scope[statement.Symbol] = localInfo{structType: initValue.Type}
 		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.FieldValue {
+		// A struct-typed field read off a NON-ADDRESSABLE struct VALUE used as
+		// the whole initializer — `let i Inner = mk().inner;` — the
+		// value-source counterpart of the Load(CheckedIndexPlace)/
+		// Load(DereferencePlace) whole-struct initializer shapes above (a
+		// struct LOCAL's field lowers to Load(FieldPlace), which
+		// buildPlaceLValue covers; a field of a call result, force-unwrap, or
+		// element read lowers to this FieldValue). The projection
+		// buildStructFieldValueRead produces carries the field's own
+		// pebble_struct_<typeID>_t C type, so it initializes the struct local
+		// directly.
+		if len(initValue.Children) != 1 {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s from a FieldValue with %d child(ren), want exactly one (the struct value)", context, structTypeName(initValue.Type), len(initValue.Children))
+		}
+		expr, err := buildStructFieldValueRead(st, unit, snapshot, fileSet, statement.Children[0], scope, width, false, true)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, expr, indent, statement.Symbol), nil
+	}
 	if initValue.Kind == tir.SymbolValue {
 		// A reference to an in-scope struct-typed local of exactly the local's
 		// type used as the direct initializer — `let second Point = first;`, a
@@ -1485,6 +1506,21 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		}
 		scope[statement.Symbol] = localInfo{isStr: true}
 		return fmt.Sprintf("%sPebbleStr pebble_local_%d = pebble_local_%d;\n%s(void)pebble_local_%d;", indent, statement.Symbol, initValue.Symbol, indent, statement.Symbol), nil
+	}
+	if initValue.Kind == tir.FieldValue {
+		// A str-typed struct field read off a NON-ADDRESSABLE struct VALUE
+		// used as the whole initializer — `let s str = mk().s;` — the
+		// value-source counterpart of the Load(FieldPlace) str-field read
+		// below (a struct LOCAL's field), which a call-result, force-unwrap,
+		// or element-read receiver lowers to instead. The projection
+		// buildStructFieldValueRead produces carries the field's own PebbleStr
+		// C type, so it initializes the PebbleStr local directly.
+		expr, err := buildStructFieldValueRead(st, unit, snapshot, fileSet, statement.Children[0], scope, width, false, false)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, expr, indent, statement.Symbol), nil
 	}
 	if initValue.Kind == tir.Load {
 		// A str value read back out of a compound local through a Load — a
