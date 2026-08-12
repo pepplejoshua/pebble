@@ -44,12 +44,43 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #87 (char-to-uint explicit cast) closed in `60a3346`.
-Second fix in the consolidated gap-filling pass over the proof-batch
-findings: #88 (narrow pointer-to-int, needs a design call), #89
-(negative-MIN literal), #90 (void anonymous function C0607), #92
-(struct call-result/field-read as argument/receiver), and #93 (bare
-string-literal arrow-body T0501) remain queued.)*
+*(empty — item #90 (void anonymous function false C0607) closed in
+`9430881`. Third fix in the consolidated gap-filling pass over the
+proof-batch findings: #88 (narrow pointer-to-int, needs a design
+call), #89 (negative-MIN literal), #92 (struct call-result/field-read
+as argument/receiver), and #93 (bare string-literal arrow-body T0501)
+remain queued.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: `fn () void {}` (anonymous void function, body falls through
+without an explicit `return`) wrongly rejected with C0607.**
+
+The identical shape as a NAMED function (`fn helper() void {}`)
+worked fine, and V1 accepts it too. Root cause:
+`infer/declaration.go`'s `prepareSignatures()` skipped every
+anonymous-function (`syntax.FunctionTerm`) symbol entirely, so no
+`Signature` was ever recorded for one; `check/control_flow_
+validation.go`'s `isVoidResult` then failed its `Signature` lookup and
+defaulted the anonymous callable to non-void, wrongly firing the
+fall-through check.
+
+**Resolution (`9430881`, 2026-08-11).** Removed the `FunctionTerm`
+skip in `prepareSignatures()`; `signatureNodes()` now seeds `seenName`
+based on node kind (a `FunctionTerm` has no declaration-name child —
+the first direct `Name` child IS the result type — mirroring how the
+resolver already models this shape). This surfaced a second, latent
+bug: anonymous function parameters never had `Containing` set (unlike
+named parameters), so once signatures started being prepared for them,
+the IR builder failed with no parameters found — fixed in
+`resolveAnonymousFunction` (`symbol/visit.go`) to set `Containing`
+exactly like the named-parameter path already does. New tests prove
+both the false-rejection is gone and the real fall-through check (a
+genuinely incomplete non-void anonymous function) still correctly
+rejects with C0607 — no regression. Causation-checked: reverting both
+files together reproduces the original C0607 exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
