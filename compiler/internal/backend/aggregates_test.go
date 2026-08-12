@@ -5669,6 +5669,28 @@ func TestEmitIntegerToFloatSliceReadInFloatReturningHelperCompilesAndRuns(t *tes
 	emitAndRun(t, "fn f() f64 { var arr [3]i32 = [1, 2, 3]; var s []i32 = arr[:]; return (s[1] as f64) + 0.5; } fn main() i32 { if f() == 2.5 { return 42; } return 1; }", false, 42, false)
 }
 
+func TestEmitSliceWrappedArrayParameterCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The bug this test guards: slicing an ARRAY PARAMETER inside a helper
+	// emitted the bare parameter symbol as the slice's .data pointer — but an
+	// array parameter is passed WRAPPED in a pebble_array_N_t struct (its real
+	// C array lives at <symbol>.data), unlike a plain local array whose bare
+	// symbol decays to a pointer directly, so cc rejected the construction
+	// with "invalid operands to binary expression ('pebble_array_23_t' and
+	// 'int32_t')". The helper's wrapped parameter is the slice base; reading
+	// all three elements back (1 + 2 + 3) proves the .data projection reaches
+	// the real C array.
+	emitAndRun(t, "fn sum(arr [3]i32) i32 { let s []i32 = arr[:]; return s[0] + s[1] + s[2]; } fn main() i32 { return sum([1, 2, 3]); }", false, 6, false)
+}
+
+func TestEmitSliceLocalArrayStillWorks(t *testing.T) {
+	t.Parallel()
+	// No-regression companion for the wrapped-array-parameter fix: slicing a
+	// plain LOCAL array (the already-working case, whose bare symbol decays to
+	// a pointer) must keep compiling and running unchanged.
+	emitAndRun(t, "fn main() i32 { var arr [3]i32 = [1, 2, 3]; let s []i32 = arr[:]; return s[0] + s[1] + s[2]; }", false, 6, false)
+}
+
 func TestEmitSliceFloatElementWriteCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A slice index WRITE of a float element (`s[0] = 3.5;`): the Store's

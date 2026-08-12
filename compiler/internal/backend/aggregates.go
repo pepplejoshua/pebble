@@ -612,6 +612,9 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		lengthLiteral, _ = arrayLengthLiteral(length, width)
 		defaultEnd = fmt.Sprintf("%d", length)
 		dataExpr = fmt.Sprintf("pebble_local_%d", baseNode.Symbol)
+		if baseInfo.arrayWrapped {
+			dataExpr += ".data"
+		}
 	} else {
 		// A Load of a slice-typed place: the base slice value's own C lvalue
 		// (built by buildPlaceLValue, the same projection a slice-typed struct
