@@ -44,20 +44,19 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 13 ("Enum variant literal as a direct call
-argument", tracker 14) closed in `0266bb2`. buildCallArgument's
-plain-enum branch now delegates an EnumVariantValue/payload-less
-VariantConstruct argument to buildEnumValue's existing variant-literal
-grammar. A broader sweep during investigation found the identical
-rejection also hits a call result, a struct field read, and an
-integer-to-enum cast used directly as a plain-enum argument —
-deliberately NOT fixed here (scope was the literal shape only), logged
-as a new tracker 14 follow-up row. This closes the 5-item batch
-requested this session. Next Phase 3 item to pick up: the newly-logged
-"Enum call argument from a call result, struct field, or
-integer-to-enum cast" row, or resume the original tracker-order sweep
-at "`none` and `some value`" (tracker 14, "Partial by payload
-shape") — supervisor's call when work resumes.)*
+*(empty — Phase 3 item 14 ("`none` and `some value`", tracker 14)
+closed in `ffb365b`. Found a real correctness bug, not just an
+unproven shape: `none`/`some` for an otherwise-unreferenced enum/union
+payload crashed cc with "unknown type name pebble_enum_N_t", because
+collectEnumTypes/collectUnionTypes discover types by walking
+VALUE-producing shapes and a NoneOptional carries no value at all.
+Both collectors gained an optional-payload scan mirroring
+collectStructTypes' existing one. `some` wrapping a non-trivial
+expression (call result, field read, tuple ordinal) confirmed already
+working across every position. Picking up the next Phase 3 item:
+"Identifier, module member, partial member" (tracker 14, "Partial by
+declaration category" — check current state for staleness first, per
+the established pattern) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
