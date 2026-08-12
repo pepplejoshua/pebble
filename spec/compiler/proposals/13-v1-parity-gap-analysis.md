@@ -44,15 +44,32 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #91 (enum/union pointer-pointee typedef collection)
-closed in `6c0af95`. All 8 proof batches from tracker 14's
-"Implemented, proof needed" phase are now complete, and this was the
-first fix in the consolidated gap-filling pass over everything those
-batches turned up: #87 (char-to-uint), #88 (narrow pointer-to-int,
-needs a design call), #89 (negative-MIN literal), #90 (void anonymous
-function C0607), #92 (struct call-result/field-read as
-argument/receiver), and #93 (bare string-literal arrow-body T0501)
-remain queued.)*
+*(empty — item #87 (char-to-uint explicit cast) closed in `60a3346`.
+Second fix in the consolidated gap-filling pass over the proof-batch
+findings: #88 (narrow pointer-to-int, needs a design call), #89
+(negative-MIN literal), #90 (void anonymous function C0607), #92
+(struct call-result/field-read as argument/receiver), and #93 (bare
+string-literal arrow-body T0501) remain queued.)*
+
+<!-- Previous item, resolved 2026-08-11:
+
+**Item: char-to-uint explicit cast (`c as uint`) failed at Emit.**
+
+`buildUintExpr` (`internal/backend/values.go`) is a separate builder
+function from `buildExpr`; it had no `CharToInteger` case, so every
+other integer destination width worked (`buildExpr`'s own
+`CharToInteger` case) but `uint` failed with "unsupported uint
+expression node CharToInteger".
+
+**Resolution (`60a3346`, 2026-08-11).** Added a `CharToInteger` case
+to `buildUintExpr` mirroring its existing `IntegerCast`/
+`PointerToInteger` cases: build the char child via `buildCharOperand`,
+cast to `cType(types.Uint)`. Four new tests prove the local-reference,
+literal-source, high-codepoint (non-truncating), and emitted-C shapes;
+the pre-existing all-widths matrix test's uint row (previously
+deliberately absent) is now filled in.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
