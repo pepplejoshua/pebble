@@ -44,30 +44,30 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 4 ("Fixed array `[N]T`", tracker 14 line 124)
-substantially closed in `249995d`: fixed the array-literal
-struct-field-construction width gap ([3]i32 etc. were rejected while
-[3]int worked, because the field destination is solve-time-only and
-the literal's elements never got grounded to the declared field
-width) — the checker now resolves a record field's declared type at
-walk time and grounds the array-literal's elements to it, narrowly
-scoped to array-typed fields only after an earlier broader version
-regressed the backend typedef golden tests. Confirmed already-working:
-local literals/repeats, parameters, returns, arrays of structs/tuples,
-at every integer width. Three genuine remaining array gaps split into
-their own tracker 14 rows rather than closing this row outright:
-nested arrays `[N][M]T` (rejected everywhere), `ArrayRepeat` as a
-struct-field value (`Box.{ data = [7; 3] }` still fails), and
-array-typed optional/tuple elements (checker unification failure, not
-isolated). Two unrelated, pre-existing, general gaps also logged but
-not fixed: anonymous `.{ ... }` construction (no base type name), and
-a scalar cast inside a generic function body. This orc session stalled
-three times specifically on the long-running full backend suite (its
-own tool timeout, not a code problem) — resumed twice, then escalated
-to luna once, then the supervisor took over final verification
-directly once the fix and tests were already complete and correct.
-Picking up the next Phase 3 item: "Slice `[]T`" (tracker 14 line 125,
-"Partial by source position and element type") next.)*
+*(empty — Phase 3 item 5 ("Slice `[]T`" plus the two overlapping rows
+"Slice expression" and "Fixed array to slice", tracker 14) closed in
+`36c47ff`. Fixed 5 checker-accepted/backend-rejected source-position
+gaps found by an empirical position x element-type sweep: a
+slice-returning call as a call argument, a slice-typed struct field
+read or a slice-returning call forwarded as a return, re-slicing an
+already-declared slice LOCAL (not just a slice-typed field), and —
+closing the `836fbea`-documented gap — a struct literal with an inline
+slice-construction field used in a pure expression position (folded
+into a GNU statement-expression over the WHOLE struct literal). Found
+and converted one now-stale rejection test
+(`TestEmitSliceStructFieldInlineConstructionAsCallArgumentRejects`)
+that the dispatched session had not touched. Two genuine remaining
+gaps logged as their own tracker 14 rows, not fixed: a slice-typed
+optional payload (`?[]T`) and a `str`-element slice are both rejected
+at `Emit`. This orc session stalled once after completing and
+self-verifying all 5 fixes (its own tool timeout on the long-running
+full backend suite, not a code problem) — the supervisor took over
+final verification directly. Picking up the next Phase 3 item:
+"Struct" (tracker 14 line 127, "Partial; local copy initialization and
+deep aggregate dependencies still reject" — note this specific wording
+may already be stale, since local copy initialization for struct was
+resolved as task #42 earlier in this effort; verify current state
+before scoping the dispatch) next.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
