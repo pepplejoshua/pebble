@@ -660,7 +660,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	unionInfos, err := collectUnionTypes(unit, snapshot, width, blockID, helpers)
+	unionInfos, err := collectUnionTypes(unit, snapshot, width, blockID, helpers, optionalTypes)
 	if err != nil {
 		return err
 	}
@@ -668,7 +668,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	for _, info := range unionInfos {
 		unions[info.typ] = info
 	}
-	enumInfos, err := collectEnumTypes(unit, snapshot, blockID, helpers, unions)
+	enumInfos, err := collectEnumTypes(unit, snapshot, blockID, helpers, unions, optionalTypes)
 	if err != nil {
 		return err
 	}

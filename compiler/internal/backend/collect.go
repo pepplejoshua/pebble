@@ -1235,7 +1235,7 @@ func findTypeDeclaration(unit *tir.Unit, symbolID symbol.SymbolID) (tir.TypeDecl
 // reachable helper is ever collected), so no Parameters/ResultType scan is
 // needed here, mirroring how those two scans exist only to close struct/tuple
 // param-result gaps.
-func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, unions map[types.TypeID]unionInfo) ([]enumInfo, error) {
+func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, unions map[types.TypeID]unionInfo, optionalTypes []types.TypeID) ([]enumInfo, error) {
 	var collected []types.TypeID
 	if err := collectEnumTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
 		return nil, err
@@ -1263,6 +1263,37 @@ func collectEnumTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir
 					collected = append(collected, pointee)
 				}
 			}
+		}
+	}
+	// An optional type's payload is a source of enum types the body/helper
+	// walks cannot see: `var o ?Color = none;` (or `none` used directly as a
+	// call argument, a return value, or a struct field's construction value —
+	// the NoneOptional node carries only the optional type, never an enum
+	// value) never references the enum as a value anywhere, but the optional's
+	// own C typedef still names the enum's pebble_enum_<typeID>_t as its
+	// .value field type (see optionalPayloadCType), so the enum typedef must
+	// exist for that to compile — mirroring collectStructTypes' optional-payload
+	// scan and the OptionalIntegerToEnum walk rule, for the plain-enum payload
+	// specifically. optionalTypes is the caller's already-collected list of
+	// every optional type reachable in the program (collectOptionalTypes runs
+	// first — see Emit). isDefinitelyEnumType is the positive-evidence test
+	// (never the no-evidence fallback), matching the pointer-pointee scan
+	// above, so an opaque extern payload (e.g. `?FILE`) is never collected as
+	// an enum. The caller's tagged-union filter applies the same way it does
+	// to the variant-shape rules: isDefinitelyEnumType reports true for a
+	// union enum too, and collectUnionTypes' own optional-payload scan
+	// collects it for the union typedef pair, so it is dropped here.
+	for _, optionalType := range optionalTypes {
+		key, ok := snapshot.Key(optionalType)
+		if !ok || key.Kind() != types.Optional {
+			continue
+		}
+		payload, ok := key.Child()
+		if !ok {
+			continue
+		}
+		if isDefinitelyEnumType(unit, snapshot, payload) {
+			collected = append(collected, payload)
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
@@ -1453,7 +1484,7 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 // declared variant order plus its constructed members, so every distinct union
 // type yields exactly one tagged struct typedef (plus its tag enum typedef),
 // emitted before any function definition in the final output.
-func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, entryBlockID tir.NodeID, helpers []helperInfo) ([]unionInfo, error) {
+func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, entryBlockID tir.NodeID, helpers []helperInfo, optionalTypes []types.TypeID) ([]unionInfo, error) {
 	payloads := make(map[types.TypeID]map[symbol.SymbolID]types.TypeID)
 	var collected []types.TypeID
 	if err := collectUnionTypesWalk(unit, snapshot, width, entryBlockID, &collected, payloads); err != nil {
@@ -1481,6 +1512,35 @@ func collectUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 					collected = append(collected, pointee)
 				}
 			}
+		}
+	}
+	// An optional type's payload is a source of union types the body/helper
+	// walks cannot see: `var o ?Choice = none;` (or `none` used directly as a
+	// call argument, a return value, or a struct field's construction value)
+	// never constructs the union anywhere — no payload-carrying VariantConstruct
+	// — but the optional's own C typedef still names the union's typedef pair
+	// as its .value field type (see optionalPayloadCType), so the union's
+	// discriminant enum and tagged struct typedefs must exist for that to
+	// compile — mirroring collectStructTypes' optional-payload scan and
+	// collectEnumTypes' own optional-payload scan, for the tagged-union
+	// payload specifically. optionalTypes is the caller's already-collected
+	// list of every optional type reachable in the program (collectOptionalTypes
+	// runs first — see Emit). isUnionEnumType is the declaration-level,
+	// construction-independent test, matching the pointer-pointee scan above:
+	// an all-void union enum is deliberately not collected here (its variants
+	// are payload-less, so it is a plain enum), and collectEnumTypes' scan
+	// collects it instead.
+	for _, optionalType := range optionalTypes {
+		key, ok := snapshot.Key(optionalType)
+		if !ok || key.Kind() != types.Optional {
+			continue
+		}
+		payload, ok := key.Child()
+		if !ok {
+			continue
+		}
+		if isUnionEnumType(unit, snapshot, payload) {
+			collected = append(collected, payload)
 		}
 	}
 	seen := make(map[types.TypeID]bool, len(collected))
