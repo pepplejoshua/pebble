@@ -44,17 +44,49 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #95 (inline tuple-literal struct field construction
-type mismatch) closed in `98ab9ae`. Per the user's instruction
-(2026-08-11): "tackle the tasks first then go to phase 3" — remaining
-before Phase 3: #100 (slice construction inside a float-returning
-entry) and #101 (slicing a wrapped array parameter inside a helper),
-both confirmed not float-specific, found during task #86 slice 86d.
-The parked `int`-width architectural question remains separate,
-awaiting the user's design decision. Once #100/#101 land, Phase 3
-begins: the 35 "Partial" rows in tracker 14, investigated and
-completed one at a time via orc dispatch, per the user's original
-three-phase instruction.)*
+*(empty — item #100 (slice construction inside a float-returning
+entry) closed in `6f80778`. Only #101 (slicing a wrapped array
+parameter inside a helper) remains before Phase 3, per the user's
+instruction (2026-08-11): "tackle the tasks first then go to phase
+3". The parked `int`-width architectural question remains separate,
+awaiting the user's design decision. Once #101 lands, Phase 3 begins:
+the 35 "Partial" rows in tracker 14, investigated and completed one at
+a time via orc dispatch, per the user's original three-phase
+instruction.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: constructing ANY slice inside a function whose declared
+RESULT type is a float (f32/f64) emitted malformed C — confirmed not
+float-element-specific.**
+
+The bounds-checked slice-start/index helper calls came out with an
+EMPTY suffix and C type, because the entry's float result kind was
+threaded through `Emit`'s whole call chain as the INTEGER width every
+checked helper's suffix/C type is selected from —
+`checkedSuffix`/`cType` are integer-only and return `""` for a float
+builtin.
+
+**Resolution (`6f80778`, 2026-08-12).** `Emit` (`internal/backend/
+emit.go`) now derives a separate `width` variable — the entry's own
+result kind when it already has an integer `cType`, falling back to
+`types.Int` otherwise — and threads THAT through every integer-width
+consumer (helper discovery, union collection, every typedef builder,
+helper prototypes/functions, the block builder), leaving `result`
+itself untouched everywhere the actual float return type is needed.
+Since `helperSignature`'s `bodyWidth` derives from the entry's width,
+this also fixed a float-returning helper NESTED inside a
+float-returning entry. A second, independent bug in the same class was
+found and fixed: `buildFloatExpr`'s `IntegerToFloat` case
+(`internal/backend/values.go`) threaded its own float kind as
+`buildExpr`'s `entryWidth` instead of the real `entryWidth` already in
+scope (a leftover from task #86 slice 86a, `e5add48`). New tests prove
+both fixes across int/float slice elements and both float widths, plus
+the nested-helper propagation case. Causation-checked: reverting
+`emit.go` and `values.go` together reproduces both original malformed-C
+failures exactly.
+
+-->
 
 <!-- Previous item, resolved 2026-08-11:
 
