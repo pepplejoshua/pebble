@@ -44,20 +44,20 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 12 ("Enum and union variant selection", tracker
-14) closed in `1414a3a`. buildUnionValueExpr and buildSwitchStatement's
-union-subject branch widened to accept a tagged-union value from every
-source enum selection already supported (struct field, force-unwrap,
-parens, deref, non-addressable field, nested aggregate), mirroring the
-existing enum-side coverage. Untagged unions and payload/container
-shapes remain correctly out of scope (separate rows). Picking up
-Phase 3 item 13: "Enum variant literal as a direct call argument"
-(tracker 14, logged during Phase 3 #1's module-level-constant
-investigation — `check(Color.green)` rejected: "want a reference to
-an enum-typed local... binding the value into a local first is
-required" — already confirmed general, not constant-specific, via a
-control case; not yet fixed) next, since it's directly related to the
-enum/union value-source work just closed.)*
+*(empty — Phase 3 item 13 ("Enum variant literal as a direct call
+argument", tracker 14) closed in `0266bb2`. buildCallArgument's
+plain-enum branch now delegates an EnumVariantValue/payload-less
+VariantConstruct argument to buildEnumValue's existing variant-literal
+grammar. A broader sweep during investigation found the identical
+rejection also hits a call result, a struct field read, and an
+integer-to-enum cast used directly as a plain-enum argument —
+deliberately NOT fixed here (scope was the literal shape only), logged
+as a new tracker 14 follow-up row. This closes the 5-item batch
+requested this session. Next Phase 3 item to pick up: the newly-logged
+"Enum call argument from a call result, struct field, or
+integer-to-enum cast" row, or resume the original tracker-order sweep
+at "`none` and `some value`" (tracker 14, "Partial by payload
+shape") — supervisor's call when work resumes.)*
 
 <!-- Previous item, resolved 2026-08-12:
 
