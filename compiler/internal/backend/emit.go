@@ -796,7 +796,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
-	unionTypedefs, err := buildUnionTypedefs(unit, snapshot, width, unionInfos)
+	unionTypedefs, err := buildUnionTypedefs(st, unit, snapshot, width, unionInfos)
 	if err != nil {
 		return err
 	}

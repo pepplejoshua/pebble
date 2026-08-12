@@ -1573,14 +1573,14 @@ func collectUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, width types
 		// fixtures at three payload shapes: an i32 literal, a bool literal, and
 		// an i32 expression referencing a local).
 		if len(node.Children) != 1 {
-			return fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload of %s, bool, or str", node.Member, len(node.Children), wantName(width))
+			return fmt.Errorf("union variant symbol %d is constructed with %d payload(s); a tagged-union variant carries exactly one payload", node.Member, len(node.Children))
 		}
 		payloadNode, ok := unit.Node(node.Children[0])
 		if !ok {
 			return fmt.Errorf("union variant symbol %d references invalid payload node %d", node.Member, node.Children[0])
 		}
-		if !isWidth(snapshot, width, payloadNode.Type) && !isBool(snapshot, payloadNode.Type) && !isStr(snapshot, payloadNode.Type) {
-			return fmt.Errorf("union variant symbol %d carries a payload of type %s; only a payload of %s, bool, or str is supported", node.Member, describeType(snapshot, payloadNode.Type), wantName(width))
+		if !unionPayloadCTypeAdmissible(unit, snapshot, payloadNode.Type) {
+			return fmt.Errorf("union variant symbol %d carries a payload of type %s, which is not supported as a tagged-union payload", node.Member, describeType(snapshot, payloadNode.Type))
 		}
 		byMember, seen := payloads[node.Type]
 		if !seen {

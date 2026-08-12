@@ -1408,9 +1408,29 @@ func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		}
 		var payloadExpr string
 		var err error
-		if isBool(snapshot, payloadNode.Type) {
+		payloadWidth, integerPayload := resolvedBuiltin(snapshot, payloadNode.Type)
+		switch {
+		case integerPayload && cType(payloadWidth) != "":
+			// Any fixed-width integer payload (the entry's own resolved width
+			// or any other) is built by buildExpr at the payload's OWN width —
+			// mirroring how buildOptionalValueExpr / structFieldCType resolve
+			// each integer to its own C type, so the emitted expression's type
+			// matches the union member's declared C type (unionMemberCType).
+			payloadExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, payloadWidth, width)
+		case isBool(snapshot, payloadNode.Type):
 			payloadExpr, err = buildBoolExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width)
-		} else if isStr(snapshot, payloadNode.Type) {
+		case isChar(snapshot, payloadNode.Type):
+			// A char-typed payload: built by the char grammar (a char literal,
+			// a reference to a char-typed local, or a call to a char-returning
+			// helper), emitted as int32_t — the same C type the union's payload
+			// member is declared with (see unionMemberCType).
+			payloadExpr, err = buildCharOperand(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		case isFloat(snapshot, payloadNode.Type):
+			// A float-typed payload (f32/f64): built by buildFloatExpr at the
+			// payload's own float kind, emitted as the plain C float/double the
+			// union member declares (see unionMemberCType).
+			payloadExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], scope, resolvedFloatKind(snapshot, payloadNode.Type), width)
+		case isStr(snapshot, payloadNode.Type):
 			// A str-typed payload (`Result[int, str].{ Err = "bad" }`): built
 			// by the str grammar (buildStrOperand — a string literal, a
 			// reference to a str-typed local, or a call to a str-returning
@@ -1418,8 +1438,26 @@ func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			// union's payload member is declared with (see unionMemberCType),
 			// so the designated initializer needs no cast.
 			payloadExpr, err = buildStrOperand(st, unit, snapshot, fileSet, node.Children[0], scope, width)
-		} else {
-			payloadExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], scope, width, width)
+		case isUnionEnumType(unit, snapshot, payloadNode.Type):
+			// A nested tagged-union payload (`Choice.value(Inner.b(7))`, a
+			// union inside a union): built by the union grammar
+			// (buildUnionValueExpr — a reference to a union-typed local, a
+			// variant construction, or a union-typed field read), emitted as
+			// the inner union's own pebble_union_<typeID>_t value, the same C
+			// type the union's payload member is declared with (see
+			// unionMemberCType). This precedes the plain-enum case below
+			// exactly as buildOptionalValueExpr's union branch precedes its
+			// enum branch: a tagged union is enum-shaped too.
+			payloadExpr, err = buildUnionValueExpr(st, unit, snapshot, fileSet, node.Children[0], scope, context, payloadNode.Type, width)
+		case isDefinitelyEnumType(unit, snapshot, payloadNode.Type):
+			// A plain-enum payload (`Choice.value(Color.green)`): built by the
+			// enum grammar (buildEnumValue — a variant literal, a reference to
+			// an enum-typed local, or an enum-returning call), emitted as the
+			// enum's own pebble_enum_<typeID>_t value, the same C type the
+			// union's payload member is declared with (see unionMemberCType).
+			payloadExpr, err = buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		default:
+			return "", fmt.Errorf("%s constructs union variant symbol %d with an unsupported payload type %s", context, node.Member, describeType(snapshot, payloadNode.Type))
 		}
 		if err != nil {
 			return "", err

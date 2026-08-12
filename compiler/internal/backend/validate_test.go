@@ -691,14 +691,19 @@ func TestEmitRejectsOptionalIntegerToEnumCallArgumentPosition(t *testing.T) {
 
 func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
 	t.Parallel()
-	// A tagged-union payload that is not exactly the entry's resolved width,
-	// bool, or str — a tuple, struct, array, optional, or nested enum — is
-	// reachable from real source (the checker accepts such a variant
-	// declaration and construction) but is a clean rejection naming what is
-	// unsupported, never guessed at. The rejection happens in the union-type
-	// collection walk, where each constructed variant's payload type is first
-	// resolved from its construction site.
-	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (int, int); only a payload of i32, bool, or str is supported")
+	// A tagged-union payload that is not one of the backend's currently
+	// wireable payload shapes — a tuple, struct, array, optional, or slice
+	// (aggregate payloads whose typedef would have to be emitted BEFORE the
+	// union typedef that references them, reversing the current union-leads-
+	// aggregate typedef order) — is reachable from real source (the checker
+	// accepts such a variant declaration and construction) but is a clean
+	// rejection naming what is unsupported, never guessed at. The rejection
+	// happens in the union-type collection walk, where each constructed
+	// variant's payload type is first resolved from its construction site.
+	// Scalar payload shapes (every fixed-width integer, bool, char, str,
+	// float, a plain enum, and a nested tagged union) are admitted and
+	// compile-run proven by TestEmitTaggedUnion*Payload tests.
+	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (i32, i32), which is not supported as a tagged-union payload")
 }
 
 func TestEmitRejectsU64CheckedDivision(t *testing.T) {

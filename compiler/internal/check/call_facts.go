@@ -414,7 +414,27 @@ func (w *walker) prepareVariant(p *callPlan, ref symbol.SyntaxRef, ctx walkConte
 	if d, ok := w.program.TypeDeclaration(member.Containing); ok {
 		for _, m := range d.Members {
 			if m.Symbol == p.target.Symbol {
-				p.destinations = []typedValue{w.instantiate(m.Type, w.rigidTerms(d.Parameters, origin), origin)}
+				// The payload destination is anchored exactly as a non-generic
+				// direct call anchors each of its parameters (see
+				// prepareDirect): a member whose type is a known template is
+				// published as a KNOWN destination, so a literal aggregate
+				// payload (`Choice.value([1, 2, 3])`) grounds its elements to
+				// the declared payload type at walk time instead of inferring
+				// its own structural type that later fails classify() as
+				// array/optional vs array/optional — the same C0601 a plain
+				// `take([1, 2, 3])` call would get without the anchor. A
+				// generic member (its type wraps a type parameter) still goes
+				// through instantiate, exactly as prepareDirect's generic
+				// branch instantiates its parameters.
+				payloadOrigin := w.originForRef(ref, "variant payload", p.target.Symbol, ctx.genericOwner)
+				term := w.termForTemplate(m.Type, d.Parameters, payloadOrigin)
+				destination, _ := w.newSlotValue(term, payloadOrigin)
+				if template, found := w.program.Template(m.Type); found && template.Kind == infer.TemplateKnown {
+					destination.Known = template.Known
+					w.knownValues[destination.ID] = template.Known
+					w.rigidValues[destination.ID] = w.isRigidType(template.Known)
+				}
+				p.destinations = []typedValue{destination}
 			}
 		}
 	}

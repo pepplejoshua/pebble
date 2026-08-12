@@ -1571,27 +1571,123 @@ func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 }
 
 // unionMemberCType is the C type one tagged-union payload member of the given
-// payload type is declared with in its union's struct typedef: int32_t /
-// int64_t for a payload of the entry's resolved width, bool for a bool payload,
-// and the runtime ABI's fixed PebbleStr for a str payload. Any other payload
-// type is a clean rejection naming what was found, since this backend emits
-// exactly those three C types as union members.
-func unionMemberCType(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
-	if isWidth(snapshot, width, id) {
-		return cType(width), nil
+// payload type is declared with in its union's struct typedef. The payload's C
+// type is resolved by its own shape, mirroring optionalPayloadCType and
+// structFieldCType exactly: any fixed-width integer builtin resolves to ITS
+// OWN C type (int32_t/int64_t for the entry's resolved width, uint64_t for
+// uint/u64, and the narrow-width int8_t/int16_t/uint8_t/uint16_t/uint32_t for
+// i8/i16/u8/u16/u32 — each at its own width, independent of the ambient
+// entry width), bool for a bool payload, int32_t for a char payload, the
+// runtime ABI's fixed PebbleStr for a str payload, float/double for an f32/f64
+// payload, the payload's own tuple/struct typedef for a tuple or nominal
+// payload (with the enum-typedef for a plain enum, the tagged union's own
+// pebble_union_<typeID>_t for a nested tagged-union payload, and the struct
+// typedef for a nominal struct), the payload's own pebble_array_<typeID>_t /
+// pebble_slice_<typeID>_t typedef for an array or slice payload, and the
+// payload's own pebble_optional_<typeID>_t typedef for an optional payload. A
+// pointer payload is declared with the pointee's own pointer C type, exactly
+// as structFieldCType does. Any other payload type is a clean rejection naming
+// what was found, since this backend emits exactly those C types as union
+// members. The union's struct typedef member is a union member by value, so
+// every resolved type must be a complete C type at the point the union typedef
+// is emitted — the aggregate typedef-ordering machinery (orderAggregateTypes /
+// the union-payload-typedef backfill) guarantees that for aggregate payloads.
+func unionMemberCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if payloadWidth, integerPayload := resolvedBuiltin(snapshot, id); integerPayload && cType(payloadWidth) != "" {
+		return cType(payloadWidth), nil
 	}
 	if isBool(snapshot, id) {
 		return "bool", nil
 	}
+	if isChar(snapshot, id) {
+		return "int32_t", nil
+	}
 	if isStr(snapshot, id) {
 		return "PebbleStr", nil
 	}
-	if builtin, ok := resolvedBuiltin(snapshot, id); ok {
-		if name, ok := builtinName(builtin); ok {
-			return "", fmt.Errorf("payload type %s is not supported, want %s, bool, or str", name, wantName(width))
-		}
+	if isFloat(snapshot, id) {
+		return floatCType(resolvedFloatKind(snapshot, id)), nil
 	}
-	return "", fmt.Errorf("payload type %s is not supported, want %s, bool, or str", describeType(snapshot, id), wantName(width))
+	if isTuple(snapshot, id) {
+		return tupleTypeName(id), nil
+	}
+	if isStruct(snapshot, id) {
+		// A tagged union and a plain enum are both enum-shaped (isEnumType
+		// reports true for each), but each has its own C representation: a
+		// tagged union's real representation is the tag-plus-payload struct its
+		// buildUnionTypedef pair emits (pebble_union_<typeID>_t), a plain enum
+		// is a bare C enum typedef (pebble_enum_<typeID>_t), and an ordinary
+		// struct is its own struct typedef — so a nested tagged-union payload
+		// (`Choice.value(Inner.b(7))`, a union inside a union) is declared with
+		// the inner union's own typedef name, the same C type a tagged-union
+		// local/parameter/result is declared with, and the same distinction
+		// optionalPayloadCType draws for an optional whose payload is a union.
+		if isUnionEnumType(unit, snapshot, id) {
+			return unionTypeName(id), nil
+		}
+		if isDefinitelyEnumType(unit, snapshot, id) {
+			return enumTypeName(id), nil
+		}
+		return structTypeName(id), nil
+	}
+	if isPointer(snapshot, id) {
+		pointee, ok := pointerPointeeType(snapshot, id)
+		if !ok {
+			return "", fmt.Errorf("payload type %s has no pointer pointee", describeType(snapshot, id))
+		}
+		if name := pointerTypeNameForUnit(st, unit, snapshot, pointee); name != "" {
+			return name, nil
+		}
+		return "", fmt.Errorf("payload type %s has a pointee %s whose C type is unsupported", describeType(snapshot, id), describeType(snapshot, pointee))
+	}
+	if isArray(snapshot, id) {
+		return arrayTypeName(id), nil
+	}
+	if isSlice(snapshot, id) {
+		return sliceTypeName(id), nil
+	}
+	if isOptional(snapshot, id) {
+		return optionalTypeName(id), nil
+	}
+	return "", fmt.Errorf("payload type %s is not supported, want a fixed-width integer, bool, char, str, float, tuple, struct, enum, union, pointer, array, slice, or optional payload", describeType(snapshot, id))
+}
+
+// unionPayloadCTypeAdmissible reports whether a tagged-union variant payload
+// type can be emitted as a union payload member at the CURRENT typedef
+// emission order — the set the backend can actually wire end-to-end. Union
+// typedefs lead the aggregate typedef block (see Emit's assembly), because
+// struct fields and optional payloads of union type name the union's typedef;
+// so a union payload whose C representation needs an AGGREGATE typedef
+// (struct, tuple, optional, array — and a slice, whose typedef block also
+// leads) would require that aggregate's typedef to be emitted BEFORE the union
+// block that currently precedes it: a bidirectional ordering only a
+// dependency-aware typedef pass could satisfy. This gate therefore admits
+// exactly the self-contained payload shapes — any fixed-width integer builtin,
+// bool, char, str, float, a plain enum (whose pebble_enum_<typeID>_t typedef
+// the enum block emits before the union block), and a nested tagged union
+// (whose typedef is emitted in the same union block, ordered before its user by
+// collectUnionTypes) — and cleanly rejects every aggregate payload shape it
+// cannot yet emit, matching what unionMemberCType can resolve at build time.
+func unionPayloadCTypeAdmissible(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if payloadWidth, integerPayload := resolvedBuiltin(snapshot, id); integerPayload && cType(payloadWidth) != "" {
+		return true
+	}
+	if isBool(snapshot, id) || isChar(snapshot, id) || isStr(snapshot, id) || isFloat(snapshot, id) {
+		return true
+	}
+	if isStruct(snapshot, id) {
+		// A plain enum payload is admitted (the enum block leads the union
+		// block, so pebble_enum_<typeID>_t is defined before the union typedef
+		// that uses it as a member); a nested tagged-union payload is admitted
+		// (its own typedef is in the same union block, dependency-ordered
+		// before its user); any other nominal — a struct, or an opaque extern
+		// nominal with no emitted typedef — is rejected by the aggregate-gate
+		// below. isUnionEnumType is the declaration-level test (a payload union
+		// with no construction of its own is still a real union typedef);
+		// isDefinitelyEnumType the positive-evidence plain-enum test.
+		return isUnionEnumType(unit, snapshot, id) || isDefinitelyEnumType(unit, snapshot, id)
+	}
+	return false
 }
 
 // functionTypeParamCType resolves one function type's parameter to the C type

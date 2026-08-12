@@ -404,10 +404,10 @@ func buildStructTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 // supplies infos in first-encountered order from the union-type collection
 // pass, so every union type the emitted program references has exactly one
 // pair here, written before any function definition in the final output.
-func buildUnionTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []unionInfo) (string, error) {
+func buildUnionTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []unionInfo) (string, error) {
 	texts := make([]string, 0, len(infos))
 	for _, info := range infos {
-		text, err := buildUnionTypedef(unit, snapshot, width, info)
+		text, err := buildUnionTypedef(st, unit, snapshot, width, info)
 		if err != nil {
 			return "", err
 		}
@@ -449,7 +449,7 @@ func buildUnionTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 // snapshot is a clean rejection, not a guessed layout (defense for hand-built
 // IR; collectUnionTypes has already resolved every collected TypeID through
 // resolveUnionInfo, which requires a tagged-union type).
-func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info unionInfo) (string, error) {
+func buildUnionTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info unionInfo) (string, error) {
 	key, ok := snapshot.Key(info.typ)
 	if !ok {
 		return "", fmt.Errorf("union type %d is not in the type snapshot", info.typ)
@@ -463,7 +463,7 @@ func buildUnionTypedef(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	}
 	members := make([]string, len(info.members))
 	for i, member := range info.members {
-		ctype, err := unionMemberCType(unit, snapshot, width, member.payloadType)
+		ctype, err := unionMemberCType(st, unit, snapshot, width, member.payloadType)
 		if err != nil {
 			return "", fmt.Errorf("union type %s: %v", unionTypeName(info.typ), err)
 		}

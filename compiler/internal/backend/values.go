@@ -1664,6 +1664,18 @@ func buildCharOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 			}
 			return lvalue, nil
 		}
+		if place.Kind == tir.FieldPlace {
+			// A char-typed narrowed union-variant payload read (`c.value`
+			// inside `case .value:` where the variant's payload type is char):
+			// the Load's place is a FieldPlace whose base is the union local
+			// and whose member is the variant, resolved by buildStructFieldRead
+			// to the union typedef's .payload.pebble_field_<member> projection —
+			// the same projection every other narrowed payload read uses. The
+			// projection's C type is the member's declared C type (int32_t,
+			// see unionMemberCType — the char C type everywhere), so the read
+			// is a valid char value with no further coercion.
+			return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+		}
 		if place.Kind != tir.CheckedIndexPlace {
 			return "", fmt.Errorf("entry function body expression contains a char Load whose place is a %s, want a CheckedIndexPlace (a char-element slice read) or a TuplePlace (a char tuple-element read)", place.Kind)
 		}
