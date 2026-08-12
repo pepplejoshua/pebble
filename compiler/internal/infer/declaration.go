@@ -335,7 +335,10 @@ func (p *Program) parametersFor(owner symbol.SymbolID) []symbol.SymbolID {
 func (p *Program) convention(tree *syntax.Tree, node syntax.Node) (types.CallingConvention, bool, bool) {
 	for _, id := range node.Children() {
 		n, ok := tree.Node(id)
-		if !ok || n.Kind() != syntax.Literal || n.Token() != syntax.StringLiteral {
+		if !ok || n.Kind() != syntax.Literal {
+			break
+		}
+		if n.Token() != syntax.StringLiteral {
 			continue
 		}
 		file, _ := p.inputs.Sources.File(n.Span().Source)

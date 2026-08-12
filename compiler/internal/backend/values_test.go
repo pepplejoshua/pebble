@@ -530,6 +530,16 @@ func TestEmitStrDifferentLiteralsCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { if \"hi\" == \"ho\" { return 10; } else { return 20; } }", false, 20, false)
 }
 
+func TestEmitStringLiteralExpressionBodyCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A function whose "=>" body is a BARE STRING LITERAL must prepare a ready
+	// signature (regression guard for the T0501 "unknown calling convention"
+	// false positive in infer/declaration.go), so the call site below compiles,
+	// links, and runs; the returned str is compared against a literal and the
+	// then-arm exits 42.
+	emitAndRun(t, "fn f() str => \"hello\"; fn main() int { let s str = f(); if s == \"hello\" { return 42; } return 1; }", false, 42, false)
+}
+
 func TestEmitStrNotEqualCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// != between two str locals, both directions: different strings are not
