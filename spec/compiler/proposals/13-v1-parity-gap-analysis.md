@@ -44,15 +44,65 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — item #101 (slicing a wrapped array parameter) closed in
-`91a50f4`. This was the last item from the user's instruction
-(2026-08-11): "tackle the tasks first then go to phase 3" — every
-task queued from the proof-batch/gap-filling/float-aggregate work is
-now resolved. Phase 3 starts next: the 35 "Partial" rows in tracker
-14, investigated and completed one at a time via orc dispatch, per
-the user's original three-phase instruction. The parked `int`-width
-architectural question remains separate, awaiting the user's design
-decision — not part of Phase 3.)*
+*(empty — Phase 3 item 1 ("Module-level immutable constant" /
+"Constant declaration" rows in tracker 14) closed in `1e526cf`, test-only
+(no product bug found; see tracker 14 for the two rows and the new
+follow-up item logged from this investigation). Phase 3 is paused here
+per the user's instruction (2026-08-12): "dont start phase 3 yet. let
+me update the claude code client when u finish this task." Do not pick
+another item from the 34 remaining "Partial" rows until the user
+resumes Phase 3. The parked `int`-width architectural question remains
+separate, awaiting the user's design decision — not part of Phase 3.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Module-level immutable constant value shapes (Phase 3 #1).**
+
+Surveyed every checker-supported constant value shape (literal,
+const-referencing-const, transitive ref, unary -/!/~, binary
+arithmetic/bitwise/comparison/logical, enum variant, bool/char/str/float)
+across every position that accepts a constant reference (return, local
+init, argument, comparison, array size, array repeat count, switch case
+label, range-loop bound, struct field value) via a 46-case scratch
+survey, left behind incomplete by orc session `ses_6a7c16f1e2413021f4645df7`
+(returned `status: "completed"` with zero tracked-file diff — only the
+scratch survey itself, never executed/reported). Took over directly:
+fixed the survey harness (`t.Logf`→`t.Errorf` so failures actually fail),
+fixed two test-authoring syntax errors (`for i in 0..N` is not valid —
+real syntax is `loop 0..N : i`; `S { f = X }`/`struct { f int }` needs
+the real designated-literal form `S.{ f = X }`/`struct { f int; }`),
+and diagnosed two apparent failures down to non-bugs: comparing a
+constant to its own literal value (`X == Color.green` where `X` IS
+`Color.green`) inlines to a C self-comparison that trips
+`-Wtautological-compare` — a degenerate test pattern, not realistic
+code, so the enum-variant cases were rewritten to compare against a
+runtime-typed local instead; and passing an enum variant literal
+directly as a call argument (`check(Color.green)`) is rejected by the
+backend ("want a reference to an enum-typed local... binding the value
+into a local first is required") — confirmed via a throwaway control
+case that this happens identically with NO constant involved at all,
+so it's an unrelated, pre-existing general limitation, not a
+constant-handling gap; logged in tracker 14 as a new standalone item,
+not fixed here.
+
+The remaining 5 failures (i8/i16/u8/u32 checked arithmetic, u64
+division, all at const-declaration width) were confirmed via a control
+test (`TestPlainNarrowWidthArithmeticLimitation`) to fail identically
+with plain, non-constant operands at the same widths — the pre-existing,
+already-known general checked-arithmetic-width limitation, not
+constant-specific, out of scope for this row.
+
+No product-code fix was needed — the backend already correctly inlines
+every real constant value shape. Converted the validated 42 cases into
+a permanent test, `TestModuleConstantValueShapes` in
+`internal/backend/constants_test.go`, plus
+`TestPlainNarrowWidthArithmeticLimitation` as the control set; deleted
+the throwaway `zz_scratch_*_test.go` files. Verified: `gofmt -l .`
+clean, `go vet ./...` clean, full backend package suite green (352s),
+full repo suite green (`-count=1 -timeout 600s -parallel 12`, all 11
+packages). Committed and pushed as `1e526cf`.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
