@@ -1521,6 +1521,18 @@ func buildVariadicSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.S
 //     compound-literal expression by buildTupleValueExpr / buildStructValueExpr,
 //     which share their brace-list construction with the local-declaration
 //     builders;
+//   - (tuple branch only) a tuple-returning call used directly as the argument
+//     — f(mk()) — a DirectCall or MethodCall, emitted as the call expression
+//     itself (its C result type IS the tuple's own typedef, so passing the
+//     whole result by value is trivially valid C), built by the same
+//     pure-expression-position call machinery buildDirectCallNested uses for a
+//     nested call in any other value position;
+//   - (tuple branch only) a whole tuple read through a pointer deref or a
+//     tuple-typed field read used directly as the argument — f(*ptr) /
+//     f(h.t) — a Load whose place is a DereferencePlace or FieldPlace, emitted
+//     as the null-checked dereference value buildDereferencePlaceRead produces
+//     or the field-projection lvalue buildPlaceLValue produces, a plain
+//     by-value tuple copy;
 //   - (struct branch only) a whole struct read through a pointer deref used
 //     directly as the argument — f(*ptr) — a Load whose place is a
 //     DereferencePlace, emitted as the null-checked dereference value
@@ -1560,6 +1572,76 @@ func buildAggregateArgument(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 					return "", fmt.Errorf("%s is a TupleValue of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(wantType))
 				}
 				return buildTupleValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
+			}
+			if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
+				// A tuple-returning call used directly as the argument — `f(makeT())`
+				// — the tuple-side mirror of the struct-returning-call argument shape
+				// the struct branch handles, and the argument-position sibling of the
+				// tuple-typed local declaration initializer buildAggregateCallInitializer
+				// accepts (10.26). A tuple-returning call's C result type IS the tuple's
+				// own typedef, so passing the whole result by value directly as the
+				// argument is trivially valid C — no runtime helper, no temp local
+				// needed. The call's result type is the node's own Type, which is the
+				// callee's resolved result type, and it must be exactly the parameter's
+				// tuple type (defense for hand-built IR — the checker coerces every
+				// argument to its parameter's type), so the emitted C never passes a
+				// value of the wrong tuple type. The call is built by buildDirectCallNested,
+				// the same pure-expression-position call machinery buildExpr's DirectCall
+				// case uses, since an argument position has nowhere for a leading
+				// pre-statement.
+				if node.Type != wantType {
+					return "", fmt.Errorf("%s is a %s of type %s, not a tuple-typed value of type %s", context, node.Kind, describeType(snapshot, node.Type), tupleTypeName(wantType))
+				}
+				return buildDirectCallNested(st, unit, snapshot, fileSet, node, locals, width)
+			}
+			if node.Kind == tir.Load {
+				// A by-value read of a whole tuple used directly as the call
+				// argument, in two shapes — the tuple-side mirror of the struct
+				// branch's Load case:
+				//
+				//   - a whole tuple read through a pointer deref — `use_tuple(*ptr);`
+				//     — a Load of a DereferencePlace whose single child is the
+				//     pointer expression. The emitted C is the null-checked
+				//     dereference value buildDereferencePlaceRead produces,
+				//     `*(pebble_tuple_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`;
+				//   - a tuple-typed field read — `use_tuple(h.p);` — lowered to a
+				//     Load of a FieldPlace, emitted as the field-projection lvalue
+				//     buildPlaceLValue produces (e.g.
+				//     `pebble_local_<sym>.pebble_field_<member>`), the same
+				//     whole-tuple field read buildAggregateCallInitializer-style
+				//     tuple locals read through.
+				//
+				// Either way the tuple's own typedef makes passing the whole
+				// dereferenced/field-read tuple by value trivially valid C, the same
+				// by-value copy the symbol-reference and compound-literal argument
+				// shapes make. The Load's Type must be exactly the parameter's tuple
+				// type (defense for hand-built IR — the checker coerces every argument
+				// to its parameter's type), and the place's resolved element type is
+				// double-checked against it for the FieldPlace shape.
+				if node.Type != wantType {
+					return "", fmt.Errorf("%s is a Load of type %s, not a tuple-typed value of type %s", context, describeType(snapshot, node.Type), tupleTypeName(wantType))
+				}
+				if len(node.Children) != 1 {
+					return "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+				}
+				place, ok := unit.Node(node.Children[0])
+				if !ok {
+					return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
+				}
+				if place.Kind == tir.DereferencePlace {
+					return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
+				}
+				if place.Kind == tir.FieldPlace {
+					lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+					if err != nil {
+						return "", fmt.Errorf("%s tuple-field read: %v", context, err)
+					}
+					if elementType != wantType {
+						return "", fmt.Errorf("%s reads a place of element type %s, not a tuple-typed value of type %s", context, describeType(snapshot, elementType), tupleTypeName(wantType))
+					}
+					return lvalue, nil
+				}
+				return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-tuple read through a pointer) or a FieldPlace (a by-value read of a tuple-typed field)", context, place.Kind)
 			}
 			return "", fmt.Errorf("%s is a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only passing an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 		}

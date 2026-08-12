@@ -578,15 +578,17 @@ func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {
 	emitAndRunRejects(t, "fn main() i32 { let c char = ['h', 'i'][0]; return 0; }", "indexes a ArrayValue of type [2]char, want a slice-typed value")
 }
 
-func TestEmitRejectsTupleReturningHelperAsArgument(t *testing.T) {
+func TestEmitTupleReturningHelperAsArgumentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// Calling a tuple-returning helper outside the one supported position — as
-	// an argument to another function (f(makeT())) — is reachable from real
-	// source: the outer DirectCall's argument is the inner DirectCall. The
-	// aggregate-argument builder rejects it cleanly, naming what was found,
-	// never a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "argument 0 is a DirectCall")
+	// The tuple side of the argument-position call-result gap: f(makeT())
+	// passes a tuple-returning call as an argument. Before the fix this was a
+	// clean rejection ("argument 0 is a DirectCall, want a reference to a
+	// tuple-typed local in scope or a tuple literal") — the aggregate-argument
+	// builder had no DirectCall case in its tuple branch, the same gap the
+	// struct fix (008b6fd) closed on the struct side (see
+	// buildAggregateArgument); now the call result is passed by value directly
+	// as the argument. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", false, 42, false)
 }
 
 func TestEmitStructReturningHelperAsArgumentCompilesAndRuns(t *testing.T) {

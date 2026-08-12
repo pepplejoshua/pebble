@@ -3064,6 +3064,83 @@ func TestEmitStructReturningCallResultAsArgumentWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitTupleReturningCallResultAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A tuple-typed call result used DIRECTLY as a call argument — `f(makeT())`
+	// where makeT() returns a (i32, i32) tuple and f takes it by value. The
+	// outer call's argument is the inner DirectCall node (confirmed
+	// checker-reachable from real source), which the aggregate-argument
+	// builder's new DirectCall/MethodCall case in the tuple branch lowers by
+	// building the inner call with buildDirectCallNested and passing its call
+	// expression (`pebble_fn_<makeT>(ctx)`, whose C result type IS the tuple's
+	// own typedef) directly as the argument — no intermediate local. 20 + 22 =
+	// 42 is the process exit code.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", false, 42, false)
+}
+
+func TestEmitTupleReturningCallResultAsArgumentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the nested tuple-returning call argument: the outer
+	// call passes the inner call's expression directly — no temp local, no
+	// construction — `return pebble_fn_25(ctx, pebble_fn_24(ctx));`.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn f(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { return f(makeT()); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "return pebble_fn_25(ctx, pebble_fn_24(ctx));") {
+		t.Errorf("emitted C missing the nested call-result argument:\n%s", out)
+	}
+}
+
+func TestEmitTupleFieldReadAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A tuple-typed field read used DIRECTLY as a call argument — `read(h.p)`
+	// where h.p is a (i32, i32)-typed struct field. The argument is a Load
+	// whose place is a FieldPlace (the identical Load(FieldPlace) shape the
+	// struct side's fix 008b6fd covers), which the aggregate-argument
+	// builder's tuple-branch Load case lowers via buildPlaceLValue to the
+	// plain C member-access expression `pebble_local_<sym>.pebble_field_
+	// <member>` — a whole-tuple by-value copy read out of the enclosing
+	// struct, no runtime helper call needed. The Holder is built from a
+	// tuple-typed local (Holder.{ p = t }) rather than an inline tuple literal
+	// because inline-tuple struct-field construction is a separate,
+	// pre-existing emitter gap (the literal's own structural tuple type ID
+	// leaks into the compound literal, producing an undeclared
+	// pebble_tuple_<ID>_t). 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "type Holder = struct { p (i32, i32); };\nfn read(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); let h Holder = Holder.{ p = t }; return read(h.p); }", false, 42, false)
+}
+
+func TestEmitTupleFieldReadAsArgumentWritesC(t *testing.T) {
+	t.Parallel()
+	// The emitted C for the tuple-field-read argument: the call site passes
+	// the field projection lvalue directly, `return pebble_fn_26(ctx,
+	// pebble_local_32.pebble_field_25);` — no temp, no runtime helper, just a
+	// plain C member-access expression used as the by-value argument.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Holder = struct { p (i32, i32); };\nfn read(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { let t (i32, i32) = (20, 22); let h Holder = Holder.{ p = t }; return read(h.p); }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "return pebble_fn_26(ctx, pebble_local_32.pebble_field_25);") {
+		t.Errorf("emitted C missing the field-projection lvalue argument:\n%s", out)
+	}
+}
+
+func TestEmitTupleDerefReadAsArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A whole tuple read through a pointer deref used DIRECTLY as a call
+	// argument — `read(*ptr)` where ptr is a *(i32, i32) and read takes the
+	// tuple by value. The argument is a Load whose place is a DereferencePlace,
+	// which the aggregate-argument builder's tuple-branch Load case lowers via
+	// buildDereferencePlaceRead to the null-checked dereference expression —
+	// the tuple's own typedef makes passing the whole dereferenced tuple by
+	// value trivially valid C. 20 + 22 = 42 is the process exit code.
+	emitAndRun(t, "fn read(t (i32, i32)) i32 { return t.0 + t.1; } fn main() i32 { var p (i32, i32) = (20, 22); let ptr *(i32, i32) = &p; return read(*ptr); }", false, 42, false)
+}
+
 func TestEmitStructFieldReadAsArgumentCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A struct-typed field read used DIRECTLY as a call argument — `read(h.p)`
