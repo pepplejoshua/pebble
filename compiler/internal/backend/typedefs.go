@@ -422,21 +422,66 @@ func buildStructTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 }
 
 // buildUnionTypedefs builds the C text of one tagged-union typedef pair per
-// union type in infos, in order, each joined by a newline. Each pair is the
-// discriminant enum typedef followed by the tagged struct typedef (in that
-// order, since the struct typedef's tag field references the enum typedef by
-// name — C requires a type fully defined before use). The caller (Emit)
-// supplies infos in first-encountered order from the union-type collection
-// pass, so every union type the emitted program references has exactly one
-// pair here, written before any function definition in the final output.
+// union type in infos, in dependency-first DFS postorder, each joined by a
+// newline. Each pair is the discriminant enum typedef followed by the tagged
+// struct typedef (in that order, since the struct typedef's tag field
+// references the enum typedef by name — C requires a type fully defined before
+// use). A NESTED union typedef's payload member is declared with its
+// union-typed payload's OWN pebble_union_<innerID>_t typedef (see
+// unionMemberCType's union case), so each union-typed payload member chain must
+// be emitted BEFORE the union type itself — C requires the inner typedef fully
+// defined before the outer references it. infos arrives in first-encountered
+// order from the collection pass, which may list an outer before its inner (an
+// INLINE `Outer.value(Inner.b(7))` construction records Outer first, the inner
+// union only reached through the outer's payload child), so the pass emits each
+// info in dependency-first DFS postorder, deduplicating within this block. The
+// caller (Emit) supplies infos from the union-type collection pass, so every
+// union type the emitted program references has exactly one pair here, written
+// before any function definition in the final output.
 func buildUnionTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []unionInfo) (string, error) {
-	texts := make([]string, 0, len(infos))
+	byID := make(map[types.TypeID]unionInfo, len(infos))
 	for _, info := range infos {
+		byID[info.typ] = info
+	}
+	texts := make([]string, 0, len(infos))
+	emitted := make(map[types.TypeID]bool, len(infos))
+	var build func(unionInfo) error
+	build = func(info unionInfo) error {
+		if emitted[info.typ] {
+			return nil
+		}
+		// Emit every union-typed payload dependency first (DFS postorder):
+		// the union-typed payload member's typedef name is inline-referenced by
+		// this union's own typedef text, so the inner typedef must be fully
+		// emitted before the outer's. The collection walk reaches a referenced
+		// payload union through the constructing VariantConstruct's payload
+		// child (see collectUnionTypesWalk), so every referenced payload union
+		// is in infos; the not-collected path below is defense for hand-built
+		// IR only.
+		for _, member := range info.members {
+			if !isUnionEnumType(unit, snapshot, member.payloadType) {
+				continue
+			}
+			inner, ok := byID[member.payloadType]
+			if !ok {
+				return fmt.Errorf("union type %s references union payload type %s that was not collected", unionTypeName(info.typ), describeType(snapshot, member.payloadType))
+			}
+			if err := build(inner); err != nil {
+				return err
+			}
+		}
+		emitted[info.typ] = true
 		text, err := buildUnionTypedef(st, unit, snapshot, width, info)
 		if err != nil {
-			return "", err
+			return err
 		}
 		texts = append(texts, text)
+		return nil
+	}
+	for _, info := range infos {
+		if err := build(info); err != nil {
+			return "", err
+		}
 	}
 	return strings.Join(texts, "\n"), nil
 }

@@ -150,6 +150,74 @@ fn rd(c Outer) int {
 fn main() int { let i = Inner.b(7); let c = Outer.value(i); return rd(c); }`, false, 42, false)
 }
 
+// TestEmitTaggedUnionNestedUnionPayloadInlineCompileAndRun proves an INLINE
+// nested tagged-union payload construction works end to end: the inner union is
+// constructed directly inside the outer's payload argument
+// (`Outer.value(Inner.b(7))`) with no intermediate local, in the three
+// positions the scalar payload tests cover — a local declaration, a function
+// argument, and a return value. The collection walk reaches the inner union
+// only through the outer's payload child (there is no separate
+// Inner-constructing statement to record it first), so the union typedef block
+// must emit the inner union's typedef before the outer's that inline-references
+// it — the dependency-first emission this test proves. A three-level nesting
+// (`Outer.value(Mid.value(Deep.b(7)))`) is included as the same DFS postorder
+// emission falls out of the fix for free.
+func TestEmitTaggedUnionNestedUnionPayloadInlineCompileAndRun(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"local-declaration", `type Inner = union enum { a void; b int; };
+type Outer = union enum { empty void; value Inner; };
+fn is_b(i Inner) int { switch i { case .a: return 1; case .b: return 42; } }
+fn rd(c Outer) int {
+    switch c {
+        case .empty: return -1;
+        case .value: return is_b(c.value);
+    }
+}
+fn main() int { let c = Outer.value(Inner.b(7)); return rd(c); }`},
+		{"function-argument", `type Inner = union enum { a void; b int; };
+type Outer = union enum { empty void; value Inner; };
+fn is_b(i Inner) int { switch i { case .a: return 1; case .b: return 42; } }
+fn rd(c Outer) int {
+    switch c {
+        case .empty: return -1;
+        case .value: return is_b(c.value);
+    }
+}
+fn main() int { return rd(Outer.value(Inner.b(7))); }`},
+		{"return-value", `type Inner = union enum { a void; b int; };
+type Outer = union enum { empty void; value Inner; };
+fn is_b(i Inner) int { switch i { case .a: return 1; case .b: return 42; } }
+fn rd(c Outer) int {
+    switch c {
+        case .empty: return -1;
+        case .value: return is_b(c.value);
+    }
+}
+fn mk() Outer { return Outer.value(Inner.b(7)); }
+fn main() int { return rd(mk()); }`},
+		{"three-level-nesting", `type Deep = union enum { a void; b int; };
+type Mid = union enum { empty void; value Deep; };
+type Outer = union enum { empty void; value Mid; };
+fn is_b(i Deep) int { switch i { case .a: return 1; case .b: return 42; } }
+fn rm(m Mid) int { switch m { case .empty: return -1; case .value: return is_b(m.value); } }
+fn rd(c Outer) int {
+    switch c {
+        case .empty: return -1;
+        case .value: return rm(c.value);
+    }
+}
+fn main() int { let c = Outer.value(Mid.value(Deep.b(7))); return rd(c); }`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, 42, false)
+		})
+	}
+}
+
 // TestEmitTaggedUnionPayloadPositionsCompileAndRun proves the scalar payload
 // shapes are wireable in every construction position the Phase 3 test files
 // cover: a local declaration (`var c C = C.value(42)`), a function argument

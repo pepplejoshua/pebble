@@ -812,11 +812,12 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// optionalPayloadCType), so C requires the union typedef to be defined
 	// before the aggregate typedef that references it. Each union typedef pair
 	// (the discriminant enum typedef followed by the tagged struct typedef, see
-	// buildUnionTypedef) is self-contained — union payloads are restricted to
-	// fixed-width integers, bool, and str, never another aggregate — so no
-	// union typedef depends on an aggregate typedef, and the whole block can
-	// safely lead the aggregate block (mirroring how the plain-enum block leads
-	// it for enum-typed fields).
+	// buildUnionTypedef) depends only on typedefs emitted before it — scalar
+	// builtins, a plain enum (the enum block leads), or a nested tagged union
+	// (emitted dependency-first within the union block itself by
+	// buildUnionTypedefs) — so no union typedef depends on an aggregate
+	// typedef, and the whole block can safely lead the aggregate block
+	// (mirroring how the plain-enum block leads it for enum-typed fields).
 	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, unionTypedefs))
 	arrayTypes, err := collectArrayTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
