@@ -415,6 +415,19 @@ func buildTupleBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 			elementExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, children[i], scope, resolvedFloatKind(snapshot, elementType), width)
 		case isTuple(snapshot, elementType), isStruct(snapshot, elementType), isOptional(snapshot, elementType):
 			elementExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, children[i], scope, elementType, context, width)
+		case isArray(snapshot, elementType):
+			// An array-typed tuple element (e.g. ([3]i32, i32)): the array
+			// literal lowers to the array's own wrapped struct construction
+			// (pebble_array_<typeID>_t){ .data = { ... } }, exactly as a
+			// nested array element in an outer array literal uses
+			// buildNestedArrayValueExpr — re-using that same helper so the
+			// array element gets its proper wrapper struct initialisation
+			// inside the tuple's brace list.
+			arrayNode, ok := unit.Node(children[i])
+			if !ok {
+				return "", fmt.Errorf("%s contains a tuple value referencing invalid child node %d", context, children[i])
+			}
+			elementExpr, err = buildNestedArrayValueExpr(st, unit, snapshot, fileSet, arrayNode, scope, elementType, context, width)
 		case isAbstractInt(snapshot, elementType):
 			elementExpr, err = buildExpr(st, unit, snapshot, fileSet, children[i], scope, width, width)
 		default:

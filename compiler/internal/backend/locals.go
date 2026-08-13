@@ -312,8 +312,8 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		if !ok {
 			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load referencing invalid place node %d", context, describeType(snapshot, initValue.Type), initValue.Children[0])
 		}
-		if place.Kind != tir.DereferencePlace && place.Kind != tir.CheckedIndexPlace {
-			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer) or a CheckedIndexPlace (a whole inner-array read from a nested array)", context, describeType(snapshot, initValue.Type), place.Kind)
+		if place.Kind != tir.DereferencePlace && place.Kind != tir.CheckedIndexPlace && place.Kind != tir.TuplePlace {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer), a CheckedIndexPlace (a whole inner-array read from a nested array), or a TuplePlace (a whole-array read from a tuple element)", context, describeType(snapshot, initValue.Type), place.Kind)
 		}
 		var srcPtr string
 		if place.Kind == tir.DereferencePlace {
@@ -337,6 +337,20 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 			}
 			checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
 			srcPtr = fmt.Sprintf("&(*(%s)(%s)).data", ptrCType, checkedPtr)
+		} else if place.Kind == tir.TuplePlace {
+			// TuplePlace path: projecting a tuple element that is an array
+			// (`let arr [N]T = t.0;` where t is (…,[N]T,…)). buildPlaceLValue
+			// resolves the projection to `pebble_local_X._N`, which is the
+			// pebble_array_<id>_t wrapper struct; appending `.data` yields the
+			// raw array pointer needed for the memcpy source.
+			lvalue, placeElemType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", fmt.Errorf("%s whole tuple-array read: %v", context, err)
+			}
+			if placeElemType != initValue.Type {
+				return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a tuple element of type %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, placeElemType))
+			}
+			srcPtr = lvalue + ".data"
 		} else {
 			// CheckedIndexPlace path: indexing into an array whose ELEMENT is
 			// itself an array (a nested array). buildPlaceLValue's

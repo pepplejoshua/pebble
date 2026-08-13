@@ -879,6 +879,34 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		inFieldArrays[payload] = true
 		fieldArrayTypes = append(fieldArrayTypes, payload)
 	}
+	// A tuple whose element is an array (`([N]T, ...)`) names the array's OWN
+	// typedef (pebble_array_<typeID>_t, see tupleElementCType) as the tuple
+	// struct's inline field type, exactly like a struct field of array type
+	// does — so every array a tuple element references must have its typedef
+	// emitted BEFORE the aggregate block that contains the tuple typedef, the
+	// same pre-aggregate position field-referenced arrays occupy. A tuple-
+	// element array's element is never an aggregate: orderAggregateTypes'
+	// depth>1-through-array nesting check rejects `([N]struct, ...)` /
+	// `([N]tuple, ...)` / `([N]optional, ...)` just as it rejects a struct
+	// field that is an array of an aggregate, so every such array is self-
+	// contained (scalar/bool/char/float/str element) and safe to emit ahead
+	// of the aggregate block.
+	for _, tupleType := range ordered.tuples {
+		key, ok := snapshot.Key(tupleType)
+		if !ok || key.Kind() != types.Tuple {
+			continue
+		}
+		elements, ok := key.Elements()
+		if !ok {
+			continue
+		}
+		for _, element := range elements {
+			if isArray(snapshot, element) && !inFieldArrays[element] {
+				inFieldArrays[element] = true
+				fieldArrayTypes = append(fieldArrayTypes, element)
+			}
+		}
+	}
 	standaloneArrayTypes := make([]types.TypeID, 0, len(arrayTypes))
 	for _, id := range arrayTypes {
 		if !inFieldArrays[id] {

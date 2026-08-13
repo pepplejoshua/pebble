@@ -1392,6 +1392,15 @@ func tupleElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	if isOptional(snapshot, id) {
 		return optionalTypeName(id), nil
 	}
+	if isArray(snapshot, id) {
+		// An array-typed tuple element is declared with the array's OWN typedef
+		// (pebble_array_<typeID>_t), exactly as a struct field of array type is
+		// (see structFieldCType) — the wrapped struct whose `.data` member is
+		// the raw `elem data[length]` array. The array typedef is emitted BEFORE
+		// the aggregate block that contains this tuple typedef (see Emit's
+		// tuple-element-array collection), so C always sees the name.
+		return arrayTypeName(id), nil
+	}
 	if isStruct(snapshot, id) {
 		if isEnumType(unit, snapshot, id) {
 			return "", fmt.Errorf("element type %s is an enum type; enum-typed tuple elements are not supported yet", enumTypeName(id))
