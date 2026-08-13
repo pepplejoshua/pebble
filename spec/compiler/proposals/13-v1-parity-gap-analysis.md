@@ -44,30 +44,51 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 27 ("`some S` to optional `T` with payload
-conversion", tracker 14) closed in `17d0eb1`. Distinct from Phase 3 #7
-(payload types) and #14 (value-source/typedef gaps): a `some <value>`
-whose payload's own type needed a width/type conversion to match the
-destination's declared payload type (a u8 local wrapped into `?u32`)
-was checker-rejected with C0601, because the SomeExpr typed itself as
-`?<payload's own type>` regardless of any known destination. Fixed by
-pinning the SomeExpr's optional type to a known destination's optional
-type at solve, then wrapping the payload in the ordinary coercion node
-at IR-build — mirroring the existing tuple-element coercion mechanism
+*(empty — Phase 3 item 28 ("Range loop, exclusive and inclusive",
+tracker 14) closed in `61eb1c5`. A real infinite-loop bug: an inclusive
+range's (`..=`) unconditional post-body `i += step` advances the
+iterator one PAST the end bound, wrapping for an unsigned iterator
+descending through 0 or for either signedness ascending past the
+type's own max, and the old step-direction-ternary condition then read
+the wrapped value as still in range — confirmed hanging forever at
+multiple widths. The exclusive form was never affected (its last step
+never crosses a representable boundary), which is why this survived
+four prior range-loop fixes. Fixed with a done-gate set from the
+iterator's pre-increment value inside the for-loop's increment clause
+— continue-robust since C's `continue` jumps to the increment clause
+where the done test lives. Full backend suite checkpoint run after
+this item (457s, green) given the correctness weight of a hang bug.
+STANDING NOTE, still open: `examples/arena_alloc.peb` fails to compile
+on pointer arithmetic in `std/mem/arena.peb` (T0505 "cannot unify
+semantic type kind 2 with kind 1", `ptr + int`) — a real-world finding
+from testing the compiler directly against `examples/`, not yet a
+tracker 14 row, not yet investigated, awaiting the user's decision on
+when to queue it. Picking up the next Phase 3 item: "Deferred local
+declaration" (tracker 14, "Absent; checker/backend contract defect" —
+check current state for staleness first, per the established pattern)
+next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `some S` to optional `T` with payload conversion (Phase 3
+#27), tracker 14.**
+
+Closed in `17d0eb1`. Distinct from Phase 3 #7 (payload types) and #14
+(value-source/typedef gaps): a `some <value>` whose payload's own type
+needed a width/type conversion to match the destination's declared
+payload type (a u8 local wrapped into `?u32`) was checker-rejected
+with C0601, because the SomeExpr typed itself as `?<payload's own
+type>` regardless of any known destination. Fixed by pinning the
+SomeExpr's optional type to a known destination's optional type at
+solve, then wrapping the payload in the ordinary coercion node at
+IR-build — mirroring the existing tuple-element coercion mechanism
 exactly (`internal/check`, not `internal/backend` — the first Phase 3
 fix this window at the checker layer rather than the backend). The
 literal half already worked. Confirmed out of scope: operator-payload
 conversion and plain (non-optional) width widening are general,
-already-tracked gaps. NOTE: a separate real-world finding surfaced
-outside the tracker sweep — running the actual v2 compiler against
-`examples/*.peb` found `examples/arena_alloc.peb` fails to compile
-with a checker error in `std/mem/arena.peb` on pointer arithmetic
-(`ptr + int`, T0505 "cannot unify semantic type kind 2 with kind 1").
-This is NOT yet a tracker 14 row and has NOT been investigated —
-flagged to the user, awaiting their decision on whether/when to log
-and queue it. Picking up the next Phase 3 item: "Range loop, exclusive
-and inclusive" (tracker 14, "Partial" — check current state for
-staleness first, per the established pattern) next.)*
+already-tracked gaps.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
