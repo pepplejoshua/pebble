@@ -329,21 +329,25 @@ func (w *walker) memberByName(declaration symbol.SymbolID, name string) symbol.S
 // the walk-time counterpart to the solver's hasField resolution: instead of
 // waiting for solve, it grounds the field's destination value as known so a
 // composite-literal field value's element types are inferred from the DECLARED
-// field type rather than their default widths. Only an ARRAY-typed field is
-// grounded — the narrow shape this task closes (struct construction of a
-// [3]i32 array field from a literal failed C0601 while [3]int worked, because
-// the literal stayed [3]int against the [3]i32 field) — so every other field
-// type (a scalar, tuple, optional, enum, struct) keeps its existing behavior
-// and its existing emitted IR exactly as before. The receiver's declaration
-// and concrete arguments come from either the record literal's own base name
-// (`Box.{ ... }`, resolved during prepareRecord) or the expected destination
-// type (`.{ ... }` under a typed binding); a generic declaration's concrete
-// arguments are the instantiation's own (the NominalKey args), so `Box[i32].{
-// data = [1, 2, 3] }` grounds data to [3]i32 through the same substitution
-// mapping the backend's structSubstitutions builds. Anything not fully
-// concrete — a type-parameterized member with no resolvable argument, a
-// generic nominal — yields no grounding and falls back to the pre-existing
-// solve-time path.
+// field type rather than their default widths. An ARRAY-typed field was the
+// first shape grounded (the narrow task that introduced this function: struct
+// construction of a [3]i32 array field from a literal failed C0601 while
+// [3]int worked, because the literal stayed [3]int against the [3]i32 field);
+// a plain STRUCT-typed field (a Nominal whose declaration is NominalStruct,
+// never a tagged union) is grounded the same way, so a nested anonymous
+// record literal (`Outer.{ inner = .{ a = 1 } }`) recovers its destination
+// declaration from the field's declared type instead of staying an unbound
+// inference variable. Every other field type (a scalar, tuple, optional,
+// enum, tagged union) keeps its existing behavior and its existing emitted IR
+// exactly as before. The receiver's declaration and concrete arguments come
+// from either the record literal's own base name (`Box.{ ... }`, resolved
+// during prepareRecord) or the expected destination type (`.{ ... }` under a
+// typed binding); a generic declaration's concrete arguments are the
+// instantiation's own (the NominalKey args), so `Box[i32].{ data = [1, 2, 3]
+// }` grounds data to [3]i32 through the same substitution mapping the
+// backend's structSubstitutions builds. Anything not fully concrete — a
+// type-parameterized member with no resolvable argument, a generic nominal —
+// yields no grounding and falls back to the pre-existing solve-time path.
 func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member symbol.SymbolID) (types.TypeID, bool) {
 	if member == 0 {
 		return 0, false
@@ -380,13 +384,9 @@ func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member
 		return 0, false
 	}
 	if template.Kind == infer.TemplateKnown {
-		key, found := w.generation.inputs.Types.Key(template.Known)
-		if !found || key.Kind() != types.Array {
-			return 0, false
-		}
-		return template.Known, true
+		return w.recordFieldGroundable(template.Known)
 	}
-	if template.Kind != infer.TemplateArray {
+	if template.Kind != infer.TemplateArray && template.Kind != infer.TemplateNominal {
 		return 0, false
 	}
 	mapping := make(map[symbol.SymbolID]types.TypeID, len(decl.Parameters))
@@ -400,11 +400,41 @@ func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member
 	if !ok {
 		return 0, false
 	}
-	key, found := w.generation.inputs.Types.Key(fieldType)
-	if !found || key.Kind() != types.Array {
+	return w.recordFieldGroundable(fieldType)
+}
+
+// recordFieldGroundable reports whether a declared field type is one the
+// walk-time declared-type grounding applies to: an array (the original scope)
+// or a plain struct — a Nominal whose declaration is NominalStruct. Tagged
+// unions and enums are also Nominals but keep their existing behavior (a
+// tagged-union field construction `.{ Int = 42 }` runs through a separate,
+// dedicated mechanism; a plain enum field needs no early grounding), and
+// every scalar, tuple, optional, pointer, slice, and function field stays
+// ungrounded as before.
+func (w *walker) recordFieldGroundable(id types.TypeID) (types.TypeID, bool) {
+	if id == 0 {
 		return 0, false
 	}
-	return fieldType, true
+	key, found := w.generation.inputs.Types.Key(id)
+	if !found {
+		return 0, false
+	}
+	switch key.Kind() {
+	case types.Array:
+		return id, true
+	case types.Nominal:
+		declaration, _, ok := key.Nominal()
+		if !ok {
+			return 0, false
+		}
+		decl, ok := w.program.TypeDeclaration(declaration)
+		if ok && decl.State == infer.DeclarationReady && decl.Nominal == infer.NominalStruct {
+			return id, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
 }
 
 func (w *walker) recordReceiverTerm(ctx walkContext, plan *recordPlan, origin infer.Origin) infer.Term {

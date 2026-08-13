@@ -25,6 +25,14 @@ import (
 // contextual expected type) — with buildRecordConstruct's existing
 // memberSymbol-by-name fallback (the one buildTaggedVariantConstruct already
 // used for `.{ Int = 42 }`) as the post-solve closing net.
+//
+// A later extension (T0510) widened recordFieldDeclaredType's walk-time
+// declared-type grounding beyond array-typed fields to PLAIN struct-typed
+// fields (NominalStruct, never a tagged union): a NESTED anonymous struct
+// literal (`Outer.{ inner = .{ a = 1 } }` — a nested-anonymous-inner form
+// that failed for the NAMED outer literal too) had no way to recover its
+// destination declaration, because the field's own destination was never
+// grounded. That is the case TestNestedAnonymousStructFieldCovers below.
 
 // TestAnonymousRecordConstructKnownDestinationPositions proves the anonymous
 // form checks successfully (no C0619, no diagnostics) in every position
@@ -114,10 +122,8 @@ fn check() void {
 // TestAnonymousRecordConstructMatchesNamedDiagnostics proves the anonymous
 // form produces the same class of field-level diagnostic the named form
 // already produces for equivalent mistakes: a wrong field value type, an
-// unknown field name, a missing required field, an optional-typed field
-// value whose some-payload form the named form also rejects, and a nested
-// anonymous struct literal (a pre-existing gap that fails for the named
-// outer form too).
+// unknown field name, a missing required field, and an optional-typed field
+// value whose some-payload form the named form also rejects.
 func TestAnonymousRecordConstructMatchesNamedDiagnostics(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -130,7 +136,6 @@ func TestAnonymousRecordConstructMatchesNamedDiagnostics(t *testing.T) {
 		{"unknown-field", "type Point = struct { x i32; y i32; };", `var p Point = Point.{ z = 1 };`, `var p Point = .{ z = 1 };`, "T0507"},
 		{"missing-field", "type Point = struct { x i32; y i32; };", `var p Point = Point.{ x = 1 };`, `var p Point = .{ x = 1 };`, "C0605"},
 		{"optional-some-field", "type Box = struct { opt ?i32; };", `var b Box = Box.{ opt = some 5 };`, `var b Box = .{ opt = some 5 };`, "C0601"},
-		{"nested-anon-struct-field", "type Inner = struct { a i32; };\ntype Outer = struct { inner Inner; };", `var o Outer = Outer.{ inner = .{ a = 1 } };`, `var o Outer = .{ inner = .{ a = 1 } };`, "T0510"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -164,6 +169,76 @@ func TestAnonymousRecordConstructMatchesNamedDiagnostics(t *testing.T) {
 			for _, item := range diags.Items() {
 				if item.Code == "C0619" {
 					t.Fatalf("anonymous form leaked the C0619 internal-error path for %s: %+v", test.name, diags.Items())
+				}
+			}
+		})
+	}
+}
+
+// TestNestedAnonymousStructFieldCovers is the T0510 regression suite for a
+// nested ANONYMOUS struct literal used as a struct field's value. Before the
+// fix, recordFieldDeclaredType grounded only ARRAY-typed fields, so a
+// struct-typed field's own destination was never pinned at walk time and the
+// inner `.{ ... }` literal (which has no base name to anchor itself) stayed
+// an unbound inference variable — producing T0510 for the NAMED outer form
+// too. The suite covers the exact repro (named outer, anonymous inner),
+// the anonymous-outer sibling, two-level-deep nesting, the named-inner
+// regression, the array-field regression, and the tagged-union `.{ Int = 42
+// }` construction regression (a separate mechanism that must keep working).
+func TestNestedAnonymousStructFieldCovers(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"named-outer-anon-inner", `type Inner = struct { a i32; };
+type Outer = struct { inner Inner; };
+fn check() void {
+    var o Outer = Outer.{ inner = .{ a = 1 } };
+}`},
+		{"anon-outer-anon-inner", `type Inner = struct { a i32; };
+type Outer = struct { inner Inner; };
+fn check() void {
+    var o Outer = .{ inner = .{ a = 1 } };
+}`},
+		{"inferred-named-outer", `type Inner = struct { a i32; };
+type Outer = struct { inner Inner; };
+fn check() void {
+    var o = Outer.{ inner = .{ a = 1 } };
+}`},
+		{"two-level-deep", `type Leaf = struct { v i32; };
+type Mid = struct { leaf Leaf; };
+type Top = struct { mid Mid; };
+fn check() void {
+    var t Top = Top.{ mid = .{ leaf = .{ v = 7 } } };
+}`},
+		{"named-inner-nested", `type Inner = struct { a i32; };
+type Outer = struct { inner Inner; };
+fn check() void {
+    var o Outer = Outer.{ inner = Inner.{ a = 1 } };
+}`},
+		{"array-field", `type Box = struct { data [3]i32; };
+fn check() void {
+    var b Box = .{ data = [1, 2, 3] };
+}`},
+		{"tagged-union-construct", `type Choice = union enum { Int int; Float f64; };
+fn check() void {
+    var c Choice = Choice.{ Int = 42 };
+}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(test.source)})
+			handoff := run06a(inputs, diagnostics, Config{})
+			if handoff == nil {
+				t.Fatalf("06a failed: %+v", diagnostics.Items())
+			}
+			result := run06b(handoff, diagnostics, Config{}, inputs.Types)
+			if !result.Successful() {
+				t.Fatalf("expected clean check, got diagnostics: %+v", diagnostics.Items())
+			}
+			for _, item := range diagnostics.Items() {
+				if item.Code == "C0619" {
+					t.Fatalf("leaked the C0619 internal-error path: %+v", diagnostics.Items())
 				}
 			}
 		})
