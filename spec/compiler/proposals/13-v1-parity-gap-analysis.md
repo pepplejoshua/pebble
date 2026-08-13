@@ -44,21 +44,48 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 26 ("Float to integer", tracker 14) closed in
-`f52bbaf`. A 20-pair sweep (f32/f64 x every integer destination width)
-confirmed both anticipated gaps real: the runtime had checked
-conversion helpers only for i32/i64 destinations (i8/i16/u8/u16/u32/u64
-Emit-rejected), and uint failed differently ("unsupported uint
-expression node FloatToInteger", buildUintExpr had no case — same bug
-class as #21/#25). Fixed by adding 12 checked conversion helpers
-(mirroring the existing i32/i64 pair's SAFE-mode NaN/range-check and
-RELEASE-mode sentinel structure exactly) and a dedicated
-`floatToIntSuffix` selector (mirroring `checkedShiftSuffix`/
+*(empty — Phase 3 item 27 ("`some S` to optional `T` with payload
+conversion", tracker 14) closed in `17d0eb1`. Distinct from Phase 3 #7
+(payload types) and #14 (value-source/typedef gaps): a `some <value>`
+whose payload's own type needed a width/type conversion to match the
+destination's declared payload type (a u8 local wrapped into `?u32`)
+was checker-rejected with C0601, because the SomeExpr typed itself as
+`?<payload's own type>` regardless of any known destination. Fixed by
+pinning the SomeExpr's optional type to a known destination's optional
+type at solve, then wrapping the payload in the ordinary coercion node
+at IR-build — mirroring the existing tuple-element coercion mechanism
+exactly (`internal/check`, not `internal/backend` — the first Phase 3
+fix this window at the checker layer rather than the backend). The
+literal half already worked. Confirmed out of scope: operator-payload
+conversion and plain (non-optional) width widening are general,
+already-tracked gaps. NOTE: a separate real-world finding surfaced
+outside the tracker sweep — running the actual v2 compiler against
+`examples/*.peb` found `examples/arena_alloc.peb` fails to compile
+with a checker error in `std/mem/arena.peb` on pointer arithmetic
+(`ptr + int`, T0505 "cannot unify semantic type kind 2 with kind 1").
+This is NOT yet a tracker 14 row and has NOT been investigated —
+flagged to the user, awaiting their decision on whether/when to log
+and queue it. Picking up the next Phase 3 item: "Range loop, exclusive
+and inclusive" (tracker 14, "Partial" — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Float to integer (Phase 3 #26), tracker 14.**
+
+Closed in `f52bbaf`. A 20-pair sweep (f32/f64 x every integer
+destination width) confirmed both anticipated gaps real: the runtime
+had checked conversion helpers only for i32/i64 destinations
+(i8/i16/u8/u16/u32/u64 Emit-rejected), and uint failed differently
+("unsupported uint expression node FloatToInteger", buildUintExpr had
+no case — same bug class as #21/#25). Fixed by adding 12 checked
+conversion helpers (mirroring the existing i32/i64 pair's SAFE-mode
+NaN/range-check and RELEASE-mode sentinel structure exactly) and a
+dedicated `floatToIntSuffix` selector (mirroring `checkedShiftSuffix`/
 `checkedNegSuffix`). i32/i64/int already worked correctly, including
-SAFE-mode abort on NaN/±Inf/out-of-range. Picking up the next Phase 3
-item: "`some S` to optional `T` with payload conversion" (tracker 14,
-"Partial" — check current state for staleness first, per the
-established pattern) next.)*
+SAFE-mode abort on NaN/±Inf/out-of-range.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
