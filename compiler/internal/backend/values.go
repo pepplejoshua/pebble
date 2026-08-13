@@ -411,6 +411,31 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("unsupported uint arithmetic operator %s", node.Operator)
 		}
 		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+	case tir.PrefixValue:
+		// A bitwise not whose result is uint (`var r uint = ~a;`): the uint
+		// twin of buildExpr's PrefixValue case. The checker builds ~ on an
+		// integral operand as a PrefixValue (the operatorIntegralSame family,
+		// the same family & | ^ use) and uint is integral, so a uint-typed
+		// PrefixValue is checker-reachable; the result type equals the operand
+		// type, so this builder's entry gate (node.Type must be uint) admits
+		// the whole tree, whose single child is also uint-typed by
+		// construction and recurses into this same builder. uint has no
+		// checked runtime helper for ANY operator — the plain C ~ is the whole
+		// lowering, exactly as this builder's CheckedArithmetic/BinaryValue
+		// cases lower uint arithmetic and buildExpr's PrefixValue case lowers
+		// ~ at every other width. Any other operator on a PrefixValue is a
+		// clean rejection.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a PrefixValue with %d operand(s), want exactly one", len(node.Children))
+		}
+		if node.Operator != syntax.Tilde {
+			return "", fmt.Errorf("uint expression contains a PrefixValue with operator %s, want ~", node.Operator)
+		}
+		child, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		return "~(" + child + ")", nil
 	case tir.BinaryValue:
 		// A bitwise &, |, or ^ whose result is uint (`(hash as uint) ^ (key
 		// as uint)`): the uint twin of buildExpr's BinaryValue case. The
