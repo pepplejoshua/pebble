@@ -267,31 +267,48 @@ func TestEmitRejectsI64MainCallsI32Helper(t *testing.T) {
 	t.Parallel()
 	// A called function must resolve to the entry's own integer width — there
 	// is no cast/coercion lowering, the same reasoning 10.13 established for
-	// locals. An i64 entry calling an i32 helper is a legal, checker-accepted
-	// program, so this is a genuine backend-scope rejection naming the width
-	// mismatch.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i32 { return 21; } fn main() i64 { return helper(); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i64")
+	// locals. An i64 entry returning an i32 helper's result is now rejected by
+	// the checker itself (C0601, cannot implicitly convert i32 to i64 for the
+	// return value) before the backend ever sees the call.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn helper() i32 { return 21; } fn main() i64 { return helper(); }", "main", false)
+	if err == nil {
+		t.Fatal("checker accepted an i64 entry returning an i32 helper's result, want rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot implicitly convert value of type i32 to i64 for return value") {
+		t.Fatalf("checker rejection %q does not name the i32-to-i64 return-width mismatch", err.Error())
+	}
 }
 
 func TestEmitRejectsI32MainCallsI64Helper(t *testing.T) {
 	t.Parallel()
-	// The reverse direction: an i32 entry calling an i64 helper is likewise a
-	// clean width-mismatch rejection.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+	// The reverse direction: an i32 entry returning an i64 helper's result is
+	// likewise a clean width-mismatch rejection, now caught by the checker's
+	// implicit-conversion rule (C0601) at check time rather than by the
+	// backend.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn helper() i64 { return 21; } fn main() i32 { return helper(); }", "main", false)
+	if err == nil {
+		t.Fatal("checker accepted an i32 entry returning an i64 helper's result, want rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot implicitly convert value of type i64 to i32 for return value") {
+		t.Fatalf("checker rejection %q does not name the i64-to-i32 return-width mismatch", err.Error())
+	}
 }
 
 func TestEmitRejectsBareI64LocalReferenceInI32Context(t *testing.T) {
 	t.Parallel()
 	// Regression: a bare (uncast) reference to a mismatched-width local used
 	// where the width matters must still be a clean rejection, never a silent
-	// coercion. The checker accepts `return y;` (an i64 local from an
-	// i32-returning function), but the backend's buildExpr width gate rejects
-	// the SymbolValue's own resolved i64 type against the ambient i32,
-	// naming the i32 it wanted.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var y i64 = 100; return y; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want i32")
+	// coercion. `return y;` (an i64 local from an i32-returning function) is
+	// now rejected by the checker itself (C0601, cannot implicitly convert i64
+	// to i32 for the return value), before the backend's buildExpr width gate
+	// is ever reached.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn main() i32 { var y i64 = 100; return y; }", "main", false)
+	if err == nil {
+		t.Fatal("checker accepted a bare i64 local returned from an i32 function, want rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot implicitly convert value of type i64 to i32 for return value") {
+		t.Fatalf("checker rejection %q does not name the i64-to-i32 return-width mismatch", err.Error())
+	}
 }
 
 func TestEmitRejectsMixedWidthFloatArithmeticAndComparison(t *testing.T) {
@@ -325,12 +342,18 @@ func TestEmitRejectsParameterWidthMismatch(t *testing.T) {
 	// int64_t in the C signature) — but the PROGRAM is still genuinely
 	// width-mismatched: main, declared i32, returns f(0), whose i64 result is
 	// consumed where the entry's i32 is expected with no cast. That mismatch
-	// is a clean rejection at the call-result width gate (buildExpr's
-	// DirectCall case), naming the mismatched width, never a coercion. This is
-	// the same width-consistency rule, now applied to the call's RESULT rather
-	// than its parameter.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "DirectCall of type i64, want i32")
+	// is now rejected by the checker itself (C0601, cannot implicitly convert
+	// i64 to i32 for the return value) rather than at the backend's
+	// call-result width gate — the same width-consistency rule, now applied to
+	// the call's RESULT rather than its parameter, and caught one stage
+	// earlier.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn f(a i64) i64 { return 0; } fn main() i32 { return f(0); }", "main", false)
+	if err == nil {
+		t.Fatal("checker accepted main returning f(0)'s i64 result, want rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot implicitly convert value of type i64 to i32 for return value") {
+		t.Fatalf("checker rejection %q does not name the i64-to-i32 return-width mismatch", err.Error())
+	}
 }
 
 func TestEmitRejectsCallArgumentCountMismatch(t *testing.T) {
@@ -756,22 +779,16 @@ func TestEmitRejectsWrappingU64BuiltinNonU64Argument(t *testing.T) {
 	t.Parallel()
 	// A non-u64 argument to a wrapping builtin is a CLEAN rejection, never a
 	// crash and never silently-wrong C: an i32-typed argument cannot satisfy
-	// the builtin's u64 parameter, and Emit rejects the call with an error that
-	// names the offending width ("want u64") instead of emitting a call that
-	// would only fail at cc compile time. The symbol table is required for the
-	// builtin identity lookup, so the fixture is built with symbols like the
-	// positive case.
-	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `fn main() int { var x i32 = 6; var r u64 = wrapping_mul_u64(x, 7); return r as int; }`)
-	var buf bytes.Buffer
-	err := Emit(unit, snapshot, entryID, sources, resolution, &buf)
+	// the builtin's u64 parameter. The checker's implicit-conversion rule
+	// (C0601) now rejects the call at check time — naming the offending width
+	// ("cannot implicitly convert ... i32 to u64 for argument 1") — instead of
+	// Emit rejecting it after the fact, so the backend never sees the call.
+	_, _, _, _, err := buildFixtureMaybeFailing(t, "fn main() int { var x i32 = 6; var r u64 = wrapping_mul_u64(x, 7); return r as int; }", "main", false)
 	if err == nil {
-		t.Fatal("Emit succeeded for a non-u64 wrapping builtin argument, want rejection")
+		t.Fatal("checker accepted an i32 argument to wrapping_mul_u64, want rejection")
 	}
-	if buf.Len() != 0 {
-		t.Fatalf("Emit wrote output on failure: %q", buf.String())
-	}
-	if !strings.Contains(err.Error(), "want u64") {
-		t.Fatalf("Emit rejection error %q does not contain \"want u64\"", err.Error())
+	if !strings.Contains(err.Error(), "cannot implicitly convert value of type i32 to u64 for argument 1") {
+		t.Fatalf("checker rejection %q does not name the i32-to-u64 argument-width mismatch", err.Error())
 	}
 }
 

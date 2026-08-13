@@ -6,6 +6,7 @@ import (
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func validateCompatibilityFixture(t *testing.T, source string) (*diagnostic.DiagnosticSet, bool) {
@@ -377,5 +378,238 @@ func TestFloatLiteralRangePerWidth(t *testing.T) {
 				t.Fatalf("rejected literal was not rejected with T0508: %+v", diagnostics.Items())
 			}
 		})
+	}
+}
+
+// TestNarrowWidthReturnCoercionRejectsDifferentConcreteWidths proves that
+// returning a local of a distinct concrete integer width from an int-returning
+// function is cleanly rejected at the checker level with C0601 — not silently
+// passed through to the backend where it would produce a confusing internal-
+// sounding Emit error. Every fixed-width integer builtin whose C type differs
+// from int's (int32_t) is covered.
+func TestNarrowWidthReturnCoercionRejectsDifferentConcreteWidths(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"u8_to_int", "fn main() int { var x u8 = 200; return x; }"},
+		{"i16_to_int", "fn main() int { var x i16 = -100; return x; }"},
+		{"u16_to_int", "fn main() int { var x u16 = 100; return x; }"},
+		{"i64_to_int", "fn main() int { var x i64 = 9007199254740992; return x; }"},
+		{"u32_to_int", "fn main() int { var x u32 = 4294967295; return x; }"},
+		{"u64_to_int", "fn main() int { var x u64 = 18446744073709551615; return x; }"},
+		{"uint_to_int", "fn main() int { var x uint = 18446744073709551615; return x; }"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics, ok := validateCompatibilityFixture(t, tc.src)
+			if ok || !hasConversionDiagnostic(diagnostics) {
+				t.Fatalf("%s: expected C0601 rejection but got success: %+v", tc.name, diagnostics.Items())
+			}
+			items := diagnostics.Items()
+			if len(items) == 0 {
+				t.Fatalf("%s: expected at least one diagnostic, got none", tc.name)
+			}
+			found := false
+			for _, d := range items {
+				if d.Code == CodeConversion && strings.Contains(d.Message, "explicit cast") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("%s: expected C0601 with 'explicit cast' message, got: %+v", tc.name, items)
+			}
+		})
+	}
+}
+
+// TestSameConcreteWidthIntegerPairIsAccepted proves that integer pairs sharing
+// the same concrete C width (e.g. i32 ↔ int, both int32_t) pass validation
+// without requiring an explicit cast. This covers the coincidentally-working
+// case that was previously masked by the backend's own width-equivalence gate.
+func TestSameConcreteWidthIntegerPairIsAccepted(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var x i32 = 5; return x; }")
+	if !ok || hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("i32→int (same concrete width) was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestExplicitCastStillWorks proves that the explicit-cast form continues to
+// check successfully for all the distinct-width pairs that are now rejected
+// when returned bare.
+func TestExplicitCastStillWorks(t *testing.T) {
+	tests := []string{
+		"fn main() int { var x u8 = 200; return x as int; }",
+		"fn main() int { var x i16 = -100; return x as int; }",
+		"fn main() int { var x u16 = 100; return x as int; }",
+		"fn main() int { var x i64 = 9007199254740992; return x as int; }",
+		"fn main() int { var x u32 = 4294967295; return x as int; }",
+		"fn main() int { var x u64 = 18446744073709551615; return x as int; }",
+		"fn main() int { var x uint = 18446744073709551615; return x as int; }",
+		"fn main() int { var x i32 = 5; return x as int; }",
+	}
+	for _, src := range tests {
+		diagnostics, ok := validateCompatibilityFixture(t, src)
+		if !ok || hasConversionDiagnostic(diagnostics) {
+			t.Fatalf("explicit cast form was rejected: %s; %+v", src, diagnostics.Items())
+		}
+	}
+}
+
+// TestNarrowWidthDeclarationInitializerRejected proves that var/let
+// declaration initializers with distinct-concrete-width types are also
+// rejected (not just returns), since they route through the same
+// compatibility-record mechanism.
+func TestNarrowWidthDeclarationInitializerRejected(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn get_u8() u8 { return 200; } fn main() int { let x int = get_u8(); return 0; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("narrow-width declaration initializer was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestNarrowWidthAssignmentRejected proves that plain assignment targets with
+// distinct-concrete-width types are also rejected.
+func TestNarrowWidthAssignmentRejected(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var target int = 0; var source u8 = 200; target = source; return 0; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("narrow-to-int assignment was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestNarrowWidthArgumentRejected proves that call arguments with distinct-
+// concrete-width types are also rejected.
+func TestNarrowWidthArgumentRejected(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn takes_int(x int) void {} fn main() int { var v u8 = 200; takes_int(v); return 0; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("narrow-to-int argument was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestPointerToPointerStillRejected proves that pointer-to-pointer conversions
+// (which were already rejected before this change) remain rejected.
+func TestPointerToPointerStillRejected(t *testing.T) {
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn main() void {}\n")})
+	handoff := run06a(inputs, diagnostics, Config{})
+	if handoff == nil || handoff.Semantics == nil || handoff.Solution == nil {
+		t.Fatalf("run06a failed: %+v", diagnostics.Items())
+	}
+	builtins := inputs.Types.Builtins()
+	pointerI32, _ := inputs.Types.Intern(types.PointerKey(builtins.I32))
+	pointerI64, _ := inputs.Types.Intern(types.PointerKey(builtins.I64))
+	handoff.Records = frozenRecords{values: []retainedRecord{{
+		Header:        recordHeader{ID: 1, Owner: 1},
+		Compatibility: &compatibilityRecord{Header: recordHeader{ID: 1, Owner: 1}, Source: 1, Destination: 2, Role: compatibilityAssignment},
+	}}}
+	records := &solvedRecords{roots: map[valueID]infer.TypeResult{
+		1: {State: infer.TypeFinal, Type: pointerI32},
+		2: {State: infer.TypeFinal, Type: pointerI64},
+	}}
+	fresh := diagnostic.NewDiagnosticSet()
+	if validateCompatibilityRecords(handoff, records, fresh, Config{}) || !hasConversionDiagnostic(fresh) {
+		t.Fatalf("pointer-to-pointer was not rejected: %+v", fresh.Items())
+	}
+}
+
+// TestFloatToIntExplicitlyRequired proves that float-to-integer conversions
+// (classified as compatibleExplicit) require an explicit cast.
+func TestFloatToIntExplicitlyRequired(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var x f32 = 3.14; return x; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("f32→int was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestExplicitCastFloatToIntStillWorks proves that explicit float-to-int cast
+// continues to work.
+func TestExplicitCastFloatToIntStillWorks(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var x f32 = 3.14; return x as int; }")
+	if !ok || hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("f32→int explicit cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestIntToU8ExplicitlyRequired proves that int-to-narrower-unsigned conversions
+// also require an explicit cast (reverse direction).
+func TestIntToU8ExplicitlyRequired(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() u8 { var x int = 200; return x; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("int→u8 was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestEnumToIntegerExplicitlyRequired proves that enum-to-integer conversions
+// (classified as compatibleExplicit) require an explicit cast.
+func TestEnumToIntegerExplicitlyRequired(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "type Color = enum { red; green; blue; }; fn main() int { var c Color = Color.red; return c; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("enum→int was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestTupleComponentCoercionExplicitlyRequired proves that tuple components
+// whose element-wise classification yields compatibleExplicit are rejected
+// when returned from a function (the return path uses compatibilityReturn,
+// which remains strict). The tuple-initialization component coercion itself
+// (compatibilityTupleComponent) is permissive — this test exercises the
+// intersection where the return rejects but the initialization does not.
+func TestTupleComponentCoercionExplicitlyRequired(t *testing.T) {
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() (int, int) { var t (u8, u8) = (1, 2); return t; }")
+	if ok || !hasConversionDiagnostic(diagnostics) {
+		t.Fatalf("tuple(u8,u8)→(int,int) was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+// TestOptionalInjectionIsAccepted proves that optional-injection positions
+// (some <value> into a wider optional payload) remain implicitly coercible
+// after the explicit-cast narrowing — classify may yield compatibleExplicit
+// for the payload pair, but the compatibilityOptionalInjection role skips
+// the new rejection gate entirely.
+func TestOptionalInjectionIsAccepted(t *testing.T) {
+	cases := []string{
+		"fn main() void { var o ?u32 = some 5; }",
+		"fn main() void { var x u8 = 5; var o ?u32 = some x; }",
+		"fn main() void { var f f32 = 2.5; var o ?f64 = some f; }",
+		"fn main() void { var c char = 'a'; var o ?i32 = some c; }",
+	}
+	for _, src := range cases {
+		diagnostics, ok := validateCompatibilityFixture(t, src)
+		if !ok || hasConversionDiagnostic(diagnostics) {
+			t.Fatalf("optional injection was rejected: %s; %+v", src, diagnostics.Items())
+		}
+	}
+}
+
+// TestTupleComponentCoercionIsAccepted proves that tuple-component coercion
+// positions (element-wise width mismatch in a tuple literal initializing a
+// typed tuple local) remain implicitly coercible — the compatibilityRole
+// compatibilityTupleComponent skips the explicit-cast gate.
+func TestTupleComponentCoercionIsAccepted(t *testing.T) {
+	cases := []string{
+		"fn main() void { let t (i64, f64) = (1, 2.0); }",
+		"fn main() void { let a i32 = 1; let b i32 = 2; let t (i64, f64) = (a, b); }",
+		"fn main() void { let a i32 = 1; let b i32 = 2; let c i32 = 3; let t (i32, i64, i32) = (a, b, c); }",
+	}
+	for _, src := range cases {
+		diagnostics, ok := validateCompatibilityFixture(t, src)
+		if !ok || hasConversionDiagnostic(diagnostics) {
+			t.Fatalf("tuple component coercion was rejected: %s; %+v", src, diagnostics.Items())
+		}
+	}
+}
+
+// TestStructFieldConstructionIsAccepted proves that struct-field construction
+// positions (field initializer with width mismatch) remain implicitly coercible
+// — the compatibilityRole compatibilityRecordField skips the explicit-cast gate.
+func TestStructFieldConstructionIsAccepted(t *testing.T) {
+	cases := []string{
+		"type P = struct { x i64; }; fn main() void { let s P = P.{ x = 1 }; }",
+		"type P = struct { x i64; y f64; }; fn main() void { let a i32 = 1; let b f32 = 1.5; let s P = P.{ x = a, y = b }; }",
+	}
+	for _, src := range cases {
+		diagnostics, ok := validateCompatibilityFixture(t, src)
+		if !ok || hasConversionDiagnostic(diagnostics) {
+			t.Fatalf("struct field construction was rejected: %s; %+v", src, diagnostics.Items())
+		}
 	}
 }
