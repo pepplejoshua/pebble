@@ -44,36 +44,38 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 44 ("Non-default-width value returned from a
-default-width-returning function", tracker 14) closed in `e7375a8`.
-Root cause was in `internal/check`, not the backend as originally
-filed: the compatibility-record mechanism classified this pair as
-`compatibleExplicit` but the IR builder silently fell through to a
-bare, uncoerced value with zero diagnostic for any non-implicit class,
-deferring an eventually-confusing rejection to the backend's own
-separate width gate. Two explicit scope decisions made by the user
-along the way: (1) require an explicit `as` cast, matching Rust's
-model of no implicit conversion between distinct concrete types; (2)
-after a first, too-broad implementation broke 3 already-shipped
-implicit-coercion features (some-payload optional injection, tuple
-component coercion, struct field construction) — caught by an
-independent full `internal/backend` suite run outside the dispatch
-brief itself — narrowed to `compatibilityAssignment`/`Argument`/
-`Return` roles only, with a composite-literal-source carve-out so
-tuple/struct LITERAL coercion still works. A genuine regression was
-also found and fixed in `std/io.peb` (three bare `int`-defaulting
-`let` constants rejected against a `u16` parameter), and 5 pre-existing
-backend tests whose own comments described the OLD, now-obsolete
-"checker accepts, backend rejects" behavior were updated to reflect
-the new, earlier, clearer rejection point. STANDING NOTE, still open:
-`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
-`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
-awaiting the user's decision on when to queue it. Picking up the next
-Phase 3 item: "Nested anonymous struct literal as a field value"
-(tracker 14 line ~136, `Outer.{ inner = .{ a = 1 } }` fails T0510 —
-found during Phase 3 #33, general/pre-existing, affects the NAMED
-outer form too — check current state for staleness first, per the
+*(empty — Phase 3 item 45 ("Nested anonymous struct literal as a field
+value", tracker 14) closed in `cf76b45`. Root cause: `recordFieldDeclaredType`
+(added for an earlier, narrower task) only grounded ARRAY-typed struct
+fields as a KNOWN destination at walk time; a struct-typed field's own
+nested anonymous literal has no base name to anchor its own type, so
+it stayed an unbound inference variable without early grounding,
+producing T0510 for both the anonymous AND named outer form. Fixed by
+widening the grounding to also cover a plain STRUCT-typed field
+(`Nominal` with `infer.NominalStruct`), explicitly excluding tagged
+unions/enums (also `Nominal`) since `.{ Int = 42 }` construction
+already works through a separate mechanism (Phase 3 #84). Covers
+arbitrary nesting depth and generic struct-typed fields; confirmed no
+regression to array fields, named nesting, or tagged-union
+construction. STANDING NOTE, still open: `examples/arena_alloc.peb`
+fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
+`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
+on when to queue it. Picking up the next Phase 3 item: "Optional field
+assigned `some <value>` in a `.{ ... }` literal" (tracker 14 line
+~137, `.{ opt = some 5 }` fails C0601 whether named or anonymous —
+found during the same Phase 3 #33 investigation as #45, general/
+pre-existing — check current state for staleness first, per the
 established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Nested anonymous struct literal as a field value (Phase 3
+#45), tracker 14.**
+
+Closed in `cf76b45`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
