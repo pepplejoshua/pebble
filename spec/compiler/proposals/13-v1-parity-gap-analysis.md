@@ -44,30 +44,33 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 37 ("Nested tagged-union payload, inline
-construction", tracker 14) closed in `6fe558b`. Root cause: the exact
-same bug class as the Phase 3 #31 nested-array typedef-ordering fix —
-`buildUnionTypedefs` emitted in first-encountered collection order
-rather than dependency order, so an inline `Outer.value(Inner.b(7))`
-construction emitted Outer's typedef (which inline-references Inner's
-typedef name) before Inner's was defined. Fixed with the identical DFS
-postorder pattern `buildArrayTypedefs` already used; collection itself
-needed no change. This dispatch's orc process was interrupted mid-run
-by the supervisor for an unrelated reason (a dispatch-invocation
-correction, not a problem with the session's work) — independent
-inspection found the diff already complete and well-formed (full DFS
-rewrite, updated doc comments, 4 solid test cases including an
-unprompted 3-level-nesting proof), so it was verified and committed
-as-is rather than wastefully re-dispatched. STANDING NOTE, still open:
-`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
-`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
-awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Array-of-arrays struct field"
-(tracker 14 line ~126, deferred from Phase 3 #31 — "rejected by
-`orderAggregateTypes`'s 'more than one level of nesting' depth check
-before the array typedef machinery is even reached; needs its own
-depth-check surgery" — check current state for staleness first, per
-the established pattern) next.)*
+*(empty — Phase 3 item 38 ("Array-of-arrays struct field", tracker 14)
+closed in `b1a5303`. Root cause: `orderAggregateTypes`'s depth check
+blanket-rejected any struct field whose chain passed through an array,
+regardless of the array's own element kind — correct for array-of-
+STRUCT/TUPLE/OPTIONAL (a genuine ordering hazard) but overcautious for
+array-of-ARRAY, since Phase 3 #31 already made that case self-contained
+within `buildArrayTypedefs`'s own DFS-postorder emission. Narrowed the
+check precisely; independently confirmed array-of-aggregate stays
+rejected via a throwaway probe. Covers read, indexed write, passing to
+a helper, non-default width, and 3-level nesting (falls out for free).
+STANDING NOTE, still open: `examples/arena_alloc.peb` fails to compile
+on pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
+yet a tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "`ArrayRepeat` of an array-typed
+value" (tracker 14 line ~127, deferred from Phase 3 #31 — "`[[7,8,9];
+2]` is checker-legal but the backend's repeat-value builder doesn't yet
+handle an array-typed repeated value" — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Array-of-arrays struct field (Phase 3 #38), tracker 14.**
+
+Closed in `b1a5303`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
