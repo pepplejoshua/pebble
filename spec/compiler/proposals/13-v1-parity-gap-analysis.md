@@ -44,11 +44,29 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 21 ("Bitwise `& | ^`", tracker 14) closed in
-`05a4d6e`. A full ~30-pair sweep (3 operators x every integer width)
-found one real gap: buildUintExpr (the dedicated uint grammar builder)
-had a CheckedArithmetic case (for uint's plain-C `+ - * / %`) but no
-BinaryValue case at all — the checker builds `& | ^` on integral
+*(empty — Phase 3 item 22 ("Shifts `<< >>`", tracker 14) closed in
+`8718b00`. A full ~20-pair sweep (2 operators x every integer width)
+confirmed the row's claim exactly: `uint`/`u64` were the only widths
+without a checked shift-helper pair — `u64` a clean Emit rejection,
+`uint` an "unsupported ... node CheckedShift" backend gap (buildUintExpr
+had no CheckedShift case at all). Fixed by adding
+`pebble_rt_checked_shl_u64`/`shr_u64` to the C runtime (mirroring the
+existing u32 pair's SAFE-mode abort/RELEASE-mode mask structure
+exactly, uint/u64 sharing one pair since both carry the C type
+uint64_t) and wiring both Go-side dispatch points. Also fixed a stale
+pre-existing regression test that pinned the OLD "u64 shift rejected"
+behavior. Picking up the next Phase 3 item: "Unary numeric negation"
+(tracker 14, "Partial by integer width" — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Bitwise `& | ^` (Phase 3 #21), tracker 14.**
+
+Closed in `05a4d6e`. A full ~30-pair sweep (3 operators x every integer
+width) found one real gap: buildUintExpr (the dedicated uint grammar
+builder) had a CheckedArithmetic case (for uint's plain-C `+ - * / %`)
+but no BinaryValue case at all — the checker builds `& | ^` on integral
 operands as a BinaryValue (not CheckedArithmetic), so any uint bitwise
 expression died at Emit with "unsupported uint expression node
 BinaryValue" even though every other integer width already lowered
@@ -56,10 +74,9 @@ correctly through buildExpr's own BinaryValue case. Fixed by adding
 the case, mirroring the existing pattern exactly. Confirmed out of
 scope: `&= |= ^=` doesn't exist in this language at all (no lexer
 token in either compiler), and bool is not a valid `&`/`|`/`^` operand
-(the checker's integral-capability check rejects it). Picking up the
-next Phase 3 item: "Shifts `<< >>`" (tracker 14, "Partial; no uint or
-u64 helpers" — check current state for staleness first, per the
-established pattern) next.)*
+(the checker's integral-capability check rejects it).
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
