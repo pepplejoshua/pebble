@@ -72,8 +72,8 @@ func isStrSlice(snapshot *types.Snapshot, id types.TypeID) bool {
 // other than a fixed-width integer builtin (the entry's resolved width, uint,
 // u8, u16, u32, u64, i8, i16, i32, or i64 — each resolved to its OWN width by
 // resolvedBuiltin/cType, independent of the ambient `width` of the context the
-// slice is being validated from), char, bool, or a tuple/optional/struct type
-// — the same element gate 10.37
+// slice is being validated from), char, bool, str, or a tuple/optional/struct
+// type — the same element gate 10.37
 // enforces for a slice-typed local (see buildSliceLocalDeclaration and
 // sliceElementCType), applied here to a slice-typed function parameter or
 // result type so a helper signature naming a slice of str or any
@@ -88,7 +88,7 @@ func validateSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, width ty
 		return fmt.Errorf("slice type %s has no element type", describeType(snapshot, id))
 	}
 	if !isSupportedSliceElementType(unit, snapshot, element) {
-		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", describeType(snapshot, element))
+		return fmt.Errorf("slice element type is %s, want a fixed-width integer, char, bool, str, tuple, optional, struct, or enum", describeType(snapshot, element))
 	}
 	return nil
 }

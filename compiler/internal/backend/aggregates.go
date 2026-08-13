@@ -557,7 +557,7 @@ func buildSliceConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		return "", "", fmt.Errorf("%s slice type %s has no element type", context, describeType(snapshot, sliceType))
 	}
 	if !isSupportedSliceElementType(unit, snapshot, sliceElementType) {
-		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, tuple, optional, struct, or enum", context, describeType(snapshot, sliceElementType))
+		return "", "", fmt.Errorf("%s slice element type is %s, want a fixed-width integer, char, bool, str, tuple, optional, struct, or enum", context, describeType(snapshot, sliceElementType))
 	}
 	// Per-base resolve the element type the new slice's element type must
 	// match, plus the base-specific length and data-pointer expressions. The
