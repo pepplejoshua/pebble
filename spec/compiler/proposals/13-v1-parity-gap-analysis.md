@@ -44,25 +44,51 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 40 ("Binding a whole inner-array read to a
-local", tracker 14) closed in `480eab5` — the last of the three shapes
-deferred from Phase 3 #31, all now resolved. Root cause:
-`buildArrayLocalDeclaration`'s Load-initializer path only accepted a
-`DereferencePlace`; added a `CheckedIndexPlace` branch reusing
-`buildPlaceLValue`'s existing `.data`-projected nested-array lvalue
-(from Phase 3 #31) as the memcpy source. Verified as a real independent
-copy (not an alias) by mutating the source array after binding and
-confirming the bound local is unaffected. STANDING NOTE, still open:
-`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
-`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
-awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Arithmetic on a non-default-width
-array element read" (tracker 14 line ~129, deferred from Phase 3 #31,
-general/pre-existing checker gap, not array-specific — "`b[0] + 1`
-where `b` is `[3]i32` fails T0505 when the element read is used
-directly as an arithmetic operand; a direct return, explicit cast, or
-binding to a local all work" — check current state for staleness
-first, per the established pattern) next.)*
+*(empty — Phase 3 item 41 ("Arithmetic on a non-default-width array
+element read", tracker 14) closed in `81b08b6`. This was under-scoped
+as array-specific by the original filing — it is not; it reproduces
+for ANY concretely-typed non-default-width operand (local, parameter)
+paired with a literal, whenever the enclosing context's expected type
+doesn't match. Root cause traced precisely: `prepareOperator` pushed
+the enclosing destination's expected type onto EVERY operand of a
+same-result binary operator, including an already-concrete sibling,
+not just the literal — a mismatched outer destination then pinned the
+literal to the wrong width before hard unification compared it against
+the sibling's real type. Fixed by excluding a literal operand from the
+pushdown (mirroring the existing unary-minus exclusion) and having it
+adopt its sibling's type via `LiteralFits`, with correct propagation
+for nested operators and outer-destination compatibility. **Highest-
+risk fix in this sweep** (every arithmetic expression in the language
+routes through this code) — verified against the FULL `internal/check`
+AND `internal/backend` suites, not just targeted tests. One
+pre-existing, unrelated full-suite failure surfaced
+(`TestEmitRejectsSliceParameterUnsupportedElementType`) and independently
+confirmed via causation-check to already fail on unmodified `HEAD`; a
+separate pre-existing backend gap was also surfaced (a non-default-width
+value, even a bare local with no arithmetic, can't be returned from a
+default-width-returning function) — both logged as their own tracker 14
+rows. Checked whether this fix also resolved the standing
+`examples/arena_alloc.peb` pointer-arithmetic finding — confirmed it did
+NOT (that's a distinct `ptr + int` pointer/integer-kind mismatch, a
+different code path entirely, untouched by this fix). STANDING NOTE,
+still open: `examples/arena_alloc.peb` fails to compile on pointer
+arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
+tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "Array-typed tuple element" (tracker
+14 line ~131, found during Phase 3 #4 — "`([3]i32, i32)` fails
+check-time unification (T0501); not yet isolated to a root cause" —
+check current state for staleness first, per the established pattern)
+next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Arithmetic on a non-default-width array element read (Phase 3
+#41), tracker 14.**
+
+Closed in `81b08b6`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
