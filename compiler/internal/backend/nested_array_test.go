@@ -181,6 +181,31 @@ func TestNestedArrayThreeLevelStructField(t *testing.T) {
 	emitAndRun(t, "type Cube = struct { data [2][2][2]int; }; fn main() int { var c Cube = Cube.{ data = [[[1,2],[3,4]],[[5,6],[7,8]]] }; return c.data[1][0][1] * 10 + c.data[0][1][0]; }", false, 63, false)
 }
 
+// TestNestedArrayRepeat proves an ArrayRepeat ([v; N]) whose repeated value is
+// itself an array-typed value: a nested array literal (`[[7,8,9]; 2]`) and a
+// reference to an in-scope array-typed local (`[row; 2]`), at the default width
+// and at a non-default element width. The repeat value routes through
+// buildNestedAggregateValue's isArray case (the same builder a nested array
+// literal's ELEMENTS use), emitted once into the repeat temp and copied into
+// every slot by the fill loop.
+func TestNestedArrayRepeat(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"repeat-of-array-literal", "fn main() int { var a [2][3]int = [[7,8,9]; 2]; return a[1][2]; }", 9},
+		{"repeat-of-array-literal-corner", "fn main() int { var a [2][3]int = [[7,8,9]; 2]; return a[0][0] * 10 + a[1][1]; }", 78},
+		{"repeat-of-array-literal-i32", "fn main() int { var a [2][3]i32 = [[7,8,9]; 2]; return a[1][2] as int; }", 9},
+		{"repeat-of-in-scope-row", "fn main() int { var row [3]int = [1,2,3]; var a [2][3]int = [row; 2]; return a[1][2]; }", 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, tc.want, false)
+		})
+	}
+}
+
 // TestNestedArrayDeferredShapesRejected pins the deliberately-out-of-scope
 // shapes to their current clean rejections, so a future follow-up can loosen
 // them deliberately rather than by accident.
@@ -190,10 +215,6 @@ func TestNestedArrayDeferredShapesRejected(t *testing.T) {
 		source        string
 		wantSubstring string
 	}{
-		// A repeat whose repeated value is itself an array literal
-		// (`[[7,8,9]; 2]`) is checker-legal but not yet supported by the
-		// backend's repeat-value builder.
-		{"repeat-of-array", "fn main() int { var a [2][3]int = [[7,8,9]; 2]; return a[1][2]; }", "ArrayValue"},
 		// Binding a whole inner array read (`let q [3]int = a[0];`) is not yet
 		// supported: the local-initializer Load path only accepts a
 		// DereferencePlace.
