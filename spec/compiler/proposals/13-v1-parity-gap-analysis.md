@@ -44,28 +44,40 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 42 ("Array-typed tuple element", tracker 14)
-closed in `5f7d40b`. The original T0501 checker filing was stale —
-independently reconfirmed via checker-test probing that the checker
-already accepts `([3]i32, i32)` cleanly in every position (declaration,
-parameter, return, indexed sub-read). The real, current gap was purely
-backend: `tupleElementCType` had no `isArray` case, the same bug class
-already fixed for arrays/slices/struct fields (Phase 3 #31/#32/#38).
-Fixed with the element-type gate plus a pre-aggregate-block typedef-
-collection step for tuple-element arrays, mirroring the existing
-struct-field/optional-payload array treatment exactly, plus two natural
-extensions found necessary along the way: a tuple-literal array-element
-construction case, and a whole-array-element-binding (`TuplePlace`)
-case for the local-declaration Load-initializer path. STANDING NOTE,
-still open: `examples/arena_alloc.peb` fails to compile on pointer
-arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
-tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "`.len` read directly on a str-typed
-indexed lvalue expression" (tracker 14 line ~140, found during Phase 3
-#32 — "`s[i].len` emits `pebble_rt_checked_index_` with no width suffix
-(`checkedSuffix(width)` resolves empty for this call site's width
-argument), an undeclared-function C compile error" — check current
-state for staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 43 ("`.len` read directly on a str-typed indexed
+lvalue expression", tracker 14) closed in `91da966`. Root cause:
+`buildExpr`'s integer `Load`/`FieldPlace` case passed the Load's OWN
+width (a structural `.len` is always `uint`, regardless of the entry's
+real width) into `buildStructFieldRead`'s receiver construction instead
+of the ambient entry width, so `checkedSuffix` resolved empty for the
+receiver's own checked-index call. Fixed with a one-line change
+(`entryWidth` instead of `width`), mirroring a correct sibling branch
+two lines above. A genuinely separate, pre-existing, unrelated bug was
+found and left out of scope: `.len` used as a `print` operand fails a
+`PRIu64`-vs-`size_t` format-specifier mismatch, independently confirmed
+via a PLAIN non-indexed `print(s.len)` reproducing identically — now
+its own tracker 14 row. The dispatched session's own test file
+initially included a test exercising that separate, still-broken bug;
+removed during verification rather than left as a red test. STANDING
+NOTE, still open: `examples/arena_alloc.peb` fails to compile on
+pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
+yet a tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "Non-default-width value returned
+from a default-width-returning function" (tracker 14 line ~130, found
+during Phase 3 #41 — "`fn main() int { var x u8 = 200; return x; }`
+[no arithmetic at all] fails Emit with '...contains a SymbolValue of
+type u8, want int'" — check current state for staleness first, per the
+established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `.len` read directly on a str-typed indexed lvalue expression
+(Phase 3 #43), tracker 14.**
+
+Closed in `91da966`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
