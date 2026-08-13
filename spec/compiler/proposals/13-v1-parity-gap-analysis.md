@@ -44,8 +44,28 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 19 ("Tagged-union variant literal", tracker 14)
-closed in `a7a8077`. The stale "Partial by payload C shape" wording
+*(empty — Phase 3 item 20 ("Arithmetic `+ - * / %`", tracker 14)
+closed in `f54e6ef`. A full ~78-pair sweep (5 operators x every
+integer width) of the plain-binary-expression form found the
+"helper-width matrix" fully correct already — i32/i64/int/u64 lower
+through checked helpers where they should, the narrow fixed widths and
+u64 `/`/`%` reject cleanly at Emit naming the operator and width (no
+missing-helper panic), and uint lowers as plain C for all 5 ops. The
+one real, distinct gap was in the COMPOUND-assignment form: `%=` on a
+uint place was hard-rejected ("% is integral-only") even though plain
+`a % b` on uint, and every other uint compound operator, already
+worked — a leftover special case with no runtime-helper justification
+(uint has no checked helper for ANY operator). Fixed by routing `%=`
+through the same operator resolution the other four compound operators
+already use. Picking up the next Phase 3 item: "Bitwise `& | ^`"
+(tracker 14, "Partial" — check current state for staleness first, per
+the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Tagged-union variant literal (Phase 3 #19), tracker 14.**
+
+Closed in `a7a8077`. The stale "Partial by payload C shape" wording
 predated Phase 3 #8's closure of the scalar payload-width restriction;
 a ~40-shape sweep of variant CONSTRUCTION across every payload
 type/position found one distinct, real gap: a variant constructed as
@@ -64,10 +84,9 @@ out of scope (already tracked separately): aggregate payloads
 (typedef-order scope limit), inline nested-union construction (Phase 3
 #8's known gap), union as a tuple/array element (container gaps),
 union call-result/field-read as a call argument (tracker 14 line 155),
-paren-wrapped local init (general SourceAlias gap). Picking up the
-next Phase 3 item: "Arithmetic `+ - * / %`" (tracker 14, "Partial;
-helper-width matrix is incomplete" — check current state for staleness
-first, per the established pattern) next.)*
+paren-wrapped local init (general SourceAlias gap).
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
