@@ -2483,25 +2483,29 @@ func emitAndRunWithSymbols(t *testing.T, sourceText string, wantCode int) {
 
 // --- Struct fields: slice-typed fields constructed inline ---
 
-// buildSliceOfStrParameterUnit hand-builds a unit whose i32 entry calls a
-// helper (symbol 24) that declares one []str parameter. The []str type is
-// borrowed from a real checker-built fixture (fn f(x []str) i32, which the
-// checker accepts even though the backend rejects the slice-of-str element
-// type); the unit is otherwise the same shape buildCallArgumentCountMismatchUnit
-// builds, so Emit's reachability walk validates the helper's signature and
-// rejects the unsupported element type before building any body.
-func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
+// buildSliceOfUnsupportedElementParameterUnit hand-builds a unit whose i32
+// entry calls a helper (symbol 24) that declares one [][3]i32 parameter. The
+// [][3]i32 type is borrowed from a real checker-built fixture (fn f(x [][3]i32)
+// i32, which the checker accepts even though the backend rejects the
+// slice-of-array element type); the unit is otherwise the same shape
+// buildCallArgumentCountMismatchUnit builds, so Emit's reachability walk
+// validates the helper's signature and rejects the unsupported element type
+// before building any body. A fixed-array slice element (or a tagged-union
+// element) is exactly what validateSliceElementType still rejects — str is a
+// supported slice element since the str-element slice work (Phase 3 #32), so a
+// []str parameter no longer exercises this gate.
+func buildSliceOfUnsupportedElementParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, symbol.SymbolID) {
 	t.Helper()
-	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(x []str) i32 { return 0; } fn main() i32 { return 0; }", "main", false)
-	var strSlice types.TypeID
+	realUnit, snapshot, entryID, _ := buildFixture(t, "fn f(x [][3]i32) i32 { return 0; } fn main() i32 { return 0; }", "main", false)
+	var sliceType types.TypeID
 	for _, n := range realUnit.Nodes() {
 		if n.Kind == tir.FunctionDeclaration && len(n.Parameters) == 1 {
-			strSlice = n.Parameters[0].Type
+			sliceType = n.Parameters[0].Type
 			break
 		}
 	}
-	if strSlice == 0 {
-		t.Fatal("checker-built fixture has no []str parameter to borrow its type from")
+	if sliceType == 0 {
+		t.Fatal("checker-built fixture has no slice-of-array parameter to borrow its type from")
 	}
 	i32 := snapshot.Builtins().I32
 	callUnit, _, _, _ := buildFixture(t, "fn add(a i32, b i32) i32 { return 0; } fn main() i32 { return add(1, 2); }", "main", false)
@@ -2547,7 +2551,7 @@ func buildSliceOfStrParameterUnit(t *testing.T) (*tir.Unit, *types.Snapshot, sym
 		Kind:       tir.FunctionDeclaration,
 		Symbol:     24,
 		Function:   helperFid,
-		Parameters: []tir.Parameter{{Symbol: 25, Type: strSlice}},
+		Parameters: []tir.Parameter{{Symbol: 25, Type: sliceType}},
 		ResultType: i32,
 		Convention: types.Pebble,
 		Span:       source.NewSpan(0, 0, 1),

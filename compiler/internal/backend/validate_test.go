@@ -876,14 +876,17 @@ func TestEmitSliceConstructionAsCallArgumentInReturnPositionCompilesAndRuns(t *t
 
 func TestEmitRejectsSliceParameterUnsupportedElementType(t *testing.T) {
 	t.Parallel()
-	// A slice-typed parameter whose element type is not the entry's width or
-	// bool is a clean rejection from validateHelperSignature. A []str parameter
-	// is checker-reachable but not constructible from real source (a str array
-	// is itself rejected by the array element gate before any slice of it could
-	// reach a call site), so this is hand-built through the IR builder to
-	// exercise the gate directly: helper symbol 24 takes one []str parameter
-	// (its type borrowed from a real checker-built fixture) and main calls it,
-	// so the reachability walk hits the gate before any body is built.
-	unit, snapshot, entryID := buildSliceOfStrParameterUnit(t)
+	// A slice-typed parameter whose element type is not one the backend can
+	// lower is a clean rejection from validateHelperSignature. A [][3]i32
+	// parameter (a slice whose element is a fixed array) is checker-reachable
+	// as a declaration but not callable from real source — the backend has no
+	// slice-of-array element lowering or typedef, so no real call site could
+	// reach this gate — so it is hand-built through the IR builder to exercise
+	// the gate directly: helper symbol 24 takes one [][3]i32 parameter (its
+	// type borrowed from a real checker-built fixture) and main calls it, so
+	// the reachability walk hits the gate before any body is built. []str is
+	// deliberately not used here: str became a supported slice element type
+	// (Phase 3 #32), so a []str parameter no longer exercises the element gate.
+	unit, snapshot, entryID := buildSliceOfUnsupportedElementParameterUnit(t)
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "unsupported element type")
 }
