@@ -44,29 +44,49 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 28 ("Range loop, exclusive and inclusive",
-tracker 14) closed in `61eb1c5`. A real infinite-loop bug: an inclusive
-range's (`..=`) unconditional post-body `i += step` advances the
-iterator one PAST the end bound, wrapping for an unsigned iterator
-descending through 0 or for either signedness ascending past the
-type's own max, and the old step-direction-ternary condition then read
-the wrapped value as still in range — confirmed hanging forever at
-multiple widths. The exclusive form was never affected (its last step
-never crosses a representable boundary), which is why this survived
-four prior range-loop fixes. Fixed with a done-gate set from the
-iterator's pre-increment value inside the for-loop's increment clause
-— continue-robust since C's `continue` jumps to the increment clause
+*(empty — Phase 3 item 29 ("Deferred local declaration", tracker 14)
+closed in `2c1c867`. Both halves of the row were real, a genuine V1
+feature gap, not stale scaffolding. Resolver (`internal/symbol`, a
+layer no prior Phase 3 item had touched): `resolveStatement`'s
+DeferStmt case resolved its child with the enclosing scope, so a bare
+`defer var x = 5;` leaked x into the surrounding function; fixed by
+resolving inside a fresh ScopeBlock, mirroring resolveBlock's own
+pattern exactly. Backend: `buildDeferredStatements` had no case for
+`tir.Initialize` (named in the audit) or `tir.Block` (also broken,
+found empirically, not named in the audit) — fixed by adding both,
+each building over a cloned/discarded locals scope via the existing
+buildLeadingStatement/buildFallthroughBody machinery, wrapped in a
+fresh C block mirroring V1's defer-local block. Full backend suite
+checkpoint run after this item (460s, green) given it touched shared
+scope-resolution code used by every checker consumer. STANDING NOTE,
+still open: `examples/arena_alloc.peb` fails to compile on pointer
+arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
+tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "Deferred block, conditional, loop,
+or switch" (tracker 14, "Absent; checker/backend contract defect" —
+check current state for staleness first, per the established pattern,
+and note item #29 may have already closed the "deferred block" half of
+this row as a side effect) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Range loop, exclusive and inclusive (Phase 3 #28), tracker 14.**
+
+Closed in `61eb1c5`. A real infinite-loop bug: an inclusive range's
+(`..=`) unconditional post-body `i += step` advances the iterator one
+PAST the end bound, wrapping for an unsigned iterator descending
+through 0 or for either signedness ascending past the type's own max,
+and the old step-direction-ternary condition then read the wrapped
+value as still in range — confirmed hanging forever at multiple
+widths. The exclusive form was never affected (its last step never
+crosses a representable boundary), which is why this survived four
+prior range-loop fixes. Fixed with a done-gate set from the iterator's
+pre-increment value inside the for-loop's increment clause —
+continue-robust since C's `continue` jumps to the increment clause
 where the done test lives. Full backend suite checkpoint run after
 this item (457s, green) given the correctness weight of a hang bug.
-STANDING NOTE, still open: `examples/arena_alloc.peb` fails to compile
-on pointer arithmetic in `std/mem/arena.peb` (T0505 "cannot unify
-semantic type kind 2 with kind 1", `ptr + int`) — a real-world finding
-from testing the compiler directly against `examples/`, not yet a
-tracker 14 row, not yet investigated, awaiting the user's decision on
-when to queue it. Picking up the next Phase 3 item: "Deferred local
-declaration" (tracker 14, "Absent; checker/backend contract defect" —
-check current state for staleness first, per the established pattern)
-next.)*
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
