@@ -249,6 +249,32 @@ func (s *irBuildState) buildValueRecord(id valueID, record *expressionRecord, re
 		if !ok {
 			return 0, false
 		}
+		if sourceType, sourceOK := s.resolveType(record.Children[0]); sourceOK {
+			if key, keyOK := s.store.Key(node.Type); keyOK && key.Kind() == types.Optional {
+				if targetPayload, childOK := key.Child(); childOK && sourceType != targetPayload {
+					// A `some <payload>` whose payload's own type differs from
+					// the SomeOptional's declared payload type — the payload
+					// needs a width/type conversion (a u8 local into a ?u32
+					// destination, a narrower call result or field read, an
+					// f32 value into a ?f64 destination). The destination
+					// payload type is pinned by the solve (see
+					// expression_facts' SomeExpr finish), so the payload child
+					// is wrapped in the ordinary coercion the pair calls for —
+					// the exact classify/coercionFor/addCoercionNode machinery
+					// the expressionTuple case above uses for a tuple element
+					// whose type differs from its destination element, and the
+					// same coercion a plain (non-optional) compatible pair
+					// accepts.
+					class := classify(s.handoff.Semantics, sourceType, targetPayload)
+					coercion := coercionFor(s.handoff.Semantics, class, sourceType, targetPayload)
+					if coercion != coercionNone {
+						if wrapped, ok := s.addCoercionNode(coercion, targetPayload, payload, record.Header.Span, symbol.SyntaxRef{}); ok {
+							payload = wrapped
+						}
+					}
+				}
+			}
+		}
 		node.Kind, node.Children = tir.SomeOptional, []tir.NodeID{payload}
 	case expressionInterpolated:
 		node.Kind = tir.InterpolatedString

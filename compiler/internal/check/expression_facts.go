@@ -313,7 +313,28 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		kind = expressionSome
 		value = w.expressionResult(ref, w.session.Variable(origin), origin)
 		child := w.firstChildValue(plan)
-		w.addConstraint(infer.ConstrainShape(value.Term, infer.OptionalShape(infer.Leaf(child.Term)), origin))
+		payload := infer.Leaf(child.Term)
+		// When `some <payload>` is constructed against a KNOWN optional
+		// destination (`var o ?u32 = some x;`, `return some x;`, `g(some x)`),
+		// the SomeExpr's own optional type is pinned to the DESTINATION's
+		// optional type rather than derived from the payload child's type. The
+		// child's type may differ when the payload needs a width/type
+		// conversion (a u8 local into a ?u32 destination); the child's own
+		// conversion is then applied by the IR builder from the retained
+		// child-to-payload compatibility record, exactly as a tuple literal's
+		// differing-width element is coerced. Without the pin, the SomeExpr
+		// would type as `?<payload's own type>` and the binding/return/argument
+		// compatibility against the destination would classify ?u8→?u32 as
+		// compatibleForbidden (C0601) even though the plain, non-optional
+		// u8→u32 conversion is accepted.
+		if id, ok := w.knownDestination(ctx.expected); ok {
+			if key, found := w.generation.inputs.Types.Key(id); found && key.Kind() == types.Optional {
+				if payloadType, childOK := key.Child(); childOK {
+					payload = infer.Leaf(w.session.Known(payloadType))
+				}
+			}
+		}
+		w.addConstraint(infer.ConstrainShape(value.Term, infer.OptionalShape(payload), origin))
 	case syntax.SizeofExpr:
 		kind = expressionSizeof
 		value = w.expressionResult(ref, w.session.Known(w.generation.inputs.Types.Builtins().Uint), origin)
