@@ -44,8 +44,30 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 29 ("Deferred local declaration", tracker 14)
-closed in `2c1c867`. Both halves of the row were real, a genuine V1
+*(empty — Phase 3 item 30 ("Deferred block, conditional, loop, or
+switch", tracker 14) closed in `7f5732c`. Confirmed staleness
+precisely: Phase 3 #29's `tir.Block` case already closed a
+conditional/loop/switch INSIDE a deferred block, via its
+`buildFallthroughBody` delegation. The one distinct remaining gap was
+a BARE deferred control-flow statement with no enclosing block (`defer
+if/while/loop/for/switch ...`, no `defer { }` wrapper) — checker-
+accepted (C0613 permits it) but Emit-rejected for all five TIR node
+kinds. Fixed by adding a case for each, mirroring #29's Block case's
+delegation pattern exactly (same builders the non-deferred fall-through
+dispatch already uses, wrapped in a fresh C block). STANDING NOTE,
+still open: `examples/arena_alloc.peb` fails to compile on pointer
+arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
+tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "Nested fixed array `[N][M]T`"
+(tracker 14 line 125, "Partial/absent — an array of arrays is rejected
+by the backend in every position tried" — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Deferred local declaration (Phase 3 #29), tracker 14.**
+
+Closed in `2c1c867`. Both halves of the row were real, a genuine V1
 feature gap, not stale scaffolding. Resolver (`internal/symbol`, a
 layer no prior Phase 3 item had touched): `resolveStatement`'s
 DeferStmt case resolved its child with the enclosing scope, so a bare
@@ -58,15 +80,9 @@ each building over a cloned/discarded locals scope via the existing
 buildLeadingStatement/buildFallthroughBody machinery, wrapped in a
 fresh C block mirroring V1's defer-local block. Full backend suite
 checkpoint run after this item (460s, green) given it touched shared
-scope-resolution code used by every checker consumer. STANDING NOTE,
-still open: `examples/arena_alloc.peb` fails to compile on pointer
-arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
-tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Deferred block, conditional, loop,
-or switch" (tracker 14, "Absent; checker/backend contract defect" —
-check current state for staleness first, per the established pattern,
-and note item #29 may have already closed the "deferred block" half of
-this row as a side effect) next.)*
+scope-resolution code used by every checker consumer.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
