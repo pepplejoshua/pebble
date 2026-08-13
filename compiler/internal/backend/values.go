@@ -2789,7 +2789,20 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		// the entry's width above, so the element/field must resolve to the
 		// entry's width here. The emitted C is
 		// pebble_local_<symbol>._<ordinal> for a tuple and
-		// pebble_local_<symbol>.pebble_field_<member> for a struct.
+		// pebble_local_<symbol>.pebble_field_<member> for a struct. The
+		// struct-field read's RECEIVER — a struct field, slice element, or
+		// array element reached through a CheckedIndexPlace — is built by
+		// buildStructFieldRead at the entry's width (entryWidth), NOT this
+		// Load's own width: the Load's Type can be a width distinct from the
+		// entry's (a structural `.len` is uint, an i64 field inside an i32
+		// entry is i64), and the receiver's checked-index lowering
+		// (pebble_rt_checked_index_<suffix> and the length cast) must use the
+		// width the INDEX is built at — the entry's — or the suffix resolves
+		// empty (e.g. `s[i].len` with a uint .len typed receiver built at uint
+		// produced pebble_rt_checked_index_ with no suffix, an undeclared
+		// function at cc time). This mirrors the CheckedIndexPlace branch
+		// directly above, which already threads entryWidth into
+		// buildArrayPlaceRead for the same reason.
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("entry function body expression contains a Load with %d child(ren), want exactly one place", len(node.Children))
 		}
@@ -2802,7 +2815,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 				return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, entryWidth, false)
 			}
 			if place.Kind == tir.FieldPlace {
-				return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+				return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, entryWidth, false)
 			}
 			if place.Kind == tir.DereferencePlace {
 				return buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
