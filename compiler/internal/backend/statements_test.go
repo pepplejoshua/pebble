@@ -1447,9 +1447,10 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	// > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 >
 	// pebble_temp_23); pebble_local_28 += pebble_step_28)`. Symbols 22/23 (the
 	// bound literal nodes), 27 (sum), and 28 (the iterator) come from the real
-	// fixture dump. The inclusive form's conditions must instead be `<=`/`>=`
-	// (RangeLoop.RangeInclusive), so the two operators are distinguishable in
-	// the emitted text.
+	// fixture dump. The inclusive form is instead gated by a done local whose
+	// test flips the direction operators to `>=`/`<=` (RangeLoop.RangeInclusive)
+	// — the wrap-safe shape for unsigned iterators — so the two end rules are
+	// distinguishable in the emitted text.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var sum i32 = 0; loop 0..3 : i { sum = sum + i; } return sum; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -1476,7 +1477,8 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	for _, want := range []string{
 		"    int32_t pebble_temp_22 = 0;\n",
 		"    int32_t pebble_temp_23 = 3;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 <= pebble_temp_23) : (pebble_local_28 >= pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+		"    int32_t pebble_done_28 = 0;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3196,7 +3198,11 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
 	}
-	// Inclusive descending: the ternary's branches must be `<=` / `>=`.
+	// Inclusive descending: the loop is gated by the done local, which is set
+	// (from the still-unincremented current value) inside the increment's comma
+	// expression once the iterator reaches the end bound — the shape that keeps
+	// an unsigned iterator from wrapping one past end (0 - 1) into an infinite
+	// loop on `loop 5..=0`.
 	unit, snapshot, entryID, sources = buildFixture(t, "fn main() i32 { var count i32 = 0; loop 5..=0 : i { count = count + 1; } return count; }", "main", false)
 	buf.Reset()
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -3205,7 +3211,8 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	out = buf.String()
 	for _, want := range []string{
 		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 <= pebble_temp_23) : (pebble_local_28 >= pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+		"    int32_t pebble_done_28 = 0;\n",
+		"    for (int32_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

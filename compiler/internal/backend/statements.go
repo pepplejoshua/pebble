@@ -1403,24 +1403,50 @@ func buildRangeLoop(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 	// The step local is deliberately always signed: it holds only -1/+1, and
 	// the condition branches on its sign, so an unsigned step would both trip
 	// -Wsign-compare and wrap -1 to a huge positive value on a descending
-	// unsigned range. The increment `i += step` needs no signedness care — the
-	// step's implicit conversion into the iterator's type wraps the -1 down to
-	// the right value for unsigned iterators.
+	// unsigned range. The increment `i += step` needs no signedness care for
+	// EXCLUSIVE ranges — the step's implicit conversion into the iterator's
+	// type wraps the -1 down to the right value for unsigned iterators, and a
+	// descending exclusive loop's last decrement is from end+1 down to end
+	// (end == 0 means from 1 down to 0), never from 0 itself.
+	//
+	// The INCLUSIVE form is different: its last iteration IS the end bound, so
+	// after the body runs at i == end the unconditional `i += step` advances
+	// an unsigned iterator one past end — 0 - 1 wraps to UINT_MAX on a
+	// descending range (and max + 1 wraps to 0 on an ascending one) — and the
+	// step-ternary condition (i <= end / i >= end) then reads the wrapped
+	// value as still in range forever. A literal/`int`-typed inclusive range
+	// never hits this (signed one-past-end is representable), but V2 lets the
+	// iterator be the bounds' own unsigned width, so `loop 5..=0 : i` over u8
+	// wrapped to 255 and looped forever (reproduced). The fix is a done local
+	// that is set, from the still-unincremented current value, inside the
+	// for-increment's comma expression: `!done` replaces the step-ternary as
+	// the condition (an inclusive range always visits its start bound at least
+	// once, so there is no range check to keep), the increment sets done once
+	// the current value is the end bound, and the following `i += step` may
+	// then wrap with no consequence because the done flag has already ended
+	// the loop. Placing the done test in the increment rather than as a
+	// post-body break keeps a body `continue` correct: C's continue jumps
+	// straight to the increment clause, which is exactly where the done test
+	// lives, so a continue on the final iteration still terminates instead of
+	// skipping a trailing break and wrapping into an infinite loop.
 	indent := strings.Repeat("    ", depth+1)
 	iterCType := cType(boundType)
 	startTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[0])
 	endTemp := fmt.Sprintf("pebble_temp_%d", rangeNode.Children[1])
 	stepTemp := fmt.Sprintf("pebble_step_%d", rangeNode.Symbol)
 	iter := fmt.Sprintf("pebble_local_%d", rangeNode.Symbol)
-	ascOp, descOp := "<", ">"
-	if rangeNode.RangeInclusive {
-		ascOp, descOp = "<=", ">="
-	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s%s %s = %s;\n", indent, iterCType, startTemp, startText)
 	fmt.Fprintf(&b, "%s%s %s = %s;\n", indent, iterCType, endTemp, endText)
 	fmt.Fprintf(&b, "%sint32_t %s = (%s <= %s) ? 1 : -1;\n", indent, stepTemp, startTemp, endTemp)
-	fmt.Fprintf(&b, "%sfor (%s %s = %s; (%s > 0) ? (%s %s %s) : (%s %s %s); %s += %s) {\n%s\n%s}", indent, iterCType, iter, startTemp, stepTemp, iter, ascOp, endTemp, iter, descOp, endTemp, iter, stepTemp, bodyText, indent)
+	if rangeNode.RangeInclusive {
+		doneTemp := fmt.Sprintf("pebble_done_%d", rangeNode.Symbol)
+		fmt.Fprintf(&b, "%sint32_t %s = 0;\n", indent, doneTemp)
+		fmt.Fprintf(&b, "%sfor (%s %s = %s; !%s; %s |= (%s > 0) ? (%s >= %s) : (%s <= %s), %s += %s) {\n%s\n%s}", indent, iterCType, iter, startTemp, doneTemp, doneTemp, stepTemp, iter, endTemp, iter, endTemp, iter, stepTemp, bodyText, indent)
+	} else {
+		ascOp, descOp := "<", ">"
+		fmt.Fprintf(&b, "%sfor (%s %s = %s; (%s > 0) ? (%s %s %s) : (%s %s %s); %s += %s) {\n%s\n%s}", indent, iterCType, iter, startTemp, stepTemp, iter, ascOp, endTemp, iter, descOp, endTemp, iter, stepTemp, bodyText, indent)
+	}
 	return b.String(), nil
 }
 
