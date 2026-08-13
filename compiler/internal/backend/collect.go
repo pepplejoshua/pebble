@@ -180,6 +180,43 @@ func collectArrayTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID ti
 		seen[id] = true
 		deduplicated = append(deduplicated, id)
 	}
+	// A NESTED array type's typedef text references its array-typed element's
+	// OWN pebble_array_<innerID>_t typedef inline (`pebble_array_<innerID>_t
+	// data[<N>]`, see arrayElementCType's array case), so every collected
+	// array type's element chain must be closed under array elements — an
+	// array type collected only through a helper signature (an array-typed
+	// parameter/result `[2][3]i32`) or a sizeof/store reference drags its
+	// inner `[3]i32` typedef along, or the outer typedef names an undeclared
+	// C type. The closure appends transitively (index-based loop so appended
+	// element chains are themselves closed); ordering is restored by
+	// buildArrayTypedefs' own dependency-first pass.
+	for i := 0; i < len(deduplicated); i++ {
+		id := deduplicated[i]
+		key, ok := snapshot.Key(id)
+		if !ok {
+			continue
+		}
+		_, element, ok := key.Array()
+		if !ok || !isArray(snapshot, element) {
+			continue
+		}
+		// Walk the element chain, appending each array-typed element (and its
+		// own element) once.
+		var walk func(types.TypeID)
+		walk = func(elem types.TypeID) {
+			if !isArray(snapshot, elem) || seen[elem] {
+				return
+			}
+			seen[elem] = true
+			deduplicated = append(deduplicated, elem)
+			if key, ok := snapshot.Key(elem); ok {
+				if _, child, ok := key.Array(); ok {
+					walk(child)
+				}
+			}
+		}
+		walk(element)
+	}
 	return deduplicated, nil
 }
 
@@ -254,6 +291,27 @@ func collectArrayTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.
 		// the array typedef must be collected and emitted or the cast names an
 		// undeclared C type.
 		*out = append(*out, node.Type)
+	}
+	if (node.Kind == tir.ArrayValue || node.Kind == tir.ArrayRepeat) && isArray(snapshot, node.Type) {
+		// A NESTED array literal or repeat (`var a [2][3]i32 =
+		// [[1,2,3],[4,5,6]];`): the array's ELEMENT is itself a fixed array,
+		// and every nested array position emits the element's own
+		// pebble_array_<innerID>_t typedef somewhere — a nested array LOCAL
+		// declares `pebble_array_<innerID>_t pebble_local_<s>[<N>]`, and a
+		// nested array-literal argument/return/field/store value builds each
+		// inner element as `(pebble_array_<innerID>_t){ .data = {...} }` (see
+		// arrayElementCType's array case) — so the inner array type must be
+		// collected even though the outer local itself is a raw C array that
+		// collects nothing. The outer type, when its typedef IS referenced
+		// (an argument/return/field/store, never a local declaration), is
+		// collected by the Store/sizeof/print/pointer cases and the helper-
+		// signature scan as today, and collectArrayTypes' element closure
+		// below pulls in any deeper array element chain.
+		if key, ok := snapshot.Key(node.Type); ok {
+			if _, element, ok := key.Array(); ok && isArray(snapshot, element) {
+				*out = append(*out, element)
+			}
+		}
 	}
 	if isPointer(snapshot, node.Type) {
 		// A pointer-typed node whose pointee is an array (`let p *[3]i32 =

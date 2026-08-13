@@ -1100,6 +1100,17 @@ func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 			return "", 0, fmt.Errorf("index base is not an array")
 		}
 		lit, _ := arrayLengthLiteral(length, width)
+		if isArray(snapshot, elem) {
+			// A nested array element — the indexed element is itself a fixed
+			// array. Its C type is the inner array's own pebble_array_<innerID>_t
+			// WRAPPER struct (see arrayElementCType's array case), so the
+			// addressable array lvalue a SUBSEQUENT index (or a whole-array
+			// read/write) wants is the element struct's raw `.data` member —
+			// `base[i].data` — exactly the `.data` projection an array-typed
+			// struct field applies (see the FieldPlace case above). The
+			// returned type stays the array type: callers dispatch on it.
+			return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)].data", base, checkedSuffix(width), idx, lit, buildSourceLoc(fileSet, n.Span)), elem, nil
+		}
 		return fmt.Sprintf("%s[pebble_rt_checked_index_%s(%s, %s, %s)]", base, checkedSuffix(width), idx, lit, buildSourceLoc(fileSet, n.Span)), elem, nil
 	case tir.DereferencePlace:
 		// A dereference place: `*p` used as a write target (`*p = x;`). The

@@ -239,8 +239,8 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 	if isEnumType(unit, snapshot, elementType) {
 		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type %s is an enum type; enum-typed array elements are not supported yet", context, describeType(snapshot, initValue.Type), enumTypeName(elementType))
 	}
-	if !isStr(snapshot, elementType) && !isSupportedSliceElementType(unit, snapshot, elementType) && !isFloat(snapshot, elementType) {
-		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, f32, f64, or an aggregate element type", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
+	if !isStr(snapshot, elementType) && !isSupportedArrayElementType(unit, snapshot, elementType) && !isFloat(snapshot, elementType) {
+		return "", fmt.Errorf("%s declares an array-typed local of type %s whose element type is %s, want a fixed-width integer, char, bool, f32, f64, an aggregate element type, or a nested fixed array element", context, describeType(snapshot, initValue.Type), describeType(snapshot, elementType))
 	}
 	if initValue.Kind == tir.ArrayRepeat && isStr(snapshot, elementType) {
 		return "", fmt.Errorf("%s declares a str array local from an ArrayRepeat, want an ArrayValue (an array literal)", context)
@@ -485,6 +485,14 @@ func buildArrayBraceElements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 		} else if isStruct(snapshot, elementType) {
 			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else if isOptional(snapshot, elementType) {
+			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
+		} else if isArray(snapshot, elementType) {
+			// A nested fixed-array element (`var a [2][3]i32 =
+			// [[1,2,3],[4,5,6]];`): the element's C type is the inner array's
+			// own pebble_array_<innerID>_t wrapper typedef (see
+			// arrayElementCType's array case), so each inner array literal is
+			// built as that wrapper's compound literal by the same nested
+			// aggregate value builder struct/tuple/optional elements use.
 			expr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, child, scope, elementType, context, width)
 		} else {
 			expr, err = buildExpr(st, unit, snapshot, fileSet, child, scope, width, width)

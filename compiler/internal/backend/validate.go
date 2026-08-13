@@ -219,7 +219,7 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has array type missing from the type snapshot", decl.Symbol, i, param.Symbol)
 			}
 			_, element, ok := key.Array()
-			if !ok || !isSupportedSliceElementType(unit, snapshot, element) {
+			if !ok || !isSupportedArrayElementType(unit, snapshot, element) {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has an unsupported array element type", decl.Symbol, i, param.Symbol)
 			}
 		}
@@ -262,7 +262,7 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 			return fmt.Errorf("called function symbol %d has array result type missing from the type snapshot", decl.Symbol)
 		}
 		_, element, ok := key.Array()
-		if !ok || !isSupportedSliceElementType(unit, snapshot, element) {
+		if !ok || !isSupportedArrayElementType(unit, snapshot, element) {
 			return fmt.Errorf("called function symbol %d has an unsupported array result element type", decl.Symbol)
 		}
 	}

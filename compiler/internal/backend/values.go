@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -201,7 +202,7 @@ func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	if !ok {
 		return "", fmt.Errorf("%s references invalid aggregate value", context)
 	}
-	if node.Kind == tir.SymbolValue {
+	if node.Kind == tir.SymbolValue && !isArray(snapshot, typ) {
 		info, ok := scope[node.Symbol]
 		if !ok {
 			return "", fmt.Errorf("%s references unknown aggregate symbol", context)
@@ -218,8 +219,75 @@ func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		return buildStructValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isOptional(snapshot, typ):
 		return buildOptionalValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
+	case isArray(snapshot, typ):
+		// A nested fixed-array element value (`var a [2][3]i32 = [[1,2,3],
+		// [4,5,6]];`, an array-literal call argument, or a nested array's
+		// construction/return/field value): the element's C type is the
+		// inner array's own pebble_array_<innerID>_t wrapper typedef, so an
+		// inner array literal is built as that wrapper's compound literal,
+		// `(pebble_array_<innerID>_t){ .data = { ... } }` — the same shape
+		// arrayElementCType names and the outer array's `data[N]` member
+		// stores.
+		return buildNestedArrayValueExpr(st, unit, snapshot, fileSet, node, scope, typ, context, width)
 	}
 	return "", fmt.Errorf("%s aggregate type is unsupported", context)
+}
+
+// buildNestedArrayValueExpr builds one nested fixed-array value in a position
+// whose C destination is the inner array's own pebble_array_<typeID>_t wrapper
+// typedef — an element of an outer array literal (`[ [1,2,3], [4,5,6] ]`), a
+// nested array-literal call argument, or a nested array's construction/return/
+// field value. Two node shapes are supported, mirroring
+// buildNestedAggregateValue's own element shapes: a nested array literal (an
+// ArrayValue, emitted as the wrapper's compound literal whose brace elements
+// are built by the same buildArrayBraceElements an array local uses), and a
+// reference to an in-scope array-typed local of exactly that inner type (a
+// SymbolValue — the wrapped form names the local's wrapper struct directly,
+// a raw array local's bytes are copied element-by-element into a fresh
+// compound literal, the same per-element read buildArrayArgument's
+// SymbolValue case uses, because a raw C array cannot be copied by value in a
+// brace-list initializer). Any other shape is a clean rejection naming what
+// was found.
+func buildNestedArrayValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, arrayType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	key, ok := snapshot.Key(arrayType)
+	if !ok {
+		return "", fmt.Errorf("%s nested array element type %s is not in the type snapshot", context, describeType(snapshot, arrayType))
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("%s nested array element type %s has no length and element type", context, describeType(snapshot, arrayType))
+	}
+	if _, err := arrayLengthLiteral(length, width); err != nil {
+		return "", fmt.Errorf("%s: %v", context, err)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, declared := scope[node.Symbol]
+		if !declared || info.array != arrayType {
+			return "", fmt.Errorf("%s references array-typed symbol %d, which is not an in-scope array-typed local of type %s", context, node.Symbol, describeType(snapshot, arrayType))
+		}
+		if info.arrayWrapped {
+			return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+		}
+		values := make([]string, int(length))
+		for i := range values {
+			values[i] = fmt.Sprintf("pebble_local_%d[%d]", node.Symbol, i)
+		}
+		return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(values, ", ")), nil
+	}
+	if node.Kind != tir.ArrayValue {
+		return "", fmt.Errorf("%s nested array element is a %s, want an array literal (an ArrayValue) or a reference to an in-scope array-typed local", context, node.Kind)
+	}
+	if node.Type != arrayType {
+		return "", fmt.Errorf("%s nested array element is an ArrayValue of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+	}
+	if uint64(len(node.Children)) != length {
+		return "", fmt.Errorf("%s nested array element has %d element expression(s), want %d", context, len(node.Children), length)
+	}
+	elems, err := buildArrayBraceElements(st, unit, snapshot, fileSet, node, scope, context, width, element)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s){ .data = { %s } }", arrayTypeName(arrayType), strings.Join(elems, ", ")), nil
 }
 
 func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {

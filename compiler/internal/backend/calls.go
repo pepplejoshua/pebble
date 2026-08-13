@@ -1475,6 +1475,12 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 				value, err = buildBoolExpr(st, unit, snapshot, fileSet, childID, locals, width)
 			} else if elementWidth, integer := resolvedBuiltin(snapshot, element); integer && cType(elementWidth) != "" {
 				value, err = buildExpr(st, unit, snapshot, fileSet, childID, locals, elementWidth, width)
+			} else if isArray(snapshot, element) {
+				// A nested array literal as a call argument (`f([[1,2,3],
+				// [4,5,6]])`): each inner array element is built as its own
+				// pebble_array_<innerID>_t wrapper compound literal by the same
+				// nested aggregate value builder an outer array literal uses.
+				value, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, childID, locals, element, "array argument", width)
 			} else {
 				return "", "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, child.Type))
 			}

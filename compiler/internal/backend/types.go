@@ -44,6 +44,17 @@ func isSupportedSliceElementType(unit *tir.Unit, snapshot *types.Snapshot, id ty
 	return isTuple(snapshot, id) || isOptional(snapshot, id) || isStruct(snapshot, id)
 }
 
+// isSupportedArrayElementType is the element gate for FIXED-ARRAY positions
+// (an array local's declaration, an array parameter/result, an array index
+// read/write): every element isSupportedSliceElementType accepts plus a nested
+// fixed array element. It is deliberately NOT isSupportedSliceElementType
+// widened in place — that predicate is shared with slice element positions,
+// where an array element (a slice of arrays, `[][N]T`) remains out of scope
+// and must stay a clean rejection.
+func isSupportedArrayElementType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	return isSupportedSliceElementType(unit, snapshot, id) || isArray(snapshot, id)
+}
+
 // instantiatedFieldType recovers one field's type for a SPECIFIC struct
 // instantiation from the unit's own construction evidence: any RecordConstruct
 // whose type is exactly structType (not merely whose declaration matches) and
@@ -517,6 +528,18 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	}
 	if isOptional(snapshot, id) {
 		return optionalTypeName(id), nil
+	}
+	if isArray(snapshot, id) {
+		// A nested array element (a [N][M]T outer array whose element is
+		// itself the fixed array [M]T): the element's C type is the inner
+		// array's OWN typedef name (pebble_array_<typeID>_t), exactly as a
+		// tuple/optional/struct element uses its own typedef name — so the
+		// outer array's `data[length]` member is an array of the inner
+		// wrapper structs, `pebble_array_<innerID>_t data[<N>]`. The inner
+		// typedef must be collected and emitted before the outer's (see
+		// buildArrayTypedefs' dependency-first ordering), and the inner's own
+		// element is validated when the inner typedef is built.
+		return arrayTypeName(id), nil
 	}
 	if isStruct(snapshot, id) {
 		if isEnumType(unit, snapshot, id) {

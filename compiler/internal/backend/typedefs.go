@@ -201,20 +201,45 @@ func buildTupleTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 
 func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
-	for _, id := range ids {
+	// A NESTED array typedef's `.data` member is an inline `elem data[length]`
+	// naming its array-typed element's own pebble_array_<innerID>_t typedef
+	// (see arrayElementCType's array case), so each array type's element chain
+	// must be emitted BEFORE the array type itself — C requires the inner
+	// typedef fully defined before the outer references it. ids arrives in
+	// first-encountered order from the collection pass (which may list an
+	// outer before its inner), so the pass emits each id in dependency-first
+	// DFS postorder, deduplicating within this block.
+	emitted := make(map[types.TypeID]bool, len(ids))
+	var build func(types.TypeID) error
+	build = func(id types.TypeID) error {
+		if emitted[id] {
+			return nil
+		}
 		key, ok := snapshot.Key(id)
 		if !ok {
-			return "", fmt.Errorf("array type %d is not in the type snapshot", id)
+			return fmt.Errorf("array type %d is not in the type snapshot", id)
 		}
 		length, element, ok := key.Array()
 		if !ok {
-			return "", fmt.Errorf("type %s is not an array type", describeType(snapshot, id))
+			return fmt.Errorf("type %s is not an array type", describeType(snapshot, id))
 		}
+		if isArray(snapshot, element) {
+			if err := build(element); err != nil {
+				return err
+			}
+		}
+		emitted[id] = true
 		ctype, err := arrayElementCType(unit, snapshot, width, element)
 		if err != nil {
-			return "", fmt.Errorf("array type %s: %v", describeType(snapshot, id), err)
+			return fmt.Errorf("array type %s: %v", describeType(snapshot, id), err)
 		}
 		texts = append(texts, fmt.Sprintf("typedef struct {\n    %s data[%d];\n} %s;", ctype, length, arrayTypeName(id)))
+		return nil
+	}
+	for _, id := range ids {
+		if err := build(id); err != nil {
+			return "", err
+		}
 	}
 	return strings.Join(texts, "\n"), nil
 }
