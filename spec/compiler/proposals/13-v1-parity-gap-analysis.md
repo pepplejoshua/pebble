@@ -44,8 +44,36 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 18 ("Array literal and repeat", tracker 14)
-closed in `b3020aa`. Five real gaps found by a ~40-shape empirical
+*(empty — Phase 3 item 19 ("Tagged-union variant literal", tracker 14)
+closed in `a7a8077`. The stale "Partial by payload C shape" wording
+predated Phase 3 #8's closure of the scalar payload-width restriction;
+a ~40-shape sweep of variant CONSTRUCTION across every payload
+type/position found one distinct, real gap: a variant constructed as
+the RETURN VALUE of a bare (brace-less) single-statement switch case
+body (`case .value: return C.value(5);`) was rejected at Emit with
+"want int" — buildSwitchCaseBody's bare-return path re-implemented
+only a subset of return shapes (char/str/aggregate/slice/float) and
+fell through to the plain-integer path for everything else, even
+though the block-body form and the switch-expression fallback both
+already dispatched through the complete buildReturnStatement. Fixed by
+delegating the bare-return path to buildReturnStatement directly,
+eliminating the buggy partial re-implementation. Also confirmed the
+real std/result.peb `Result.map` shape (a generic union constructed in
+a case-body return) was affected — not a synthetic-only gap. Confirmed
+out of scope (already tracked separately): aggregate payloads
+(typedef-order scope limit), inline nested-union construction (Phase 3
+#8's known gap), union as a tuple/array element (container gaps),
+union call-result/field-read as a call argument (tracker 14 line 155),
+paren-wrapped local init (general SourceAlias gap). Picking up the
+next Phase 3 item: "Arithmetic `+ - * / %`" (tracker 14, "Partial;
+helper-width matrix is incomplete" — check current state for staleness
+first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Array literal and repeat (Phase 3 #18), tracker 14.**
+
+Closed in `b3020aa`. Five real gaps found by a ~40-shape empirical
 sweep: (1) ArrayRepeat (`[v; N]`) as a call argument was entirely
 unsupported at Emit; (2) ArrayRepeat as a struct-field construction
 value was entirely unsupported at Emit (also closes tracker 14's
@@ -65,10 +93,9 @@ float-element branch. Confirmed out of scope (general, reproduce
 identically for non-array code): bare scalar-width widening without a
 literal, bool-as-int cast; confirmed still-open and separately tracked:
 nested array-of-array (tracker 14 line 125), array-typed tuple element
-(line 127). Picking up the next Phase 3 item: "Tagged-union variant
-literal" (tracker 14, "Partial by payload C shape; generic narrowing
-is resolved" — check current state for staleness first, per the
-established pattern) next.)*
+(line 127).
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
