@@ -44,32 +44,40 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 46 ("Optional field assigned `some <value>` in
-a `.{ ... }` literal", tracker 14) closed in `72c3109`. Same bug class
-as Phase 3 #45, one type-kind short: `recordFieldGroundable` covered
-only Array and plain Struct, so an optional-typed field's destination
-was never grounded as KNOWN at walk time, meaning Phase 3 #27's
-existing SomeExpr-pinning never fired inside a record literal — the
-SomeExpr typed itself from the payload alone (`?int` for a bare `5`)
-and failed the field-role compatibility check, even for a MATCHING
-literal payload. Fixed by widening `recordFieldGroundable` to also
-cover `types.Optional`, and widening the generic-substitution gate to
-admit `infer.TemplateOptional` so a generic struct's own `?T` field
-grounds correctly too. A genuine side effect surfaced by the
-supervisor's own independent full-suite verification (not the dispatch
-itself): grounding the Optional TypeID earlier shifts downstream
-type-ID interning order, breaking one unrelated pre-existing test's
-hardcoded exact typedef numbers — confirmed a pure renumbering (same
-correct C shape) and fixed via a small follow-up dispatch. STANDING
+*(empty — Phase 3 item 47 ("`.len` used as a `print` operand fails a
+format-specifier mismatch", tracker 14) closed in `1dd0d63`. Root
+cause: a `.len`-sourced print operand's C expression carries the
+runtime aggregate's real `size_t` type (`PebbleStr`/`PebbleStrSlice`
+both declare `.len` as `size_t`; a fixed array's `.len` folds to a
+uint-typed C literal), neither of which is `uint64_t`, so the `PRIu64`
+format specifier rejected it under `-Werror -Wformat`. Fixed by
+casting a `.len`-sourced (or any Uint-typed literal — investigation
+found a plain `print(5u)` hits the identical mismatch) print operand's
+C expression to `uint64_t` at the print-call site, mirroring an
+existing precedent (a str's `.data` cast to `const char *` for a `%s`
+libc argument). Covers str/slice/fixed-array `.len`, addressable and
+non-addressable receivers, parenthesized/mixed-operand/deferred
+prints; composite print operands were already unaffected. STANDING
 NOTE, still open: `examples/arena_alloc.peb` fails to compile on
 pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
 yet a tracker 14 row, awaiting the user's decision on when to queue
-it. Picking up the next Phase 3 item: "`.len` used as a `print`
-operand fails a format-specifier mismatch" (tracker 14 line ~143,
-`print(s.len)` fails `cc -Werror -Wformat` — `PRIu64` vs. `.len`'s
-actual `size_t` C type — found during Phase 3 #43, general/
-pre-existing, unrelated to indexing — check current state for
+it. Picking up the next Phase 3 item: "`TestEmitRejectsSliceParameterUnsupportedElementType`
+hand-built-IR test failure" (tracker 14 line ~131, the hand-built IR
+fixture `buildSliceOfStrParameterUnit` produces a call node with 0
+arguments instead of 1 — found during Phase 3 #41's full-suite
+checkpoint, confirmed pre-existing and unrelated via causation-check
+at the time, root cause not yet chased — check current state for
 staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `.len` used as a `print` operand fails a format-specifier
+mismatch (Phase 3 #47), tracker 14.**
+
+Closed in `1dd0d63`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
