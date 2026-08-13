@@ -93,6 +93,20 @@ type operatorPlan struct {
 	children []symbol.SyntaxRef
 	result   typedValue
 	exact    infer.Term
+	// concreteResult reports that the one-literal operand path resolved the
+	// operator result to a sibling operand whose type is already statically
+	// known from its own declaration. The result then must not be hard-pinned
+	// to the enclosing destination's expected type: like a plain symbol
+	// reference, its outer expectation is satisfied by the retained
+	// compatibility record instead, so a differing-width destination (e.g.
+	// returning an `i32` expression from an `int` function) is accepted via
+	// the compatibility classification rather than a T0505 unify conflict.
+	concreteResult bool
+	// resultKnown is the statically-known concrete type of a concreteResult
+	// operator result; it is published onto the result value (and its
+	// knownValues entry) so that an ENCLOSING operator treating this result as
+	// a one-literal sibling sees it as concrete too (e.g. `x + 1 + 2`).
+	resultKnown types.TypeID
 }
 
 type castRecord struct {
@@ -186,6 +200,29 @@ func operatorSharesResult(kind syntax.NodeKind, token syntax.TokenKind) bool {
 	}
 }
 
+// isIntegerOrFloatLiteral reports whether the node is a bare integer or float
+// literal — the two literal kinds whose concrete type is not yet fixed and may
+// need to fit an operand or destination rather than being pre-pinned.
+func isIntegerOrFloatLiteral(node syntax.Node) bool {
+	return node.Kind() == syntax.Literal && (node.Token() == syntax.IntegerLiteral || node.Token() == syntax.FloatLiteral)
+}
+
+// binaryHasExactlyOneLiteral reports whether, among the given binary-operator
+// child items, exactly one (the one at index) is a bare integer/float literal.
+func binaryHasExactlyOneLiteral(items []walkItem, index int, tree *syntax.Tree) bool {
+	literals := 0
+	for j := range items {
+		child, ok := tree.Node(items[j].ref.Node)
+		if !ok || child.Kind() == syntax.Missing || child.Kind() == syntax.Error {
+			continue
+		}
+		if isIntegerOrFloatLiteral(child) {
+			literals++
+		}
+	}
+	return literals == 1
+}
+
 func (w *walker) prepareOperator(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree) []walkItem {
 	items := childItems(ref, node, ctx)
 	if ctx.suppressValue {
@@ -216,6 +253,22 @@ func (w *walker) prepareOperator(ref symbol.SyntaxRef, node syntax.Node, ctx wal
 			}
 			if node.Kind() == syntax.BinaryExpr && (node.Token() == syntax.ShiftLeft || node.Token() == syntax.ShiftRight) && i == 1 {
 				continue
+			}
+			// A bare integer/float literal operand of a same-result binary
+			// operator (`+ - * / % & | ^`) is excluded from the destination
+			// pushdown when exactly one of the two operands is a literal: its
+			// final concrete type must come from its already-typed sibling
+			// operand (finishOperator then fits the literal against that
+			// sibling), not from the enclosing destination — pinning it to the
+			// destination would hard-conflict a concrete sibling of a different
+			// width (e.g. `var x i32; return x + 1;` from an `int` function).
+			// This mirrors the unary-Minus exclusion above. When both operands
+			// are literals, or neither is, the pushdown is left untouched.
+			if node.Kind() == syntax.BinaryExpr && operatorSharesResult(node.Kind(), node.Token()) {
+				child, _ := tree.Node(items[i].ref.Node)
+				if isIntegerOrFloatLiteral(child) && binaryHasExactlyOneLiteral(items, i, tree) {
+					continue
+				}
 			}
 			items[i].ctx.expected = w.expectationFor(items[i].ref, ctx.expected.Destination, ctx.expected.Role)
 		}
@@ -310,29 +363,73 @@ func (w *walker) finishOperator(ref symbol.SyntaxRef, node syntax.Node, ctx walk
 		}
 	} else {
 		left, right := operands[0], operands[1]
+		// When exactly one operand is a bare literal and the other is a
+		// value whose type is already fixed from its own declaration, the
+		// literal must adopt the sibling's concrete type instead of being
+		// hard-unified with it: finishExpression has not pinned the literal
+		// to any outer destination (prepareOperator excludes it from the
+		// pushdown), so its actual type is determined here by LiteralFits
+		// against the sibling, and the operator result is the sibling's own
+		// term. When neither or both operands are literals the unchanged
+		// addEqual path applies.
+		leftExact := w.operandLiteralTerm(p.children[0])
+		rightExact := w.operandLiteralTerm(p.children[1])
+		oneLiteral := (leftExact != (infer.Term{})) != (rightExact != (infer.Term{}))
+		unify := func(literal infer.Term, sibling typedValue) {
+			resultTerm = sibling.Term
+			capability(infer.LiteralFits(literal, sibling.Term, origin))
+			if sibling.Known != 0 {
+				p.concreteResult = true
+				p.resultKnown = sibling.Known
+			}
+		}
 		switch node.Token() {
 		case syntax.Minus, syntax.Star, syntax.Slash:
 			family = operatorNumericSame
-			resultTerm = w.session.Variable(origin)
 			capability(infer.Numeric(left.Term, origin))
 			capability(infer.Numeric(right.Term, origin))
-			addEqual(left.Term, right.Term, "same operands")
-			addEqual(resultTerm, left.Term, "operator result")
+			if oneLiteral {
+				if leftExact != (infer.Term{}) {
+					unify(leftExact, right)
+				} else {
+					unify(rightExact, left)
+				}
+			} else {
+				resultTerm = w.session.Variable(origin)
+				addEqual(left.Term, right.Term, "same operands")
+				addEqual(resultTerm, left.Term, "operator result")
+			}
 		case syntax.Plus:
 			family = operatorAdd
-			resultTerm = w.session.Variable(origin)
-			addEqual(left.Term, right.Term, "same operands")
-			addEqual(resultTerm, left.Term, "operator result")
+			if oneLiteral {
+				if leftExact != (infer.Term{}) {
+					unify(leftExact, right)
+				} else {
+					unify(rightExact, left)
+				}
+			} else {
+				resultTerm = w.session.Variable(origin)
+				addEqual(left.Term, right.Term, "same operands")
+				addEqual(resultTerm, left.Term, "operator result")
+			}
 			if w.plusNeedsNumeric(p.children, operands, ctx.genericOwner) {
 				capability(infer.Numeric(left.Term, origin))
 			}
 		case syntax.Percent, syntax.Ampersand, syntax.Pipe, syntax.Caret:
 			family = operatorIntegralSame
-			resultTerm = w.session.Variable(origin)
 			capability(infer.Integral(left.Term, origin))
 			capability(infer.Integral(right.Term, origin))
-			addEqual(left.Term, right.Term, "same operands")
-			addEqual(resultTerm, left.Term, "operator result")
+			if oneLiteral {
+				if leftExact != (infer.Term{}) {
+					unify(leftExact, right)
+				} else {
+					unify(rightExact, left)
+				}
+			} else {
+				resultTerm = w.session.Variable(origin)
+				addEqual(left.Term, right.Term, "same operands")
+				addEqual(resultTerm, left.Term, "operator result")
+			}
 		case syntax.ShiftLeft, syntax.ShiftRight:
 			family = operatorShift
 			resultTerm = w.session.Variable(origin)
@@ -369,6 +466,10 @@ func (w *walker) finishOperator(ref symbol.SyntaxRef, node syntax.Node, ctx walk
 	if family == operatorBoolean || family == operatorOrdering || family == operatorEquality {
 		result.Known = builtins.Bool
 		w.knownValues[result.ID] = result.Known
+		w.valuesBySyntax[ref] = result
+	} else if p.concreteResult && p.resultKnown != 0 {
+		result.Known = p.resultKnown
+		w.knownValues[result.ID] = p.resultKnown
 		w.valuesBySyntax[ref] = result
 	}
 	if result.ID == 0 || !w.publishedSyntax[ref] {
@@ -418,13 +519,32 @@ func (w *walker) finishOperator(ref symbol.SyntaxRef, node syntax.Node, ctx walk
 			w.retainOperatorRequirement(header, requirementEquatable, operand.ID, node.Token())
 		}
 	}
-	w.applyExpected(result, p.exact, ctx.expected, origin)
+	if !p.concreteResult {
+		w.applyExpected(result, p.exact, ctx.expected, origin)
+	}
 	if destination := w.optionalDestinations[ref]; destination != 0 {
 		w.retainCompatibility(ref, ctx.genericOwner, result.ID, destination, compatibilityOptionalInjection, 0, 0, node.Span(), false)
 	}
 	if _, ok := w.addRecord(retainedRecord{Header: header, Expression: &expressionRecord{Header: header, Kind: map[operatorForm]expressionKind{operatorPrefix: expressionPrefix, operatorPostfix: expressionPostfix, operatorBinary: expressionBinary}[form], Result: result.ID, Children: ids, Specialized: specialized}}); ok {
 		w.successfulExpressions[ref] = true
 	}
+}
+
+// operandLiteralTerm returns the exact-literal term of the given operator
+// child when it is a bare literal (or a literal-negating prefix that already
+// computed an exact negated literal), mirroring how the unary-Minus case in
+// finishOperator reads the same information. It is the zero term when the
+// child is not a literal — e.g. a symbol reference to an already-typed
+// declaration, a load, or a call result — whose type is fixed elsewhere.
+func (w *walker) operandLiteralTerm(ref symbol.SyntaxRef) infer.Term {
+	exact := infer.Term{}
+	if childPlan := w.expressionPlans[ref]; childPlan != nil {
+		exact = childPlan.exactLiteral
+	}
+	if childPlan := w.operatorPlans[ref]; exact == (infer.Term{}) && childPlan != nil {
+		exact = childPlan.exact
+	}
+	return exact
 }
 
 func (w *walker) retainOperatorRequirement(header recordHeader, kind requirementKind, subject valueID, token syntax.TokenKind) {

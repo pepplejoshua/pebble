@@ -183,6 +183,109 @@ func TestOperatorFactsStringAddAndMixedNumeric(t *testing.T) {
 	}
 }
 
+// TestOperatorFactsLiteralOperandAdoptsConcreteSibling confirms the Phase 3 #41
+// fix: when exactly one operand of a same-result binary operator is a bare
+// numeric literal and the other is a value whose type is already concrete from
+// its own declaration, the literal's type must be determined by the sibling
+// (LiteralFits against the sibling's term), NOT by the enclosing destination's
+// expected type — and the operator result takes the sibling's type, with any
+// differing-width outer destination (a return/assignment expected type) handled
+// by the retained compatibility record rather than a hard unify. Previously
+// `fn main() int { var x i32 = 5; return x + 1; }` failed with a T0505
+// "cannot unify semantic type kind 1 with kind 1" ("same operands") because the
+// literal was pre-pinned to the outer `int` destination while `x` was already
+// `i32`.
+func TestOperatorFactsLiteralOperandAdoptsConcreteSibling(t *testing.T) {
+	operators := []string{"+", "-", "*", "/", "%", "&", "|", "^"}
+	widths := []string{"i32", "u8", "i16", "u32"}
+	for _, op := range operators {
+		for _, width := range widths {
+			for _, side := range []string{"left", "right"} {
+				expr := "x " + op + " 2"
+				if side == "left" {
+					expr = "2 " + op + " x"
+				}
+				source := "fn main() int { var x " + width + " = 5; return " + expr + "; }"
+				t.Run(op+"-"+width+"-"+side, func(t *testing.T) {
+					inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+					facts := run06a3(inputs, diagnostics, Config{})
+					solution := facts.Session.Solve()
+					if !solution.Successful() || diagnostics.HasErrors() {
+						t.Fatalf("solution=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestOperatorFactsLiteralOperandMatchingDestination keeps the ORIGINAL working
+// cases working after the fix: when the enclosing destination matches the
+// concrete sibling's width, and for both-literal and default-width arithmetic,
+// the checker must accept exactly as before.
+func TestOperatorFactsLiteralOperandMatchingDestination(t *testing.T) {
+	cases := []string{
+		`fn main() i32 { var x i32 = 5; return x + 1; }`,
+		`fn f(x i32) i32 { return x + 1; }`,
+		`fn f(x i32) i32 { return 1 + x; }`,
+		`fn f(x i32) i32 { return x - 1; }`,
+		`fn f(x i32) i32 { return 2 * x; }`,
+		`fn f(x i32) i32 { return x / 2; }`,
+		`fn f(x i32) i32 { return x % 2; }`,
+		`fn f(x i32) i32 { return x & 2; }`,
+		`fn f(x i32) i32 { return x | 2; }`,
+		`fn f(x i32) i32 { return x ^ 2; }`,
+		`fn main() int { return 1 + 2; }`,
+		`fn main() i32 { return 1 + 2; }`,
+		`fn main() void { let sum i32 = 1 + 2; }`,
+		`fn main() int { var x int = 5; return x + 1; }`,
+		`fn main() uint { var x uint = 5; return x + 1; }`,
+		`fn main() void { var x i32 = 5; let sum i32 = x + 1; }`,
+		`fn main() i32 { var x i32 = 5; return x + 1 + 2; }`,
+		`fn main() int { var x i32 = 5; return x + 1 + 2; }`,
+		`fn main() int { var x i32 = 5; return (x + 1) * 2; }`,
+		`fn f(x i32) i32 { return 1 + x + 2; }`,
+	}
+	for _, source := range cases {
+		t.Run(source, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+			facts := run06a3(inputs, diagnostics, Config{})
+			solution := facts.Session.Solve()
+			if !solution.Successful() || diagnostics.HasErrors() {
+				t.Fatalf("solution=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+			}
+		})
+	}
+}
+
+// TestOperatorFactsMixedConcreteOperandsStillRejected is the most important
+// regression check for this fix: two operands that are BOTH already-concrete
+// non-literal values of different types must STILL fail. Neither side is a
+// literal, so the one-literal LiteralFits path must not apply and the
+// unchanged addEqual unification must keep rejecting the mixed expression.
+func TestOperatorFactsMixedConcreteOperandsStillRejected(t *testing.T) {
+	cases := []string{
+		`fn f(x i32, y u8) int { return x + y; }`,
+		`fn f(x i32, y u8) int { return x * y; }`,
+		`fn f(x i32, y u8) int { return x & y; }`,
+		`fn f(x i16, y u32) int { return x - y; }`,
+		`fn f(x u8, y i64) int { return x / y; }`,
+		`fn f(x i64, y u32) int { return x % y; }`,
+		`fn f(x u16, y i16) int { return x | y; }`,
+		`fn f(x i8, y u8) int { return x ^ y; }`,
+	}
+	for _, source := range cases {
+		t.Run(source, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(source)})
+			facts := run06a3(inputs, diagnostics, Config{})
+			solution := facts.Session.Solve()
+			if solution.Successful() || !diagnostics.HasErrors() {
+				t.Fatalf("mixed concrete operands accepted: solution=%v diagnostics=%+v", solution.Successful(), diagnostics.Items())
+			}
+		})
+	}
+}
+
 func TestOperatorFactsRepeatedNegationPreservesExactValue(t *testing.T) {
 	valid, validDiagnostics := factInputs(t, checkProvider{"main.peb": []byte(`let value i8 = - - -128;`)})
 	validFacts := run06a3(valid, validDiagnostics, Config{})
