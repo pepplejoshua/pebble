@@ -44,41 +44,66 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 41 ("Arithmetic on a non-default-width array
-element read", tracker 14) closed in `81b08b6`. This was under-scoped
-as array-specific by the original filing — it is not; it reproduces
-for ANY concretely-typed non-default-width operand (local, parameter)
-paired with a literal, whenever the enclosing context's expected type
-doesn't match. Root cause traced precisely: `prepareOperator` pushed
-the enclosing destination's expected type onto EVERY operand of a
-same-result binary operator, including an already-concrete sibling,
-not just the literal — a mismatched outer destination then pinned the
-literal to the wrong width before hard unification compared it against
-the sibling's real type. Fixed by excluding a literal operand from the
-pushdown (mirroring the existing unary-minus exclusion) and having it
-adopt its sibling's type via `LiteralFits`, with correct propagation
-for nested operators and outer-destination compatibility. **Highest-
-risk fix in this sweep** (every arithmetic expression in the language
-routes through this code) — verified against the FULL `internal/check`
-AND `internal/backend` suites, not just targeted tests. One
-pre-existing, unrelated full-suite failure surfaced
-(`TestEmitRejectsSliceParameterUnsupportedElementType`) and independently
-confirmed via causation-check to already fail on unmodified `HEAD`; a
-separate pre-existing backend gap was also surfaced (a non-default-width
-value, even a bare local with no arithmetic, can't be returned from a
-default-width-returning function) — both logged as their own tracker 14
-rows. Checked whether this fix also resolved the standing
-`examples/arena_alloc.peb` pointer-arithmetic finding — confirmed it did
-NOT (that's a distinct `ptr + int` pointer/integer-kind mismatch, a
-different code path entirely, untouched by this fix). STANDING NOTE,
+*(empty — Phase 3 item 42 ("Array-typed tuple element", tracker 14)
+closed in `5f7d40b`. The original T0501 checker filing was stale —
+independently reconfirmed via checker-test probing that the checker
+already accepts `([3]i32, i32)` cleanly in every position (declaration,
+parameter, return, indexed sub-read). The real, current gap was purely
+backend: `tupleElementCType` had no `isArray` case, the same bug class
+already fixed for arrays/slices/struct fields (Phase 3 #31/#32/#38).
+Fixed with the element-type gate plus a pre-aggregate-block typedef-
+collection step for tuple-element arrays, mirroring the existing
+struct-field/optional-payload array treatment exactly, plus two natural
+extensions found necessary along the way: a tuple-literal array-element
+construction case, and a whole-array-element-binding (`TuplePlace`)
+case for the local-declaration Load-initializer path. STANDING NOTE,
 still open: `examples/arena_alloc.peb` fails to compile on pointer
 arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
 tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Array-typed tuple element" (tracker
-14 line ~131, found during Phase 3 #4 — "`([3]i32, i32)` fails
-check-time unification (T0501); not yet isolated to a root cause" —
-check current state for staleness first, per the established pattern)
-next.)*
+Picking up the next Phase 3 item: "`.len` read directly on a str-typed
+indexed lvalue expression" (tracker 14 line ~140, found during Phase 3
+#32 — "`s[i].len` emits `pebble_rt_checked_index_` with no width suffix
+(`checkedSuffix(width)` resolves empty for this call site's width
+argument), an undeclared-function C compile error" — check current
+state for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Array-typed tuple element (Phase 3 #42), tracker 14.**
+
+Closed in `5f7d40b`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Arithmetic on a non-default-width array element read (Phase 3
+#41), tracker 14.**
+
+Closed in `81b08b6`. Root cause: `prepareOperator` pushed the enclosing
+destination's expected type onto EVERY operand of a same-result binary
+operator, including an already-concrete sibling, not just the literal
+— a mismatched outer destination then pinned the literal to the wrong
+width before hard unification compared it against the sibling's real
+type. Fixed by excluding a literal operand from the pushdown (mirroring
+the existing unary-minus exclusion) and having it adopt its sibling's
+type via `LiteralFits`, with correct propagation for nested operators
+and outer-destination compatibility. This was under-scoped as
+array-specific by the original filing — it is not; it reproduces for
+ANY concretely-typed non-default-width operand paired with a literal.
+**Highest-risk fix in this sweep** — verified against the FULL
+`internal/check` AND `internal/backend` suites. One pre-existing,
+unrelated full-suite failure surfaced
+(`TestEmitRejectsSliceParameterUnsupportedElementType`) and a separate
+pre-existing backend gap (non-default-width value returned from a
+default-width-returning function) — both logged as their own tracker
+14 rows. Checked whether this fix also resolved the standing
+`examples/arena_alloc.peb` pointer-arithmetic finding — confirmed it
+did NOT (a distinct `ptr + int` pointer/integer-kind mismatch, a
+different code path entirely).
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
