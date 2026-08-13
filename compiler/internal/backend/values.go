@@ -558,6 +558,38 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", err
 		}
 		return callExpr, nil
+	case tir.FloatToInteger:
+		// A float value cast to uint (`f as uint`), the uint twin of
+		// buildExpr's FloatToInteger case: the whole cast lowers to the
+		// runtime's checked pebble_rt_checked_<f32|f64>_to_u64 helper, which
+		// rejects NaN and out-of-range values in SAFE mode rather than
+		// invoking C's undefined float-to-int conversion. The destination is
+		// uint by construction (buildUintExpr's entry gate above already
+		// required node.Type to be uint), and uint carries the C type
+		// uint64_t, so the u64 helper serves it — the same dual-width mapping
+		// floatToIntSuffix, checkedShiftSuffix, and optionalUnwrapSuffix use.
+		// The single child is a float value built by buildFloatExpr at its
+		// OWN float kind (resolvedFloatKind — f32 or f64), exactly as
+		// buildExpr's case builds its own child; width (the entry's resolved
+		// width) doubles as the entry width, the same threading this
+		// builder's PointerToInteger case uses for its buildExpr call.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("uint expression contains a FloatToInteger with %d children, want exactly one", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("uint expression FloatToInteger references invalid child node %d", node.Children[0])
+		}
+		childWidth := resolvedFloatKind(snapshot, child.Type)
+		if childWidth == 0 {
+			return "", fmt.Errorf("uint expression FloatToInteger child has non-float type %s", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+		if err != nil {
+			return "", fmt.Errorf("uint expression float-to-integer cast child: %v", err)
+		}
+		helper := "pebble_rt_checked_" + childFloatSuffix(childWidth) + "_to_" + floatToIntSuffix(types.Uint)
+		return helper + "(" + childExpr + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	default:
 		return "", fmt.Errorf("unsupported uint expression node %s", node.Kind)
 	}
@@ -2407,12 +2439,14 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with invalid destination type %d", node.Type)
 		}
 		destinationWidth, ok := destination.Builtin()
-		// The float-to-integer conversion helpers exist only for i32 and i64
-		// destinations. A u64 destination is cleanly rejected here rather than
-		// emitted as a call to a nonexistent pebble_rt_checked_f*_to_u64
-		// (checkedSuffix admits u64 for the +, -, * arithmetic family this
-		// slice adds, but the float-conversion family has no u64 twin yet).
-		if !ok || checkedSuffix(destinationWidth) == "" || destinationWidth == types.U64 {
+		// Every integer destination width has a checked float-conversion
+		// runtime helper, selected by floatToIntSuffix (i32/i64/int, the
+		// narrow signed i8/i16, the narrow unsigned u8/u16/u32, and the
+		// uint64_t-carrying u64; uint is routed through buildUintExpr's own
+		// case below). checkedSuffix itself deliberately stays narrow, so the
+		// float-conversion family uses its own selector — a non-integer
+		// destination (bool, char) yields "" and is cleanly rejected here.
+		if !ok || floatToIntSuffix(destinationWidth) == "" {
 			return "", fmt.Errorf("entry function body expression contains a FloatToInteger with non-integer destination type %s", describeType(snapshot, node.Type))
 		}
 		child, ok := unit.Node(node.Children[0])
@@ -2427,7 +2461,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if err != nil {
 			return "", fmt.Errorf("entry function body float-to-integer cast child: %v", err)
 		}
-		helper := "pebble_rt_checked_" + childFloatSuffix(childWidth) + "_to_" + checkedSuffix(destinationWidth)
+		helper := "pebble_rt_checked_" + childFloatSuffix(childWidth) + "_to_" + floatToIntSuffix(destinationWidth)
 		return helper + "(" + childExpr + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.CheckedNegate:
 		if len(node.Children) != 1 {

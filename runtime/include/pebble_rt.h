@@ -238,17 +238,33 @@ uint64_t pebble_rt_checked_shl_u64(uint64_t value, uint64_t amount, PebbleSource
 uint64_t pebble_rt_checked_shr_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc);
 
 /* ---- checked float-to-integer conversion -----------------------------------
- * Converts f32/f64 values to i32/i64 after checking for NaN and values outside
- * the destination's representable range. SAFE mode panics with
- * PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode returns the destination's
- * integer-indefinite sentinel (INT32_MIN or INT64_MIN). The upper bound is
- * exclusive: for floating sources it is expressed as 2^31 or 2^63 because
- * INT32_MAX/INT64_MAX round to those values at the relevant precision.
+ * Converts f32/f64 values to any fixed-width integer destination after
+ * checking for NaN and values outside the destination's representable range.
+ * SAFE mode panics with PEBBLE_PANIC_ARITHMETIC_OVERFLOW; RELEASE mode
+ * returns the destination's integer-indefinite sentinel — the signed widths
+ * return their minimum (INT8_MIN/INT16_MIN/INT32_MIN/INT64_MIN), the unsigned
+ * widths the sign-bit-set bit pattern (0x80/0x8000/0x80000000/
+ * 0x8000000000000000), the same bit pattern the signed sentinels use. The
+ * upper bound is exclusive: for floating sources it is expressed as a power of
+ * two (2^7/2^8/2^15/2^16/2^31/2^32/2^63/2^64) because the destination's
+ * own maximum rounds to that value at the relevant precision.
  */
 int32_t pebble_rt_checked_f32_to_i32(float value, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_f64_to_i32(double value, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_f32_to_i64(float value, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_f32_to_i8(float value, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_f64_to_i8(double value, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_f32_to_i16(float value, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_f64_to_i16(double value, PebbleSourceLoc loc);
+uint8_t pebble_rt_checked_f32_to_u8(float value, PebbleSourceLoc loc);
+uint8_t pebble_rt_checked_f64_to_u8(double value, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_f32_to_u16(float value, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_f64_to_u16(double value, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_f32_to_u32(float value, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_f64_to_u32(double value, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_f32_to_u64(float value, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_f64_to_u64(double value, PebbleSourceLoc loc);
 
 /* ---- checked integer-to-enum conversion -------------------------------------
  * Validates that an integer names a real variant of a destination enum (the

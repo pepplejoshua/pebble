@@ -548,6 +548,160 @@ int64_t pebble_rt_checked_f64_to_i64(double value, PebbleSourceLoc loc) {
     return (int64_t)value;
 }
 
+/* The narrow SIGNED destinations: the same check at i8 and i16. The upper
+ * bounds are exclusive powers of two, which remain correct when the width's
+ * own maximum is rounded by conversion to the source float type. */
+int8_t pebble_rt_checked_f32_to_i8(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -128.0f || value >= 128.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to i8 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT8_MIN;
+#endif
+    }
+    return (int8_t)value;
+}
+
+int8_t pebble_rt_checked_f64_to_i8(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -128.0 || value >= 128.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to i8 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT8_MIN;
+#endif
+    }
+    return (int8_t)value;
+}
+
+int16_t pebble_rt_checked_f32_to_i16(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -32768.0f || value >= 32768.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to i16 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT16_MIN;
+#endif
+    }
+    return (int16_t)value;
+}
+
+int16_t pebble_rt_checked_f64_to_i16(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < -32768.0 || value >= 32768.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to i16 conversion overflow", loc);
+#else
+        (void)loc;
+        return INT16_MIN;
+#endif
+    }
+    return (int16_t)value;
+}
+
+/* The UNSIGNED destinations: any negative source (including -Inf) is out of
+ * range, as is NaN; the upper bound is the width's own exclusive power of two
+ * (256/65536/2^32/2^64, each exactly representable in both f32 and f64). The
+ * RELEASE sentinel is the destination width's integer-indefinite bit pattern
+ * (sign bit set, rest zero) — the same bit pattern the signed helpers'
+ * INT8_MIN/INT16_MIN/INT32_MIN/INT64_MIN sentinels use, interpreted as an
+ * unsigned value. */
+uint8_t pebble_rt_checked_f32_to_u8(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0f || value >= 256.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to u8 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT8_C(0x80);
+#endif
+    }
+    return (uint8_t)value;
+}
+
+uint8_t pebble_rt_checked_f64_to_u8(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0 || value >= 256.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to u8 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT8_C(0x80);
+#endif
+    }
+    return (uint8_t)value;
+}
+
+uint16_t pebble_rt_checked_f32_to_u16(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0f || value >= 65536.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to u16 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT16_C(0x8000);
+#endif
+    }
+    return (uint16_t)value;
+}
+
+uint16_t pebble_rt_checked_f64_to_u16(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0 || value >= 65536.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to u16 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT16_C(0x8000);
+#endif
+    }
+    return (uint16_t)value;
+}
+
+uint32_t pebble_rt_checked_f32_to_u32(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0f || value >= 4294967296.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to u32 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT32_C(0x80000000);
+#endif
+    }
+    return (uint32_t)value;
+}
+
+uint32_t pebble_rt_checked_f64_to_u32(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0 || value >= 4294967296.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to u32 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT32_C(0x80000000);
+#endif
+    }
+    return (uint32_t)value;
+}
+
+uint64_t pebble_rt_checked_f32_to_u64(float value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0f || value >= 18446744073709551616.0f) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f32 to u64 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT64_C(0x8000000000000000);
+#endif
+    }
+    return (uint64_t)value;
+}
+
+uint64_t pebble_rt_checked_f64_to_u64(double value, PebbleSourceLoc loc) {
+    if (isnan(value) || value < 0.0 || value >= 18446744073709551616.0) {
+#if defined(PEBBLE_RT_MODE_SAFE)
+        pebble_rt_overflow_panic("f64 to u64 conversion overflow", loc);
+#else
+        (void)loc;
+        return UINT64_C(0x8000000000000000);
+#endif
+    }
+    return (uint64_t)value;
+}
+
 /* Integer-to-enum conversion (the compiler's CheckedIntegerToEnum node,
  * `5 as Color`): validates that the integer names a real variant of the
  * destination enum. Pebble enums are ordinal — variant Members[i] gets the C

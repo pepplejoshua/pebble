@@ -300,6 +300,40 @@ func checkedSuffix(width types.BuiltinKind) string {
 	return ""
 }
 
+// floatToIntSuffix returns the pebble_rt_checked_<f32|f64>_to_* function-name
+// suffix for a float-to-integer cast DESTINATION: "i32" for an int or i32
+// destination, "i64" for i64, "u64" for a uint or u64 destination (both carry
+// the C type uint64_t, so one runtime helper serves both), and the width's own
+// name for every narrow fixed-width integer (i8, i16, u8, u16, u32) — the full
+// integer destination matrix the runtime's checked float-conversion family
+// covers. It is the float-conversion-specific twin of checkedShiftSuffix:
+// checkedSuffix itself deliberately stays narrow (the arithmetic/index/
+// slice-start/char-at families admit only the i32/i64/u64 widths, so widening
+// it globally would emit calls to nonexistent helpers for them, e.g.
+// pebble_rt_checked_add_u8 does not exist). Any non-integer destination yields
+// "", a clean rejection for the caller.
+func floatToIntSuffix(width types.BuiltinKind) string {
+	switch width {
+	case types.Int, types.I32:
+		return "i32"
+	case types.I64:
+		return "i64"
+	case types.U8:
+		return "u8"
+	case types.U16:
+		return "u16"
+	case types.U32:
+		return "u32"
+	case types.I8:
+		return "i8"
+	case types.I16:
+		return "i16"
+	case types.Uint, types.U64:
+		return "u64"
+	}
+	return ""
+}
+
 func childFloatSuffix(width types.BuiltinKind) string {
 	switch width {
 	case types.F32:
