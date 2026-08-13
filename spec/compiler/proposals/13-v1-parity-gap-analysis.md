@@ -44,27 +44,34 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 39 ("`ArrayRepeat` of an array-typed value",
-tracker 14) closed in `7f62398` for the local-declaration position.
-Root cause: `buildArrayRepeatLocalDeclaration`'s element-type dispatch
-had no array case; widened the existing struct/tuple/optional branch
-to include `isArray`, routing through the same `buildNestedAggregateValue`
-call (whose `isArray` case, from Phase 3 #31, already built it
-correctly) — no new builder logic needed. Investigated and confirmed a
-broader, separate, pre-existing gap: the array-typed CALL-ARGUMENT and
-RETURN-VALUE `ArrayRepeat` builders support no aggregate-typed repeat
-value at all (not just arrays) — correctly left out of scope, not
-folded into this narrow fix. STANDING NOTE, still open:
+*(empty — Phase 3 item 40 ("Binding a whole inner-array read to a
+local", tracker 14) closed in `480eab5` — the last of the three shapes
+deferred from Phase 3 #31, all now resolved. Root cause:
+`buildArrayLocalDeclaration`'s Load-initializer path only accepted a
+`DereferencePlace`; added a `CheckedIndexPlace` branch reusing
+`buildPlaceLValue`'s existing `.data`-projected nested-array lvalue
+(from Phase 3 #31) as the memcpy source. Verified as a real independent
+copy (not an alias) by mutating the source array after binding and
+confirming the bound local is unaffected. STANDING NOTE, still open:
 `examples/arena_alloc.peb` fails to compile on pointer arithmetic in
 `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
 awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Binding a whole inner-array read to
-a local" (tracker 14 line ~128, deferred from Phase 3 #31 —
-"`let q [3]int = a[0];` (a is `[N][M]T`) is rejected; the
-local-initializer Load path only accepts a `DereferencePlace`, needs a
-`CheckedIndexPlace` case" — check current state for staleness first,
-per the established pattern) next — the last of the three shapes
-deferred from Phase 3 #31.)*
+Picking up the next Phase 3 item: "Arithmetic on a non-default-width
+array element read" (tracker 14 line ~129, deferred from Phase 3 #31,
+general/pre-existing checker gap, not array-specific — "`b[0] + 1`
+where `b` is `[3]i32` fails T0505 when the element read is used
+directly as an arithmetic operand; a direct return, explicit cast, or
+binding to a local all work" — check current state for staleness
+first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Binding a whole inner-array read to a local (Phase 3 #40), tracker 14.**
+
+Closed in `480eab5`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
