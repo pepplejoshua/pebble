@@ -279,6 +279,27 @@ uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSource
     return value >> amount;
 }
 
+/* u64/uint pair, SAFE: the same contract at 64-bit width. Both u64 and uint
+ * carry the C type uint64_t, so one helper pair serves both widths (the same
+ * dual-width mapping optionalUnwrapSuffix uses). The value and the count are
+ * already uint64_t, so no unsigned-twin cast is needed and the count's
+ * unsignedness means a negative count (cast at the call site to uint64_t)
+ * wraps to a value the >= width check below always catches, exactly as the
+ * other unsigned pairs rely on. */
+uint64_t pebble_rt_checked_shl_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc) {
+    if (amount >= 64) {
+        pebble_rt_overflow_panic("u64 shift amount out of range", loc);
+    }
+    return value << amount;
+}
+
+uint64_t pebble_rt_checked_shr_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc) {
+    if (amount >= 64) {
+        pebble_rt_overflow_panic("u64 shift amount out of range", loc);
+    }
+    return value >> amount;
+}
+
 #else /* PEBBLE_RT_MODE_RELEASE */
 
 int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
@@ -410,6 +431,18 @@ uint32_t pebble_rt_checked_shl_u32(uint32_t value, uint32_t amount, PebbleSource
 uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc) {
     (void)loc;
     return value >> ((uint32_t)amount & 31u);
+}
+
+/* u64/uint pair, RELEASE: mask the count to the operand's own 64-bit width
+ * and shift, exactly like the narrower pairs. */
+uint64_t pebble_rt_checked_shl_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value << (amount & 63u);
+}
+
+uint64_t pebble_rt_checked_shr_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc) {
+    (void)loc;
+    return value >> (amount & 63u);
 }
 
 #endif /* PEBBLE_RT_MODE_SAFE / PEBBLE_RT_MODE_RELEASE */

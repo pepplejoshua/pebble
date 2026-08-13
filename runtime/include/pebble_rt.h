@@ -203,6 +203,10 @@ uint64_t pebble_rt_wrapping_add_u64(uint64_t a, uint64_t b);
  * width) wraps to a value the >= width check always catches in SAFE mode,
  * and the RELEASE mask (& 7u / & 15u / & 31u) reduces it to the correct
  * residue regardless.
+ *
+ * The u64 pair serves both u64 and uint (both carry the C type uint64_t, so
+ * one helper pair reads both back at their true width), the same dual-width
+ * mapping optionalUnwrapSuffix uses for a uint/u64 optional payload.
  */
 int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_shr_i32(int32_t value, int32_t amount, PebbleSourceLoc loc);
@@ -219,6 +223,8 @@ int16_t pebble_rt_checked_shl_i16(int16_t value, int16_t amount, PebbleSourceLoc
 int16_t pebble_rt_checked_shr_i16(int16_t value, int16_t amount, PebbleSourceLoc loc);
 uint32_t pebble_rt_checked_shl_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc);
 uint32_t pebble_rt_checked_shr_u32(uint32_t value, uint32_t amount, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_shl_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc);
+uint64_t pebble_rt_checked_shr_u64(uint64_t value, uint64_t amount, PebbleSourceLoc loc);
 
 /* ---- checked float-to-integer conversion -----------------------------------
  * Converts f32/f64 values to i32/i64 after checking for NaN and values outside

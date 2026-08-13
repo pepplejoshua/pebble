@@ -238,13 +238,24 @@ func TestEmitCheckedShiftNarrowWidthCallsItsOwnHelper(t *testing.T) {
 	}
 }
 
-func TestEmitCheckedShiftU64StillRejected(t *testing.T) {
+func TestEmitCheckedShiftU64CallsItsOwnHelper(t *testing.T) {
 	t.Parallel()
-	// The u64 shift twin (pebble_rt_checked_shl_u64/shr_u64) is still not
-	// implemented, so a u64 shift stays a clean rejection rather than a call
-	// to a nonexistent helper — this slice adds the narrower-width pairs only.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() int { var x u64 = 5; var z u64 = x << 2; return z as int; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "want << or >>")
+	// The u64 shift twin (pebble_rt_checked_shl_u64/shr_u64), added in Phase 3
+	// #22 alongside uint (both carry the C type uint64_t, so the pair serves
+	// both widths), is now implemented — a u64 shift calls its own helper
+	// rather than being rejected or promoted to the i32/i64 helper.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var x u64 = 5; var z u64 = x << 2; return z as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_shl_u64(") {
+		t.Fatalf("emitted C does not call the u64 shift helper:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_checked_shl_i32") || strings.Contains(out, "pebble_rt_checked_shl_i64") {
+		t.Fatalf("emitted C promotes a u64 shift to a narrower helper:\n%s", out)
+	}
 }
 
 func TestEmitI64CheckedAddCompilesAndRuns(t *testing.T) {

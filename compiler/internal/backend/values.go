@@ -443,6 +443,60 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("unsupported uint bitwise operator %s, want &, |, or ^", node.Operator)
 		}
 		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+	case tir.CheckedShift:
+		// A shift whose result is uint (`var r uint = a << b;`): the uint
+		// twin of buildExpr's CheckedShift case. The value, the count, and
+		// the result all carry uint's own C type (uint64_t), so the whole
+		// shift lowers to the runtime's pebble_rt_checked_shl/shr_u64 pair —
+		// the u64 helpers, which serve uint and u64 alike (both carry the C
+		// type uint64_t, the same dual-width mapping checkedShiftSuffix and
+		// optionalUnwrapSuffix use). The count check is real
+		// undefined-behavior avoidance (a shift amount >= 64 is C UB), so the
+		// plain C operator is never the whole lowering here, unlike uint's
+		// CheckedArithmetic/BinaryValue cases. Both operands are uint-typed by
+		// construction (this builder's entry gate requires the CheckedShift
+		// node's own type to be uint and the checker anchors the operands to
+		// the result), so they recurse into this same builder; the count's own
+		// width still matters for the helper's count parameter, so a
+		// non-uint-typed count is built by buildExpr at its own width and cast
+		// to uint's C type, exactly as buildExpr's CheckedShift case casts a
+		// mismatched count to the value's own width.
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("uint expression contains a CheckedShift with %d operand(s), want exactly two", len(node.Children))
+		}
+		helper, ok := checkedShiftHelper(node.Operator, types.Uint)
+		if !ok {
+			return "", fmt.Errorf("uint expression contains a CheckedShift with operator %s, want << or >>", node.Operator)
+		}
+		left, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		amountNode, ok := unit.Node(node.Children[1])
+		if !ok {
+			return "", fmt.Errorf("uint expression references invalid shift amount node %d", node.Children[1])
+		}
+		amountType, ok := snapshot.Key(amountNode.Type)
+		if !ok {
+			return "", fmt.Errorf("uint expression shift amount has invalid type %d", amountNode.Type)
+		}
+		amountWidth, ok := amountType.Builtin()
+		if !ok || cType(amountWidth) == "" {
+			return "", fmt.Errorf("uint expression shift amount has non-integer type %s", describeType(snapshot, amountNode.Type))
+		}
+		var amount string
+		if isUint(snapshot, amountNode.Type) {
+			amount, err = buildUintExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
+		} else {
+			amount, err = buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, amountWidth, width)
+		}
+		if err != nil {
+			return "", err
+		}
+		if amountWidth != types.Uint {
+			amount = "(" + cType(types.Uint) + ")(" + amount + ")"
+		}
+		return helper + "(" + left + ", " + amount + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.DirectCall:
 		// A call to a uint-returning helper used as a uint value (`var n =
 		// get_count();`, or std/io.peb's read_line shape `var bytes = read(

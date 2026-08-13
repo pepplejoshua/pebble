@@ -131,11 +131,11 @@ func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, b
 	}
 	// Every width with a runtime shift-helper pair is admitted: the original
 	// i32/i64 pair plus every narrower fixed-width integer (u8, u16, i8, i16,
-	// u32) added when shifts were widened. A u64 (or uint) shift stays a clean
-	// rejection here rather than being emitted as a call to a nonexistent
-	// pebble_rt_checked_shl_u64/shr_u64 (checkedSuffix admits u64 for the +,
-	// -, * arithmetic family this slice adds, but the shift family has no u64
-	// twin yet).
+	// u32) and the u64 pair added when shifts were widened — the u64 pair also
+	// serves uint, whose C representation is the same uint64_t. Any width
+	// without a runtime shift-helper pair stays a clean rejection here rather
+	// than being emitted as a call to a nonexistent
+	// pebble_rt_checked_shl_<w>/shr_<w>.
 	suffix := checkedShiftSuffix(width)
 	if suffix == "" {
 		return "", false
@@ -145,15 +145,17 @@ func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, b
 
 // checkedShiftSuffix returns the pebble_rt_checked_shl/shr_* function-name
 // suffix for the given width: "i32" for an int or i32 entry, "i64" for an
-// i64 entry, and the width's own name for every narrower fixed-width integer
-// (u8, u16, i8, i16, u32 — each of which has its own runtime shift-helper
-// pair). It is the shift-specific twin of checkedSuffix, which deliberately
-// stays narrow: the OTHER checked helper families (arithmetic, index, slice
-// start, float-to-integer) admit only the i32/i64/u64 widths, so widening
-// checkedSuffix globally would emit calls to nonexistent helpers for them
-// (e.g. pebble_rt_checked_add_u8 does not exist). Any width without a
-// runtime shift helper — u64 and uint, whose C representation is uint64_t —
-// yields "", a clean rejection for the caller.
+// i64 entry, "u64" for a u64 or uint entry (both carry the C type uint64_t,
+// so one runtime helper serves both, the same dual-width mapping
+// optionalUnwrapSuffix uses), and the width's own name for every narrower
+// fixed-width integer (u8, u16, i8, i16, u32 — each of which has its own
+// runtime shift-helper pair). It is the shift-specific twin of checkedSuffix,
+// which deliberately stays narrow: the OTHER checked helper families
+// (arithmetic, index, slice start, float-to-integer) admit only the
+// i32/i64/u64 widths, so widening checkedSuffix globally would emit calls to
+// nonexistent helpers for them (e.g. pebble_rt_checked_add_u8 does not
+// exist). Any width without a runtime shift helper yields "", a clean
+// rejection for the caller.
 func checkedShiftSuffix(width types.BuiltinKind) string {
 	switch width {
 	case types.Int, types.I32:
@@ -170,6 +172,8 @@ func checkedShiftSuffix(width types.BuiltinKind) string {
 		return "i8"
 	case types.I16:
 		return "i16"
+	case types.Uint, types.U64:
+		return "u64"
 	}
 	return ""
 }
