@@ -44,30 +44,46 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 47 ("`.len` used as a `print` operand fails a
-format-specifier mismatch", tracker 14) closed in `1dd0d63`. Root
-cause: a `.len`-sourced print operand's C expression carries the
-runtime aggregate's real `size_t` type (`PebbleStr`/`PebbleStrSlice`
-both declare `.len` as `size_t`; a fixed array's `.len` folds to a
-uint-typed C literal), neither of which is `uint64_t`, so the `PRIu64`
-format specifier rejected it under `-Werror -Wformat`. Fixed by
-casting a `.len`-sourced (or any Uint-typed literal — investigation
-found a plain `print(5u)` hits the identical mismatch) print operand's
-C expression to `uint64_t` at the print-call site, mirroring an
-existing precedent (a str's `.data` cast to `const char *` for a `%s`
-libc argument). Covers str/slice/fixed-array `.len`, addressable and
-non-addressable receivers, parenthesized/mixed-operand/deferred
-prints; composite print operands were already unaffected. STANDING
-NOTE, still open: `examples/arena_alloc.peb` fails to compile on
-pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
-yet a tracker 14 row, awaiting the user's decision on when to queue
-it. Picking up the next Phase 3 item: "`TestEmitRejectsSliceParameterUnsupportedElementType`
-hand-built-IR test failure" (tracker 14 line ~131, the hand-built IR
-fixture `buildSliceOfStrParameterUnit` produces a call node with 0
-arguments instead of 1 — found during Phase 3 #41's full-suite
-checkpoint, confirmed pre-existing and unrelated via causation-check
-at the time, root cause not yet chased — check current state for
-staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 48 ("`TestEmitRejectsSliceParameterUnsupportedElementType`
+hand-built-IR test failure", tracker 14) closed in `15ad508`. NOT a
+production ordering bug: the fixture's own premise went stale after
+str became a SUPPORTED slice element type (Phase 3 #32, earlier in
+this engagement) — a `[]str` helper parameter no longer reaches the
+element-type gate at all. Confirmed the gate is still live via a
+genuinely unsupported element (slice-of-fixed-array, `[][3]i32`) and
+rebuilt the fixture around that. Full `internal/backend` suite is now
+FULLY GREEN — the last remaining known failure, carried since Phase 3
+#41, is now closed. STANDING NOTE, still open: `examples/arena_alloc.peb`
+fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
+`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
+on when to queue it.
+
+WELL-SCOPED BUG QUEUE NOW EXHAUSTED: every remaining open tracker 14
+row is either "Decision needed" (Untagged union line ~151, escape
+analysis line ~152, C variadic extern call line ~324, freestanding
+compilation line ~722 — each requires a design decision from the user,
+not a bug fix), "Absent"-by-design pending a decision (explicit tuple
+prefix cast line ~237, struct literal field conversion line ~239,
+explicit structural struct prefix cast line ~240 — each needs the user
+to accept or reject a specific relaxed rule before any implementation
+makes sense), or a single large, already-deliberately-deferred item
+(interpolated string with a non-`bool` value part, line ~347 — a real,
+much larger formatting-matrix scope, not a narrow slice like every
+item closed this sweep). No further item was picked; awaiting the
+user's direction on whether to make any of the pending design
+decisions, start slicing the interpolation item narrowly (e.g. one
+value-type at a time, matching how every other large item in this
+engagement was decomposed), or stop here.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `TestEmitRejectsSliceParameterUnsupportedElementType`
+hand-built-IR test failure (Phase 3 #48), tracker 14.**
+
+Closed in `15ad508`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
