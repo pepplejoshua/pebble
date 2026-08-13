@@ -44,24 +44,36 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 38 ("Array-of-arrays struct field", tracker 14)
-closed in `b1a5303`. Root cause: `orderAggregateTypes`'s depth check
-blanket-rejected any struct field whose chain passed through an array,
-regardless of the array's own element kind — correct for array-of-
-STRUCT/TUPLE/OPTIONAL (a genuine ordering hazard) but overcautious for
-array-of-ARRAY, since Phase 3 #31 already made that case self-contained
-within `buildArrayTypedefs`'s own DFS-postorder emission. Narrowed the
-check precisely; independently confirmed array-of-aggregate stays
-rejected via a throwaway probe. Covers read, indexed write, passing to
-a helper, non-default width, and 3-level nesting (falls out for free).
-STANDING NOTE, still open: `examples/arena_alloc.peb` fails to compile
-on pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
-yet a tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "`ArrayRepeat` of an array-typed
-value" (tracker 14 line ~127, deferred from Phase 3 #31 — "`[[7,8,9];
-2]` is checker-legal but the backend's repeat-value builder doesn't yet
-handle an array-typed repeated value" — check current state for
-staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 39 ("`ArrayRepeat` of an array-typed value",
+tracker 14) closed in `7f62398` for the local-declaration position.
+Root cause: `buildArrayRepeatLocalDeclaration`'s element-type dispatch
+had no array case; widened the existing struct/tuple/optional branch
+to include `isArray`, routing through the same `buildNestedAggregateValue`
+call (whose `isArray` case, from Phase 3 #31, already built it
+correctly) — no new builder logic needed. Investigated and confirmed a
+broader, separate, pre-existing gap: the array-typed CALL-ARGUMENT and
+RETURN-VALUE `ArrayRepeat` builders support no aggregate-typed repeat
+value at all (not just arrays) — correctly left out of scope, not
+folded into this narrow fix. STANDING NOTE, still open:
+`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
+`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
+awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "Binding a whole inner-array read to
+a local" (tracker 14 line ~128, deferred from Phase 3 #31 —
+"`let q [3]int = a[0];` (a is `[N][M]T`) is rejected; the
+local-initializer Load path only accepts a `DereferencePlace`, needs a
+`CheckedIndexPlace` case" — check current state for staleness first,
+per the established pattern) next — the last of the three shapes
+deferred from Phase 3 #31.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `ArrayRepeat` of an array-typed value (Phase 3 #39), tracker 14.**
+
+Closed in `7f62398`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
