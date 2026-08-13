@@ -44,22 +44,41 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 25 ("Bitwise not", tracker 14) closed in
-`55be9b9`. The same bug class Phase 3 #21 found for uint's `& | ^`:
-buildUintExpr had no PrefixValue case at all, so uint `~x` died at
-Emit ("unsupported uint expression node PrefixValue") even though
-every other width already lowered `~` correctly through buildExpr's
-own PrefixValue case. Fixed by adding the case, mirroring the existing
-pattern exactly. bool is not a valid `~` operand (checker-rejected) —
-confirmed intentional, not a gap. NOTE: as of this item, the
-verification cadence changed — the full backend/repo suite is now a
-periodic checkpoint (~every 5 items), not a per-item gate; per-item
-verification is gofmt/vet + targeted tests only (see
+*(empty — Phase 3 item 26 ("Float to integer", tracker 14) closed in
+`f52bbaf`. A 20-pair sweep (f32/f64 x every integer destination width)
+confirmed both anticipated gaps real: the runtime had checked
+conversion helpers only for i32/i64 destinations (i8/i16/u8/u16/u32/u64
+Emit-rejected), and uint failed differently ("unsupported uint
+expression node FloatToInteger", buildUintExpr had no case — same bug
+class as #21/#25). Fixed by adding 12 checked conversion helpers
+(mirroring the existing i32/i64 pair's SAFE-mode NaN/range-check and
+RELEASE-mode sentinel structure exactly) and a dedicated
+`floatToIntSuffix` selector (mirroring `checkedShiftSuffix`/
+`checkedNegSuffix`). i32/i64/int already worked correctly, including
+SAFE-mode abort on NaN/±Inf/out-of-range. Picking up the next Phase 3
+item: "`some S` to optional `T` with payload conversion" (tracker 14,
+"Partial" — check current state for staleness first, per the
+established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Bitwise not (Phase 3 #25), tracker 14.**
+
+Closed in `55be9b9`. The same bug class Phase 3 #21 found for uint's
+`& | ^`: buildUintExpr had no PrefixValue case at all, so uint `~x`
+died at Emit ("unsupported uint expression node PrefixValue") even
+though every other width already lowered `~` correctly through
+buildExpr's own PrefixValue case. Fixed by adding the case, mirroring
+the existing pattern exactly. bool is not a valid `~` operand
+(checker-rejected) — confirmed intentional, not a gap. NOTE: as of this
+item, the verification cadence changed — the full backend/repo suite
+is now a periodic checkpoint (~every 5 items), not a per-item gate;
+per-item verification is gofmt/vet + targeted tests only (see
 memory/feedback_no_full_suite_per_item.md, agreed with the user
 2026-08-13 after the growing backend suite's per-item runtime became a
-real bottleneck). Picking up the next Phase 3 item: "Float to integer"
-(tracker 14, "Partial by destination width" — check current state for
-staleness first, per the established pattern) next.)*
+real bottleneck).
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
