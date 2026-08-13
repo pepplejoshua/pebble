@@ -700,6 +700,78 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitPrintLenReadCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A `.len`-sourced print operand — `print(s.len)` — is Uint-typed and gets
+	// the PRIu64 format specifier, but its C expression carries the runtime
+	// aggregate's real size_t type (PebbleStr.len and PebbleStrSlice.len are
+	// both declared size_t, which is `unsigned long` where uint64_t is
+	// `unsigned long long` on the reference platform), or a uint-typed
+	// constant literal for a fixed array. Passing that raw expression to
+	// printf would fail the mandated -Wall -Wextra -Werror build with
+	// -Wformat, so the print machinery casts the argument to uint64_t — the
+	// compiled program must print the correct value, proving the cast
+	// type-checks AND is value-preserving. The bare str local case is the
+	// confirmed original repro; a str call result exercises the
+	// non-addressable FieldValue shape, a slice exercises the shared size_t
+	// runtime declaration (pebble_rt.h line ~516), and a fixed array exercises
+	// the folded uint-typed constant shape. Every `.len` variant — str, slice,
+	// fixed array — is included because all three share the underlying
+	// size_t/uint64_t type mismatch.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"bare str local", "fn main() i32 { let s str = \"hello\"; print s.len; return 0; }", "5\n"},
+		{"bare str call result", "fn mk() str { return \"hello\"; }\nfn main() i32 { print mk().len; return 0; }", "5\n"},
+		{"bare str field of struct receiver", "type P = struct { s str; };\nfn main() i32 { let p = P.{ s = \"hello\" }; print p.s.len; return 0; }", "5\n"},
+		{"bare slice", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s.len; return 0; }", "3\n"},
+		{"bare fixed array", "fn main() i32 { var a [3]int = [1, 2, 3]; print a.len; return 0; }", "3\n"},
+		{"parenthesized", "fn main() i32 { let s str = \"hi\"; print((s.len)); return 0; }", "2\n"},
+		{"mixed with other operands", "fn main() i32 { let s str = \"hi\"; print \"len=\", s.len; return 0; }", "len=2\n"},
+		{"deferred", "fn main() i32 { let s str = \"hi\"; defer print s.len; return 0; }", "2\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintCompositeContainingLenCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A `.len` value INSIDE a composite print operand — `print((s.len,))` or a
+	// struct field initialized from `s.len` — is materialized into the
+	// composite operand's temp, whose declared field/element type is uint64_t
+	// (uint's own C type), so the composite print machinery's scalar field
+	// reads are already uint64_t and never hit the size_t/PRIu64 mismatch a
+	// bare `.len` print operand does. These cases document that the
+	// buildScalarPrintParts composite path needs no cast — the fix is scoped
+	// to the bare `.len` operand path, and these must keep compiling cleanly
+	// and printing the right values.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"tuple", "fn main() i32 { let s str = \"hello\"; print (s.len,); return 0; }", "(5,)\n"},
+		{"struct field", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; print W.{ l = s.len }; return 0; }", "W{ l: 5 }\n"},
+		{"array element", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; var a [2]W = [W.{ l = s.len }, W.{ l = 7 }]; print a; return 0; }", "[W{ l: 5 }, W{ l: 7 }]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// An interpolated-string print operand — `print \`ok? {true}\`;` — prints

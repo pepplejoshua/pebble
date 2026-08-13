@@ -3026,10 +3026,68 @@ func buildScalarPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snap
 	if err != nil {
 		return "", "", nil, err
 	}
+	// A `.len`-sourced operand's C expression has the runtime aggregate's real
+	// size_t type — PebbleStr and PebbleStrSlice both declare their `.len`
+	// field as size_t, and a fixed array's `.len` folds to a uint-typed
+	// constant literal — which is NOT the uint64_t printfSpecifier's PRIu64
+	// format string demands, so the raw size_t value passed to printf would
+	// fail the mandated -Wall -Wextra -Werror build with -Wformat (size_t is
+	// `unsigned long` where uint64_t is `unsigned long long` on the reference
+	// platform, two distinct C types of the same width). The argument is cast
+	// to uint64_t here, the value the PRIu64 specifier expects — the print
+	// equivalent of calls.go's analogous cast of a str's `.data` field to
+	// const char * for a %s libc argument — leaving every OTHER `.len`
+	// consumer (indexing, arithmetic, comparison) on the real size_t type
+	// untouched. Every non-`.len` Uint operand (a local, a cast, a call
+	// result) is already a genuine uint64_t value and is never matched, so the
+	// cast is applied only to the `.len`-sourced shapes.
+	if kind == types.Uint && printOperandLenRead(unit, snapshot, child) {
+		arg = "(uint64_t)(" + arg + ")"
+	}
 	if sliceIndexPre != "" {
 		return format, arg, append([]string{sliceIndexPre}, parts...), nil
 	}
 	return format, arg, parts, nil
+}
+
+// printOperandLenRead reports whether a print operand's value node reads a
+// structural `.len` field — a Uint-typed value whose C expression carries the
+// runtime aggregate's real size_t type (see buildScalarPrintOperand) instead
+// of the uint64_t the PRIu64 printf specifier demands. The three shapes the
+// checker produces for a `.len` read are: a Load of a FieldPlace with member
+// StructuralFieldLen (an addressable str/slice receiver, `s.len` or
+// `point.s.len`), a FieldValue with member StructuralFieldLen (a
+// non-addressable str/slice receiver, `mk().len`), and a uint-typed
+// IntegerLiteral (a fixed array's `.len`, folded to its compile-time length by
+// the checker — the one source of a bare uint-typed literal in print
+// position, which is exactly why it is matched here). A SourceAlias grouping
+// wrapper is peeled first so a parenthesized operand (`print (s.len)`) is
+// recognized too. Every OTHER uint-typed print operand — a local, a cast, a
+// call result — is deliberately not matched.
+func printOperandLenRead(unit *tir.Unit, snapshot *types.Snapshot, node tir.Node) bool {
+	for node.Kind == tir.SourceAlias && len(node.Children) == 1 {
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return false
+		}
+		node = child
+	}
+	if node.Kind == tir.Load && len(node.Children) == 1 {
+		if place, ok := unit.Node(node.Children[0]); ok && place.Kind == tir.FieldPlace && place.Member == tir.StructuralFieldLen {
+			return true
+		}
+	}
+	if node.Kind == tir.FieldValue && node.Member == tir.StructuralFieldLen {
+		return true
+	}
+	if node.Kind == tir.IntegerLiteral {
+		if key, ok := snapshot.Key(node.Type); ok {
+			if kind, ok := key.Builtin(); ok && kind == types.Uint {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildScalarPrintParts formats ONE scalar value whose C expression is already
