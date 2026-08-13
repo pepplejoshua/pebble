@@ -386,7 +386,7 @@ func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member
 	if template.Kind == infer.TemplateKnown {
 		return w.recordFieldGroundable(template.Known)
 	}
-	if template.Kind != infer.TemplateArray && template.Kind != infer.TemplateNominal {
+	if template.Kind != infer.TemplateArray && template.Kind != infer.TemplateNominal && template.Kind != infer.TemplateOptional {
 		return 0, false
 	}
 	mapping := make(map[symbol.SymbolID]types.TypeID, len(decl.Parameters))
@@ -404,13 +404,13 @@ func (w *walker) recordFieldDeclaredType(ctx walkContext, rp *recordPlan, member
 }
 
 // recordFieldGroundable reports whether a declared field type is one the
-// walk-time declared-type grounding applies to: an array (the original scope)
-// or a plain struct — a Nominal whose declaration is NominalStruct. Tagged
-// unions and enums are also Nominals but keep their existing behavior (a
-// tagged-union field construction `.{ Int = 42 }` runs through a separate,
-// dedicated mechanism; a plain enum field needs no early grounding), and
-// every scalar, tuple, optional, pointer, slice, and function field stays
-// ungrounded as before.
+// walk-time declared-type grounding applies to: an array (the original scope),
+// a plain struct — a Nominal whose declaration is NominalStruct — or an
+// optional. Tagged unions and enums are also Nominals but keep their existing
+// behavior (a tagged-union field construction `.{ Int = 42 }` runs through a
+// separate, dedicated mechanism; a plain enum field needs no early grounding),
+// and every scalar, tuple, pointer, slice, and function field stays ungrounded
+// as before.
 func (w *walker) recordFieldGroundable(id types.TypeID) (types.TypeID, bool) {
 	if id == 0 {
 		return 0, false
@@ -421,6 +421,8 @@ func (w *walker) recordFieldGroundable(id types.TypeID) (types.TypeID, bool) {
 	}
 	switch key.Kind() {
 	case types.Array:
+		return id, true
+	case types.Optional:
 		return id, true
 	case types.Nominal:
 		declaration, _, ok := key.Nominal()

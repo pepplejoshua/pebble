@@ -94,6 +94,95 @@ fn check() void {
 	}
 }
 
+// TestOptionalFieldSomePayloadConstruction (Phase 3 #46) proves that a `some
+// <payload>` assigned to an OPTIONAL-typed struct field constructs cleanly for
+// both the named and anonymous record literal form, in both the matching-type
+// literal-payload shape and the width-converting payload shape (a u8 local
+// into a ?u32 field). Before the fix, recordFieldGroundable only grounded
+// ARRAY- and plain STRUCT-typed fields as KNOWN destinations at walk time, so
+// the SomeExpr's optional-type pinning (Phase 3 #27) never fired inside a
+// record literal and the field-role compatibility rejected `?<payload's own
+// type>` against the field's declared optional type as an unconvertible pair
+// (C0601). The `none` value into an optional field and the Phase 3 #27
+// plain-local/return/argument positions are pinned as regressions.
+func TestOptionalFieldSomePayloadConstruction(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"named-matching-literal", `type Box = struct { opt ?i32; };
+fn check() void {
+    var b Box = Box.{ opt = some 5 };
+}`},
+		{"named-width-converting-payload", `type Box = struct { opt ?u32; };
+fn check() void {
+    var x u8 = 5;
+    var b Box = Box.{ opt = some x };
+}`},
+		{"anonymous-matching-literal", `type Box = struct { opt ?i32; };
+fn check() void {
+    var b Box = .{ opt = some 5 };
+}`},
+		{"anonymous-width-converting-payload", `type Box = struct { opt ?u32; };
+fn check() void {
+    var x u8 = 5;
+    var b Box = .{ opt = some x };
+}`},
+		{"inferred-named-width-converting-payload", `type Box = struct { opt ?u32; };
+fn check() void {
+    var x u8 = 5;
+    var b = Box.{ opt = some x };
+}`},
+		{"none-value-named", `type Box = struct { opt ?i32; };
+fn check() void {
+    var b Box = Box.{ opt = none };
+}`},
+		{"generic-optional-field-typed", `type Box[T] = struct { opt ?T; };
+fn check() void {
+    var b Box[i32] = Box[i32].{ opt = some 5 };
+}`},
+		{"generic-optional-field-width-converting", `type Box[T] = struct { opt ?u32; };
+fn check() void {
+    var x u8 = 5;
+    var b Box[i32] = Box[i32].{ opt = some x };
+}`},
+		{"plain-local-matching-literal", `fn check() void {
+    var o ?i32 = some 5;
+}`},
+		{"plain-local-width-converting-payload", `fn check() void {
+    var x u8 = 5;
+    var o ?u32 = some x;
+}`},
+		{"plain-return-width-converting-payload", `fn mk() ?u32 {
+    var x u8 = 5;
+    return some x;
+}`},
+		{"plain-argument-width-converting-payload", `fn g(o ?u32) void {}
+fn check() void {
+    var x u8 = 5;
+    g(some x);
+}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(test.source)})
+			handoff := run06a(inputs, diagnostics, Config{})
+			if handoff == nil {
+				t.Fatalf("06a failed: %+v", diagnostics.Items())
+			}
+			result := run06b(handoff, diagnostics, Config{}, inputs.Types)
+			if !result.Successful() {
+				t.Fatalf("expected construction to check cleanly, got diagnostics: %+v", diagnostics.Items())
+			}
+			for _, item := range diagnostics.Items() {
+				if item.Code == "C0619" {
+					t.Fatalf("leaked the C0619 internal-error path: %+v", diagnostics.Items())
+				}
+			}
+		})
+	}
+}
+
 // TestAnonymousRecordConstructNoDestinationRejected proves that when the
 // destination type cannot be inferred at all, the anonymous form produces a
 // clean inference diagnostic (T0510) rather than the C0619 internal-error
@@ -135,7 +224,7 @@ func TestAnonymousRecordConstructMatchesNamedDiagnostics(t *testing.T) {
 		{"wrong-type", "type Point = struct { x i32; y i32; };", `var p Point = Point.{ x = "str", y = 2 };`, `var p Point = .{ x = "str", y = 2 };`, "T0505"},
 		{"unknown-field", "type Point = struct { x i32; y i32; };", `var p Point = Point.{ z = 1 };`, `var p Point = .{ z = 1 };`, "T0507"},
 		{"missing-field", "type Point = struct { x i32; y i32; };", `var p Point = Point.{ x = 1 };`, `var p Point = .{ x = 1 };`, "C0605"},
-		{"optional-some-field", "type Box = struct { opt ?i32; };", `var b Box = Box.{ opt = some 5 };`, `var b Box = .{ opt = some 5 };`, "C0601"},
+		{"optional-some-field", "type Box = struct { opt ?i32; };", `var b Box = Box.{ opt = some "hi" };`, `var b Box = .{ opt = some "hi" };`, "C0601"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

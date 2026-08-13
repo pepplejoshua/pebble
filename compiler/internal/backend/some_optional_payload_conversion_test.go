@@ -118,6 +118,63 @@ func TestSomePayloadConversionPositions(t *testing.T) {
 	}
 }
 
+// TestSomePayloadIntoOptionalField (Phase 3 #46) proves the same payload
+// conversion into an OPTIONAL-typed STRUCT FIELD, the record-literal
+// counterpart to the plain-local/return/argument positions above. Before the
+// fix, recordFieldGroundable grounded only ARRAY- and plain STRUCT-typed
+// fields at walk time, so the SomeExpr's optional-type pinning never fired
+// inside a record literal and both `Box.{ opt = some 5 }` (named) and the
+// width-converting `Box.{ opt = some x }` (u8 local into a ?u32 field) failed
+// C0601, for the named and anonymous form alike. The 300-in-u16-into-?u32
+// case would truncate to 44 if the payload were silently kept at the narrower
+// width; the value round-trips via the ordinary IntegerCast machinery.
+func TestSomePayloadIntoOptionalField(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"named-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"named-width-converting-payload", "type Box = struct { opt ?u32; }; fn main() int { var x u8 = 5; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
+		{"named-u16-300-into-u32", "type Box = struct { opt ?u32; }; fn main() int { var x u16 = 300; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 300 { return 42; } } return 0; }", 42},
+		{"named-u8-into-int", "type Box = struct { opt ?int; }; fn main() int { var x u8 = 5; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
+		{"named-char-into-i32", "type Box = struct { opt ?i32; }; fn main() int { var c char = 'a'; var b Box = Box.{ opt = some c }; if b.opt.has_value { if b.opt! == 97 { return 42; } } return 0; }", 42},
+		{"named-field-read-payload", "type P = struct { x u16; }; type Box = struct { opt ?i64; }; fn main() int { var s P = P.{ x = 7 }; var b Box = Box.{ opt = some s.x }; if b.opt.has_value { if b.opt! == 7 { return 42; } } return 0; }", 42},
+		{"anonymous-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = .{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"anonymous-width-converting-payload", "type Box = struct { opt ?u32; }; fn main() int { var x u8 = 5; var b Box = .{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
+		{"none-value", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = none }; if !b.opt.has_value { return 42; } return 0; }", 42},
+		{"generic-optional-field-matching", "type Box[T] = struct { opt ?T; }; fn main() int { var b Box[i32] = Box[i32].{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"generic-optional-field-width-converting", "type Box[T] = struct { opt ?T; }; fn main() int { var x u8 = 5; var b Box[u32] = Box[u32].{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
+		{"generic-optional-field-300", "type Box[T] = struct { opt ?T; }; fn main() int { var x u16 = 300; var b Box[u32] = Box[u32].{ opt = some x }; if b.opt.has_value { if b.opt! == 300 { return 42; } } return 0; }", 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, tc.want, false)
+		})
+	}
+}
+
+// TestSomePayloadIntoOptionalFieldRejects pins the conversions that must STAY
+// rejected in a record-literal optional field, mirroring the plain-local
+// rejection class: a payload with no conversion path to the destination
+// payload (str) produces the same C0601 optional-injection rejection the
+// plain-local `var o ?i32 = some "hi"` produces.
+func TestSomePayloadIntoOptionalFieldRejects(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"named-str-payload-into-i32", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = some \"hi\" }; return 0; }", "cannot convert"},
+		{"anonymous-str-payload-into-i32", "type Box = struct { opt ?i32; }; fn main() int { var b Box = .{ opt = some \"hi\" }; return 0; }", "cannot convert"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertCheckRejects(t, tc.source, tc.want)
+		})
+	}
+}
+
 // TestSomeLiteralPayloadFits pins the row's already-working literal half so
 // the conversion fix does not regress it: an int literal fits every integer
 // optional payload and a float literal fits both float payloads.

@@ -76,11 +76,11 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	t.Parallel()
 	// The emitted-C shape check for the optional two-specialization case: each
 	// specialization's typedef must name its OWN payload optional type —
-	// pebble_optional_30_t (Optional(int)) for Box[int], pebble_optional_31_t
+	// pebble_optional_25_t (Optional(int)) for Box[int], pebble_optional_27_t
 	// (Optional(bool)) for Box[bool] — and BOTH optional typedefs must be
 	// emitted (before this slice the bool-payload optional was referenced but
-	// never defined, a real cc error). Struct type IDs 24/25, optional types
-	// 30/31, field symbol 26 from a real fixture dump.
+	// never defined, a real cc error). Struct type IDs 24/26, optional types
+	// 25/27, field symbol 26 from a real fixture dump.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Box[K] = struct { value ?K; }; fn main() int { var b Box[int] = Box[int].{ value = some 5 }; var c Box[bool] = Box[bool].{ value = some true }; var d Box[bool] = Box[bool].{ value = none }; if c.value! { if d.value! { return 1; } else { return b.value!; } } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -88,8 +88,8 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    pebble_optional_30_t pebble_field_26;\n} pebble_struct_24_t;",
-		"typedef struct {\n    pebble_optional_31_t pebble_field_26;\n} pebble_struct_25_t;",
+		"typedef struct {\n    pebble_optional_25_t pebble_field_26;\n} pebble_struct_24_t;",
+		"typedef struct {\n    pebble_optional_27_t pebble_field_26;\n} pebble_struct_26_t;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -97,7 +97,7 @@ func TestEmitGenericStructOptionalTwoSpecializationsWriteConcreteCTypedefs(t *te
 	}
 	// Both optional typedefs must exist: the bool-payload optional is what was
 	// referenced-but-undefined before this slice.
-	if strings.Count(out, "} pebble_optional_30_t;") != 1 || strings.Count(out, "} pebble_optional_31_t;") != 1 {
+	if strings.Count(out, "} pebble_optional_25_t;") != 1 || strings.Count(out, "} pebble_optional_27_t;") != 1 {
 		t.Errorf("expected exactly one typedef each for the two optional payloads:\n%s", out)
 	}
 }
