@@ -44,28 +44,42 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 45 ("Nested anonymous struct literal as a field
-value", tracker 14) closed in `cf76b45`. Root cause: `recordFieldDeclaredType`
-(added for an earlier, narrower task) only grounded ARRAY-typed struct
-fields as a KNOWN destination at walk time; a struct-typed field's own
-nested anonymous literal has no base name to anchor its own type, so
-it stayed an unbound inference variable without early grounding,
-producing T0510 for both the anonymous AND named outer form. Fixed by
-widening the grounding to also cover a plain STRUCT-typed field
-(`Nominal` with `infer.NominalStruct`), explicitly excluding tagged
-unions/enums (also `Nominal`) since `.{ Int = 42 }` construction
-already works through a separate mechanism (Phase 3 #84). Covers
-arbitrary nesting depth and generic struct-typed fields; confirmed no
-regression to array fields, named nesting, or tagged-union
-construction. STANDING NOTE, still open: `examples/arena_alloc.peb`
-fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
-`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
-on when to queue it. Picking up the next Phase 3 item: "Optional field
-assigned `some <value>` in a `.{ ... }` literal" (tracker 14 line
-~137, `.{ opt = some 5 }` fails C0601 whether named or anonymous —
-found during the same Phase 3 #33 investigation as #45, general/
-pre-existing — check current state for staleness first, per the
-established pattern) next.)*
+*(empty — Phase 3 item 46 ("Optional field assigned `some <value>` in
+a `.{ ... }` literal", tracker 14) closed in `72c3109`. Same bug class
+as Phase 3 #45, one type-kind short: `recordFieldGroundable` covered
+only Array and plain Struct, so an optional-typed field's destination
+was never grounded as KNOWN at walk time, meaning Phase 3 #27's
+existing SomeExpr-pinning never fired inside a record literal — the
+SomeExpr typed itself from the payload alone (`?int` for a bare `5`)
+and failed the field-role compatibility check, even for a MATCHING
+literal payload. Fixed by widening `recordFieldGroundable` to also
+cover `types.Optional`, and widening the generic-substitution gate to
+admit `infer.TemplateOptional` so a generic struct's own `?T` field
+grounds correctly too. A genuine side effect surfaced by the
+supervisor's own independent full-suite verification (not the dispatch
+itself): grounding the Optional TypeID earlier shifts downstream
+type-ID interning order, breaking one unrelated pre-existing test's
+hardcoded exact typedef numbers — confirmed a pure renumbering (same
+correct C shape) and fixed via a small follow-up dispatch. STANDING
+NOTE, still open: `examples/arena_alloc.peb` fails to compile on
+pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
+yet a tracker 14 row, awaiting the user's decision on when to queue
+it. Picking up the next Phase 3 item: "`.len` used as a `print`
+operand fails a format-specifier mismatch" (tracker 14 line ~143,
+`print(s.len)` fails `cc -Werror -Wformat` — `PRIu64` vs. `.len`'s
+actual `size_t` C type — found during Phase 3 #43, general/
+pre-existing, unrelated to indexing — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Optional field assigned `some <value>` in a `.{ ... }`
+literal (Phase 3 #46), tracker 14.**
+
+Closed in `72c3109`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
