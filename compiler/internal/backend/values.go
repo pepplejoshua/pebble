@@ -2415,16 +2415,18 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 		if err != nil {
 			return "", err
 		}
-		if checkedSuffix(width) == "" {
+		if checkedNegSuffix(width) == "" {
 			// No pebble_rt_checked_neg_* runtime helper exists for this
-			// width (the runtime implements only the i32/i64/u64 family).
-			// A literal operand that fits the width's own signed range is
-			// folded to its negated decimal text — the same negative C
-			// constant spelling a negative switch case label uses — so a
-			// narrow-width negative literal initializer (e.g. `let x i16
-			// = -5;`) emits valid C instead of a call to a nonexistent
-			// helper. A non-constant operand is a clean rejection rather
-			// than a malformed call.
+			// width (the runtime implements only the signed i8/i16/i32/i64
+			// family; unsigned widths have none, and the checker rejects
+			// unary minus on an unsigned operand anyway). A literal operand
+			// that fits the width's own signed range is folded to its
+			// negated decimal text — the same negative C constant spelling a
+			// negative switch case label uses — so a narrow-width negative
+			// literal initializer (e.g. `let x u16 = -5;` in hand-built IR)
+			// emits valid C instead of a call to a nonexistent helper. A
+			// non-constant operand is a clean rejection rather than a
+			// malformed call.
 			if folded, ok := checkedNegateLiteral(unit, node.Children[0], width); ok {
 				return folded, nil
 			}
@@ -2451,7 +2453,7 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 				return checkedNegateMinimumText(width), nil
 			}
 		}
-		return "pebble_rt_checked_neg_" + checkedSuffix(width) + "(" + child + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
+		return "pebble_rt_checked_neg_" + checkedNegSuffix(width) + "(" + child + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
 	case tir.CheckedArithmetic:
 		if len(node.Children) != 2 {
 			return "", fmt.Errorf("entry function body expression contains a CheckedArithmetic with %d operand(s), want exactly two", len(node.Children))
@@ -2749,13 +2751,15 @@ func buildExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet 
 // negated value does not fit the width's range. It is the literal-only
 // narrowing buildExpr's CheckedNegate case uses for widths with no
 // pebble_rt_checked_neg_* runtime helper (the runtime implements only the
-// i32/i64/u64 family): a literal `-5` at i16 emits the C constant `-5` — the
-// same negative spelling integerLiteralText gives a negative switch case label
-// — and a non-constant operand is left for the caller to reject cleanly
-// rather than be emitted as a call to a nonexistent helper. The same folding
-// is also applied at a width WITH a helper for the one literal whose positive
-// magnitude is not a spellable C constant of that width: a negation at the
-// width's exact signed minimum (see buildExpr's CheckedNegate case).
+// signed i8/i16/i32/i64 family; unsigned widths have none, and the checker
+// rejects unary minus on an unsigned operand): a hand-built-IR literal `-5`
+// at u16 emits the C constant `-5` — the same negative spelling
+// integerLiteralText gives a negative switch case label — and a non-constant
+// operand is left for the caller to reject cleanly rather than be emitted as
+// a call to a nonexistent helper. The same folding is also applied at a width
+// WITH a helper for the one literal whose positive magnitude is not a
+// spellable C constant of that width: a negation at the width's exact signed
+// minimum (see buildExpr's CheckedNegate case).
 func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.BuiltinKind) (string, bool) {
 	operand, ok := unit.Node(operandID)
 	if !ok || operand.Kind != tir.IntegerLiteral {

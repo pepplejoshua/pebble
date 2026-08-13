@@ -178,6 +178,31 @@ func checkedShiftSuffix(width types.BuiltinKind) string {
 	return ""
 }
 
+// checkedNegSuffix returns the pebble_rt_checked_neg_* function-name suffix
+// for the given width: "i32" for an int or i32 entry, "i64" for an i64 entry,
+// and the width's own name for the narrow fixed-width SIGNED integers i8 and
+// i16 — the only other widths the checker admits for unary minus, each of
+// which now has its own runtime checked-negation helper. It is the
+// negation-specific twin of checkedShiftSuffix: checkedSuffix itself
+// deliberately stays narrow, because the OTHER checked helper families
+// (arithmetic, index, slice start, float-to-integer) admit only the
+// i32/i64/u64 widths, so widening it globally would emit calls to nonexistent
+// helpers for them. Unsigned widths yield "" — the checker rejects unary
+// minus on an unsigned operand, so the caller never needs a helper for them.
+func checkedNegSuffix(width types.BuiltinKind) string {
+	switch width {
+	case types.Int, types.I32:
+		return "i32"
+	case types.I64:
+		return "i64"
+	case types.I8:
+		return "i8"
+	case types.I16:
+		return "i16"
+	}
+	return ""
+}
+
 // isCompatibleIntegerWidth reports whether id resolves to an integer builtin
 // (ANY fixed-width integer, not just the abstract `int` one) whose C
 // representation shares width's own: cType(builtin) == cType(width). It is the

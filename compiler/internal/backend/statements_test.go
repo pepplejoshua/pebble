@@ -2233,11 +2233,16 @@ func TestEmitSwitchNegativeCaseLabelEntryWidthIntNonMatchCompilesAndRuns(t *test
 
 func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 	t.Parallel()
-	// Confirm the emitted C for a negative i16 case label: the subject's `-5`
-	// initializer folds to the negative constant at its own int16_t width, and
-	// the case label is spelled `case -5:` — the same negative decimal text a
-	// negative literal emits in any other position — so it matches the
-	// int16_t subject rather than a silently unsigned reinterpretation.
+	// Confirm the emitted C for a negative i16 case label: the case label is
+	// spelled `case -5:` — the same negative decimal text a negative literal
+	// emits in any other position — so it matches the int16_t subject rather
+	// than a silently unsigned reinterpretation. The subject's `-5`
+	// initializer itself now calls pebble_rt_checked_neg_i16 (Phase 3 #23
+	// gave i16 its own checked-negation helper, alongside i8; before that fix
+	// i16 had no helper at all, so an ordinary literal negation folded to a
+	// compile-time constant instead — literal folding is now reserved for
+	// the width's unspellable-minimum edge case only, see
+	// TestEmitCheckedNegateLiteralMinimumWritesC).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x i16 = -5; switch x { case -5: return 1; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2245,7 +2250,7 @@ func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int16_t pebble_local_27 = -5;",
+		"pebble_local_27 = pebble_rt_checked_neg_i16(5,",
 		"switch (pebble_local_27)",
 		"case -5:",
 		"default:",
@@ -2261,11 +2266,14 @@ func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 
 func TestEmitCheckedNegateLiteralNarrowWidthCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// A negative literal at a width with no pebble_rt_checked_neg_* runtime
-	// helper (the runtime implements only the i32/i64/u64 family) folds at
-	// emission to its negated decimal text instead of calling a nonexistent
-	// helper: `let x i8 = -5;` emits `int8_t pebble_local_27 = -5;`. x = -5
-	// cast to the entry int returns -5, whose OS-visible low byte is 251.
+	// A negative literal at i8: since Phase 3 #23 gave i8 its own
+	// pebble_rt_checked_neg_i8 helper (alongside i16), an ordinary literal
+	// negation like this one now compiles through that helper rather than
+	// folding to a compile-time constant — literal folding is reserved for
+	// the width's unspellable-minimum edge case only (see
+	// TestEmitCheckedNegateLiteralMinimumWidthCompilesAndRuns). Either way
+	// the result must be correct end to end: x = -5 cast to the entry int
+	// returns -5, whose OS-visible low byte is 251.
 	emitAndRun(t, "fn main() int { let x i8 = -5; return x as int; }", false, 251, false)
 }
 
@@ -2690,12 +2698,16 @@ func TestEmitSwitchI8SubjectElseCompilesAndRuns(t *testing.T) {
 
 func TestEmitSwitchI8SubjectWritesC(t *testing.T) {
 	t.Parallel()
-	// Confirm the emitted C for an i8 switch: the subject's -5 initializer
-	// folds to the negative constant at its own int8_t width, and the case
-	// labels are spelled `case -5:` / `case 7:` / `case 2:` — the same texts a
-	// signed literal emits anywhere — so the labels match the int8_t subject
-	// rather than a silent unsigned reinterpretation. The else arm is the
-	// default label.
+	// Confirm the emitted C for an i8 switch: the case labels are spelled
+	// `case -5:` / `case 7:` / `case 2:` — the same texts a signed literal
+	// emits anywhere — so the labels match the int8_t subject rather than a
+	// silent unsigned reinterpretation. The else arm is the default label.
+	// The subject's `-5` initializer itself now calls
+	// pebble_rt_checked_neg_i8 (Phase 3 #23 gave i8 its own checked-negation
+	// helper, alongside i16; before that fix i8 had no helper at all, so an
+	// ordinary literal negation folded to a compile-time constant instead —
+	// literal folding is now reserved for the width's unspellable-minimum
+	// edge case only, see TestEmitCheckedNegateLiteralMinimumWritesC).
 	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { let x i8 = -5; switch x { case -5, 7: return 1; case 2: return 2; else: return 0; } }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2703,7 +2715,7 @@ func TestEmitSwitchI8SubjectWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int8_t pebble_local_27 = -5;",
+		"pebble_local_27 = pebble_rt_checked_neg_i8(5,",
 		"switch (pebble_local_27)",
 		"case -5:",
 		"case 7:",

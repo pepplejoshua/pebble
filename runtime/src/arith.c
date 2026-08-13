@@ -167,6 +167,29 @@ int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
     return result;
 }
 
+/* The i8/i16 twins: the exact same contract at the narrower signed width.
+ * Negation overflows only at the width's minimum (-(-128) does not fit i8,
+ * -(-32768) does not fit i16), and __builtin_sub_overflow(0, a, ...) reports
+ * exactly that case at any integer width, so the SAFE path is the identical
+ * pattern with int8_t/INT8_MIN or int16_t/INT16_MIN substituting for the
+ * i32/i64 types. The RELEASE path wraps through the width's unsigned twin the
+ * same way the i32 path wraps via uint32_t. */
+int8_t pebble_rt_checked_neg_i8(int8_t a, PebbleSourceLoc loc) {
+    int8_t result;
+    if (__builtin_sub_overflow(0, a, &result)) {
+        pebble_rt_overflow_panic("i8 negation overflow", loc);
+    }
+    return result;
+}
+
+int16_t pebble_rt_checked_neg_i16(int16_t a, PebbleSourceLoc loc) {
+    int16_t result;
+    if (__builtin_sub_overflow(0, a, &result)) {
+        pebble_rt_overflow_panic("i16 negation overflow", loc);
+    }
+    return result;
+}
+
 int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {
     if (amount < 0 || amount >= 32) {
         pebble_rt_overflow_panic("i32 shift amount out of range", loc);
@@ -355,6 +378,16 @@ uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) 
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc) {
     (void)loc;
     return (int64_t)(0u - (uint64_t)a);
+}
+
+int8_t pebble_rt_checked_neg_i8(int8_t a, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)(0u - (uint8_t)a);
+}
+
+int16_t pebble_rt_checked_neg_i16(int16_t a, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)(0u - (uint16_t)a);
 }
 
 int32_t pebble_rt_checked_shl_i32(int32_t value, int32_t amount, PebbleSourceLoc loc) {

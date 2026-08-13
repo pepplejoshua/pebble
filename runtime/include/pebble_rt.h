@@ -174,6 +174,17 @@ int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_neg_i64(int64_t a, PebbleSourceLoc loc);
 
+/* Narrower-width checked negation: the same contract at the operand's own
+ * width, for the fixed-width signed integers the language actually exposes
+ * (`-a` on an i8/i16 value is checker-accepted and must negate in range or
+ * panic on the minimum). The i32/i64 family above is the model: SAFE mode
+ * reports the single overflow boundary (-<MIN> is unrepresentable) via
+ * __builtin_sub_overflow, RELEASE mode wraps through the unsigned twin.
+ * There is deliberately no checked_neg at any unsigned width, exactly as for
+ * u64 — the language rejects unary minus on an unsigned operand. */
+int8_t pebble_rt_checked_neg_i8(int8_t a, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_neg_i16(int16_t a, PebbleSourceLoc loc);
+
 uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
