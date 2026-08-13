@@ -1072,11 +1072,16 @@ func buildCompoundFloatCore(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // resolved element type is uint) and a uint-typed local (`sum += 1`). A uint
 // place has no checked runtime helper (checkedSuffix maps no width to uint), so
 // the plain C operator is the whole lowering, never a malformed helper name.
+// %= is admitted exactly like the other four operators: uint `%` is plain C
+// modulo on uint64_t (defined, no checked runtime primitive), and buildUintExpr
+// already lowers a plain uint `a % b` the same way, so the compound form must
+// not reject it (the checker accepts `a %= b` at uint; only float `%=` has no
+// lowering, which buildCompoundFloatCore rejects separately).
 func buildCompoundUintCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, lvalue string, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
-	if statement.Operator == syntax.Percent {
-		return "", fmt.Errorf("%s compound assignment uses %%%% on a uint place, want +, -, *, or / (%% is integral-only)", context)
+	op, ok := arithmeticOperator(statement.Operator)
+	if !ok {
+		return "", fmt.Errorf("%s compound assignment has unsupported operator %s on a uint place", context, statement.Operator)
 	}
-	op, _ := arithmeticOperator(statement.Operator)
 	value, err := buildUintExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 	if err != nil {
 		return "", err

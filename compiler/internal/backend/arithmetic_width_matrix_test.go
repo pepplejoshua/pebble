@@ -1,0 +1,173 @@
+package backend
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+// Arithmetic width-matrix tests (Phase 3 #20). These pin the checked-arithmetic
+// + - * / % helper-width matrix documented in proposal 14's "Integer runtime
+// coverage matrix": every checker-accepted integer width must either emit a
+// real, correct checked-arithmetic lowering or reject CLEANLY at Emit — never
+// emit a call to a nonexistent helper that only fails later at cc. The plain
+// binary-expression matrix is fully covered (int/i32/i64 x all five ops via the
+// checked helpers, u64 x + - * via the u64 helpers, uint x all five ops as
+// plain C arithmetic, and a clean rejection for every narrow fixed-width
+// integer x every op and for u64 / and %); the compound-assignment form has the
+// same coverage, including the %= on uint shape that previously rejected even
+// though the plain `a % b` form lowered fine.
+
+func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
+	t.Parallel()
+	// (operator, width) pairs that must COMPILE AND RUN with the arithmetically
+	// correct result. Each source is the probe shape `var r <W> = a <op> b;`
+	// with two same-width locals in an int-entry main, so the CheckedArithmetic
+	// node really emits at <W>. 5 op 2 yields 7/3/10/2/1 for + - * / % at every
+	// width.
+	for _, tc := range []struct {
+		name  string
+		width string
+		op    string
+		want  int
+	}{
+		{"add int", "int", "+", 7},
+		{"sub int", "int", "-", 3},
+		{"mul int", "int", "*", 10},
+		{"div int", "int", "/", 2},
+		{"mod int", "int", "%", 1},
+		{"add i32", "i32", "+", 7},
+		{"sub i32", "i32", "-", 3},
+		{"mul i32", "i32", "*", 10},
+		{"div i32", "i32", "/", 2},
+		{"mod i32", "i32", "%", 1},
+		{"add i64", "i64", "+", 7},
+		{"sub i64", "i64", "-", 3},
+		{"mul i64", "i64", "*", 10},
+		{"div i64", "i64", "/", 2},
+		{"mod i64", "i64", "%", 1},
+		{"add u64", "u64", "+", 7},
+		{"sub u64", "u64", "-", 3},
+		{"mul u64", "u64", "*", 10},
+		{"add uint", "uint", "+", 7},
+		{"sub uint", "uint", "-", 3},
+		{"mul uint", "uint", "*", 10},
+		{"div uint", "uint", "/", 2},
+		{"mod uint", "uint", "%", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf("fn main() int { var a %s = 5; var b %s = 2; var r %s = a %s b; return r as int; }", tc.width, tc.width, tc.width, tc.op)
+			emitAndRun(t, src, false, tc.want, false)
+		})
+	}
+}
+
+func TestArithmeticWidthMatrixRejectsCleanly(t *testing.T) {
+	t.Parallel()
+	// (operator, width) pairs that have no checked-arithmetic runtime helper and
+	// must be rejected CLEANLY at Emit with a message naming the operator and
+	// the offending width — never emitted as a call to a nonexistent helper
+	// (the pre-73bfbb1 empty-suffix pebble_rt_checked_*_ shape) that would only
+	// fail at cc. The narrow fixed-width integers (u8/u16/i8/i16/u32) have no
+	// runtime arithmetic helper at all; u64 has one for + - * only, so / and %
+	// reject the same way.
+	for _, tc := range []struct {
+		name  string
+		width string
+		op    string
+	}{
+		{"add u8", "u8", "+"},
+		{"sub u8", "u8", "-"},
+		{"mul u8", "u8", "*"},
+		{"div u8", "u8", "/"},
+		{"mod u8", "u8", "%"},
+		{"add u16", "u16", "+"},
+		{"sub u16", "u16", "-"},
+		{"mul u16", "u16", "*"},
+		{"div u16", "u16", "/"},
+		{"mod u16", "u16", "%"},
+		{"add u32", "u32", "+"},
+		{"sub u32", "u32", "-"},
+		{"mul u32", "u32", "*"},
+		{"div u32", "u32", "/"},
+		{"mod u32", "u32", "%"},
+		{"add i8", "i8", "+"},
+		{"sub i8", "i8", "-"},
+		{"mul i8", "i8", "*"},
+		{"div i8", "i8", "/"},
+		{"mod i8", "i8", "%"},
+		{"add i16", "i16", "+"},
+		{"sub i16", "i16", "-"},
+		{"mul i16", "i16", "*"},
+		{"div i16", "i16", "/"},
+		{"mod i16", "i16", "%"},
+		{"div u64", "u64", "/"},
+		{"mod u64", "u64", "%"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf("fn main() int { var a %s = 5; var b %s = 2; var r %s = a %s b; return r as int; }", tc.width, tc.width, tc.width, tc.op)
+			want := fmt.Sprintf("CheckedArithmetic with operator %s at %s, want an operator with a checked runtime helper", tc.op, tc.width)
+			emitAndRunRejects(t, src, want)
+		})
+	}
+}
+
+func TestUintCompoundAssignmentWidthMatrixCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// uint compound assignment lowers to plain C arithmetic at uint's own
+	// uint64_t width, exactly like a plain uint `a <op> b` expression. All five
+	// operators must therefore work on a uint local; %= on uint is the shape
+	// that previously rejected ("% is integral-only") even though the plain
+	// form and every other compound operator already lowered fine. 5 op 2
+	// yields 7/3/10/2/1 for += -= *= /= %=.
+	for _, tc := range []struct {
+		name string
+		op   string
+		want int
+	}{
+		{"add-assign", "+=", 7},
+		{"sub-assign", "-=", 3},
+		{"mul-assign", "*=", 10},
+		{"div-assign", "/=", 2},
+		{"mod-assign", "%=", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf("fn main() int { var a uint = 5; a %s 2; return a as int; }", tc.op)
+			emitAndRun(t, src, false, tc.want, false)
+		})
+	}
+}
+
+func TestUintCompoundModuloFieldPlaceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The uint %= fix's struct-field shape: the std/hmap.peb self.len-style
+	// compound assignment on a uint-typed field of a struct reached through a
+	// pointer helper must also lower %= to plain C `%` — the same
+	// buildCompoundUintCore path a uint local's %= uses (the field's resolved
+	// element type is uint). 5 %= 2 = 1.
+	emitAndRun(t, "type S = struct { n uint; }; fn f(s *S) void { s.n %= 2; } fn main() int { var s S = S.{ n = 5 }; f(&s); return s.n as int; }", false, 1, false)
+}
+
+func TestUintCompoundModuloWritesPlainCOperator(t *testing.T) {
+	t.Parallel()
+	// Assert the emitted C for uint %=: the combined value must be the plain C
+	// modulo expression on the uint local, never a checked runtime helper call —
+	// uint has no checked helper (checkedSuffix maps no width to uint), and the
+	// plain operator is the whole lowering, exactly like uint += etc.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() int { var a uint = 5; a %= 2; return a as int; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "% 2u)") {
+		t.Errorf("emitted C missing the plain uint %%-operator lowering:\n%s", out)
+	}
+	if strings.Contains(out, "pebble_rt_checked_mod_") {
+		t.Errorf("emitted C calls a checked-modulo helper for uint, want plain C %%:\n%s", out)
+	}
+}
