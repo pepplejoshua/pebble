@@ -411,6 +411,38 @@ func buildUintExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, file
 			return "", fmt.Errorf("unsupported uint arithmetic operator %s", node.Operator)
 		}
 		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+	case tir.BinaryValue:
+		// A bitwise &, |, or ^ whose result is uint (`(hash as uint) ^ (key
+		// as uint)`): the uint twin of buildExpr's BinaryValue case. The
+		// checker builds & | ^ on integral operands as a BinaryValue (unlike
+		// % , which it builds as a CheckedArithmetic), and uint is integral,
+		// so a uint-typed BinaryValue is checker-reachable. uint has no
+		// checked runtime helper for ANY operator — the plain C operator is
+		// the whole lowering, exactly as this builder's CheckedArithmetic
+		// case lowers uint arithmetic and buildExpr's BinaryValue case lowers
+		// & | ^ at every other width. Both operands are uint-typed by
+		// construction (this builder's entry gate requires the BinaryValue
+		// node's own type to be uint and the checker anchors the operands to
+		// the result), so they recurse into this same builder, and the result
+		// is the plain C operator between them. Any other operator on a
+		// BinaryValue (a comparison, or a shift, which the checker builds as
+		// CheckedShift instead) is a clean rejection.
+		if len(node.Children) != 2 {
+			return "", fmt.Errorf("uint bitwise expression has %d operands, want exactly two", len(node.Children))
+		}
+		left, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width)
+		if err != nil {
+			return "", err
+		}
+		right, err := buildUintExpr(st, unit, snapshot, fileSet, node.Children[1], locals, width)
+		if err != nil {
+			return "", err
+		}
+		op, ok := bitwiseOperator(node.Operator)
+		if !ok {
+			return "", fmt.Errorf("unsupported uint bitwise operator %s, want &, |, or ^", node.Operator)
+		}
+		return fmt.Sprintf("(%s %s %s)", left, op, right), nil
 	case tir.DirectCall:
 		// A call to a uint-returning helper used as a uint value (`var n =
 		// get_count();`, or std/io.peb's read_line shape `var bytes = read(
