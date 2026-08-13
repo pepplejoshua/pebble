@@ -44,8 +44,28 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 24 ("Address-of and dereference", tracker 14)
-closed in `75fc89a`. A ~45-shape sweep found two real, distinct gaps
+*(empty — Phase 3 item 25 ("Bitwise not", tracker 14) closed in
+`55be9b9`. The same bug class Phase 3 #21 found for uint's `& | ^`:
+buildUintExpr had no PrefixValue case at all, so uint `~x` died at
+Emit ("unsupported uint expression node PrefixValue") even though
+every other width already lowered `~` correctly through buildExpr's
+own PrefixValue case. Fixed by adding the case, mirroring the existing
+pattern exactly. bool is not a valid `~` operand (checker-rejected) —
+confirmed intentional, not a gap. NOTE: as of this item, the
+verification cadence changed — the full backend/repo suite is now a
+periodic checkpoint (~every 5 items), not a per-item gate; per-item
+verification is gofmt/vet + targeted tests only (see
+memory/feedback_no_full_suite_per_item.md, agreed with the user
+2026-08-13 after the growing backend suite's per-item runtime became a
+real bottleneck). Picking up the next Phase 3 item: "Float to integer"
+(tracker 14, "Partial by destination width" — check current state for
+staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Address-of and dereference (Phase 3 #24), tracker 14.**
+
+Closed in `75fc89a`. A ~45-shape sweep found two real, distinct gaps
 beyond Phase 3 #3's earlier work: a whole ARRAY read through a pointer
 dereference (`*p` where `p` is `*[N]T`) was unsupported as a call
 argument and as an array-typed struct field's construction value (both
@@ -62,9 +82,9 @@ gap), parenthesized aggregate return/argument (general grouped-value
 gap), array-literal-with-aggregate-element argument (general
 array-of-aggregate gap), `&mk()` (correctly checker-rejected, not a
 bug), escape analysis for `return &localVar` (known design-decision
-gap). Picking up the next Phase 3 item: "Bitwise not" (tracker 14,
-"Partial by backend width" — check current state for staleness first,
-per the established pattern) next.)*
+gap).
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
