@@ -44,20 +44,41 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 22 ("Shifts `<< >>`", tracker 14) closed in
-`8718b00`. A full ~20-pair sweep (2 operators x every integer width)
-confirmed the row's claim exactly: `uint`/`u64` were the only widths
-without a checked shift-helper pair — `u64` a clean Emit rejection,
-`uint` an "unsupported ... node CheckedShift" backend gap (buildUintExpr
-had no CheckedShift case at all). Fixed by adding
+*(empty — Phase 3 item 23 ("Unary numeric negation", tracker 14) closed
+in `ea6525e`. A full sweep confirmed i32/i64/int already worked,
+unsigned widths are intentionally checker-rejected for unary minus (not
+a bug), and floats already worked via plain-C negation; i8/i16 negation
+of a non-constant operand was the one real gap (Emit-rejected, "no
+checked-neg runtime helper"). Fixed by adding
+`pebble_rt_checked_neg_i8`/`neg_i16` to the C runtime (mirroring the
+i32/i64 pair's exact SAFE/RELEASE structure) and a dedicated
+`checkedNegSuffix` selector (mirroring `checkedShiftSuffix`, confirmed
+via grep that the shared `checkedSuffix`'s other 8 call sites are
+unaffected). Surfaced and fixed two pre-existing tests that pinned the
+old "narrow width folds any literal" emitted-C text — now that i8/i16
+have real helpers, literal folding is correctly reserved for the
+width's unspellable-minimum edge case only, exactly like i32/i64/int
+already worked. Picking up the next Phase 3 item: "Address-of and
+dereference" (tracker 14, "Partial for whole aggregate values" — check
+current state for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Shifts `<< >>` (Phase 3 #22), tracker 14.**
+
+Closed in `8718b00`. A full ~20-pair sweep (2 operators x every integer
+width) confirmed the row's claim exactly: `uint`/`u64` were the only
+widths without a checked shift-helper pair — `u64` a clean Emit
+rejection, `uint` an "unsupported ... node CheckedShift" backend gap
+(buildUintExpr had no CheckedShift case at all). Fixed by adding
 `pebble_rt_checked_shl_u64`/`shr_u64` to the C runtime (mirroring the
 existing u32 pair's SAFE-mode abort/RELEASE-mode mask structure
 exactly, uint/u64 sharing one pair since both carry the C type
 uint64_t) and wiring both Go-side dispatch points. Also fixed a stale
 pre-existing regression test that pinned the OLD "u64 shift rejected"
-behavior. Picking up the next Phase 3 item: "Unary numeric negation"
-(tracker 14, "Partial by integer width" — check current state for
-staleness first, per the established pattern) next.)*
+behavior.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
