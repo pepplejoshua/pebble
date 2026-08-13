@@ -44,32 +44,36 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 34 ("Scalar cast inside a generic function
-body", tracker 14) closed in `2a063f0`, in two passes. Root cause:
-three independent layers (cast validation, requirement validation,
-IR-build coercion selection) all lacked a case for a TypeParameter-
-typed operand, each rejecting/failing a cast touching a still-generic
-type during template checking. First dispatch fixed the first two
-layers but the session ended mid-investigation into the third
-(IR-build C0619), leaving its own primary target test still failing —
-caught from the session's own visible test output rather than trusting
-"completed" status. Resumed the same session, which found the
-IR-builder gap and confirmed the fix is sound because this codebase's
-generic model rebuilds the whole body per concrete instantiation via
-buildSpecialization (the deferred template-time node never reaches the
-backend). I independently added and verified two end-to-end
-compile-and-run probes (i32 and u64 instantiations) to prove
-specialization really does produce a correct, working cast, not just
-that validation stopped erroring. STANDING NOTE, still open:
+*(empty — Phase 3 item 35 ("Enum call argument from a call result,
+struct field, or integer-to-enum cast", tracker 14) closed in
+`2a76a27`. Root cause: `buildEnumValue` already built correct C for
+every needed node kind internally; the gap was purely
+`buildCallArgument`'s own dispatch never recognizing DirectCall/
+Load-of-FieldPlace/CheckedIntegerToEnum and delegating, exactly like
+its two pre-existing cases (variant literal, deref-read) already did.
+Fixed with three dispatch cases plus a bonus fourth found during
+testing (`check(mk().c)`, a FieldValue — field read off a call-result
+struct VALUE, not an addressable local). Confirmed
+IndirectCall-with-enum-result is genuinely unreachable from real
+source, so no case was added there. STANDING NOTE, still open:
 `examples/arena_alloc.peb` fails to compile on pointer arithmetic in
 `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
 awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Enum call argument from a call
-result, struct field, or integer-to-enum cast" (tracker 14 line ~162,
-"Partial — the SAME rejection as the literal-argument row... also hits
-check(pick()) [DirectCall], check(s.c) [Load/FieldPlace], and
-check(1 as Color) [CheckedIntegerToEnum]" — check current state for
+Picking up the next Phase 3 item: "Materialize an interpolated string
+as a local, argument, result, or ordinary value" (tracker 14 line
+~343, "InterpolatedString is handled only inside buildPrint; general
+string builders reject it" — **Absent** — check current state for
 staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Enum call argument from a call result, struct field, or
+integer-to-enum cast (Phase 3 #35), tracker 14.**
+
+Closed in `2a76a27`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
