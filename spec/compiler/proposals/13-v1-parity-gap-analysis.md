@@ -44,32 +44,40 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 36 ("Materialize an interpolated string as a
-local, argument, result, or ordinary value", tracker 14) closed in
-`395eb2c`. Root cause: `InterpolatedString` was handled only inside
-`buildPrint`; the general str-value builders had no case for it at
-all. Fixed for the same scope `buildPrint` already supports (literal
-text + `bool`-typed value parts only) via a new runtime primitive
-`pebble_rt_str_from_parts` and backend wiring into
-`buildStrOperand`/`buildStrLocalDeclaration`/`buildStoreCore`. A real
-heap buffer overflow (bool-part byte-length ternary backwards — "true"
-is 4 chars, "false" is 5, the dispatch had them swapped) was found
-during independent verification, NOT by the dispatched session, which
-had an empty worklog and no evidence of having run its own tests —
-resumed with the precise diagnosis and confirmed fixed, then verified
-5x-repeated (`-count=5`) given this is new pointer-manipulating C code.
-Interpolating a non-bool value type remains explicitly out of scope,
-now its own tracker 14 row. STANDING NOTE, still open:
+*(empty — Phase 3 item 37 ("Nested tagged-union payload, inline
+construction", tracker 14) closed in `6fe558b`. Root cause: the exact
+same bug class as the Phase 3 #31 nested-array typedef-ordering fix —
+`buildUnionTypedefs` emitted in first-encountered collection order
+rather than dependency order, so an inline `Outer.value(Inner.b(7))`
+construction emitted Outer's typedef (which inline-references Inner's
+typedef name) before Inner's was defined. Fixed with the identical DFS
+postorder pattern `buildArrayTypedefs` already used; collection itself
+needed no change. This dispatch's orc process was interrupted mid-run
+by the supervisor for an unrelated reason (a dispatch-invocation
+correction, not a problem with the session's work) — independent
+inspection found the diff already complete and well-formed (full DFS
+rewrite, updated doc comments, 4 solid test cases including an
+unprompted 3-level-nesting proof), so it was verified and committed
+as-is rather than wastefully re-dispatched. STANDING NOTE, still open:
 `examples/arena_alloc.peb` fails to compile on pointer arithmetic in
 `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
 awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Nested tagged-union payload, inline
-construction" (tracker 14 line ~147, "`Outer.value(Inner.b(7))`
-[constructing the inner union inline] fails to compile: the outer
-union's typedef is emitted before the inner's... The WORKING form
-[construct-then-reference] is proven" — a typedef-ordering gap similar
-in shape to the nested-array fix from Phase 3 #31 — check current
-state for staleness first, per the established pattern) next.)*
+Picking up the next Phase 3 item: "Array-of-arrays struct field"
+(tracker 14 line ~126, deferred from Phase 3 #31 — "rejected by
+`orderAggregateTypes`'s 'more than one level of nesting' depth check
+before the array typedef machinery is even reached; needs its own
+depth-check surgery" — check current state for staleness first, per
+the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Nested tagged-union payload, inline construction (Phase 3
+#37), tracker 14.**
+
+Closed in `6fe558b`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
