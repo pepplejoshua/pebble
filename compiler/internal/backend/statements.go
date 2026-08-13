@@ -2187,9 +2187,23 @@ func buildLeadingIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 // runs at exit inside a fresh C block — V1's `{ /* defer */ ... }` defer-local
 // block — built over a cloned scope that is discarded afterwards, so the
 // deferred local is scoped to the defer and invisible outside it, while the
-// block's own statements can still reference it and the enclosing locals. The
-// emitted declaration block uses the shared buildLeadingStatement /
-// buildFallthroughBody machinery the non-deferred declaration and fall-through
+// block's own statements can still reference it and the enclosing locals. A
+// deferred block containing a conditional, loop, or switch works through the
+// Block case's buildFallthroughBody delegation (Phase 3 #29), and — since 10.48 —
+// a bare deferred control-flow statement is supported too: `defer if cond { ...
+// }`, `defer while cond { ... }`, `defer loop start..end : i { ... }`, `defer
+// for ... { ... }`, and `defer switch ... { ... }` (the DeferRegister's child is
+// the tir.If/tir.While/tir.RangeLoop/tir.For/tir.Switch node directly, no
+// enclosing Block), each built by the same builder the non-deferred
+// fall-through-sequence dispatch uses (buildLoopIf/buildWhile/buildRangeLoop/
+// buildFor/buildLoopSwitch) over a cloned, discarded scope and wrapped in V1's
+// fresh defer-local C block. The checker's C0613 rejects a deferred
+// return/break/continue/nested defer, so every deferred control-flow statement
+// can contain only ordinary fall-through statements; a break/continue inside it
+// must target a loop or switch contained within the deferred statement's own
+// region (regionHasEscapingExit enforces this), so the emitted C break/continue
+// resolves to the same construct. The emitted declaration block uses the shared
+// buildLeadingStatement / buildFallthroughBody machinery the non-deferred declaration and fall-through
 // positions use, so the emission logic lives in exactly one place. A
 // DeferRegister whose child is an unsupported
 // statement kind is a clean rejection naming what was found. result is the
@@ -2307,8 +2321,83 @@ func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 				continue
 			}
 			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
+		case tir.If:
+			// A bare deferred conditional — `defer if cond { ... } else {
+			// ... }` — runs at exit inside a fresh C block (V1's defer-local
+			// block), built by the same buildLoopIf a fall-through-sequence if
+			// uses over a cloned scope that is discarded afterwards: the arms
+			// are themselves fall-through sequences (the checker's C0613
+			// rejects a deferred return/break/continue/nested defer, so the
+			// arms can contain only ordinary fall-through statements), and a
+			// break/continue targeting a loop inside an arm resolves exactly
+			// as it does in any fall-through sequence.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildLoopIf(st, unit, snapshot, fileSet, stmt, deferredScope, len(indent)/4, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
+		case tir.While:
+			// A bare deferred while loop — `defer while cond { ... }` — runs
+			// at exit inside a fresh C block (V1's defer-local block), built
+			// by the same buildWhile a fall-through-sequence while uses over a
+			// cloned scope that is discarded afterwards: the loop's own body is
+			// a fall-through sequence (see the While case of
+			// buildFallthroughStatement), and a break/continue targeting this
+			// deferred loop is contained within its own region, exactly as the
+			// checker's regionHasEscapingExit requires.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildWhile(st, unit, snapshot, fileSet, stmt, deferredScope, len(indent)/4, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
+		case tir.RangeLoop:
+			// A bare deferred range loop — `defer loop start..end : i { ... }`
+			// — runs at exit inside a fresh C block (V1's defer-local block),
+			// built by the same buildRangeLoop a fall-through-sequence range
+			// loop uses over a cloned scope that is discarded afterwards: the
+			// loop's own body is a fall-through sequence (see the RangeLoop
+			// case of buildFallthroughStatement), and a break/continue
+			// targeting this deferred loop is contained within its own region.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildRangeLoop(st, unit, snapshot, fileSet, stmt, deferredScope, len(indent)/4, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
+		case tir.For:
+			// A bare deferred classic for loop — `defer for var i i32 = 0; i <
+			// 3; i = i + 1 { ... }` — runs at exit inside a fresh C block
+			// (V1's defer-local block), built by the same buildFor a
+			// fall-through-sequence for loop uses over a cloned scope that is
+			// discarded afterwards: the loop's own body is a fall-through
+			// sequence (see the For case of buildFallthroughStatement), and a
+			// break/continue targeting this deferred loop is contained within
+			// its own region.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildFor(st, unit, snapshot, fileSet, stmt, deferredScope, len(indent)/4, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
+		case tir.Switch:
+			// A bare deferred switch — `defer switch x { case 1: ...; else:
+			// ...; }` — runs at exit inside a fresh C block (V1's defer-local
+			// block), built by the same buildLoopSwitch a fall-through-sequence
+			// switch uses over a cloned scope that is discarded afterwards: the
+			// case bodies are themselves fall-through sequences (see the Switch
+			// case of buildFallthroughStatement), and a break/continue targeting
+			// a loop or switch inside a case body is contained within the
+			// deferred statement's own region.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildLoopSwitch(st, unit, snapshot, fileSet, stmt, deferredScope, len(indent)/4, width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
 		default:
-			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment, a CompoundStore compound assignment or postfix increment/decrement, a void-returning function call used as a statement, and a local declaration, bare or block-wrapped, are supported)", context, stmt.Kind)
+			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment, a CompoundStore compound assignment or postfix increment/decrement, a void-returning function call used as a statement, a local declaration, bare or block-wrapped, and a conditional, while, range loop, classic for loop, or switch, bare or block-wrapped, are supported)", context, stmt.Kind)
 		}
 	}
 	return strings.Join(parts, "\n"), nil
