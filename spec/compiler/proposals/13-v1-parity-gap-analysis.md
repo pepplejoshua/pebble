@@ -44,8 +44,33 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 23 ("Unary numeric negation", tracker 14) closed
-in `ea6525e`. A full sweep confirmed i32/i64/int already worked,
+*(empty — Phase 3 item 24 ("Address-of and dereference", tracker 14)
+closed in `75fc89a`. A ~45-shape sweep found two real, distinct gaps
+beyond Phase 3 #3's earlier work: a whole ARRAY read through a pointer
+dereference (`*p` where `p` is `*[N]T`) was unsupported as a call
+argument and as an array-typed struct field's construction value (both
+Emit-rejected); it already worked as a return value. Fixed by
+extracting the existing return-value lowering into a shared helper
+(`buildWholeArrayDerefRead`) and reusing it at both new call sites — no
+new lowering strategy invented. Everything else already worked:
+struct/tuple/array/slice address-of and whole-value dereference across
+every position, method calls through a dereferenced receiver,
+address-of a field/index path, deref chaining, pointer injection into
+an optional. Confirmed out of scope, already tracked separately:
+struct/tuple/optional field-construction from a call result (general
+gap), parenthesized aggregate return/argument (general grouped-value
+gap), array-literal-with-aggregate-element argument (general
+array-of-aggregate gap), `&mk()` (correctly checker-rejected, not a
+bug), escape analysis for `return &localVar` (known design-decision
+gap). Picking up the next Phase 3 item: "Bitwise not" (tracker 14,
+"Partial by backend width" — check current state for staleness first,
+per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Unary numeric negation (Phase 3 #23), tracker 14.**
+
+Closed in `ea6525e`. A full sweep confirmed i32/i64/int already worked,
 unsigned widths are intentionally checker-rejected for unary minus (not
 a bug), and floats already worked via plain-C negation; i8/i16 negation
 of a non-constant operand was the one real gap (Emit-rejected, "no
@@ -58,9 +83,9 @@ unaffected). Surfaced and fixed two pre-existing tests that pinned the
 old "narrow width folds any literal" emitted-C text — now that i8/i16
 have real helpers, literal folding is correctly reserved for the
 width's unspellable-minimum edge case only, exactly like i32/i64/int
-already worked. Picking up the next Phase 3 item: "Address-of and
-dereference" (tracker 14, "Partial for whole aggregate values" — check
-current state for staleness first, per the established pattern) next.)*
+already worked.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
