@@ -145,10 +145,19 @@ func validateRequirements(handoff *solveHandoff, records *solvedRecords, diagnos
 			continue
 		}
 		switch record.Kind {
-		case requirementUnsupportedField, requirementUnsupportedMethod, requirementUnsupportedIndex, requirementUnsupportedSlice, requirementUnsupportedCall, requirementUnsupportedConversion, requirementUnsupportedLayout, requirementUnsupportedPrint, requirementUnsupportedConstruction, requirementUnsupportedComponent:
+		case requirementUnsupportedField, requirementUnsupportedMethod, requirementUnsupportedIndex, requirementUnsupportedSlice, requirementUnsupportedCall, requirementUnsupportedLayout, requirementUnsupportedPrint, requirementUnsupportedConstruction, requirementUnsupportedComponent:
 			if key.Kind() == types.TypeParameter {
 				report(CodeUnsupportedGeneric, "operation is unsupported on an unconstrained generic type parameter", retained.Header.Span)
 			}
+		}
+		// Explicit casts whose source or destination involves a TypeParameter
+		// cannot be judged during template checking because the legality
+		// depends on the concrete instantiation. Defer to instantiation time
+		// following the same pattern used by deferredGenericRequirement for
+		// requirement checks and our own hasTypeParameter guard in
+		// validateCastRecords.
+		if record.Kind == requirementUnsupportedConversion && key.Kind() == types.TypeParameter {
+			continue
 		}
 	}
 

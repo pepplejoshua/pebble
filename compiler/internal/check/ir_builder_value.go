@@ -68,6 +68,16 @@ func (s *irBuildState) buildValueRecord(id valueID, record *expressionRecord, re
 			node.Kind, node.ExplicitCast, node.Children = tir.SourceAlias, true, []tir.NodeID{child}
 			break
 		}
+		// During symbolic build of a generic function body, either side may
+		// still contain a TypeParameter. We cannot determine the coercion kind
+		// until specialization time when activeSubstitution maps each TypeParam-
+		// eter to its concrete instantiation. Defer to specialization by emitting
+		// a passthrough SourceAlias here — the real coercion node is emitted
+		// when buildSpecialization rebuilds the body with concrete types.
+		if hasTypeParameter(s.handoff.Semantics, sourceType) || hasTypeParameter(s.handoff.Semantics, destination) {
+			node.Kind, node.ExplicitCast, node.Children = tir.SourceAlias, true, []tir.NodeID{child}
+			break
+		}
 		class := classify(s.handoff.Semantics, sourceType, destination)
 		coercion := coercionFor(s.handoff.Semantics, class, sourceType, destination)
 		if coercion == coercionNone && (class == compatibleExplicit || class == compatibleForbidden) {

@@ -282,3 +282,37 @@ func TestValidateCastRecordsSkipsInactiveRecord(t *testing.T) {
 		t.Fatalf("inactive cast record was not skipped: %+v", fresh.Items())
 	}
 }
+
+func TestValidateCastRecordsAcceptsCastOfGenericTypeParameterToConcrete(t *testing.T) {
+	source := `fn identity[T](x T) i32 { return x as i32; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("cast of generic type parameter T to concrete i32 was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsAcceptsConcreteCastInsideGenericFunction(t *testing.T) {
+	source := `fn example[T](x T) u64 { var v i32 = 5; return v as u64; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal i32->u64 cast inside generic function body was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsInvalidCastInsideGenericFunction(t *testing.T) {
+	type testCase struct {
+		name string
+		src  string
+	}
+	for _, tc := range []testCase{
+		{"bool-to-int-in-generic", "fn example[T](x T) i32 { var b bool = false; return b as i32; }"},
+		{"str-to-char-in-generic", "fn example[T](x T) char { var s str = \"hello\"; return s as char; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics, ok := validateCastFixture(t, tc.src)
+			if ok || !hasConversionDiagnostic(diagnostics) {
+				t.Fatalf("invalid cast inside generic function was not rejected: %+v", diagnostics.Items())
+			}
+		})
+	}
+}
