@@ -285,6 +285,9 @@ func (w *walker) prepareRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		if resolved, ok := w.generation.inputs.Resolution.Reference(field.name); ok && resolved.State == symbol.ResolutionResolved {
 			field.member = resolved.Symbol
 		}
+		if field.member == 0 {
+			field.member = w.memberByName(rp.declaration, field.nameText)
+		}
 		if field.member != 0 {
 			if declaredType, ok := w.recordFieldDeclaredType(ctx, rp, field.member); ok {
 				w.knownValues[field.destination.ID] = declaredType
@@ -293,6 +296,31 @@ func (w *walker) prepareRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 		rp.fields = append(rp.fields, field)
 		fieldOrdinal++
 	}
+}
+
+// memberByName re-derives a struct field symbol by name from a nominal
+// declaration. The resolver resolves record-literal field names only when the
+// literal carries a base-type name (Point.{ x = 1 }); for the anonymous form
+// (.{ x = 1 }) there is no base-name node to carry the owner, so the checker
+// resolves each field name itself against the destination struct declaration —
+// the same declaration recordReceiverTerm grounds from the contextual expected
+// type just above. Setting field.member at walk time (not only at IR-build
+// time) matters because recordFieldDeclaredType's declared-type grounding
+// keys off it: an array-typed field value's element type must be pinned early
+// so the array literal's own element inference/coercion can unify against it
+// (`.{ data = [1, 2, 3] }` into a [3]i32 field). When the destination is not
+// concrete at walk time (rp.declaration == 0), the member stays deferred and
+// buildRecordConstruct's post-solve re-derivation closes the gap.
+func (w *walker) memberByName(declaration symbol.SymbolID, name string) symbol.SymbolID {
+	if declaration == 0 || name == "" {
+		return 0
+	}
+	for _, member := range w.generation.inputs.Resolution.Members(declaration) {
+		if value, found := w.generation.inputs.Resolution.Symbols.Symbol(member); found && value.Kind == symbol.SymbolField && value.Name == name {
+			return member
+		}
+	}
+	return 0
 }
 
 // recordFieldDeclaredType resolves the declared concrete type of one record

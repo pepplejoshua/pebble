@@ -189,7 +189,16 @@ func (s *irBuildState) buildRecordConstruct(record *expressionRecord, node *tir.
 		if !ok {
 			return false
 		}
-		fields = append(fields, tir.FieldInit{Field: fv.Member, Value: valueNode})
+		member := fv.Member
+		if member == 0 {
+			// Anonymous .{ ... } construction: the resolver cannot resolve the
+			// field names (there is no base-type name node), so the member
+			// symbol is re-derived by name from the record's solved receiver
+			// type here — exactly as buildTaggedVariantConstruct does for
+			// .{ Int = 42 }.
+			member = s.memberSymbol(aggregate.Receiver, fv.Name)
+		}
+		fields = append(fields, tir.FieldInit{Field: member, Value: valueNode})
 	}
 	node.Kind = tir.RecordConstruct
 	node.Symbol = aggregate.Declaration

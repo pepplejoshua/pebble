@@ -111,23 +111,39 @@ let inferred Point = .{ x = 2 };
 let color Color = .red;
 `)})
 	facts := run06a3(inputs, diagnostics, Config{})
-	explicitMember, deferredMember, partialMember := false, false, false
+	var explicit, inferred *aggregateRecord
+	partialMember := false
 	for _, retained := range facts.Generation.records.values {
 		if retained.Aggregate == nil || len(retained.Aggregate.Fields) != 1 {
 			continue
 		}
 		field := retained.Aggregate.Fields[0]
 		switch {
-		case retained.Aggregate.Kind == aggregateStruct && field.Name == "x" && field.Member != 0:
-			explicitMember = true
-		case retained.Aggregate.Kind == aggregateStruct && field.Name == "x" && field.Member == 0:
-			deferredMember = field.Destination != 0 && retained.Aggregate.Receiver != 0
+		case retained.Aggregate.Kind == aggregateStruct && field.Name == "x":
+			if explicit == nil {
+				explicit = retained.Aggregate
+			} else {
+				inferred = retained.Aggregate
+			}
 		case retained.Aggregate.Kind == aggregateEnumVariant && field.Name == "red":
 			partialMember = field.Member == 0 && field.Destination != 0 && retained.Aggregate.Receiver != 0
 		}
 	}
-	if !explicitMember || !deferredMember || !partialMember {
-		t.Fatalf("resolved/deferred/partial identity = %v/%v/%v", explicitMember, deferredMember, partialMember)
+	if explicit == nil || inferred == nil || explicit.Header.Span.Start > inferred.Header.Span.Start {
+		t.Fatalf("struct aggregate evidence = explicit %+v inferred %+v", explicit, inferred)
+	}
+	// The named form resolves its member symbol through the resolver; the
+	// anonymous form (no base-type name node) now resolves it by name against
+	// the destination declaration grounded from the contextual expected type,
+	// so BOTH carry a resolved member identity at walk time.
+	if explicit.Fields[0].Member == 0 {
+		t.Fatalf("named form field member unresolved: %+v", explicit.Fields[0])
+	}
+	if inferred.Fields[0].Member == 0 || inferred.Declaration == 0 || inferred.Receiver == 0 {
+		t.Fatalf("anonymous form field member/receiver/declaration unresolved: %+v", inferred)
+	}
+	if !partialMember {
+		t.Fatal("partial member identity not deferred")
 	}
 	if diagnostics.HasErrors() {
 		t.Fatalf("member evidence diagnostics: %+v", diagnostics.Items())
