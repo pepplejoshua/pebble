@@ -44,8 +44,28 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 20 ("Arithmetic `+ - * / %`", tracker 14)
-closed in `f54e6ef`. A full ~78-pair sweep (5 operators x every
+*(empty — Phase 3 item 21 ("Bitwise `& | ^`", tracker 14) closed in
+`05a4d6e`. A full ~30-pair sweep (3 operators x every integer width)
+found one real gap: buildUintExpr (the dedicated uint grammar builder)
+had a CheckedArithmetic case (for uint's plain-C `+ - * / %`) but no
+BinaryValue case at all — the checker builds `& | ^` on integral
+operands as a BinaryValue (not CheckedArithmetic), so any uint bitwise
+expression died at Emit with "unsupported uint expression node
+BinaryValue" even though every other integer width already lowered
+correctly through buildExpr's own BinaryValue case. Fixed by adding
+the case, mirroring the existing pattern exactly. Confirmed out of
+scope: `&= |= ^=` doesn't exist in this language at all (no lexer
+token in either compiler), and bool is not a valid `&`/`|`/`^` operand
+(the checker's integral-capability check rejects it). Picking up the
+next Phase 3 item: "Shifts `<< >>`" (tracker 14, "Partial; no uint or
+u64 helpers" — check current state for staleness first, per the
+established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-12:
+
+**Item: Arithmetic `+ - * / %` (Phase 3 #20), tracker 14.**
+
+Closed in `f54e6ef`. A full ~78-pair sweep (5 operators x every
 integer width) of the plain-binary-expression form found the
 "helper-width matrix" fully correct already — i32/i64/int/u64 lower
 through checked helpers where they should, the narrow fixed widths and
@@ -57,9 +77,9 @@ uint place was hard-rejected ("% is integral-only") even though plain
 worked — a leftover special case with no runtime-helper justification
 (uint has no checked helper for ANY operator). Fixed by routing `%=`
 through the same operator resolution the other four compound operators
-already use. Picking up the next Phase 3 item: "Bitwise `& | ^`"
-(tracker 14, "Partial" — check current state for staleness first, per
-the established pattern) next.)*
+already use.
+
+-->
 
 <!-- Previous item, resolved 2026-08-12:
 
