@@ -1230,10 +1230,19 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 		// enum the supported arguments are a reference to an
 		// already-declared enum-typed local in scope of exactly the
 		// parameter's type (a SymbolValue — e.g. unwrap_or(a, 0) passing the
-		// union local a) or a variant literal directly (check(Color.green) /
+		// union local a), a variant literal directly (check(Color.green) /
 		// check(Color.green()), an EnumVariantValue / payload-less
 		// VariantConstruct built by buildEnumValue, the same grammar an
-		// enum-typed local's declaration uses); for a tagged union the
+		// enum-typed local's declaration uses), and — the Phase 3 #35
+		// widening — any of the remaining enum-value shapes buildEnumValue
+		// already builds for a plain-enum position: a call to an
+		// enum-returning helper used directly (check(pick()), a DirectCall),
+		// an enum-typed struct field read used directly (check(s.c), a Load
+		// of a FieldPlace, or check(mk().c), a FieldValue read off a
+		// call-result struct), and an integer-to-enum cast used directly
+		// (check(1 as Color), a CheckedIntegerToEnum), each delegated to
+		// buildEnumValue exactly like the variant-literal and deref-read
+		// cases below; for a tagged union the
 		// argument may additionally be
 		// a union-typed struct field read (h.tag), a union-payload optional
 		// force-unwrap (o!), or an inline variant construction, all built by
@@ -1273,23 +1282,78 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 			}
 			return "", expr, nil
 		}
+		if argNode.Kind == tir.DirectCall {
+			// A call to an enum-returning helper used directly as the
+			// argument — `check(pick());` — the Phase 3 #35 widening. The
+			// argument is delegated to buildEnumValue's DirectCall case, which
+			// double-checks the callee's declared result type is the enum and
+			// emits the whole call expression (`pebble_fn_<callee>(ctx, ...)`),
+			// whose return type is the callee's declared
+			// pebble_enum_<typeID>_t — trivially valid at the parameter's own
+			// typedef, the same C type helperSignature declares the parameter
+			// with. (An IndirectCall whose result were an enum is unreachable
+			// from real source: a function-typed value's signature only ever
+			// admits the result shapes the indirect-call lowering can emit, and
+			// an enum is not one of them.)
+			expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", expr, nil
+		}
 		if argNode.Kind == tir.Load && len(argNode.Children) == 1 {
-			// A whole enum read through a pointer deref used directly as the
-			// argument — `use_enum(*ptr);` — the read-side twin of the
+			// A whole enum read used directly as the argument — `use_enum(*ptr);` (a pointer deref) or
+			// `use_enum(s.c);` (an enum-typed struct field, the Phase 3 #35
+			// widening) — the read-side twin of the
 			// enum-typed `*p = v;` write. The argument is a Load whose place
-			// is a DereferencePlace, delegated to buildEnumValue's deref-read
-			// case, which emits the null-checked whole-enum deref value
+			// is a DereferencePlace or a FieldPlace, delegated to
+			// buildEnumValue's Load case, which emits the null-checked
+			// whole-enum deref value
 			// buildDereferencePlaceRead produces
 			// (`*(pebble_enum_<typeID>_t)(pebble_rt_checked_deref_ptr(...))`)
+			// or the field projection
+			// (`pebble_local_<sym>.pebble_field_<m>`, carrying the field's own
+			// pebble_enum_<typeID>_t) buildStructFieldRead produces
 			// — the enum's own typedef makes the by-value argument trivially
 			// valid C.
-			if place, ok := unit.Node(argNode.Children[0]); ok && place.Kind == tir.DereferencePlace {
+			if place, ok := unit.Node(argNode.Children[0]); ok && (place.Kind == tir.DereferencePlace || place.Kind == tir.FieldPlace) {
 				expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
 				if err != nil {
 					return "", "", err
 				}
 				return "", expr, nil
 			}
+		}
+		if argNode.Kind == tir.FieldValue {
+			// An enum-typed struct field read off a NON-ADDRESSABLE struct
+			// VALUE used directly as the argument — `check(mk().c)` where mk
+			// returns the struct by value — the call-result twin of the
+			// `check(s.c)` local-field shape above (the checker lowers a field
+			// read off an rvalue struct to a FieldValue, not a Load of a
+			// FieldPlace). The argument is delegated to buildEnumValue's
+			// FieldValue case, which emits the field projection carrying the
+			// field's own pebble_enum_<typeID>_t — trivially valid at the
+			// parameter's own typedef.
+			expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", expr, nil
+		}
+		if argNode.Kind == tir.CheckedIntegerToEnum {
+			// An integer-to-enum cast used directly as the argument —
+			// `check(1 as Color);` — the Phase 3 #35 widening. The argument is
+			// delegated to buildEnumValue's CheckedIntegerToEnum case, which
+			// emits buildCheckedIntegerToEnumExpr's bounds-checked cast
+			// (`(pebble_enum_<typeID>_t)pebble_rt_checked_int_to_enum(...)`)
+			// at the enum's own C typedef — trivially valid at the parameter's
+			// own typedef, the same C type helperSignature declares the
+			// parameter with.
+			expr, err := buildEnumValue(st, unit, snapshot, fileSet, argID, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			return "", expr, nil
 		}
 		if argNode.Kind != tir.SymbolValue {
 			return "", "", fmt.Errorf("call to symbol %d parameter %d (symbol %d) of type %s is a %s, want a reference to an enum-typed local of exactly that type in scope (binding the value into a local first is required)", calleeSymbol, position, param.Symbol, describeType(snapshot, param.Type), argNode.Kind)
