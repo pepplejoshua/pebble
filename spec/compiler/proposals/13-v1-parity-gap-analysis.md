@@ -44,30 +44,56 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 43 ("`.len` read directly on a str-typed indexed
-lvalue expression", tracker 14) closed in `91da966`. Root cause:
-`buildExpr`'s integer `Load`/`FieldPlace` case passed the Load's OWN
-width (a structural `.len` is always `uint`, regardless of the entry's
-real width) into `buildStructFieldRead`'s receiver construction instead
-of the ambient entry width, so `checkedSuffix` resolved empty for the
-receiver's own checked-index call. Fixed with a one-line change
-(`entryWidth` instead of `width`), mirroring a correct sibling branch
-two lines above. A genuinely separate, pre-existing, unrelated bug was
-found and left out of scope: `.len` used as a `print` operand fails a
-`PRIu64`-vs-`size_t` format-specifier mismatch, independently confirmed
-via a PLAIN non-indexed `print(s.len)` reproducing identically — now
-its own tracker 14 row. The dispatched session's own test file
-initially included a test exercising that separate, still-broken bug;
-removed during verification rather than left as a red test. STANDING
-NOTE, still open: `examples/arena_alloc.peb` fails to compile on
-pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
-yet a tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Non-default-width value returned
-from a default-width-returning function" (tracker 14 line ~130, found
-during Phase 3 #41 — "`fn main() int { var x u8 = 200; return x; }`
-[no arithmetic at all] fails Emit with '...contains a SymbolValue of
-type u8, want int'" — check current state for staleness first, per the
+*(empty — Phase 3 item 44 ("Non-default-width value returned from a
+default-width-returning function", tracker 14) closed in `e7375a8`.
+Root cause was in `internal/check`, not the backend as originally
+filed: the compatibility-record mechanism classified this pair as
+`compatibleExplicit` but the IR builder silently fell through to a
+bare, uncoerced value with zero diagnostic for any non-implicit class,
+deferring an eventually-confusing rejection to the backend's own
+separate width gate. Two explicit scope decisions made by the user
+along the way: (1) require an explicit `as` cast, matching Rust's
+model of no implicit conversion between distinct concrete types; (2)
+after a first, too-broad implementation broke 3 already-shipped
+implicit-coercion features (some-payload optional injection, tuple
+component coercion, struct field construction) — caught by an
+independent full `internal/backend` suite run outside the dispatch
+brief itself — narrowed to `compatibilityAssignment`/`Argument`/
+`Return` roles only, with a composite-literal-source carve-out so
+tuple/struct LITERAL coercion still works. A genuine regression was
+also found and fixed in `std/io.peb` (three bare `int`-defaulting
+`let` constants rejected against a `u16` parameter), and 5 pre-existing
+backend tests whose own comments described the OLD, now-obsolete
+"checker accepts, backend rejects" behavior were updated to reflect
+the new, earlier, clearer rejection point. STANDING NOTE, still open:
+`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
+`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
+awaiting the user's decision on when to queue it. Picking up the next
+Phase 3 item: "Nested anonymous struct literal as a field value"
+(tracker 14 line ~136, `Outer.{ inner = .{ a = 1 } }` fails T0510 —
+found during Phase 3 #33, general/pre-existing, affects the NAMED
+outer form too — check current state for staleness first, per the
 established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Non-default-width value returned from a default-width-returning
+function (Phase 3 #44), tracker 14.**
+
+Closed in `e7375a8`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `.len` read directly on a str-typed indexed lvalue expression
+(Phase 3 #43), tracker 14.**
+
+Closed in `91da966`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
