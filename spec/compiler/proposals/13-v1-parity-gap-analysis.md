@@ -44,24 +44,41 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 30 ("Deferred block, conditional, loop, or
-switch", tracker 14) closed in `7f5732c`. Confirmed staleness
-precisely: Phase 3 #29's `tir.Block` case already closed a
-conditional/loop/switch INSIDE a deferred block, via its
-`buildFallthroughBody` delegation. The one distinct remaining gap was
-a BARE deferred control-flow statement with no enclosing block (`defer
-if/while/loop/for/switch ...`, no `defer { }` wrapper) — checker-
-accepted (C0613 permits it) but Emit-rejected for all five TIR node
-kinds. Fixed by adding a case for each, mirroring #29's Block case's
-delegation pattern exactly (same builders the non-deferred fall-through
-dispatch already uses, wrapped in a fresh C block). STANDING NOTE,
-still open: `examples/arena_alloc.peb` fails to compile on pointer
-arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
-tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Nested fixed array `[N][M]T`"
-(tracker 14 line 125, "Partial/absent — an array of arrays is rejected
-by the backend in every position tried" — check current state for
-staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 31 ("Nested fixed array `[N][M]T`", tracker 14)
+closed in `b903ddb`. This was a genuinely open investigation, unlike
+most Phase 3 rows — never previously root-caused. Root cause:
+`arrayElementCType` had no case for an array-typed element, cascading
+to every position (local, index, parameter, return). Fixed the
+foundational positions (local declaration incl. 3-level nesting and
+whole-local copy, indexed read/write via a new `.data` lvalue
+projection, literal referencing in-scope array locals, parameters,
+returns, `.len` on both dimensions, non-default element widths,
+whole-array reassignment). Deliberately deferred three shapes, each
+pinned to a clean rejection: array-of-arrays struct field (blocked by
+`orderAggregateTypes`'s nesting-depth check), `ArrayRepeat` of an
+array-typed value, and binding a whole inner-array read to a local
+(Load path only accepts `DereferencePlace`) — now logged as their own
+tracker 14 rows. Also surfaced and explicitly left out of scope: a
+general, pre-existing, non-nested-specific checker bug where arithmetic
+on a non-default-width array element read fails T0505 for a
+SINGLE-LEVEL array too. Full backend suite checkpoint run given the
+size of this change (476s, green). STANDING NOTE, still open:
+`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
+`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
+awaiting the user's decision on when to queue it.
+Picking up the next Phase 3 item: "`str`-element slice" (tracker 14
+line 137, "Partial/absent — rejected at `Emit` ('slice element type
+str is not supported')... the checker accepts it" — check current
+state for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Nested fixed array `[N][M]T` (Phase 3 #31), tracker 14.**
+
+Closed in `b903ddb`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
