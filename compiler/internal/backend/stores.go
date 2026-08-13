@@ -519,25 +519,33 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		}
 		if targetInfo.isStr {
 			// A Store whose place names a str-typed local is a whole-str
-			// reassignment. The only supported new-value shape is a string
+			// reassignment. Two new-value shapes are supported: a string
 			// literal (a StringLiteral), the same single shape a str local's
-			// declaration accepts — this slice is deliberately literal-to-
-			// literal only, so `s = "hi";` works while reassigning from any
-			// other value does not. The emitted C is a whole-struct
-			// reassignment, `pebble_local_<sym> = (PebbleStr){ .data = ...,
-			// .len = <N> };`, whose inner PebbleStr construction text is the
-			// exact same byte-for-byte text buildStrLocalDeclaration embeds in
-			// a str local's declaration from the same literal (via
-			// buildStrLiteralValue — the (PebbleStr) compound-literal cast is
-			// what makes the brace text a valid C assignment expression).
-			// Reassigning a str local from anything else — a str-typed local
-			// (s = t;), a call result (s = g();), string concatenation (s =
-			// "h" + "i";), all confirmed reachable from real source against
-			// real fixtures — is a clean rejection naming what was found,
-			// never a guessed lowering.
+			// declaration accepts — this keeps `s = "hi";` working as a
+			// literal-to-literal copy — and an interpolated string
+			// (an InterpolatedString), which must be materialized into a
+			// PebbleStr via the runtime helper pebble_rt_str_from_parts.
+			// The emitted C is a whole-struct reassignment,
+			// `pebble_local_<sym> = (PebbleStr){ .data = ..., .len = <N> };`
+			// for literals, or `pebble_local_<sym> = ({ PebbleStr tmp =
+			// pebble_rt_str_from_parts(...); tmp; });` for interpolated
+			// strings. Reassigning a str local from anything else — a
+			// str-typed local (s = t;), a call result (s = g();), all
+			// confirmed reachable from real source against real fixtures —
+			// is a clean rejection naming what was found, never a guessed
+			// lowering.
 			storeValue, ok := unit.Node(statement.Children[1])
 			if !ok {
 				return "", fmt.Errorf("%s reassignment references invalid value node %d", context, statement.Children[1])
+			}
+			if storeValue.Kind == tir.InterpolatedString {
+				callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, storeValue, scope, width)
+				if err != nil {
+					return "", err
+				}
+				st.interpolatedStringCounter++
+				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+				return fmt.Sprintf("%s = ({ PebbleStr %s = %s; %s; })", lvalue, tempName, callExpr, tempName), nil
 			}
 			if storeValue.Kind != tir.StringLiteral {
 				return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local, from a %s; reassigning a str local from anything other than a string literal is not supported yet", context, place.Symbol, storeValue.Kind)

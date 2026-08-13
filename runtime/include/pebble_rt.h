@@ -425,6 +425,26 @@ typedef struct PebbleStr {
     size_t len;
 } PebbleStr;
 
+/* ---- interpolated string materialization ----------------------------------
+ * Builds a PebbleStr from a sequence of parts: literal text and bool values
+ * formatted as "true"/"false". Used by the compiler to materialize an
+ * interpolated string expression as an ordinary str value (not just in
+ * print statements). Only text and bool parts are supported — interpolating
+ * other types (int, float, str, enum, etc.) is a separate follow-up task.
+ */
+typedef enum PebbleStrPartKind {
+    PEBBLE_STR_PART_TEXT,
+    PEBBLE_STR_PART_BOOL,
+} PebbleStrPartKind;
+
+typedef struct PebbleStrPart {
+    PebbleStrPartKind kind;
+    const char *text;     /* for PEBBLE_STR_PART_TEXT */
+    int bool_value;       /* for PEBBLE_STR_PART_BOOL: 0 or 1 */
+} PebbleStrPart;
+
+PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count);
+
 /* Byte-for-byte equality: false immediately on a length mismatch (so a and b
  * are never memcmp'd past the shorter length), otherwise a memcmp over the
  * shared length. Not NUL-terminated-dependent, per this type's own contract

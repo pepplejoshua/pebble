@@ -503,6 +503,11 @@ type emitState struct {
 	// entry/helpers, so emitEntryC includes <string.h> (memcpy's declaration)
 	// in the preamble exactly when the emitted C calls it.
 	hasArrayStore bool
+	// interpolatedStringCounter provides unique temp names for GNU statement
+	// expressions that materialize InterpolatedString nodes as PebbleStr
+	// values in pure expression positions (each occurrence gets its own scoped
+	// temp so the same node used in multiple contexts doesn't collide).
+	interpolatedStringCounter int
 }
 
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
@@ -516,8 +521,9 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return fmt.Errorf("cannot emit C: nil writer")
 	}
 	st := &emitState{
-		symbols:           symbols,
-		allocatorAdapters: make(map[string]runtimeAllocatorAdapter),
+		symbols:                   symbols,
+		allocatorAdapters:         make(map[string]runtimeAllocatorAdapter),
+		interpolatedStringCounter: 0,
 	}
 
 	decl, err := findEntryDeclaration(unit, entrySymbol)

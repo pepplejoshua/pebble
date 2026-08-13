@@ -1579,6 +1579,25 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		scope[statement.Symbol] = localInfo{isStr: true}
 		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, lvalue, indent, statement.Symbol), nil
 	}
+	if initValue.Kind == tir.InterpolatedString {
+		// An interpolated string used as the initializer of a str-typed local
+		// declaration. Materialize it directly in the initializer using the
+		// runtime helper pebble_rt_str_from_parts — unlike expression positions,
+		// this doesn't need a GNU statement expression because the declaration
+		// itself provides storage:
+		//
+		//   PebbleStr pebble_local_<sym> = pebble_rt_str_from_parts(ctx, parts, count);
+		//
+		// Each text part uses escapeCString (same as buildPrint); each bool
+		// value part is validated against types.Bool and built with buildBoolExpr
+		// (same scope as buildPrint's restricted bool-only interpolation).
+		callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
 	if initValue.Kind != tir.StringLiteral {
 		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal), a call to a str-returning helper, or a reference to a str-typed local in scope", context, initValue.Kind)
 	}

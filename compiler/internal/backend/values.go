@@ -1413,6 +1413,47 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 	return fmt.Sprintf("{ .data = (const uint8_t *)\"%s\", .len = %d }", escapeCString(text), len(text)), nil
 }
 
+// buildInterpolatedStringParts builds the C text for the PebbleStrPart array
+// and the pebble_rt_str_from_parts call for an InterpolatedString node. It
+// iterates over node.Parts: each InterpolationTextPart becomes a
+// { PEBBLE_STR_PART_TEXT, .text = "<escaped>" } entry (using escapeCString,
+// exactly as buildPrint does), and each InterpolationValuePart is validated
+// to be bool-typed and becomes a { PEBBLE_STR_PART_BOOL, .bool_value =
+// (<bool-expr> ? 1 : 0) } entry (reusing buildBoolExpr, matching buildPrint's
+// same restriction to bool-only value parts). Returns the full runtime-call
+// expression text, ready to be used as a GNU statement expression body or a
+// local-declaration initializer.
+func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+	if node.Kind != tir.InterpolatedString {
+		return "", fmt.Errorf("interpolated-string builder contains a %s, want an InterpolatedString", node.Kind)
+	}
+	var parts []string
+	for _, part := range node.Parts {
+		switch part.Kind {
+		case tir.InterpolationTextPart:
+			parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \"%s\" }", escapeCString(part.Text)))
+		case tir.InterpolationValuePart:
+			valueNode, ok := unit.Node(part.Value)
+			if !ok {
+				return "", fmt.Errorf("interpolated-string builder references invalid value node %d", part.Value)
+			}
+			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
+			if !ok || valueKind != types.Bool {
+				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool", valueNode.Kind, describeType(snapshot, valueNode.Type))
+			}
+			boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, locals, width)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", boolExpr))
+		default:
+			return "", fmt.Errorf("interpolated-string builder has an unknown part kind %d", part.Kind)
+		}
+	}
+	partsList := strings.Join(parts, ", ")
+	return fmt.Sprintf("pebble_rt_str_from_parts(ctx, ((PebbleStrPart []){ %s }), %d)", partsList, len(node.Parts)), nil
+}
+
 // buildCharLiteralValue builds the C text for one CharLiteral node: its
 // decoded rune emitted as an int32_t decimal literal, `(int32_t)97`. A char's
 // C representation is always the fixed int32_t — a Unicode scalar value fits
@@ -1801,6 +1842,26 @@ func buildStrOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fi
 			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
 		}
 		return buildStructFieldRead(st, unit, snapshot, fileSet, place, locals, width, false)
+	case tir.InterpolatedString:
+		// An interpolated string used as a str value in an expression position
+		// (comparison operand, call argument, return value, store value, struct
+		// field construction, or any other expression context). Materialize it
+		// into a temporary PebbleStr via the runtime helper
+		// pebble_rt_str_from_parts, wrapped in a GNU statement expression so
+		// the whole thing is a valid C primary expression:
+		//
+		//   ({ PebbleStr pebble_tmp_N = pebble_rt_str_from_parts(ctx, parts, count); pebble_tmp_N; })
+		//
+		// Each text part uses escapeCString (same as buildPrint); each bool
+		// value part is validated against types.Bool and built with buildBoolExpr
+		// (same scope as buildPrint's restricted bool-only interpolation).
+		callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, node, locals, width)
+		if err != nil {
+			return "", err
+		}
+		st.interpolatedStringCounter++
+		tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+		return fmt.Sprintf("({ PebbleStr %s = %s; %s; })", tempName, callExpr, tempName), nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
 	}
