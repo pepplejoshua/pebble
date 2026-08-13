@@ -1397,6 +1397,48 @@ func buildCallArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 	}
 }
 
+// buildWholeArrayDerefRead builds the C expression for a by-value whole-array
+// read through a pointer deref — `*p` used as an array-typed VALUE in a
+// position whose C destination is the wrapped pebble_array_<typeID>_t typedef:
+// an array-typed call argument, an array-typed struct field's construction
+// value, or an array return value. The value is a Load whose single child is a
+// DereferencePlace whose single child is the pointer expression. The
+// dereference yields the wrapped pebble_array_<typeID>_t struct (see
+// pointerTypeNameForUnit's array case), so the whole dereference is the value
+// itself, `*(pebble_array_<id>_t *)(pebble_rt_checked_deref_ptr(<ptr>,
+// <loc>))` — a single expression with the null check performed exactly once —
+// the same lowering buildArrayReturnValue's Load case uses. arrayType is the
+// array type the destination expects, which must equal the Load's own type.
+// context names the enclosing position in error messages.
+func buildWholeArrayDerefRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, arrayType types.TypeID, locals map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if node.Type != arrayType {
+		return "", fmt.Errorf("%s is a Load of type %s, not an array-typed value of type %s", context, describeType(snapshot, node.Type), describeType(snapshot, arrayType))
+	}
+	if len(node.Children) != 1 {
+		return "", fmt.Errorf("%s is a Load with %d child(ren), want exactly one place", context, len(node.Children))
+	}
+	place, ok := unit.Node(node.Children[0])
+	if !ok {
+		return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
+	}
+	if place.Kind != tir.DereferencePlace {
+		return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer)", context, place.Kind)
+	}
+	if len(place.Children) != 1 {
+		return "", fmt.Errorf("%s deref read has %d child(ren), want exactly one (the pointer expression)", context, len(place.Children))
+	}
+	ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], locals, width, width)
+	if err != nil {
+		return "", fmt.Errorf("%s deref pointer expression: %v", context, err)
+	}
+	ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
+	if ptrCType == "" {
+		return "", fmt.Errorf("%s deref has unsupported pointee type %s", context, describeType(snapshot, place.Type))
+	}
+	checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
+	return fmt.Sprintf("*(%s)(%s)", ptrCType, checkedPtr), nil
+}
+
 func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, width types.BuiltinKind, arrayType types.TypeID, argID tir.NodeID, locals map[symbol.SymbolID]localInfo, calleeSymbol symbol.SymbolID, position int, nested bool) (string, string, error) {
 	node, ok := unit.Node(argID)
 	if !ok {
@@ -1510,8 +1552,22 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		}
 		return pre, expr, nil
 	}
+	if node.Kind == tir.Load {
+		// A whole array read through a pointer deref used directly as the
+		// argument — `useIt(*p)`, the array twin of the whole-struct/tuple deref
+		// read buildAggregateArgument already passes (and the missing shape this
+		// backend previously rejected: "array parameter ... is a Load"). The
+		// argument is a Load whose place is a DereferencePlace; the dereference
+		// yields the wrapped pebble_array_<typeID>_t struct, which is exactly
+		// the parameter's C type, so the whole dereference is passed directly —
+		// the same single-expression lowering buildArrayReturnValue uses for
+		// `return *p;`, with the null check performed exactly once (Phase 3 #24).
+		context := fmt.Sprintf("entry function body expression contains a call to symbol %d whose array parameter %d", calleeSymbol, position)
+		expr, err := buildWholeArrayDerefRead(st, unit, snapshot, fileSet, node, arrayType, locals, context, width)
+		return "", expr, err
+	}
 	if node.Kind != tir.SymbolValue {
-		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is a %s, want an array local, an array literal, an ArrayRepeat, or an array-returning call", calleeSymbol, position, node.Kind)
+		return "", "", fmt.Errorf("entry function body expression contains a call to symbol %d whose array parameter %d is a %s, want an array local, an array literal, an ArrayRepeat, an array-returning call, or a whole-array dereference read", calleeSymbol, position, node.Kind)
 	}
 	info, declared := locals[node.Symbol]
 	if !declared || info.array != arrayType {
@@ -2242,33 +2298,11 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 		// below), and the dereference yields exactly that wrapped struct (see
 		// pointerTypeNameForUnit's array case), so the whole dereference is
 		// returned directly — `*(pebble_array_<id>_t *)(checked)` — a single
-		// return expression with no pre-return statement.
-		if node.Type != arrayType {
-			return "", "", fmt.Errorf("array return is a Load of type %s, not an array-typed value of type %s", describeType(snapshot, node.Type), describeType(snapshot, arrayType))
-		}
-		if len(node.Children) != 1 {
-			return "", "", fmt.Errorf("array return is a Load with %d child(ren), want exactly one place", len(node.Children))
-		}
-		place, ok := unit.Node(node.Children[0])
-		if !ok {
-			return "", "", fmt.Errorf("array return is a Load referencing invalid place node %d", node.Children[0])
-		}
-		if place.Kind != tir.DereferencePlace {
-			return "", "", fmt.Errorf("array return is a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer)", place.Kind)
-		}
-		if len(place.Children) != 1 {
-			return "", "", fmt.Errorf("array return deref read has %d child(ren), want exactly one (the pointer expression)", len(place.Children))
-		}
-		ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], locals, width, width)
-		if err != nil {
-			return "", "", fmt.Errorf("array return deref pointer expression: %v", err)
-		}
-		ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
-		if ptrCType == "" {
-			return "", "", fmt.Errorf("array return deref has unsupported pointee type %s", describeType(snapshot, place.Type))
-		}
-		checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
-		return "", fmt.Sprintf("*(%s)(%s)", ptrCType, checkedPtr), nil
+		// return expression with no pre-return statement. This is the same
+		// lowering the shared buildWholeArrayDerefRead produces for the
+		// array-argument and array-struct-field construction positions.
+		returnValue, err := buildWholeArrayDerefRead(st, unit, snapshot, fileSet, node, arrayType, locals, "array return", width)
+		return "", returnValue, err
 	}
 	if node.Kind != tir.SymbolValue {
 		return "", "", fmt.Errorf("array return is a %s, want an array literal (an ArrayValue), an ArrayRepeat, an array local, or an array-returning call", node.Kind)

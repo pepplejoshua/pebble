@@ -1424,8 +1424,18 @@ func buildStructArrayFieldValue(st *emitState, unit *tir.Unit, snapshot *types.S
 		}
 		expr, err := buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
 		return "", expr, err
+	case tir.Load:
+		// A whole array read through a pointer deref used directly as the
+		// field's construction value — `Box.{ data = *p }`. The field's C type
+		// is the array's own pebble_array_<typeID>_t typedef, and the
+		// dereference yields exactly that wrapped struct, so the whole
+		// dereference is the construction value directly — the same
+		// single-expression lowering buildArrayReturnValue uses for `return
+		// *p;`, with the null check performed exactly once (Phase 3 #24).
+		expr, err := buildWholeArrayDerefRead(st, unit, snapshot, fileSet, node, fieldType, scope, context, width)
+		return "", expr, err
 	}
-	return "", "", fmt.Errorf("%s array field initialized from a %s, want an array literal, an ArrayRepeat, an array-typed local in scope, or a call to an array-returning helper", context, node.Kind)
+	return "", "", fmt.Errorf("%s array field initialized from a %s, want an array literal, an ArrayRepeat, an array-typed local in scope, a call to an array-returning helper, or a whole-array dereference read", context, node.Kind)
 }
 
 // buildUnionConstruction builds the C expression text for one tagged-union
