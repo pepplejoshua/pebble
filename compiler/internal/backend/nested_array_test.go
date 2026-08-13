@@ -152,6 +152,35 @@ func TestNestedArrayWholeStore(t *testing.T) {
 	emitAndRun(t, "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; a = [[7,8,9],[10,11,12]]; return a[1][0] * 10 + a[0][2]; }", false, 109, false)
 }
 
+// TestNestedArrayStructField proves an array-of-arrays struct field works end-to-end:
+// declaration, construction, indexed read and write, passing the struct to a helper,
+// and a non-default element width (i32). The orderAggregateTypes depth check now allows
+// array-of-arrays struct fields because buildArrayTypedefs handles nested arrays via
+// DFS postorder, making the chain fully self-contained within the array-typedef machinery.
+func TestNestedArrayStructField(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"basic-read", "type Box = struct { data [2][3]int; }; fn main() int { var b Box = Box.{ data = [[1,2,3],[4,5,6]] }; return b.data[1][2]; }", 6},
+		{"indexed-write", "type Box = struct { data [2][3]int; }; fn main() int { var b Box = Box.{ data = [[1,2,3],[4,5,6]] }; b.data[0][1] = 9; return b.data[0][1]; }", 9},
+		{"pass-to-helper", "type Box = struct { data [2][3]int; }; fn sum(b Box) int { var total int = 0; var i int = 0; while i < 2 { var j int = 0; while j < 3 { total = total + b.data[i][j]; j = j + 1; } i = i + 1; } return total; } fn main() int { var b Box = Box.{ data = [[1,2,3],[4,5,6]] }; return sum(b); }", 21},
+		{"non-default-width", "type Box = struct { data [2][3]i32; }; fn main() int { var b Box = Box.{ data = [[1,2,3],[4,5,6]] }; return b.data[1][2] as int; }", 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, tc.want, false)
+		})
+	}
+}
+
+// TestNestedArrayThreeLevelStructField verifies that three-level nested arrays
+// as struct fields also work (falls out for free from the same fix).
+func TestNestedArrayThreeLevelStructField(t *testing.T) {
+	emitAndRun(t, "type Cube = struct { data [2][2][2]int; }; fn main() int { var c Cube = Cube.{ data = [[[1,2],[3,4]],[[5,6],[7,8]]] }; return c.data[1][0][1] * 10 + c.data[0][1][0]; }", false, 63, false)
+}
+
 // TestNestedArrayDeferredShapesRejected pins the deliberately-out-of-scope
 // shapes to their current clean rejections, so a future follow-up can loosen
 // them deliberately rather than by accident.
@@ -169,9 +198,6 @@ func TestNestedArrayDeferredShapesRejected(t *testing.T) {
 		// supported: the local-initializer Load path only accepts a
 		// DereferencePlace.
 		{"whole-inner-read", "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; let q [3]int = a[0]; return q[2]; }", "want a DereferencePlace"},
-		// An array-of-arrays struct field is rejected by the aggregate
-		// nesting-depth check before the array machinery is reached.
-		{"struct-field", "type Box = struct { data [2][3]int; }; fn main() int { var b Box = Box.{ data = [[1,2,3],[4,5,6]] }; return b.data[1][2]; }", "more than one level of nesting"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -37,14 +37,18 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 	}
 	// depth returns the maximum dependency-nesting level below id (a leaf is 0,
 	// an aggregate/array field adds 1) together with whether ANY dependency edge
-	// under id routes through an array type. The array flag drives the
-	// selective nesting check below: a chain built only from struct/tuple/
-	// optional nesting may nest arbitrarily deep, while a chain that passes
-	// through an array keeps the depth>1 rejection — a struct-field array's
-	// typedef is emitted BEFORE the aggregate block (see Emit's
-	// fieldArrayTypedefs), and its inline `elem data[length]` member needs the
-	// COMPLETE element type, so an array whose element is itself an aggregate
-	// would reference a typedef not yet defined.
+	// under id routes through an array type to a struct/tuple/optional. The
+	// array flag drives the selective nesting check below: a chain built only
+	// from struct/tuple/optional nesting may nest arbitrarily deep, while a
+	// chain that passes through an array to an aggregate keeps the depth>1
+	// rejection — a struct-field array's typedef is emitted BEFORE the
+	// aggregate block (see Emit's fieldArrayTypedefs), and its inline `elem
+	// data[length]` member needs the COMPLETE element type, so an array whose
+	// element is itself an aggregate would reference a typedef not yet defined.
+	// An array-of-array chain is exempt: buildArrayTypedefs emits inner array
+	// typedefs before outer ones via DFS postorder, so the outer array's inline
+	// .data member can safely name the inner array's own typedef — the chain
+	// is fully self-contained within the array-typedef machinery.
 	var depth func(types.TypeID, map[types.TypeID]bool) (int, bool)
 	depth = func(id types.TypeID, active map[types.TypeID]bool) (int, bool) {
 		if active[id] {
@@ -88,7 +92,22 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			// be miscounted as nested and rejected by the depth check below.
 			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || (isStruct(snapshot, d) && runtimeType(unit, snapshot, d) == 0)) && !isEnumType(unit, snapshot, d) {
 				if isArray(snapshot, d) {
-					throughArray = true
+					// An array whose element is itself an array is fully
+					// self-contained within the array-typedef machinery:
+					// buildArrayTypedefs emits inner array typedefs before outer
+					// ones via DFS postorder, so the outer array's inline .data
+					// member can safely name the inner array's own typedef. Only
+					// flag throughArray when the array's element is a struct/
+					// tuple/optional — the genuine ordering hazard where the
+					// array's inline .data member needs an aggregate typedef not
+					// yet defined.
+					key, ok := snapshot.Key(d)
+					if ok {
+						_, elem, ok := key.Array()
+						if ok && (isTuple(snapshot, elem) || isOptional(snapshot, elem) || (isStruct(snapshot, elem) && runtimeType(unit, snapshot, elem) == 0)) {
+							throughArray = true
+						}
+					}
 				}
 				subDepth, subArray := depth(d, active)
 				if subArray {
