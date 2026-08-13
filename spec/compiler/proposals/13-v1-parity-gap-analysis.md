@@ -44,26 +44,47 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 35 ("Enum call argument from a call result,
-struct field, or integer-to-enum cast", tracker 14) closed in
-`2a76a27`. Root cause: `buildEnumValue` already built correct C for
-every needed node kind internally; the gap was purely
-`buildCallArgument`'s own dispatch never recognizing DirectCall/
-Load-of-FieldPlace/CheckedIntegerToEnum and delegating, exactly like
-its two pre-existing cases (variant literal, deref-read) already did.
-Fixed with three dispatch cases plus a bonus fourth found during
-testing (`check(mk().c)`, a FieldValue — field read off a call-result
-struct VALUE, not an addressable local). Confirmed
-IndirectCall-with-enum-result is genuinely unreachable from real
-source, so no case was added there. STANDING NOTE, still open:
+*(empty — Phase 3 item 36 ("Materialize an interpolated string as a
+local, argument, result, or ordinary value", tracker 14) closed in
+`395eb2c`. Root cause: `InterpolatedString` was handled only inside
+`buildPrint`; the general str-value builders had no case for it at
+all. Fixed for the same scope `buildPrint` already supports (literal
+text + `bool`-typed value parts only) via a new runtime primitive
+`pebble_rt_str_from_parts` and backend wiring into
+`buildStrOperand`/`buildStrLocalDeclaration`/`buildStoreCore`. A real
+heap buffer overflow (bool-part byte-length ternary backwards — "true"
+is 4 chars, "false" is 5, the dispatch had them swapped) was found
+during independent verification, NOT by the dispatched session, which
+had an empty worklog and no evidence of having run its own tests —
+resumed with the precise diagnosis and confirmed fixed, then verified
+5x-repeated (`-count=5`) given this is new pointer-manipulating C code.
+Interpolating a non-bool value type remains explicitly out of scope,
+now its own tracker 14 row. STANDING NOTE, still open:
 `examples/arena_alloc.peb` fails to compile on pointer arithmetic in
 `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
 awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "Materialize an interpolated string
-as a local, argument, result, or ordinary value" (tracker 14 line
-~343, "InterpolatedString is handled only inside buildPrint; general
-string builders reject it" — **Absent** — check current state for
-staleness first, per the established pattern) next.)*
+Picking up the next Phase 3 item: "Nested tagged-union payload, inline
+construction" (tracker 14 line ~147, "`Outer.value(Inner.b(7))`
+[constructing the inner union inline] fails to compile: the outer
+union's typedef is emitted before the inner's... The WORKING form
+[construct-then-reference] is proven" — a typedef-ordering gap similar
+in shape to the nested-array fix from Phase 3 #31 — check current
+state for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Materialize an interpolated string as a str value (Phase 3
+#36), tracker 14.**
+
+Closed in `395eb2c`, across two orc dispatches on the same session. See
+the Active defect entry above for the full summary; kept brief here
+since that entry already carries it. Notable for supervisor process: a
+real memory-safety bug (heap buffer overflow in new runtime C code)
+shipped in the first pass's diff and was caught only by independent
+verification actually running the new tests — the session's own
+"completed" report gave no indication of the failure.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
