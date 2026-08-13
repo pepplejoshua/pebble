@@ -44,27 +44,49 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 32 ("`str`-element slice", tracker 14) closed in
-`c4a2a4c`. Root cause: `isSupportedSliceElementType` and
-`sliceElementCType` both had no `str` case, while every other element
-kind (including `str` in the fixed-array equivalent,
-`arrayElementCType`) was already admitted. Fixed by mirroring the
-existing `arrayElementCType` str-to-`PebbleStr` handling. Covers
-construction, local declaration, indexed read/write, parameter,
-return, `.len` across full/partial/re-slice construction. Surfaced and
-deliberately left out of scope: a genuine, separate, pre-existing bug
-where `.len` read directly on a str-typed indexed lvalue expression
-(`s[i].len`) emits `pebble_rt_checked_index_` missing its width
-suffix — independently reproduced via a throwaway probe, now its own
-tracker 14 row. STANDING NOTE, still open: `examples/arena_alloc.peb`
-fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
-`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
-on when to queue it.
-Picking up the next Phase 3 item: "Anonymous `.{ ... }` struct
-construction (no base type name)" (tracker 14 line ~131, "Partial/
-broken — fails with a missing Field symbol (C0619); member symbols
-never resolve for the base-less literal form" — check current state
-for staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 33 ("Anonymous `.{ ... }` struct construction
+(no base type name)", tracker 14) closed in `ef5fc24`, in two passes.
+Root cause: the resolver only resolves record-literal field names when
+the literal carries a base-type name; the anonymous form's
+`field.Member` stayed 0, breaking walk-time declared-type grounding
+(an array-typed field value's element type never got pinned early,
+failing C0601) and the IR-build step (`FieldInit{Field: 0}`, C0619 for
+every other case). First dispatch attempt fixed the IR-build side but
+left a walk-time helper dead/unwired and shipped a printf-only test
+that silently hid the array-field regression — caught during my own
+independent verification (compared directly against the named form,
+which passed cleanly), then a tightly-scoped resume of the same
+session correctly wired the walk-time resolution too. Covers local
+declaration, call argument, return, reassignment, and array-typed
+field values; diagnostic parity confirmed with the named form. Two
+genuine, separate, pre-existing gaps surfaced and logged as their own
+tracker 14 rows (both affect the named form identically, so neither is
+anonymous-specific): a nested anonymous struct literal as a field
+value fails T0510, and an optional field assigned `some <value>` fails
+C0601. STANDING NOTE, still open: `examples/arena_alloc.peb` fails to
+compile on pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr +
+int`) — not yet a tracker 14 row, awaiting the user's decision on when
+to queue it.
+Picking up the next Phase 3 item: "Scalar cast inside a generic
+function body" (tracker 14 line ~134, "Partial/broken — `x as T` (or
+similar) inside a generic function reports 'no valid conversion';
+pre-existing, general generic-cast gap, not array-specific" — check
+current state for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Anonymous `.{ ... }` struct construction (Phase 3 #33), tracker 14.**
+
+Closed in `ef5fc24`, across two orc dispatches on the same session. See
+the Active defect entry above for the full summary; kept brief here
+since that entry already carries it. Notable for supervisor process:
+the first dispatch's own test file only printed diagnostics without
+asserting anything, hiding a real array-field regression that
+independent verification caught by direct comparison against the named
+form — a concrete instance of why "completed" status and a passing
+self-report are never sufficient on their own.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
