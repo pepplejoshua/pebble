@@ -44,39 +44,58 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 31 ("Nested fixed array `[N][M]T`", tracker 14)
-closed in `b903ddb`. This was a genuinely open investigation, unlike
-most Phase 3 rows — never previously root-caused. Root cause:
-`arrayElementCType` had no case for an array-typed element, cascading
-to every position (local, index, parameter, return). Fixed the
-foundational positions (local declaration incl. 3-level nesting and
-whole-local copy, indexed read/write via a new `.data` lvalue
-projection, literal referencing in-scope array locals, parameters,
-returns, `.len` on both dimensions, non-default element widths,
-whole-array reassignment). Deliberately deferred three shapes, each
-pinned to a clean rejection: array-of-arrays struct field (blocked by
-`orderAggregateTypes`'s nesting-depth check), `ArrayRepeat` of an
-array-typed value, and binding a whole inner-array read to a local
-(Load path only accepts `DereferencePlace`) — now logged as their own
-tracker 14 rows. Also surfaced and explicitly left out of scope: a
-general, pre-existing, non-nested-specific checker bug where arithmetic
-on a non-default-width array element read fails T0505 for a
-SINGLE-LEVEL array too. Full backend suite checkpoint run given the
-size of this change (476s, green). STANDING NOTE, still open:
-`examples/arena_alloc.peb` fails to compile on pointer arithmetic in
-`std/mem/arena.peb` (T0505, `ptr + int`) — not yet a tracker 14 row,
-awaiting the user's decision on when to queue it.
-Picking up the next Phase 3 item: "`str`-element slice" (tracker 14
-line 137, "Partial/absent — rejected at `Emit` ('slice element type
-str is not supported')... the checker accepts it" — check current
-state for staleness first, per the established pattern) next.)*
+*(empty — Phase 3 item 32 ("`str`-element slice", tracker 14) closed in
+`c4a2a4c`. Root cause: `isSupportedSliceElementType` and
+`sliceElementCType` both had no `str` case, while every other element
+kind (including `str` in the fixed-array equivalent,
+`arrayElementCType`) was already admitted. Fixed by mirroring the
+existing `arrayElementCType` str-to-`PebbleStr` handling. Covers
+construction, local declaration, indexed read/write, parameter,
+return, `.len` across full/partial/re-slice construction. Surfaced and
+deliberately left out of scope: a genuine, separate, pre-existing bug
+where `.len` read directly on a str-typed indexed lvalue expression
+(`s[i].len`) emits `pebble_rt_checked_index_` missing its width
+suffix — independently reproduced via a throwaway probe, now its own
+tracker 14 row. STANDING NOTE, still open: `examples/arena_alloc.peb`
+fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
+`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
+on when to queue it.
+Picking up the next Phase 3 item: "Anonymous `.{ ... }` struct
+construction (no base type name)" (tracker 14 line ~131, "Partial/
+broken — fails with a missing Field symbol (C0619); member symbols
+never resolve for the base-less literal form" — check current state
+for staleness first, per the established pattern) next.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: `str`-element slice (Phase 3 #32), tracker 14.**
+
+Closed in `c4a2a4c`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
 **Item: Nested fixed array `[N][M]T` (Phase 3 #31), tracker 14.**
 
-Closed in `b903ddb`. See the Active defect entry above for the full
-summary; kept brief here since that entry already carries it.
+Closed in `b903ddb`. Root cause: `arrayElementCType` had no case for
+an array-typed element, cascading to every position (local, index,
+parameter, return). Fixed the foundational positions (local
+declaration incl. 3-level nesting and whole-local copy, indexed
+read/write via a new `.data` lvalue projection, literal referencing
+in-scope array locals, parameters, returns, `.len` on both dimensions,
+non-default element widths, whole-array reassignment). Deliberately
+deferred three shapes, each pinned to a clean rejection:
+array-of-arrays struct field (blocked by `orderAggregateTypes`'s
+nesting-depth check), `ArrayRepeat` of an array-typed value, and
+binding a whole inner-array read to a local (Load path only accepts
+`DereferencePlace`) — logged as their own tracker 14 rows. Also
+surfaced and explicitly left out of scope: a general, pre-existing,
+non-nested-specific checker bug where arithmetic on a non-default-width
+array element read fails T0505 for a SINGLE-LEVEL array too. Full
+backend suite checkpoint run given the size of this change (476s,
+green).
 
 -->
 
