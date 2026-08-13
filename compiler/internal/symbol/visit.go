@@ -273,8 +273,24 @@ func (r *resolver) resolveStatement(ctx walkContext, nodeID syntax.NodeID) {
 			}
 		}
 	case syntax.DeferStmt:
+		// A deferred statement runs in its own defer-local scope when it
+		// fires at exit (V1 emits each deferred statement inside a fresh C
+		// block), so a local declaration deferred directly — `defer var x =
+		// 5;` — must not leak its binding into the enclosing scope: the
+		// deferred binding is invisible outside the defer, exactly as a block
+		// deferred statement's bindings are. The deferred statement is
+		// resolved inside a fresh block scope; a deferred block's own nested
+		// scope layers on top of it, mirroring the defer-local C block that
+		// wraps its contents. A deferred block's members (a later use of a
+		// binding declared earlier in the same deferred block) still resolve:
+		// they look up from the nested scope, whose parent chain reaches the
+		// deferred binding.
+		deferCtx := ctx
+		if deferScope := r.newScope(ScopeBlock, ctx.scope, ctx.module.ID, ctx.function.symbol, SyntaxRef{Module: ctx.module.ID, Node: nodeID}); deferScope != 0 {
+			deferCtx.scope = deferScope
+		}
 		for _, id := range node.Children() {
-			r.resolveStatement(ctx, id)
+			r.resolveStatement(deferCtx, id)
 		}
 	case syntax.ReturnStmt, syntax.PrintStmt, syntax.AssignmentStmt, syntax.ExpressionStmt:
 		for _, id := range node.Children() {

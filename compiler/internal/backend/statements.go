@@ -151,7 +151,7 @@ func buildBlock(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		if result.kind != types.Void {
 			return "", fmt.Errorf("entry function body block statement is an ImplicitReturn, want a Return of an integer expression, a two-armed if/else, or a switch (an implicit fall-through tail only appears in a void function, but the enclosing function resolves to a non-void result)")
 		}
-		deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, last.DeferChain, scope, indent, "entry function body block", width, unions)
+		deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, last.DeferChain, scope, indent, "entry function body block", width, result, unions)
 		if err != nil {
 			return "", err
 		}
@@ -317,7 +317,7 @@ func buildReturnStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			// function, and lowers to a plain C `return;` after any deferred
 			// statements fire, exactly as the void helper's ImplicitReturn tail
 			// emits nothing but its deferred statements.
-			deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+			deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, result, unions)
 			if err != nil {
 				return "", err
 			}
@@ -479,7 +479,7 @@ func buildReturnStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	if err != nil {
 		return "", err
 	}
-	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, unions)
+	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, returnNode.DeferChain, scope, indent, context, width, result, unions)
 	if err != nil {
 		return "", err
 	}
@@ -2021,9 +2021,9 @@ func buildFallthroughStatement(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		// case uses.
 		text, err = buildReturnStatement(st, unit, snapshot, fileSet, statement, scope, indent, context, width, result, unions)
 	case tir.Break:
-		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "break", indent, context, scope, width, unions)
+		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "break", indent, context, scope, width, result, unions)
 	case tir.Continue:
-		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "continue", indent, context, scope, width, unions)
+		text, err = buildLoopJump(st, unit, snapshot, fileSet, statement, "continue", indent, context, scope, width, result, unions)
 	case tir.DeferRegister:
 		// A DeferRegister in a fall-through statement sequence is a
 		// registration marker the checker's analysis already consumed; the
@@ -2178,12 +2178,26 @@ func buildLeadingIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 // deferred return/break/continue/nested defer (C0613), so the only reachable
 // deferred statement kinds from real source are Store (reassignment),
 // CompoundStore (a compound assignment or postfix increment/decrement), Print
-// (the built-in), and — since 10.33 — a bare discarded-expression statement
-// that is a call to a void-returning function (defer helper();, built by the
-// same buildExpressionStatement the leading-statement case uses). A
+// (the built-in), a bare discarded-expression statement that is a call to a
+// void-returning function (defer helper();, built by the same
+// buildExpressionStatement the leading-statement case uses), and — since 10.47 —
+// a deferred local declaration, in either its bare form (`defer var x = 5;`, a
+// tir.Initialize) or its block form (`defer { var x = 5; print x; }`, a
+// tir.Block). A declaration's initializer (or a deferred block's statements)
+// runs at exit inside a fresh C block — V1's `{ /* defer */ ... }` defer-local
+// block — built over a cloned scope that is discarded afterwards, so the
+// deferred local is scoped to the defer and invisible outside it, while the
+// block's own statements can still reference it and the enclosing locals. The
+// emitted declaration block uses the shared buildLeadingStatement /
+// buildFallthroughBody machinery the non-deferred declaration and fall-through
+// positions use, so the emission logic lives in exactly one place. A
 // DeferRegister whose child is an unsupported
-// statement kind is a clean rejection naming what was found.
-func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
+// statement kind is a clean rejection naming what was found. result is the
+// enclosing callable's resultInfo, threaded to the shared builders in case a
+// deferred statement sequence ever contains a return (real source can't — C0613
+// — but the builders need the value to build one correctly if a hand-built unit
+// somehow reaches them).
+func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, chain []tir.NodeID, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
 	if len(chain) == 0 {
 		return "", nil
 	}
@@ -2251,12 +2265,50 @@ func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 			}
 			parts = append(parts, text)
 		case tir.Initialize:
-			// A deferred local declaration is reachable from real source but
-			// not yet supported as a deferred statement in this backend's
-			// current scope. Reject cleanly rather than guess.
-			return "", fmt.Errorf("%s deferred statement is an Initialize (local declaration), which is not supported as a deferred statement yet", context)
+			// A bare deferred local declaration — `defer var x = 5;` — runs
+			// its initializer at exit inside a fresh C block (V1's defer-local
+			// block), built by the same buildLeadingStatement a non-deferred
+			// local declaration uses over a cloned scope that is discarded
+			// afterwards: the deferred local is visible only inside that block
+			// (the checker scopes the binding to the defer), never to the
+			// enclosing function's emission scope, so its C name can never
+			// collide with a same-named local in the enclosing body and the
+			// declaration's own (void) cast keeps -Wunused-variable quiet.
+			if len(stmt.Children) != 1 {
+				return "", fmt.Errorf("%s deferred local declaration initializes %d value(s), want exactly one expression", context, len(stmt.Children))
+			}
+			deferredScope := cloneLocals(scope)
+			innerIndent := indent + "    "
+			decl, err := buildLeadingStatement(st, unit, snapshot, fileSet, deferReg.Children[0], deferredScope, innerIndent, len(indent)/4, context+" deferred local declaration", width, result, unions)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, indent+"{\n"+decl+"\n"+indent+"}")
+		case tir.Block:
+			// A deferred block — `defer { var x = 5; print x; }` — runs its
+			// statements at exit inside a fresh C block (V1's defer-local
+			// block), built by the same buildFallthroughBody a loop body or if
+			// arm uses over a cloned scope that is discarded afterwards: a
+			// local declared inside the block is visible to the block's own
+			// later statements and nested constructs but invisible outside it,
+			// exactly as the enclosing function's locals remain visible inside
+			// it. A deferred block can only contain fall-through statements —
+			// the checker's C0613 rejects a deferred return/break/continue/
+			// nested defer, while a break/continue targeting a loop contained
+			// inside the block is handled by buildLoopJump exactly as it is in
+			// any fall-through sequence.
+			deferredScope := cloneLocals(scope)
+			inner, err := buildFallthroughBody(st, unit, snapshot, fileSet, deferReg.Children[0], deferredScope, len(indent)/4, width, result, unions, context+" deferred statement block")
+			if err != nil {
+				return "", err
+			}
+			if inner == "" {
+				parts = append(parts, indent+"{}")
+				continue
+			}
+			parts = append(parts, indent+"{\n"+inner+"\n"+indent+"}")
 		default:
-			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment, a CompoundStore compound assignment or postfix increment/decrement, and a void-returning function call used as a statement are supported)", context, stmt.Kind)
+			return "", fmt.Errorf("%s deferred statement is a %s, which is not a supported deferred statement kind (only Store reassignment, a CompoundStore compound assignment or postfix increment/decrement, a void-returning function call used as a statement, and a local declaration, bare or block-wrapped, are supported)", context, stmt.Kind)
 		}
 	}
 	return strings.Join(parts, "\n"), nil
@@ -2277,8 +2329,8 @@ func buildDeferredStatements(st *emitState, unit *tir.Unit, snapshot *types.Snap
 // value never needs to be consulted or compared; it is confirmed (against a
 // nested-loop fixture) to name the loop that actually contains the jump, and
 // the checker (C0611) already guarantees that loop is an enclosing one.
-func buildLoopJump(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, unions map[types.TypeID]unionInfo) (string, error) {
-	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, statement.DeferChain, scope, indent, context, width, unions)
+func buildLoopJump(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement tir.Node, keyword string, indent, context string, scope map[symbol.SymbolID]localInfo, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, statement.DeferChain, scope, indent, context, width, result, unions)
 	if err != nil {
 		return "", err
 	}
