@@ -1160,59 +1160,19 @@ func buildSwitchCaseBody(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 	if bodyNode.Kind == tir.Block {
 		return buildBlock(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
 	}
-	// Bare single-statement case body: must be a Return.
+	// Bare single-statement case body: must be a Return. Built by the shared
+	// buildReturnStatement — the exact dispatch every other Return position in
+	// this backend uses (bool, char, str, tuple/struct, union, enum, array,
+	// slice, optional, function, float, uint, and a void-returning bare
+	// `return;`) — not a partial re-dispatch. This path previously re-coded
+	// only the char/str/aggregate/slice/float branches and fell through to
+	// buildExpr for everything else, which silently routed a union variant
+	// construction (`case .value: return C.value(5);`), a plain enum value, a
+	// bool, an array, or an optional into buildExpr's integer-width gate
+	// ("want int") even though the block-body and fall-through paths both
+	// already dispatched these through buildReturnStatement.
 	if bodyNode.Kind == tir.Return {
-		if len(bodyNode.Children) != 1 {
-			return "", fmt.Errorf("switch case bare return statement has %d argument(s), want exactly one expression", len(bodyNode.Children))
-		}
-		indent := strings.Repeat("    ", depth+1)
-		var returnValue string
-		var err error
-		var preReturn string
-		if result.isChar {
-			// A char-returning function's bare single-statement case body
-			// returning a char value: built under the char grammar by
-			// buildCharOperand, exactly like buildBlock's tail-position Return
-			// case.
-			returnValue, err = buildCharOperand(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
-		} else if result.isStr {
-			returnValue, err = buildStrOperand(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width)
-		} else if result.tuple != 0 || result.structType != 0 {
-			preReturn, returnValue, err = buildAggregateReturnValue(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
-		} else if result.sliceType != 0 {
-			// A slice-returning function's bare single-statement case body
-			// returning a fresh slice construction: the construction needs the
-			// two-statement temp-then-construction shape (see
-			// buildSliceReturnValue), so the temp declaration is returned
-			// separately and joined into the case body ahead of the final
-			// return line, the same mechanical shape the deferred statements
-			// below demonstrate.
-			preReturn, returnValue, err = buildSliceReturnValue(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result, indent, width)
-		} else if result.kind == types.F32 || result.kind == types.F64 {
-			// A float-returning entry's bare single-statement case body
-			// returning a float value: built under the float grammar by
-			// buildFloatExpr, exactly like buildBlock's tail-position Return
-			// case.
-			returnValue, err = buildFloatExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, result.kind, width)
-		} else {
-			returnValue, err = buildExpr(st, unit, snapshot, fileSet, bodyNode.Children[0], locals, width, width)
-		}
-		if err != nil {
-			return "", err
-		}
-		deferText, err := buildDeferredStatements(st, unit, snapshot, fileSet, bodyNode.DeferChain, locals, indent, "switch case body", width, unions)
-		if err != nil {
-			return "", err
-		}
-		parts := []string{}
-		if preReturn != "" {
-			parts = append(parts, preReturn)
-		}
-		if deferText != "" {
-			parts = append(parts, deferText)
-		}
-		parts = append(parts, indent+"return "+returnValue+";")
-		return strings.Join(parts, "\n"), nil
+		return buildReturnStatement(st, unit, snapshot, fileSet, bodyNode, locals, strings.Repeat("    ", depth+1), "switch case body", width, result, unions)
 	}
 	return "", fmt.Errorf("switch case body is a %s, want a Block or a Return", bodyNode.Kind)
 }
