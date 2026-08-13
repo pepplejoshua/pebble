@@ -206,23 +206,32 @@ func TestNestedArrayRepeat(t *testing.T) {
 	}
 }
 
+// TestNestedArrayWholeInnerRead proves binding a whole inner array element
+// from a nested array to a local works end-to-end: the CheckedIndexPlace path
+// in buildArrayLocalDeclaration emits a bare declaration + memcpy from the
+// inner element's .data, producing an independent copy (writes to the bound
+// local do not affect the source).
+func TestNestedArrayWholeInnerRead(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"basic", "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; let q [3]int = a[0]; return q[2]; }", 3},
+		{"non-first-index", "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; let q [3]int = a[1]; return q[0]; }", 4},
+		{"non-default-width", "fn main() int { var a [2][3]i32 = [[1,2,3],[4,5,6]]; let q [3]i32 = a[0]; return q[1] as int; }", 2},
+		{"copy-independence-mutate-source", "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; let q [3]int = a[1]; a[1][2] = 77; return q[2]; }", 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitAndRun(t, tc.source, false, tc.want, false)
+		})
+	}
+}
+
 // TestNestedArrayDeferredShapesRejected pins the deliberately-out-of-scope
 // shapes to their current clean rejections, so a future follow-up can loosen
 // them deliberately rather than by accident.
 func TestNestedArrayDeferredShapesRejected(t *testing.T) {
-	cases := []struct {
-		name          string
-		source        string
-		wantSubstring string
-	}{
-		// Binding a whole inner array read (`let q [3]int = a[0];`) is not yet
-		// supported: the local-initializer Load path only accepts a
-		// DereferencePlace.
-		{"whole-inner-read", "fn main() int { var a [2][3]int = [[1,2,3],[4,5,6]]; let q [3]int = a[0]; return q[2]; }", "want a DereferencePlace"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			emitAndRunRejects(t, tc.source, tc.wantSubstring)
-		})
-	}
+	// No rejected shapes remain — all previously-pinned cases are now supported.
 }

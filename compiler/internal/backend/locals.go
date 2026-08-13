@@ -290,19 +290,21 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		}, "\n"), nil
 	}
 	if initValue.Kind == tir.Load {
-		// A whole array read through a pointer deref used directly as the
-		// local's initializer — `let q [3]i32 = *p;`, the read-side twin of
-		// the `*p = v;` write and the pointer-receiver reset shape
-		// `self.data = other;`. The initializer is a Load whose place is a
-		// DereferencePlace whose single child is the pointer expression. Like
-		// the SymbolValue copy-initializer case above, C cannot initialize a
-		// raw array variable from another array value in its declarator, so
-		// the copy is three statements — a bare declaration, then a
-		// byte-for-byte memcpy of the null-checked dereference pointer's
-		// storage into the new local's (the dereference yields the array
-		// object itself, whose address is the checked pointer cast to the
-		// pointer-to-array C type), then the (void) cast every local ends
-		// with.
+		// A whole array read used directly as the local's initializer, in two
+		// shapes:
+		//
+		//   - a whole array read through a pointer deref — `let q [3]i32 =
+		//     *p;` — the read-side twin of the `*p = v;` write and the
+		//     pointer-receiver reset shape `self.data = other;`;
+		//   - a whole inner-array read from a nested array — `let q [3]int =
+		//     a[0];` — lowered by the checker to a Load of a
+		//     CheckedIndexPlace whose base is the outer array local and index
+		//     selects the inner element.
+		//
+		// Both emit the same three-statement shape: a bare declaration, then a
+		// byte-for-byte memcpy into the new local's storage (C cannot
+		// initialize a raw array variable from another array value in its
+		// declarator), then the (void) cast every local ends with.
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load with %d child(ren), want exactly one place", context, describeType(snapshot, initValue.Type), len(initValue.Children))
 		}
@@ -310,28 +312,47 @@ func buildArrayLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 		if !ok {
 			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load referencing invalid place node %d", context, describeType(snapshot, initValue.Type), initValue.Children[0])
 		}
-		if place.Kind != tir.DereferencePlace {
-			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer)", context, describeType(snapshot, initValue.Type), place.Kind)
+		if place.Kind != tir.DereferencePlace && place.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a Load whose place is a %s, want a DereferencePlace (a by-value whole-array read through a pointer) or a CheckedIndexPlace (a whole inner-array read from a nested array)", context, describeType(snapshot, initValue.Type), place.Kind)
 		}
-		if place.Type != initValue.Type {
-			return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a read of a dereference place of type %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, place.Type))
+		var srcPtr string
+		if place.Kind == tir.DereferencePlace {
+			// Pointer-deref path: the dereference yields the wrapped
+			// pebble_array_<id>_t struct (see pointerTypeNameForUnit's array
+			// case); the memcpy source is the address of that struct's raw
+			// `.data` array member.
+			if place.Type != initValue.Type {
+				return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a read of a dereference place of type %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, place.Type))
+			}
+			if len(place.Children) != 1 {
+				return "", fmt.Errorf("%s array deref read has %d child(ren), want exactly one (the pointer expression)", context, len(place.Children))
+			}
+			ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], scope, width, width)
+			if err != nil {
+				return "", fmt.Errorf("%s array deref pointer expression: %v", context, err)
+			}
+			ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
+			if ptrCType == "" {
+				return "", fmt.Errorf("%s array deref has unsupported pointee type %s", context, describeType(snapshot, place.Type))
+			}
+			checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
+			srcPtr = fmt.Sprintf("&(*(%s)(%s)).data", ptrCType, checkedPtr)
+		} else {
+			// CheckedIndexPlace path: indexing into an array whose ELEMENT is
+			// itself an array (a nested array). buildPlaceLValue's
+			// CheckedIndexPlace case already projects `.data` for this shape
+			// (`base[idx].data`), returning the inner element's raw data
+			// pointer — exactly what the memcpy needs. Validate the resolved
+			// element type matches the local's declared array type.
+			lvalue, placeElemType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", fmt.Errorf("%s whole inner-array read: %v", context, err)
+			}
+			if placeElemType != initValue.Type {
+				return "", fmt.Errorf("%s declares an array-typed local of type %s initialized from a read of element type %s", context, describeType(snapshot, initValue.Type), describeType(snapshot, placeElemType))
+			}
+			srcPtr = lvalue
 		}
-		if len(place.Children) != 1 {
-			return "", fmt.Errorf("%s array deref read has %d child(ren), want exactly one (the pointer expression)", context, len(place.Children))
-		}
-		ptrExpr, err := buildExpr(st, unit, snapshot, fileSet, place.Children[0], scope, width, width)
-		if err != nil {
-			return "", fmt.Errorf("%s array deref pointer expression: %v", context, err)
-		}
-		ptrCType := pointerTypeNameForUnit(st, unit, snapshot, place.Type)
-		if ptrCType == "" {
-			return "", fmt.Errorf("%s array deref has unsupported pointee type %s", context, describeType(snapshot, place.Type))
-		}
-		checkedPtr := fmt.Sprintf("pebble_rt_checked_deref_ptr(%s, %s)", ptrExpr, buildSourceLoc(fileSet, place.Span))
-		// The dereference yields the wrapped pebble_array_<id>_t struct (see
-		// pointerTypeNameForUnit's array case); the memcpy source is the
-		// address of that struct's raw `.data` array member.
-		srcPtr := fmt.Sprintf("&(*(%s)(%s)).data", ptrCType, checkedPtr)
 		elementCType, err := arrayElementCType(unit, snapshot, width, elementType)
 		if err != nil {
 			return "", fmt.Errorf("%s: %v", context, err)
