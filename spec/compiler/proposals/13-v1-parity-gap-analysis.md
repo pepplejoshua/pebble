@@ -126,28 +126,42 @@ Lesson for future multi-entry-expansion part kinds (if any): always
 re-verify byte-exact output via `od -c`, not just exit code — a
 truncation bug can still exit 0.
 
-Picking up F5-09 next (interpolation of a tuple value part — same
-rejection, confirmed live with `var t (int, int) = (1, 2); ... print
-`tuple={t}`;` fails with "want bool, char, an integer type, a float
-type, or a str type"; V1 recursively formats the value. A bare
-(non-interpolated) `print t;` of a tuple ALREADY works today, printing
-`(1, 2)` — `buildTuplePrintValueCalls`/`buildTuplePrintOperand`/
-`buildTuplePrintValueExpr` (`statements.go`) are the tuple analogues
-of F5-08's struct-print helpers. Same shape as F5-08: one tuple value
-part should expand into multiple `PebbleStrPart` entries (`"("`,
-element 0's entry, `", "`, element 1's entry, ..., `")"`) directly in
-`buildInterpolatedStringParts`'s own array, reusing the exact same
-per-element-type dispatch already built for bool/int/float/str/char/
-plain-enum/struct. SCOPE: non-nested tuples first (every element a
-scalar/str/char/plain-enum/non-nested-struct type — check whether
-reusing the F5-08 struct-element dispatch just works, since struct
-support already landed), rejecting a tuple/array-element with a clear
-error if recursion doesn't fall out naturally. CRITICAL — MUST
-explicitly verify in the dispatch brief AND independently re-verify:
-the SAME `len(parts)` (not `len(node.Parts)`) count fix from F5-08
-already covers this correctly since it's already committed — but
-double-check the tuple case doesn't reintroduce a similar counting
-bug elsewhere (e.g. if it builds its own separate materialization
-path instead of reusing the existing array-append pattern). Verify
-byte-exact output via `od -c` on the original repro before trusting
-"it works," per the lesson above.)*
+*(empty — F5-09 (interpolation of a non-nested tuple value part)
+closed in `8b7d057`, the final item in the interpolation-value-part
+matrix (F5-01 through F5-09 all done). Mirrored F5-08's struct
+pattern almost exactly: one tuple value part expands into multiple
+`PebbleStrPart` entries (`"("`, each element's own entry, `", "`
+between, `")"`, a trailing `,` for a single element) directly in
+`buildInterpolatedStringParts`'s array, reusing the same per-type
+dispatch and `buildTuplePrintValueCalls`/`Operand`/`ValueExpr`'s
+naming so an interpolated tuple matches bare print exactly. A
+struct-typed tuple element does NOT fall out naturally (the struct
+case resolves fields off a source node, incompatible with a tuple's
+ordinal `.0`/`.1` access), so it's cleanly rejected along with tuple/array
+elements — verified with extra rigor per F5-08's lesson (`go build`
+confirmed clean, byte-exact `od -c` output confirmed, the `len(parts)`
+count line confirmed unchanged) and landed clean on the first dispatch,
+no follow-ups needed this time.
+
+Picking up F5-10 next (aggregate `ArrayRepeat` call argument — passing
+`[Point.{ ... }; N]` to an `[N]Point` parameter, confirmed live:
+`fn takes(pts [3]Point) int { return pts[0].x; } fn main() int {
+return takes([Point.{ x = 1, y = 2 }; 3]); }` fails with "array
+argument element type nominal(symbol N) is unsupported". `calls.go`'s
+`buildArrayArgument` has TWO separate element-building switches — one
+for a full `ArrayValue` literal (`node.Kind == tir.ArrayValue`, which
+already has an `isArray` nested-array case using
+`buildNestedAggregateValue`, so likely just needs an `isStruct` sibling
+case added the same way) and one for `ArrayRepeat`
+(`node.Kind == tir.ArrayRepeat`, which currently only handles
+bool/int/float and needs a struct case using `buildNestedAggregateValue`
+too, following the exact same evaluate-once-copy-N-times pattern the
+existing scalar cases use — build the struct value ONCE into a temp,
+then reference that temp name `length` times in the array compound
+literal, exactly like the existing `tempName := fmt.Sprintf(...)`
+scalar-repeat code already does). `arrayElementCType` (used to declare
+the temp's C type) needs confirming it already handles a struct
+element type — check before assuming. SCOPE: `ArrayRepeat` argument
+position ONLY (per the ledger's own split) — F5-11 (the return-value
+position, `buildArrayReturnValue`) is a separate, later item; do not
+combine them in one dispatch.)*
