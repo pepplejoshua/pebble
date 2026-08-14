@@ -604,20 +604,6 @@ func TestEmitStructReturningHelperAsArgumentCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn makeP() Point { return Point.{ x = 20, y = 22 }; } fn f(p Point) i32 { return p.x + p.y; } fn main() i32 { return f(makeP()); }", false, 42, false)
 }
 
-func TestEmitRejectsTupleWholeReassignmentFromCallValue(t *testing.T) {
-	t.Parallel()
-	// Reassigning a whole tuple-typed local from a call to a tuple-returning
-	// helper (`p = make_tuple();`) is reachable from real source but out of
-	// scope this slice: the supported new-value shapes are a reference to an
-	// in-scope tuple-typed local or a tuple literal (a TupleValue), mirroring
-	// buildAggregateArgument's tuple argument shapes and the struct
-	// reassignment's own DirectCall deferral. A DirectCall value reaches
-	// buildStoreCore's tuple branch and is a clean rejection naming what was
-	// found, never a guessed lowering.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn make_tuple() (int, int) { return (9, 10); } fn main() int { var p (int, int) = (1, 2); p = make_tuple(); return p.0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "reassigns a tuple-typed place")
-}
-
 func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
 	t.Parallel()
 	// Calling a tuple-returning helper as an operand of an element read —

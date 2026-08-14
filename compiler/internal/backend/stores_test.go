@@ -455,3 +455,94 @@ func TestEmitPointerReassignCompilesAndRuns(t *testing.T) {
 	// Reassigning a pointer local to point at a different variable.
 	emitAndRun(t, "fn main() i32 { var y i32 = 5; var p *i32 = &y; var z i32 = 10; p = &z; return *p; }", false, 10, false)
 }
+
+func TestEmitTupleWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// F5-12: Reassigning a whole tuple-typed local from a call to a
+	// tuple-returning helper (`pair = make_pair();`), the reproduction's
+	// plain-local shape: the Store's place names a tuple-typed local and the
+	// new value is a DirectCall whose result type matches the local's tuple
+	// type, emitted as the call expression itself — `pebble_local_<pair> =
+	// make_pair(ctx);` — a plain C struct assignment since the helper's C
+	// return type is the place's own pebble_tuple_<typeID>_t. The reassigned
+	// local's elements must reflect the value make_pair returns (1), not the
+	// original (0).
+	emitAndRun(t, "fn makePair() (int, int) { return (1, 2); }\nfn main() int { var pair (int, int) = (0, 0); pair = makePair(); return pair.0; }", false, 1, false)
+}
+
+func TestEmitTupleThreeElementReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 3-element tuple reassignment from a call proves buildTupleStoreValue's
+	// DirectCall case works with tuples larger than 2 elements.
+	emitAndRun(t, "fn makeTriple() (int, int, int) { return (10, 20, 30); }\nfn main() int { var t (int, int, int) = (0, 0, 0); t = makeTriple(); return t.2; }", false, 30, false)
+}
+
+func TestEmitTupleMixedTypeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A (int, int) tuple reassignment from a call with distinct values per
+	// element proves buildTupleStoreValue's DirectCall case correctly assigns
+	// all elements of the tuple — not just the first. The callee returns (42,
+	// 99), so after p = makePair(), p.1 must be 99, not the original 0.
+	emitAndRun(t, "fn makePair() (int, int) { return (42, 99); }\nfn main() int { var p (int, int) = (0, 0); p = makePair(); return p.1; }", false, 99, false)
+}
+
+func TestEmitTuplePointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole tuple through a pointer deref from a call to a
+	// tuple-returning helper (`*self = make_pair();`), the reproduction's
+	// reset shape: the Store's place is a DereferencePlace whose resolved
+	// element type is the tuple type, and the new value is a DirectCall whose
+	// result type matches, emitted as the call expression through the
+	// null-checked deref lvalue — the same plain C struct assignment as the
+	// plain-local shape, just reaching the store through the pointer. The
+	// reassigned local's elements must reflect the value make_pair returns (7),
+	// not the original (1).
+	emitAndRun(t, "fn makePair() (int, int) { return (7, 8); }\nfn reset(self *(int, int)) void { *self = makePair(); }\nfn main() int { var p (int, int) = (1, 2); reset(&p); return p.0; }", false, 7, false)
+}
+
+func TestEmitTupleReassignmentFromCallEmittedExactlyOnce(t *testing.T) {
+	t.Parallel()
+	// The emitted-C proof of single evaluation for a call-source tuple
+	// reassignment: the helper call text must appear exactly once — in the
+	// store's RHS (`pebble_local_<pair> = make_pair(ctx);`), the same
+	// buildDirectCallNested machinery a scalar-width call uses — never spliced
+	// into any comparison. The helper body's own return text is excluded by
+	// anchoring the count to the pebble_fn_ call form.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn makePair() (int, int) { return (1, 2); }\nfn main() int { var pair (int, int) = (0, 0); pair = makePair(); return pair.0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the tuple-returning helper %d time(s), want exactly once (the store's RHS):\n%s", callCount, out)
+	}
+}
+
+func TestEmitTupleReassignmentFromMismatchedCallIsRejected(t *testing.T) {
+	t.Parallel()
+	// A call returning a DIFFERENT tuple type than the place is rejected by the
+	// checker (C0601 type mismatch) before the backend ever sees it — confirming
+	// the checker's own discipline. This is the negative counterpart to the
+	// positive tests above: if the checker did not catch this, the backend would
+	// emit an assignment of one tuple typedef into a place of another, which is
+	// UB in C.
+	unit, snapshot, entryID, _, err := buildFixtureMaybeFailing(t, "fn makeOther() (int, int, int) { return (1, 2, 3); }\nfn main() int { var pair (int, int) = (0, 0); pair = makeOther(); return pair.0; }", "main", false)
+	if err == nil {
+		// If the checker somehow passes, verify the backend still rejects it at
+		// the DirectCall type-check level in buildTupleStoreValue.
+		var buf bytes.Buffer
+		emitErr := Emit(unit, snapshot, entryID, nil, nil, &buf)
+		if emitErr == nil {
+			t.Fatal("expected rejection but emit succeeded")
+		}
+		if !strings.Contains(emitErr.Error(), "reassigns a tuple-typed place") {
+			t.Fatalf("emission error %q does not contain 'reassigns a tuple-typed place'", emitErr.Error())
+		}
+		return
+	}
+	// The checker rejected it; confirm the diagnostic mentions the mismatch.
+	if !strings.Contains(err.Error(), "cannot convert") && !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("check error %q does not indicate a type mismatch", err.Error())
+	}
+}

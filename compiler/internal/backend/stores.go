@@ -732,19 +732,24 @@ func buildStructStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 // buildTupleStoreValue builds the C value text for a whole-tuple
 // reassignment whose place resolves to the tuple type wantType, shared by
 // buildStoreCore's two tuple-reassignment paths (the plain-local path and the
-// pointer-deref/field/indexed-element path). Two value shapes are supported,
+// pointer-deref/field/indexed-element path). Three value shapes are supported,
 // mirroring buildAggregateArgument's tuple argument shapes: a plain
 // SymbolValue naming an already-declared tuple-typed local in scope whose
 // declared type is exactly wantType, emitted as the local's own
 // pebble_local_<symbol> C name — the tuple's own typedef makes the by-value C
 // copy trivially valid, so `lvalue = pebble_local_<symbol>;` is the whole
-// store; or a freshly-constructed TupleValue of exactly wantType, emitted as
+// store; a freshly-constructed TupleValue of exactly wantType, emitted as
 // the same C99 positional compound literal buildTupleValueExpr builds (the
 // tuple typedef's field order is already the construction order, so a
-// positional compound literal is a direct, correct lowering). Any other value
-// shape — a call to a tuple-returning helper (a DirectCall, deliberately out
-// of scope this slice), a local that is not tuple-typed of that type, or any
-// other node kind — is a clean rejection naming what was found, matching
+// positional compound literal is a direct, correct lowering); or a DirectCall
+// to a tuple-returning helper whose declared result type is exactly wantType
+// (`lvalue = make_pair();`), the call expression built by
+// buildDirectCallNested — the same call-building machinery a
+// tuple-returning call's local-initializer and return-forwarding shapes use —
+// and emitted as the whole new value, trivially valid C since the helper's C
+// return type is the place's own pebble_tuple_<typeID>_t. Any other value
+// shape — a local that is not tuple-typed of that type, or any other node
+// kind — is a clean rejection naming what was found, matching
 // buildAggregateArgument's own discipline. width is the entry's resolved
 // integer width, threaded through to the inline construction builder so each
 // element is built at the width the tuple's own typedef uses.
@@ -761,15 +766,36 @@ func buildTupleStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	}
 	if valueNode.Kind == tir.DirectCall {
 		// A reassignment from a call to a tuple-returning helper —
-		// `p = make_tuple();` — is reachable from real source but out of scope
-		// this slice: the supported new-value shapes are a reference to an
-		// in-scope tuple-typed local or a tuple literal (a TupleValue),
-		// mirroring buildAggregateArgument's tuple argument shapes. A
-		// DirectCall value reaches buildStoreCore's tuple branch and is a
-		// clean rejection naming the unsupported shape, never a guessed
-		// lowering — the deliberate deferral mirroring how buildStructStoreValue's
-		// DirectCall shape landed only in a follow-up commit.
-		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a call to a tuple-returning helper; reassigning a whole tuple from a call is not supported yet", context, tupleTypeName(wantType))
+		// `p = make_pair();`, the reproduction's shape. The call's result
+		// type is the DirectCall node's own Type, which is the callee's
+		// resolved result type, and it must be exactly the place's tuple
+		// type — double-checked against the callee's declared ResultType
+		// (defense for hand-built IR), exactly as buildAggregateCallInitializer
+		// and buildAggregateReturnValue's tuple DirectCall shape do, so the
+		// emitted C never assigns a value of one tuple type into a place of
+		// another. The call itself is built by buildDirectCallNested, the
+		// pure-expression-position call machinery (this store value position
+		// is not a leading statement, so an inline slice-construction
+		// argument folds its temp declaration into a GNU statement-expression
+		// argument rather than returning a pre), and the call
+		// expression is the whole new value — a `lvalue = f(ctx, ...);`
+		// assignment, trivially valid C since the helper's C return type is
+		// the place's own pebble_tuple_<typeID>_t.
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a call of result type %s", context, tupleTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		calleeDecl, err := findCallDeclaration(unit, snapshot, valueNode)
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != wantType {
+			return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a call to symbol %d whose declared result type %s does not match", context, tupleTypeName(wantType), valueNode.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, valueNode, scope, width)
+		if err != nil {
+			return "", err
+		}
+		return callExpr, nil
 	}
 	if valueNode.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s reassigns a tuple-typed place of type %s from a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue)", context, tupleTypeName(wantType), valueNode.Kind)
