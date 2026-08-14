@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -1044,5 +1046,190 @@ func TestEmitInterpolatedStringEnumTaggedUnionRejected(t *testing.T) {
 			t.Parallel()
 			emitAndRunRejects(t, tc.src, "tagged-union type")
 		})
+	}
+}
+
+func TestEmitInterpolatedStringStructAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a struct value part used as a str-typed
+	// local's declaration initializer. Each struct field must be formatted
+	// as `field: value` and concatenated with surrounding text into a single
+	// PebbleStr. We verify by comparing the local against a plain string
+	// literal. This also exercises the F5-08 truncation regression path: a
+	// struct with 2+ fields expands into MANY parts[] entries (one text label
+	// + one per field + closing text), so using len(node.Parts) instead of
+	// len(parts) would undercount and truncate the output.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two int fields", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; let s str = `point={p}`; if s == \"point=Point{ x: 1, y: 2 }\" { return 0; } return 1; }", 0},
+		{"three fields mixed types", "type Config = struct { name str; count int; active bool; };\nfn main() i32 { let c Config = Config.{ name = \"test\", count = 5, active = true }; let s str = `cfg={c}`; if s == \"cfg=Config{ name: test, count: 5, active: true }\" { return 0; } return 1; }", 0},
+		{"float field", "type Measure = struct { val f64; };\nfn main() i32 { let m Measure = Measure.{ val = 3.14 }; let s str = `m={m}`; if s == \"m=Measure{ val: 3.140000 }\" { return 0; } return 1; }", 0},
+		{"struct with surrounding text", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 10, y = 20 }; let s str = `before {p} after`; if s == \"before Point{ x: 10, y: 20 } after\" { return 0; } return 1; }", 0},
+		{"struct mixed with other parts", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; let b bool = true; let n int = 99; let s str = `start_{b}_mid={p}_end_{n}`; if s == \"start_true_mid=Point{ x: 1, y: 2 }_end_99\" { return 0; } return 1; }", 0},
+		{"inline struct construction", "type Point = struct { x int; y int; };\nfn main() i32 { let s str = `pt={Point.{ x = 42, y = -7 }}`; if s == \"pt=Point{ x: 42, y: -7 }\" { return 0; } return 1; }", 0},
+		{"four fields all kinds", "type All = struct { a int; b bool; c f32; d str; };\nfn main() i32 { let v All = All.{ a = 1, b = false, c = 2.5, d = \"hi\" }; let s str = `v={v}`; if s == \"v=All{ a: 1, b: false, c: 2.500000, d: hi }\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructPrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a struct value part used directly as a
+	// print operand must render the struct identically to passing the same
+	// struct straight to bare print. The combined-print cases print an
+	// interpolation and the same struct bare in ONE print statement, so the
+	// two paths' text can be compared byte-for-byte in the captured output.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print two-field struct", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; print `pt={p}`; return 0; }", "pt=Point{ x: 1, y: 2 }\n"},
+		{"print three-field struct", "type Config = struct { name str; count int; };\nfn main() i32 { let c Config = Config.{ name = \"hello\", count = 3 }; print `cfg={c}`; return 0; }", "cfg=Config{ name: hello, count: 3 }\n"},
+		{"print struct with float", "type Measure = struct { val f64; };\nfn main() i32 { let m Measure = Measure.{ val = -2.5 }; print `m={m}`; return 0; }", "m=Measure{ val: -2.500000 }\n"},
+		{"print inline struct construction", "type Point = struct { x int; y int; };\nfn main() i32 { print `pt={Point.{ x = 7, y = 11}}`; return 0; }", "pt=Point{ x: 7, y: 11 }\n"},
+		{"interpolated matches bare print", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 5, y = 10 }; print `p={p}`, p; return 0; }", "p=Point{ x: 5, y: 10 }Point{ x: 5, y: 10 }\n"},
+		{"print struct mixed with other kinds", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; let b bool = true; let n int = 42; print `mix={p},{b},{n}`; return 0; }", "mix=Point{ x: 1, y: 2 },true,42\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a struct value part used as a call
+	// argument for a str parameter — `takes(`ok={p}`)` — must materialize
+	// into a PebbleStr value that flows through the call to the callee.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two-field struct arg", "type Point = struct { x int; y int; };\nfn takes(s str) i32 { if s == \"pt=Point{ x: 1, y: 2 }\" { return 1; } return 0; }\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; return takes(`pt={p}`); }", 1},
+		{"three-field struct arg", "type Config = struct { name str; count int; };\nfn takes(s str) i32 { if s == \"cfg=Config{ name: hello, count: 3 }\" { return 1; } return 0; }\nfn main() i32 { let c Config = Config.{ name = \"hello\", count = 3 }; return takes(`cfg={c}`); }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a struct value part used as a tail-
+	// position return value from a str-returning helper — `fn make(p Point)
+	// str { return \`val={p}\`; }` — must materialize into a PebbleStr that
+	// is returned to the caller.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two-field struct return", "type Point = struct { x int; y int; };\nfn make(p Point) str { return `pt={p}`; }\nfn main() i32 { let s str = make(Point.{ x = 1, y = 2 }); if s == \"pt=Point{ x: 1, y: 2 }\" { return 0; } return 1; }", 0},
+		{"three-field struct return", "type Config = struct { name str; count int; };\nfn make(c Config) str { return `cfg={c}`; }\nfn main() i32 { let s str = make(Config.{ name = \"test\", count = 7 }); if s == \"cfg=Config{ name: test, count: 7 }\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a struct value part used directly in a
+	// comparison expression — `if `prefix={p}` == "prefix=Point{ ... }" { ... }`
+	// — must materialize into a PebbleStr that participates in
+	// pebble_rt_str_eq.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal after interpolation", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; if `pt={p}` == \"pt=Point{ x: 1, y: 2 }\" { return 1; } else { return 0; } }", 1},
+		{"not equal after interpolation", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; if `pt={p}` == \"pt=Point{ x: 9, y: 9 }\" { return 0; } else { return 1; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-typed local reassigned from an interpolated string with a struct
+	// value part — `var s str = "initial"; s = `new={p}`;` — must
+	// materialize the interpolated string into a PebbleStr and store it into
+	// the local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"reassign with struct", "type Point = struct { x int; y int; };\nfn main() i32 { var s str = \"old\"; let p Point = Point.{ x = 3, y = 4 }; s = `v={p}`; if s == \"v=Point{ x: 3, y: 4 }\" { return 0; } return 1; }", 0},
+		{"reassign with inline struct", "type Point = struct { x int; y int; };\nfn main() i32 { var s str = \"old\"; s = `v={Point.{ x = 10, y = 20}}`; if s == \"v=Point{ x: 10, y: 20 }\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStructNestedRejected(t *testing.T) {
+	t.Parallel()
+	// A struct whose field is itself a struct, tuple, array, or untagged
+	// union must be cleanly REJECTED with a clear error message — only
+	// scalar, str, char, and plain-enum field types are supported in
+	// interpolated strings. This confirms the intentional scope boundary
+	// (non-nested aggregates only) is enforced, not silently mishandled.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"nested struct field", "type Inner = struct { v int; };\ntype Outer = struct { inner Inner; };\nfn main() i32 { let o Outer = Outer.{ inner = Inner.{ v = 1 } }; let s str = `o={o}`; return 0; }"},
+		{"tuple field", "type Pair = struct { pt (i32, i32); };\nfn main() i32 { let p Pair = Pair.{ pt = (1, 2) }; let s str = `p={p}`; return 0; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitRejectsWithSource(t, tc.src, "only scalar, str, char, and plain-enum field types are supported in interpolated strings")
+		})
+	}
+}
+
+// emitRejectsWithSource is a variant of emitAndRunRejects that passes the
+// source file set to Emit. This is needed for struct-interpolation rejection
+// tests because the struct-interpolation code resolves source names for
+// struct declarations (via structSourceName/fieldSourceName) before checking
+// whether individual field types are supported — without the file set those
+// name lookups fail first.
+func emitRejectsWithSource(t *testing.T, sourceText, wantSubstring string) {
+	t.Helper()
+	unit, snapshot, entryID, fileSet := buildFixture(t, sourceText, "main", false)
+	var buf bytes.Buffer
+	err := Emit(unit, snapshot, entryID, fileSet, nil, &buf)
+	if err == nil {
+		t.Fatalf("Emit succeeded for an unsupported entry shape, want rejection containing %q", wantSubstring)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Emit wrote output on failure: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("Emit rejection error %q does not contain %q", err.Error(), wantSubstring)
 	}
 }

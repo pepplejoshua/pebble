@@ -1515,7 +1515,7 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 				}
 				st.interpolatedStringCounter++
 				enumTemp := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
-				pre, err := buildEnumInterpolationSwitch(st, unit, snapshot, fileSet, valueNode, enumExpr, enumTemp)
+				pre, err := buildEnumInterpolationSwitch(st, unit, snapshot, fileSet, valueNode.Type, enumExpr, enumTemp)
 				if err != nil {
 					return "", nil, err
 				}
@@ -1529,6 +1529,143 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 					return "", nil, err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", strExpr))
+				continue
+			}
+			if isStruct(snapshot, valueNode.Type) && !isEnumType(unit, snapshot, valueNode.Type) && !isUntaggedUnionType(unit, snapshot, valueNode.Type) {
+				info, err := resolveStructInfo(unit, snapshot, valueNode.Type, nil)
+				if err != nil {
+					return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of struct type %s: %v", valueNode.Kind, describeType(snapshot, valueNode.Type), err)
+				}
+				typeName, err := structSourceName(unit, fileSet, info.decl)
+				if err != nil {
+					return "", nil, err
+				}
+				srcNode, ok := unit.Node(part.Value)
+				if !ok {
+					return "", nil, fmt.Errorf("interpolated-string builder references invalid struct value node %d", part.Value)
+				}
+				for i, field := range info.fields {
+					fieldName, err := fieldSourceName(unit, fileSet, field.member)
+					if err != nil {
+						return "", nil, err
+					}
+					var fieldLabel string
+					if i == 0 {
+						fieldLabel = typeName + "{ " + fieldName + ": "
+					} else {
+						fieldLabel = ", " + fieldName + ": "
+					}
+					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \"%s\" }", escapeCString(fieldLabel)))
+					if isStruct(snapshot, field.typ) || isTuple(snapshot, field.typ) || isArray(snapshot, field.typ) {
+						return "", nil, fmt.Errorf("interpolated-string builder has a struct field of type %s; only scalar, str, char, and plain-enum field types are supported in interpolated strings", describeType(snapshot, field.typ))
+					}
+					if isUntaggedUnionType(unit, snapshot, field.typ) {
+						return "", nil, fmt.Errorf("interpolated-string builder has a struct field of untagged-union type %s; only scalar, str, char, and plain-enum field types are supported in interpolated strings", describeType(snapshot, field.typ))
+					}
+					if isEnumType(unit, snapshot, field.typ) {
+						if isTaggedUnionType(unit, snapshot, field.typ) {
+							return "", nil, fmt.Errorf("interpolated-string builder has a struct field of tagged-union type %s, want a plain enum", describeType(snapshot, field.typ))
+						}
+						var fieldExpr string
+						var fieldValueNode tir.NodeID
+						switch srcNode.Kind {
+						case tir.SymbolValue:
+							fieldExpr = fmt.Sprintf("pebble_local_%d.pebble_field_%d", srcNode.Symbol, field.member)
+						case tir.RecordConstruct:
+							for _, fi := range srcNode.Fields {
+								if fi.Field == field.member {
+									fieldValueNode = fi.Value
+									break
+								}
+							}
+							if fieldValueNode == 0 {
+								return "", nil, fmt.Errorf("struct %s has no field named %d", describeType(snapshot, valueNode.Type), field.member)
+							}
+						default:
+							return "", nil, fmt.Errorf("interpolated-string builder struct source is a %s, want a SymbolValue or RecordConstruct", srcNode.Kind)
+						}
+						if fieldExpr == "" {
+							fieldExpr, err = buildEnumValue(st, unit, snapshot, fileSet, fieldValueNode, locals, width)
+							if err != nil {
+								return "", nil, err
+							}
+						}
+						st.interpolatedStringCounter++
+						enumTemp := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+						pre, err := buildEnumInterpolationSwitch(st, unit, snapshot, fileSet, field.typ, fieldExpr, enumTemp)
+						if err != nil {
+							return "", nil, err
+						}
+						pres = append(pres, pre)
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", enumTemp))
+						continue
+					}
+					var fieldExpr string
+					var fieldValueNode tir.NodeID
+					switch srcNode.Kind {
+					case tir.SymbolValue:
+						fieldExpr = fmt.Sprintf("pebble_local_%d.pebble_field_%d", srcNode.Symbol, field.member)
+					case tir.RecordConstruct:
+						for _, fi := range srcNode.Fields {
+							if fi.Field == field.member {
+								fieldValueNode = fi.Value
+								break
+							}
+						}
+						if fieldValueNode == 0 {
+							return "", nil, fmt.Errorf("struct %s has no field named %d", describeType(snapshot, valueNode.Type), field.member)
+						}
+					default:
+						return "", nil, fmt.Errorf("interpolated-string builder struct source is a %s, want a SymbolValue or RecordConstruct", srcNode.Kind)
+					}
+					if isStr(snapshot, field.typ) {
+						if fieldExpr == "" {
+							fieldExpr, err = buildStrOperand(st, unit, snapshot, fileSet, fieldValueNode, locals, width)
+							if err != nil {
+								return "", nil, err
+							}
+						}
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", fieldExpr))
+						continue
+					}
+					fk, ok := resolvedBuiltin(snapshot, field.typ)
+					if !ok || (fk != types.Bool && fk != types.Char && cType(fk) == "" && fk != types.F32 && fk != types.F64) {
+						return "", nil, fmt.Errorf("interpolated-string builder interpolates a struct field of unsupported type %s, want a plain enum, bool, char, an integer type, a float type, or a str type", describeType(snapshot, field.typ))
+					}
+					var expr string
+					if fieldExpr != "" {
+						expr = fieldExpr
+					} else {
+						switch {
+						case fk == types.Bool:
+							expr, err = buildBoolExpr(st, unit, snapshot, fileSet, fieldValueNode, locals, width)
+						case fk == types.Char:
+							expr, err = buildCharOperand(st, unit, snapshot, fileSet, fieldValueNode, locals, width)
+						case fk == types.F32 || fk == types.F64:
+							expr, err = buildFloatExpr(st, unit, snapshot, fileSet, fieldValueNode, locals, fk, width)
+						default:
+							expr, err = buildExpr(st, unit, snapshot, fileSet, fieldValueNode, locals, fk, width)
+						}
+						if err != nil {
+							return "", nil, err
+						}
+					}
+					switch {
+					case fk == types.Bool:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", expr))
+					case fk == types.Char:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_CHAR, .char_value = %s }", expr))
+					case fk == types.F32 || fk == types.F64:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_FLOAT, .float_value = %s }", expr))
+					default:
+						if isUnsignedWidth(fk) {
+							parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_UINT, .uint_value = %s }", expr))
+						} else {
+							parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_INT, .int_value = %s }", expr))
+						}
+					}
+				}
+				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \" }\" }"))
 				continue
 			}
 			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
@@ -1570,7 +1707,7 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 		}
 	}
 	partsList := strings.Join(parts, ", ")
-	return fmt.Sprintf("pebble_rt_str_from_parts(ctx, ((PebbleStrPart []){ %s }), %d)", partsList, len(node.Parts)), pres, nil
+	return fmt.Sprintf("pebble_rt_str_from_parts(ctx, ((PebbleStrPart []){ %s }), %d)", partsList, len(parts)), pres, nil
 }
 
 // buildEnumInterpolationSwitch emits the pre-statement block that assigns one
@@ -1610,10 +1747,10 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 // multi-line C block (the declaration and the switch); each caller prefixes
 // the statement indent to its first line, and its internal case/body lines
 // carry their own relative indentation.
-func buildEnumInterpolationSwitch(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueNode tir.Node, enumExpr, tempName string) (string, error) {
-	info, err := resolveEnumInfo(unit, snapshot, valueNode.Type)
+func buildEnumInterpolationSwitch(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, typ types.TypeID, enumExpr, tempName string) (string, error) {
+	info, err := resolveEnumInfo(unit, snapshot, typ)
 	if err != nil {
-		return "", fmt.Errorf("enum interpolation value of type %s: %v", describeType(snapshot, valueNode.Type), err)
+		return "", fmt.Errorf("enum interpolation value of type %s: %v", describeType(snapshot, typ), err)
 	}
 	typeName, err := enumSourceName(unit, fileSet, info.decl)
 	if err != nil {

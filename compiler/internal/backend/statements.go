@@ -2865,12 +2865,14 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		if child.Kind == tir.InterpolatedString {
 			// Check whether this interpolated string contains any str value
-			// part or plain-enum value part — a PebbleStr is a struct (not a C
-			// scalar) so a str cannot fold into the combined printf, and an
-			// enum's formatted name needs a runtime tag-comparison switch (a
-			// pre-statement), so either forces materializing the whole
-			// interpolation into a temp first.  Bool, integer, float, and char
-			// value parts still format inline.
+			// part, plain-enum value part, or struct value part — a PebbleStr
+			// is a struct (not a C scalar) so a str cannot fold into the
+			// combined printf, an enum's formatted name needs a runtime tag-
+			// comparison switch (a pre-statement), and a struct's formatted
+			// representation needs multiple PebbleStrPart entries plus
+			// potentially pre-statements for enum fields, so all three force
+			// materializing the whole interpolation into a temp first.  Bool,
+			// integer, float, and char value parts still format inline.
 			needsMaterialization := false
 			for _, part := range child.Parts {
 				if part.Kind != tir.InterpolationValuePart {
@@ -2880,7 +2882,7 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 				if !ok {
 					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 				}
-				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) {
+				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) || (isStruct(snapshot, vn.Type) && !isEnumType(unit, snapshot, vn.Type) && !isUntaggedUnionType(unit, snapshot, vn.Type)) {
 					needsMaterialization = true
 					break
 				}
@@ -3333,12 +3335,14 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		}
 		if child.Kind == tir.InterpolatedString {
 			// Check whether this interpolated string contains any str value
-			// part or plain-enum value part — a PebbleStr is a struct (not a C
-			// scalar) so a str cannot format inline, and an enum's formatted
-			// name needs a runtime tag-comparison switch (a pre-statement), so
-			// either forces materializing the whole interpolation into a temp
-			// first.  Bool, integer, float, and char value parts still format
-			// as individual fprintf calls.
+			// part, plain-enum value part, or struct value part — a PebbleStr
+			// is a struct (not a C scalar) so a str cannot format inline, an
+			// enum's formatted name needs a runtime tag-comparison switch (a
+			// pre-statement), and a struct's formatted representation needs
+			// multiple PebbleStrPart entries plus potentially pre-statements
+			// for enum fields, so all three force materializing the whole
+			// interpolation into a temp first.  Bool, integer, float, and char
+			// value parts still format as individual fprintf calls.
 			needsMaterialization := false
 			for _, part := range child.Parts {
 				if part.Kind != tir.InterpolationValuePart {
@@ -3348,7 +3352,7 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 				if !ok {
 					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 				}
-				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) {
+				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) || (isStruct(snapshot, vn.Type) && !isEnumType(unit, snapshot, vn.Type) && !isUntaggedUnionType(unit, snapshot, vn.Type)) {
 					needsMaterialization = true
 					break
 				}
