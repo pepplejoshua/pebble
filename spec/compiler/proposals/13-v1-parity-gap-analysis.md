@@ -370,18 +370,50 @@ causation-checked via file-copy swap against `HEAD` using `-run`
 (pre-fix: rejects with the original message; post-fix: compiles and
 runs, correctly comparing the round-tripped string).
 
-Picking up F5-22 next (print an optional value — V1 has an optional
-format path, V2 rejects the operand in the checker, per the master
-ledger: "Implement proposal 17's optional-print slice only"). This is
-a DIFFERENT category of item than F5-05 through F5-21 — a
-checker-level rejection (not a backend typedef/ABI gap), and the
-ledger points at a specific existing proposal document (17) rather
-than describing the shape inline, so READ `spec/compiler/proposals/17-*.md`
-first (find its exact filename) to understand the scoped slice before
-reproducing or writing a dispatch brief — do not guess the intended
-print format from first principles when a proposal doc already defines
-it. Investigate/reproduce directly first with a minimal `.peb` snippet
-(`print(some(5));` or similar) to see the exact current checker
-rejection message before writing a dispatch brief; next dispatch
-should use `vercel/alibaba/qwen3.7-flash` (the last dispatch, F5-21's
-follow-up, used `opencode-go/deepseek-v4-flash`).)*
+*(empty — F5-22 (print an optional value, proposal 17 slice 7) closed
+in `1987102`. Landed clean on the FIRST dispatch, despite touching both
+the checker AND the backend — a genuinely different category than every
+prior F5 item this window, all of which were pure backend gaps.
+`printableType` (checker) gained a `types.Optional` case recursing into
+the payload via `key.Child()`, mirroring the existing slice/tuple
+recursion. Backend emits a raw C `if (<expr>.has_value) { "some(" +
+<recursive payload> + ")" } else { "none" }`. The dispatched session did
+real, visible incremental debugging beyond the initial plan — discovering
+and fixing that `buildOptionalValueExpr` (previously only handling
+`SomeOptional`/`NoneOptional`/`OptionalInject` construction nodes) needed
+`SymbolValue`/`DirectCall`/`SourceAlias` cases to handle a print operand
+that REFERENCES an already-declared optional local rather than
+constructing one fresh, and that `buildStructValueExpr`/
+`buildTupleValueExpr` needed to transparently unwrap a `SourceAlias`
+wrapper around a nested struct/tuple payload literal
+(`some(Point.{...})`, `some((1, 2))`) — genuine, correctly-scoped fixes
+discovered through real test-driven debugging, not scope creep. Reported
+"failed"/stalled despite a complete, correct diff — caught, as always,
+by verifying directly rather than trusting the status. Verified with
+byte-exact captured stdout (not just exit code) across scalar/struct/
+tuple payloads and their `none` counterparts, plus a mixed-operand
+print statement. A pointer-payload optional stays cleanly rejected
+(pointers are proposal 17's slice 8, not yet printable). No stale
+`C0612` negative fixtures existed for optionals (checked, none found).
+Causation-checked against `HEAD`; full `internal/backend` AND
+`internal/check` suites both clean (this item's checker-touching nature
+made the `internal/check` suite a new checkpoint addition, not run for
+prior F5 items).
+
+Picking up F5-23 next (print a pointer value — V1 has a pointer format
+path, V2 rejects the operand in the checker, per the master ledger:
+"Implement proposal 17's pointer-print slice only" — this is proposal
+17's slice 8, "nil-safe address-only printing; a dedicated test proving
+a self-referential (`Node`) pointer cycle cannot cause unbounded print
+recursion"). Re-read proposal 17's slice 8 description closely before
+scoping a dispatch brief — the cycle-safety requirement is explicit and
+non-obvious (a pointer to a struct containing a pointer back to itself
+must NOT be printed recursively the way F5-22's optional-of-struct
+recursion does; "address-only" strongly suggests printing the pointer's
+raw address rather than dereferencing and recursing into the pointee at
+all, sidestepping the cycle question entirely — confirm this reading is
+correct before dispatching, don't assume). Investigate/reproduce
+directly first with a minimal `.peb` snippet (`print(some_ptr);` where
+`some_ptr *int` or similar) to see the exact current checker rejection
+message; next dispatch should use `opencode-go/deepseek-v4-flash` (the
+last dispatch, F5-22, used `vercel/alibaba/qwen3.7-flash`).)*

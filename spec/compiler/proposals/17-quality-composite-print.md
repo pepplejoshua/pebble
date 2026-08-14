@@ -228,8 +228,32 @@ and a runtime switch only for an enum/union discriminant.
    rejection was found and moved to valid/. Causation-checked (reverted
    both files, confirmed the exact pre-fix `C0612` rejection
    reproduces). Full suite clean.
-7. **Optionals** — `none`/`some(...)`, reusing the payload formatter
-   recursively.
+7. ~~**Optionals**~~ **RESOLVED (`1987102`).** `printableType` gains a
+   `types.Optional` case, recursive over the payload type via
+   `key.Child()` (mirroring the slice/tuple element recursion above).
+   Backend emits one raw C `if (<expr>.has_value) { ... } else { ... }`:
+   the true branch prints `"some("` then recurses into
+   `buildPrintValueCalls` against `<expr>.value`, then `")"`; the false
+   branch prints the bare `"none"` literal. Widened
+   `buildOptionalValueExpr` to accept a `SymbolValue` (an already-
+   declared optional local/global), a `DirectCall` (an optional-
+   returning helper call), and a `SourceAlias` (grouped-expression
+   parens) as print-operand sources — previously only
+   `SomeOptional`/`NoneOptional`/`OptionalInject` construction nodes
+   were handled, but a print operand is typically a reference to an
+   already-declared local, not a fresh construction. Also taught
+   `buildStructValueExpr`/`buildTupleValueExpr` to transparently unwrap
+   a `SourceAlias`-wrapped payload literal, needed for
+   `some(Point.{...})`/`some((1, 2))` to round-trip through print (the
+   payload literal arrives wrapped in a SourceAlias node). Verified: a
+   scalar payload (`some(5)`, `none`), a struct payload
+   (`some(Point{ x: 1, y: 2 })`), a tuple payload (`some((1, 2))`),
+   each with its `none` counterpart, and a mixed-operand print
+   (`print a, " ", b`) — all with byte-exact captured stdout, not just
+   exit code. A pointer-payload optional stays cleanly rejected at the
+   checker (pointers are slice 8, not yet printable). Causation-checked
+   against `HEAD`. Full `internal/backend` and `internal/check` suites
+   clean.
 8. **Pointers** — nil-safe address-only printing; a dedicated test
    proving a self-referential (`Node`) pointer cycle cannot cause
    unbounded print recursion.
