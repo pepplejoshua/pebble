@@ -46,38 +46,54 @@ not stay in this file.
 
 ## Active defect
 
-*(empty — F5-05 (interpolation of a `str` value part) closed in
-`a785060`. A `str` needs no formatting/snprintf at all: it already
-carries `.data`/`.len`, so interpolating it is a direct memcpy of its
-own bytes, the same as the existing literal-text part. Added
-`PEBBLE_STR_PART_STR` to `PebbleStrPartKind`/`PebbleStrPart`, a
-matching case in `pebble_rt_str_from_parts`, and widened
-`buildInterpolatedStringParts` plus `buildPrint`'s combined and
-sequential paths to build the value via `buildStrOperand` (the same
-helper F5-03/F5-04 relied on). New runtime smoke coverage (empty str,
-str+text, multiple strs, str mixed with bool/int/float) and Go
-end-to-end tests across local-init, call-argument, return, comparison,
-reassignment, and print positions — all independently reviewed file by
-file before verification. Dispatch's own report was a terse,
-early-stalled "failed"/`provider_stalled` message despite substantial
-real, correct work (359 lines across 6 files) — not trusted at face
-value, verified fully as always. Full `internal/backend` checkpoint
-hit the known rotating loop-test flakiness at `-parallel 12`
-(unrelated range-loop width-matrix tests, exit -1); confirmed flaky by
-isolation rerun (all pass standalone), clean at `-parallel 4` per the
-established fallback. Causation-checked via file-copy swap against
-HEAD (original repro fails with the exact pre-fix error; passes again
-once restored).
+*(empty — F5-06 (interpolation of a `char` value part) closed in
+`170ff96`. The scalar is UTF-8-encoded via the existing
+`pebble_rt_char_to_utf8`, reused from the char-print path. A real
+NUL-char (Unicode scalar 0) regression surfaced during verification:
+the write pass's first draft reused the int/float cases' `strlen`-
+based copy, which returns 0 for a buffer whose first byte is `0x00`,
+silently dropping the character and desyncing every later part's
+offset — fixed by encoding directly into the destination and using
+the encoder's own return value as the byte count, not `strlen`. Two
+follow-up dispatches were needed: one to fix the NUL bug itself (a
+session that stalled mid-edit left a genuinely broken, uncompilable
+`#if 0` with no `#endif` in `str.c` — caught by grep, not trusted from
+the "completed" report, fixed with a second tiny dispatch), and one to
+rescope 3 Go test cases that asserted on `print` OUTPUT of a
+NUL-containing string — `print`'s C emission
+(`fprintf(..., "%s", ...)`) truncates at any embedded NUL for ANY
+`str` value, confirmed independent of interpolation or char work
+entirely (`print "x\0y";` already truncates on plain `HEAD`); rescoped
+those 3 cases to assert on `.len` materialization instead (which IS
+correct), and logged the print-NUL-truncation limitation as its own
+new backlog row (F5-06b) rather than trying to fix it here. Full
+`internal/backend` checkpoint hit the same known rotating loop/while
+flakiness at `-parallel 12` (exit -1, unrelated tests); confirmed
+flaky by isolation rerun, clean at `-parallel 4`. Causation-checked
+via file-copy swap against HEAD.
 
-Picking up F5-06 next (interpolation of a `char` value part — same
-"want bool, an integer type, or a float type" rejection, confirmed
-live with `var c char = 'x'; print `hello {c}`;`. V1 formats the
-character. A reusable building block already exists:
-`pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5])` in
-`runtime/src/str.c`/`pebble_rt.h` — already used by the "char-to-UTF-8
-encoding" smoke test — encodes a Unicode scalar into up to 4 UTF-8
-bytes plus a length. Unlike the int/float parts, this needs a small
-fixed scratch buffer (5 bytes) per part, similar in shape to those
-cases but calling this existing encoder instead of `snprintf`.
-Include both ASCII and multi-byte Unicode (e.g. `'é'`, matching Phase
-3 #52's non-ASCII precedent) in the proof.)*
+Picking up F5-07 next (interpolation of an enum value part — same
+"want bool, char, an integer type, a float type, or a str type"
+rejection, confirmed live with a plain enum:
+`type Color = enum { red, green, blue }; ... print `color={c}`;`
+fails; V1 formats the variant name. A bare (non-interpolated)
+`print c;` of an enum ALREADY works today — `buildEnumPrintValueCalls`
+(`statements.go`) emits a runtime C switch over the enum's
+discriminant, each case `fprintf`-ing a STATIC string
+(`"TypeName.variantName"`), with a defensive default case for an
+invalid discriminant. Interpolation needs the SAME switch shape but
+producing a `PebbleStr` VALUE (assigned to a temp via a pre-statement
+switch) instead of directly calling `fprintf` — each case assigns the
+temp from a `{ .data = (const uint8_t *)"...", .len = N }` PebbleStr
+literal (the same literal-construction shape `buildStrLiteralValue`
+already uses for a bare string literal), then the temp is referenced
+as a normal `{ PEBBLE_STR_PART_STR, .str_value = <temp> }` entry —
+reusing the already-existing str-part machinery from F5-05, not
+inventing new runtime plumbing. This is architecturally different
+from bool/int/float/char/str (all of which build a single value
+expression); enum needs a pre-statement switch block, closer in shape
+to how `buildScalarPrintParts`' char case already threads a
+pre-statement buffer. Scope to plain (non-union) enums only — tagged
+unions are a separate, more complex follow-up (payload recursion),
+matching how the print matrix split plain-enum (composite print slice
+5) from tagged-union (slice 6) work previously.)*
