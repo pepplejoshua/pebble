@@ -72,28 +72,47 @@ flakiness at `-parallel 12` (exit -1, unrelated tests); confirmed
 flaky by isolation rerun, clean at `-parallel 4`. Causation-checked
 via file-copy swap against HEAD.
 
-Picking up F5-07 next (interpolation of an enum value part — same
-"want bool, char, an integer type, a float type, or a str type"
-rejection, confirmed live with a plain enum:
-`type Color = enum { red, green, blue }; ... print `color={c}`;`
-fails; V1 formats the variant name. A bare (non-interpolated)
-`print c;` of an enum ALREADY works today — `buildEnumPrintValueCalls`
-(`statements.go`) emits a runtime C switch over the enum's
-discriminant, each case `fprintf`-ing a STATIC string
-(`"TypeName.variantName"`), with a defensive default case for an
-invalid discriminant. Interpolation needs the SAME switch shape but
-producing a `PebbleStr` VALUE (assigned to a temp via a pre-statement
-switch) instead of directly calling `fprintf` — each case assigns the
-temp from a `{ .data = (const uint8_t *)"...", .len = N }` PebbleStr
-literal (the same literal-construction shape `buildStrLiteralValue`
-already uses for a bare string literal), then the temp is referenced
-as a normal `{ PEBBLE_STR_PART_STR, .str_value = <temp> }` entry —
-reusing the already-existing str-part machinery from F5-05, not
-inventing new runtime plumbing. This is architecturally different
-from bool/int/float/char/str (all of which build a single value
-expression); enum needs a pre-statement switch block, closer in shape
-to how `buildScalarPrintParts`' char case already threads a
-pre-statement buffer. Scope to plain (non-union) enums only — tagged
-unions are a separate, more complex follow-up (payload recursion),
-matching how the print matrix split plain-enum (composite print slice
-5) from tagged-union (slice 6) work previously.)*
+*(empty — F5-07 (interpolation of a plain-enum value part) closed in
+`cd5e3c6`. A plain enum's formatted representation depends on a
+runtime tag comparison across N static strings, so it can't become a
+single inline `PebbleStrPart` entry; `buildEnumInterpolationSwitch`
+emits a pre-statement C switch assigning a temp `PebbleStr` per
+variant (reusing F5-05's `PEBBLE_STR_PART_STR` machinery — no new
+runtime code), and reuses the existing enum-print naming helpers
+(`enumSourceName`/`variantSourceName`/`enumVariantName`) so an
+interpolated enum renders identically to the same enum passed straight
+to `print`. `buildInterpolatedStringParts`'s signature grew a `[]string`
+pre-statements return, threaded through all 3 call sites (local decl,
+general expression, and both of `buildPrint`'s combined/sequential
+paths). A tagged union (payload-carrying enum) is explicitly rejected
+with a clear error, confirmed by test — not silently mishandled.
+Also fixed a real collection gap found during this work:
+`collectEnumTypesWalk` only followed `node.Children`, missing an enum
+referenced only via an interpolation's `node.Parts` (e.g.
+`` `pick={Color.green}` ``), leaving its typedef/variant constants
+uncollected — the same Parts-not-Children shape `collectDirectCalls`
+already closes for helper calls used as interpolated values.
+
+Picking up F5-08 next (interpolation of a struct value part — same
+rejection, confirmed live with a plain struct:
+`type Point = struct { x int; y int; }; ... print `point={p}`;`
+fails; V1 recursively formats the value. A bare (non-interpolated)
+`print p;` of a struct ALREADY works today, producing
+`Point{ x: 1, y: 2 }` — `buildStructPrintValueCalls` (`statements.go`)
+recurses field-by-field through `buildPrintValueCalls`, so a scalar
+field produces its own `buildScalarPrintParts` call and a nested
+struct/tuple/array field recurses further, joined by static punctuation
+text (`"Point{ "`, `": "`, `", "`, `" }"`). Interpolation needs the
+same field-by-field formatting but producing ONE materialized
+`PebbleStr` (or a sequence of `PebbleStrPart` entries feeding a single
+`pebble_rt_str_from_parts` call) instead of a sequence of `fprintf`
+calls — closer in shape to F5-07's pre-statement-switch pattern than
+to a scalar builder, but with N field parts instead of N enum-variant
+cases, and each field's part built via whichever existing scalar/str/
+char/enum builder already applies to that field's own type (reusing
+the exact same dispatch this task's own F5-05/F5-06/F5-07 slices just
+built into `buildInterpolatedStringParts`, not reinventing it).
+SCOPE PER THE LEDGER'S OWN GUIDANCE: non-nested structs only first
+(every field a scalar/str/char/plain-enum type, no struct/tuple/array
+field) — keep nested-field recursion as a separate, harder follow-up
+if it turns out not to fall out naturally from reusing the dispatch.)*
