@@ -3490,6 +3490,55 @@ func TestEmitStructReturningHelperForwardsCallCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x i32; y i32; };\nfn helper() Point { return Point.{ x = 20, y = 22 }; } fn makeP() Point { return helper(); } fn main() i32 { let p Point = makeP(); return p.x + p.y; }", false, 42, false)
 }
 
+func TestEmitTupleReturningHelperForwardsCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A tuple-returning helper whose tail return is a DirectCall to another
+	// tuple-returning helper (`return makePair();`), the exact F5-14 repro
+	// shape: forward's return value is built from the call itself rather than
+	// from a SymbolValue or TupleValue. The entry assigns forward's call to a
+	// matching local and reads an element back, so a real element of the
+	// returned tuple must come through end-to-end. 1 is the process exit code.
+	emitAndRun(t, "fn makePair() (int, int) { return (1, 2); } fn forward() (int, int) { return makePair(); } fn main() int { var p (int, int) = forward(); return p.0; }", false, 1, false)
+}
+
+func TestEmitTupleReturningHelperForwardsThreeElementCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 3-element tuple forwarded through a helper's tail return proves the
+	// tuple-branch DirectCall case works with tuples larger than 2 elements
+	// and that ALL elements survive the forward, not just the first: the
+	// callee returns (10, 20, 30), so after forward() the entry's local must
+	// hold all three. 10 + 20 + 30 = 60 is the process exit code.
+	emitAndRun(t, "fn makeTriple() (int, int, int) { return (10, 20, 30); } fn forward() (int, int, int) { return makeTriple(); } fn main() int { var t (int, int, int) = forward(); return t.0 + t.1 + t.2; }", false, 60, false)
+}
+
+func TestEmitTupleReturningHelperForwardsMismatchedCallIsRejected(t *testing.T) {
+	t.Parallel()
+	// A call returning a DIFFERENT tuple type than the function's result type
+	// is rejected by the checker (C0601 type mismatch) before the backend ever
+	// sees it — confirming the checker's own discipline. This is the negative
+	// counterpart to the positive forward tests above: if the checker did not
+	// catch this, the backend would emit a return of one tuple typedef as
+	// another, which is UB in C.
+	unit, snapshot, entryID, _, err := buildFixtureMaybeFailing(t, "fn makeOther() (int, int, int) { return (1, 2, 3); } fn forward() (int, int) { return makeOther(); } fn main() int { var p (int, int) = forward(); return p.0; }", "main", false)
+	if err == nil {
+		// If the checker somehow passes, verify the backend still rejects it at
+		// the DirectCall type-check level in buildAggregateReturnValue.
+		var buf bytes.Buffer
+		emitErr := Emit(unit, snapshot, entryID, nil, nil, &buf)
+		if emitErr == nil {
+			t.Fatal("expected rejection but emit succeeded")
+		}
+		if !strings.Contains(emitErr.Error(), "does not match the function's result type") {
+			t.Fatalf("emission error %q does not contain 'does not match the function's result type'", emitErr.Error())
+		}
+		return
+	}
+	// The checker rejected it; confirm the diagnostic mentions the mismatch.
+	if !strings.Contains(err.Error(), "cannot convert") && !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("check error %q does not indicate a type mismatch", err.Error())
+	}
+}
+
 func TestEmitTupleReturningHelperWithBoolElementCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A mixed width/bool tuple result: the bool element is built by

@@ -615,17 +615,15 @@ func TestEmitRejectsTupleReturningHelperAsOperand(t *testing.T) {
 	assertEmitRejectsContaining(t, unit, snapshot, entryID, "of a DirectCall")
 }
 
-func TestEmitRejectsTupleReturningHelperInAnotherHelpersReturn(t *testing.T) {
+func TestEmitTupleReturningHelperForwardsCallInAnotherHelpersReturnCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Calling a tuple-returning helper as another tuple-returning helper's
 	// return value — `return makeT();` from makeT2 — is reachable from real
-	// source but deliberately out of scope (a call is only supported as a
-	// direct-initializer use, never this return-forwarding position). The
-	// tuple-returning helper's own tail Return routes through
-	// buildAggregateReturnValue, which rejects the DirectCall value cleanly,
-	// naming what was found.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "returns a DirectCall")
+	// source. The tuple-returning helper's own tail Return routes through
+	// buildAggregateReturnValue's tuple-branch DirectCall case (F5-14),
+	// forwarding the callee's result by value; both tuple elements must
+	// survive the two-hop chain.
+	emitAndRun(t, "fn makeT() (i32, i32) { return (20, 22); } fn makeT2() (i32, i32) { return makeT(); } fn main() i32 { let t (i32, i32) = makeT2(); return t.0 + t.1; }", false, 42, false)
 }
 
 func TestEmitRejectsEntryReturningTuple(t *testing.T) {

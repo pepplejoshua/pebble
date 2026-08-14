@@ -2096,8 +2096,8 @@ func buildSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 //     by buildTupleValueExpr / buildStructValueExpr (the same 10.25 expression
 //     builders an inline call argument uses), so the return statement emits
 //     e.g. `return (pebble_tuple_23_t){ 20, 22 };`;
-//   - (struct branch only) a DirectCall to another struct-returning helper
-//     (return helperReturningStruct();), the return-forwarding shape io.peb's
+//   - a DirectCall to another aggregate-returning helper (return
+//     helperReturningStruct();), the return-forwarding shape io.peb's
 //     `return string::new();` uses. The callee's declared ResultType is
 //     double-checked against the function's result type (defense for hand-built
 //     IR), then the call is built by buildDirectCallWithPre — the same
@@ -2118,11 +2118,11 @@ func buildSliceArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 // construct whose own Type is not exactly the function's result type (defense
 // for hand-built IR — the checker coerces every return value to the function's
 // declared result type) is a clean rejection, so the emitted C never returns a
-// value of the wrong aggregate type; the struct branch's DirectCall shape is
-// likewise rejected when the callee's declared ResultType differs from the
-// function's result type. Any other return-value shape is a clean rejection
-// naming what was found — including a DirectCall in the tuple branch, where
-// only the SymbolValue and TupleValue shapes above are supported. width is the
+// value of the wrong aggregate type; the DirectCall shape is likewise rejected
+// when the callee's declared ResultType differs from the function's result
+// type. Any other return-value shape is a clean rejection naming what was
+// found — including a DirectCall whose callee's declared ResultType does not
+// match the function's tuple/struct result type. width is the
 // entry's resolved integer width, threaded through to the inline builders so
 // each element/field is built at the width the result type's own typedef uses.
 func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, id tir.NodeID, locals map[symbol.SymbolID]localInfo, result resultInfo, indent string, width types.BuiltinKind) (string, string, error) {
@@ -2192,6 +2192,23 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 				return "", lvalue, nil
 			}
 			return "", "", fmt.Errorf("%s returns a Load whose place is a %s, want a DereferencePlace (a by-value whole-tuple read through a pointer) or a FieldPlace (a by-value read of a tuple-typed field)", context, place.Kind)
+		}
+		if node.Kind == tir.DirectCall {
+			calleeDecl, err := findCallDeclaration(unit, snapshot, node)
+			if err != nil {
+				return "", "", err
+			}
+			if calleeDecl.ResultType != result.tuple {
+				return "", "", fmt.Errorf("%s returns a call to symbol %d whose declared result type %s does not match the function's result type %s", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType), tupleTypeName(result.tuple))
+			}
+			callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, node, locals, width)
+			if err != nil {
+				return "", "", err
+			}
+			if callPre != "" {
+				callPre = indent + callPre
+			}
+			return callPre, callExpr, nil
 		}
 		return "", "", fmt.Errorf("%s returns a %s, want a reference to a tuple-typed local in scope or a tuple literal (a TupleValue); only returning an already-declared tuple-typed local or constructing a fresh tuple literal inline is supported", context, node.Kind)
 	}
