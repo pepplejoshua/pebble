@@ -143,25 +143,36 @@ confirmed clean, byte-exact `od -c` output confirmed, the `len(parts)`
 count line confirmed unchanged) and landed clean on the first dispatch,
 no follow-ups needed this time.
 
-Picking up F5-10 next (aggregate `ArrayRepeat` call argument — passing
-`[Point.{ ... }; N]` to an `[N]Point` parameter, confirmed live:
-`fn takes(pts [3]Point) int { return pts[0].x; } fn main() int {
-return takes([Point.{ x = 1, y = 2 }; 3]); }` fails with "array
-argument element type nominal(symbol N) is unsupported". `calls.go`'s
-`buildArrayArgument` has TWO separate element-building switches — one
-for a full `ArrayValue` literal (`node.Kind == tir.ArrayValue`, which
-already has an `isArray` nested-array case using
-`buildNestedAggregateValue`, so likely just needs an `isStruct` sibling
-case added the same way) and one for `ArrayRepeat`
-(`node.Kind == tir.ArrayRepeat`, which currently only handles
-bool/int/float and needs a struct case using `buildNestedAggregateValue`
-too, following the exact same evaluate-once-copy-N-times pattern the
-existing scalar cases use — build the struct value ONCE into a temp,
-then reference that temp name `length` times in the array compound
-literal, exactly like the existing `tempName := fmt.Sprintf(...)`
-scalar-repeat code already does). `arrayElementCType` (used to declare
-the temp's C type) needs confirming it already handles a struct
-element type — check before assuming. SCOPE: `ArrayRepeat` argument
-position ONLY (per the ledger's own split) — F5-11 (the return-value
-position, `buildArrayReturnValue`) is a separate, later item; do not
-combine them in one dispatch.)*
+*(empty — F5-10 (aggregate `ArrayRepeat` call argument) closed in
+`cea6231`. Both of `buildArrayArgument`'s element-building switches
+(the full `ArrayValue` literal case, which already had an `isArray`
+nested-array precedent, and the `ArrayRepeat` `[v; N]` case, which
+only handled bool/int/float) gained an `isStruct` branch using
+`buildNestedAggregateValue`, preserving the `ArrayRepeat` case's
+evaluate-once/copy-N-times pattern exactly. `buildStructValueExpr`
+also gained a `DirectCall`/`MethodCall` case so a struct-returning
+helper call can be the repeated value directly, proven by a dedicated
+evaluate-once test (a global counter, confirmed called exactly once).
+Landed clean on the first dispatch, no follow-ups needed.
+
+Picking up F5-11 next (the return-position counterpart — returning
+`[Point.{ ... }; N]` from a function whose result type is `[N]Point`,
+confirmed live: `fn makeAll() [3]Point { return [Point.{ x = 1, y = 2
+}; 3]; } fn main() int { var pts [3]Point = makeAll(); return
+pts[0].x; }` fails with "entry function body expression contains a
+RecordConstruct of type nominal(symbol N), want int" — the checker
+accepts it, but `calls.go`'s `buildArrayReturnValue`'s `ArrayRepeat`
+branch has an `else` fallback that calls the generic int-kind
+`buildExpr` for anything not bool/char/float/int, and a struct
+`RecordConstruct` obviously isn't an int expression. IMPORTANT scope
+finding from investigation: the SIBLING `ArrayValue` case (a full
+struct-literal array return, `return [Point.{...}, Point.{...}];`,
+NOT a repeat) was checked and ALREADY WORKS today (confirmed:
+compiles, runs, returns the correct field value) — so this item is
+narrower than F5-10 was: fix ONLY the `ArrayRepeat` branch's `else`
+fallback, adding an `isStruct` case using `buildNestedAggregateValue`
+before the generic `buildExpr` fallback, mirroring F5-10's exact
+fix location and pattern (the temp-then-repeat evaluate-once
+machinery in this function is analogous to `buildArrayArgument`'s —
+read both side by side). Do not touch the working `ArrayValue`
+return case at all.)*
