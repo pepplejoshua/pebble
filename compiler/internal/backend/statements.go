@@ -3054,16 +3054,10 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isTuple(snapshot, child.Type) || isArray(snapshot, child.Type) || isSlice(snapshot, child.Type) {
 			hasComposite = true
 		}
-		// A plain enum or tagged-union operand is also composite for routing
-		// purposes (composite print slices 5 and 6): it cannot fold into the
-		// combined printf the way a scalar does, because its output requires a
-		// runtime tag comparison to pick the variant name, not a static format
-		// specifier — even though a plain enum has no nested fields to recurse
-		// into (a union recurses into its variant payloads). The isEnumType
-		// guard above already excludes an enum/union from the struct branch
-		// (a union enum also passes isEnumType), so this line is what routes
-		// it to buildSequentialPrint.
 		if isEnumType(unit, snapshot, child.Type) {
+			hasComposite = true
+		}
+		if isOptional(snapshot, child.Type) {
 			hasComposite = true
 		}
 	}
@@ -3475,6 +3469,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildUnionPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isEnumType(unit, snapshot, child.Type):
 			compositeCalls, pres, err = buildEnumPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isOptional(snapshot, child.Type):
+			compositeCalls, pres, err = buildOptionalPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
 			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
@@ -3682,6 +3678,46 @@ func buildUnionPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	return calls, append(pres, valuePres...), nil
 }
 
+// buildOptionalPrintOperand emits one optional-typed operand of a print statement as
+// its sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's ONE raw C if/else over
+// the optional's .has_value flag (composite print slice 7). The operand is
+// materialized once into a per-operand temp (pebble_print_optional_<nodeID>,
+// declared with the optional's own pebble_optional_<typeID>_t C type) so an
+// optional-returning call operand is evaluated exactly once, and the if/else
+// checks the temp's stored has_value flag (see buildOptionalPrintValueCalls).
+func buildOptionalPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	valueExpr, err := buildOptionalPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	tempName := fmt.Sprintf("pebble_print_optional_%d", operandID)
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", optionalTypeName(child.Type), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
+// buildOptionalPrintValueExpr builds the C expression naming one optional-typed
+// print operand's value, of the shapes real source produces (all built by the
+// same machinery an optional value uses anywhere in this backend —
+// buildOptionalValueExpr is the one shared builder for an optional value in
+// every position): a some literal (some(5), emitted as its compound literal), a
+// none literal (none, emitted as its compound literal with zero payload), a
+// reference to an optional-typed local/global (a SymbolValue, emitted as its
+// pebble_local_<id> / pebble_global_<id> C name), a call to an
+// optional-returning helper (a DirectCall, emitted as the call expression), a
+// SourceAlias (transparent grouped-expression parens), or a Load of an
+// optional-typed struct field (emitted as the field projection). Any other
+// shape is a clean rejection, never a guessed lowering. This is a NEW consumer
+// of the existing buildOptionalValueExpr machinery (composite print slice 7),
+// not new optional representation knowledge.
+func buildOptionalPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	return buildOptionalValueExpr(st, unit, snapshot, fileSet, child, scope, context, width)
+}
+
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
 // materialized operand temp (the common case, from the build*PrintOperand
@@ -3730,6 +3766,8 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return buildArrayPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	case types.Slice:
 		return buildSlicePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	case types.Optional:
+		return buildOptionalPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	default:
 		if isTaggedUnionType(unit, snapshot, valueType) {
 			// A tagged union is checked BEFORE the plain-enum branch below,
@@ -4144,6 +4182,60 @@ func buildUnionPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"<invalid-tag: %d>") + ", " + expr + ".tag);\n")
 	block.WriteString(bodyIndent + "break;\n")
 	block.WriteString(indent + "}")
+	return []printFprintfCall{
+		{raw: block.String()},
+		{format: `""`},
+	}, nil, nil
+}
+
+// buildOptionalPrintValueCalls emits one optional VALUE (a whole operand temp, or
+// a nested optional field/element off an enclosing temp) as its ONE raw pre-
+// rendered C if/else over the optional's .has_value flag (composite print slice
+// 7). When .has_value is false at runtime the emitted output is the literal text
+// "none"; when .has_value is true the output is "some(" followed by the payload
+// value printed by recursively delegating to buildPrintValueCalls against
+// <expr>.value, then ")". The has_value check is a RUNTIME branch so the exact
+// output depends on the actual stored value — the checker only knows the TYPE
+// is printable, not which branch any given value will take. The payload type
+// comes from key.Child() on the optional key, the same accessor types.Slice's
+// case already uses for its element type. A trailing empty-string label call
+// follows the raw if/else: it is a no-op (fprintf(stdout, "");) in the middle
+// of a multi-operand statement, and buildSequentialPrint's trailing-newline
+// append turns it into fprintf(stdout, "\n"); when the optional is the
+// statement's last operand — the raw if/else block itself cannot receive that
+// append, so the no-op carrier is how the one-newline-per-print rule stays
+// uniform. No pres are returned — the payload formatter's pres are consumed
+// into the else-body text rather than hoisted (they must run only when has_value
+// is true).
+func buildOptionalPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not in the type snapshot", context, optionalTypeName(valueType))
+	}
+	payloadType, ok := key.Child()
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which has no payload type", context, optionalTypeName(valueType))
+	}
+	caseIndent := indent + "    "
+	bodyIndent := indent + "        "
+	var block strings.Builder
+	block.WriteString(indent + "if (" + expr + ".has_value) {\n")
+	block.WriteString(caseIndent + "fprintf(stdout, " + strconv.Quote("some(") + ");\n")
+	payloadCalls, payloadPres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, payloadType, expr+".value", operandID, bufferPath, bodyIndent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, pre := range payloadPres {
+		block.WriteString(pre + "\n")
+	}
+	for _, call := range payloadCalls {
+		block.WriteString(call.text(bodyIndent) + "\n")
+	}
+	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(")") + ");\n")
+	block.WriteString(caseIndent + "} else {\n")
+	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote("none") + ");\n")
+	block.WriteString(caseIndent + "}\n")
+	block.WriteString(indent + "")
 	return []printFprintfCall{
 		{raw: block.String()},
 		{format: `""`},

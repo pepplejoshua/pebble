@@ -184,6 +184,15 @@ func tupleElementSameCShape(snapshot *types.Snapshot, a, b types.TypeID) bool {
 // wrong cast. The node must be a TupleValue; the caller already guarantees
 // this, so the kind check is defense for hand-built IR.
 func buildTupleValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, wantType types.TypeID, context string, width types.BuiltinKind) (string, error) {
+	if node.Kind == tir.SourceAlias {
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// (e.g. `((1, 2))`) and nothing else — so it is unwrapped and its
+		// single child built recursively.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, wantType, context, width)
+	}
 	if node.Kind != tir.TupleValue {
 		return "", fmt.Errorf("%s contains a %s, want a TupleValue (a tuple literal)", context, node.Kind)
 	}
@@ -745,6 +754,56 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	if node.Kind == tir.NoneOptional {
 		return fmt.Sprintf("(%s){ .has_value = false, .value = %s }", optionalTypeName(node.Type), zeroOptionalPayloadLiteral(unit, snapshot, payload)), nil
 	}
+	if node.Kind == tir.SourceAlias {
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// and nothing else — so it is unwrapped and its single child built.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildOptionalValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+	}
+	if node.Kind == tir.SymbolValue {
+		info, declared := scope[node.Symbol]
+		if !declared || info.optional == 0 {
+			if ginfo, isGlobal := st.globals[node.Symbol]; isGlobal {
+				if ginfo.info.optional == 0 {
+					return "", fmt.Errorf("%s references global symbol %d, which is not an optional-typed global of type %s", context, node.Symbol, optionalTypeName(node.Type))
+				}
+				return fmt.Sprintf("pebble_global_%d", node.Symbol), nil
+			}
+			if einfo, isExtern := st.externData[node.Symbol]; isExtern {
+				if einfo.info.optional == 0 {
+					return "", fmt.Errorf("%s references extern variable symbol %d, which is not an optional-typed extern variable", context, node.Symbol)
+				}
+				return einfo.name, nil
+			}
+			return "", fmt.Errorf("%s references symbol %d, which is not an optional-typed local declared earlier in the body", context, node.Symbol)
+		}
+		if info.optional != node.Type {
+			return "", fmt.Errorf("%s references symbol %d, a local of type %s, not the optional type %s", context, node.Symbol, describeType(snapshot, info.optional), optionalTypeName(node.Type))
+		}
+		return fmt.Sprintf("pebble_local_%d", node.Symbol), nil
+	}
+	if node.Kind == tir.DirectCall {
+		// A call to an optional-returning helper used directly as an optional
+		// value — e.g. a print operand or a function argument. The emitted C
+		// is pebble_fn_<callee>(ctx, ...) whose return type IS the callee's
+		// declared optional-typed result, so the whole call expression is
+		// directly an optional value of exactly node.Type.
+		calleeDecl, err := findCallDeclaration(unit, snapshot, node)
+		if err != nil {
+			return "", err
+		}
+		callKey, ok := snapshot.Key(calleeDecl.ResultType)
+		if !ok || callKey.Kind() != types.Optional {
+			return "", fmt.Errorf("%s contains a call to symbol %d whose declared result type %s is not an optional type", context, node.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, node, scope, width)
+		if err != nil {
+			return "", err
+		}
+		return callExpr, nil
+	}
 	if (node.Kind != tir.SomeOptional && node.Kind != tir.OptionalInject) || len(node.Children) != 1 {
 		return "", fmt.Errorf("%s contains a %s, want some, none, or an implicit-injection (some-without-the-keyword) optional value", context, node.Kind)
 	}
@@ -774,8 +833,13 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		// targeting the optional's DECLARED payload tuple type (payload, from
 		// the optional type's own key above) — the .value field's C type — not
 		// the literal's own structural tuple type ID, which can diverge (issue
-		// #95).
-		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, payload, context, width)
+		// #95). SourceAlias wrappers (grouped-expression parens) are unwrapped
+		// first so the inner TupleValue reaches buildTupleValueExpr cleanly.
+		payloadChild := mustNode(unit, node.Children[0])
+		if payloadChild.Kind == tir.SourceAlias && len(payloadChild.Children) == 1 {
+			payloadChild = mustNode(unit, payloadChild.Children[0])
+		}
+		value, err = buildTupleValueExpr(st, unit, snapshot, fileSet, payloadChild, scope, payload, context, width)
 	case isTaggedUnionType(unit, snapshot, payload):
 		// A tagged-union payload's some/injected value is a union value (a
 		// reference to an already-declared union-typed local, a variant
@@ -798,7 +862,14 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		// but its value is a union value, never a plain enum constant.
 		value, err = buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 	case isStruct(snapshot, payload):
-		value, err = buildStructValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
+		// A struct-payload some/injected value is built by buildStructValueExpr.
+		// SourceAlias wrappers (grouped-expression parens) are unwrapped first
+		// so the inner RecordConstruct reaches buildStructValueExpr cleanly.
+		payloadChild := mustNode(unit, node.Children[0])
+		if payloadChild.Kind == tir.SourceAlias && len(payloadChild.Children) == 1 {
+			payloadChild = mustNode(unit, payloadChild.Children[0])
+		}
+		value, err = buildStructValueExpr(st, unit, snapshot, fileSet, payloadChild, scope, context, width)
 	case isArray(snapshot, payload):
 		// An array-typed payload's some/injected value is an array value (an
 		// array literal, a reference to an array-typed local, a by-value read
@@ -858,6 +929,15 @@ func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		// call expression (`pebble_fn_XX(ctx)`) whose result is the struct
 		// value, stored once in the ArrayRepeat temp then repeated N times.
 		return buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
+	}
+	if node.Kind == tir.SourceAlias {
+		// A SourceAlias is transparent — it records grouped-expression parens
+		// (e.g. `(Point.{ x = 1 })`) and nothing else — so it is unwrapped
+		// and its single child built recursively.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("%s contains a SourceAlias with %d child(ren), want exactly one", context, len(node.Children))
+		}
+		return buildStructValueExpr(st, unit, snapshot, fileSet, mustNode(unit, node.Children[0]), scope, context, width)
 	}
 	if node.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)

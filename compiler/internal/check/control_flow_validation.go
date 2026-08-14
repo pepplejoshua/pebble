@@ -188,6 +188,9 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		case types.Slice:
 			element, ok := key.Child()
 			return ok && printableType(element)
+		case types.Optional:
+			payload, ok := key.Child()
+			return ok && printableType(payload)
 		case types.Nominal:
 		default:
 			return false

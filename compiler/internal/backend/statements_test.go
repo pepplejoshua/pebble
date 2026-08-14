@@ -1283,6 +1283,150 @@ func TestEmitPrintTaggedUnionRejectsNonPrintablePayload(t *testing.T) {
 	}
 }
 
+func TestEmitPrintOptionalOfIntCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 7: an optional-typed operand prints as
+	// `some(<payload>)` when its runtime .has_value is true and as the bare
+	// literal text `none` when .has_value is false — the payload itself is
+	// formatted recursively through the same buildPrintValueCalls machinery,
+	// so a scalar payload produces its scalar emitter and a composite payload
+	// produces its own inline nested sequence.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"some with int payload",
+			"fn main() i32 { var x ?int = some(5); print x; return 0; }",
+			"some(5)\n",
+		},
+		{
+			"none value",
+			"fn main() i32 { var y ?int = none; print y; return 0; }",
+			"none\n",
+		},
+		{
+			"some with i32 payload",
+			"fn main() i32 { var x ?i32 = some(42); print x; return 0; }",
+			"some(42)\n",
+		},
+		{
+			"some with bool payload",
+			"fn main() i32 { var x ?bool = some(true); print x; return 0; }",
+			"some(true)\n",
+		},
+		{
+			"none with explicit type",
+			"fn main() i32 { var y ?i32 = none; print y; return 0; }",
+			"none\n",
+		},
+		{
+			"mixed some and none in one print",
+			"fn main() i32 { var a ?int = some(5); var b ?int = none; print a, \" \", b; return 0; }",
+			"some(5) none\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintOptionalWritesRuntimeIfElse(t *testing.T) {
+	t.Parallel()
+	// An optional operand's print is emitted as a raw C if/else over .has_value:
+	// the some-branch emits "some(" + payload + ")" via fprintf calls and the
+	// else-branch emits "none". No pres are returned — the payload formatter's
+	// pres are consumed into the if-body text rather than hoisted.
+	unit, snapshot, entryID, sources := buildFixture(t,
+		"fn main() i32 { var a ?int = some(5); var b ?int = none; print a; print b; return 0; }",
+		"main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, ".has_value") {
+		t.Fatalf("emitted C does not contain the expected if(.has_value) branch;\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, `"some("`) {
+		t.Fatalf("emitted C does not contain the expected \"some(\" fprintf;\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, `"none"`) {
+		t.Fatalf("emitted C does not contain the expected \"none\" fprintf;\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, `"some("`) {
+		t.Fatalf("emitted C does not contain the opening \"some(\" fprintf;\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, `")"`) {
+		t.Fatalf("emitted C does not contain the closing \")\" fprintf;\ngot:\n%s", out)
+	}
+}
+
+func TestEmitPrintOptionalNestedCompositeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 7 recursive check: an optional whose payload is a
+	// composite type (struct or tuple) must reuse the payload formatter
+	// recursively, so the output shows the inner composite's own format inside
+	// the outer some() wrapper.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"optional of struct",
+			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = some(Point.{ x = 1, y = 2 }); print p; return 0; }",
+			"some(Point{ x: 1, y: 2 })\n",
+		},
+		{
+			"optional of struct with none",
+			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = none; print p; return 0; }",
+			"none\n",
+		},
+		{
+			"optional of tuple",
+			"fn main() i32 { var t ?(int, int) = some((1, 2)); print t; return 0; }",
+			"some((1, 2))\n",
+		},
+		{
+			"optional of tuple with none",
+			"fn main() i32 { var t ?(int, int) = none; print t; return 0; }",
+			"none\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitPrintOptionalRejectsNonPrintablePayload(t *testing.T) {
+	t.Parallel()
+	// An optional whose payload type is not yet printable (a pointer, here —
+	// pointers are slice 8) must be rejected by the checker, mirroring the
+	// conservative struct-field rule: printability is a property of the
+	// optional TYPE decided once from its payload, not per-value.
+	_, _, _, _, err := buildFixtureMaybeFailing(t,
+		"fn main() i32 { var x ?*i32 = none; print x; return 0; }",
+		"main", false)
+	if err == nil {
+		t.Fatalf("expected a checker error rejecting an optional with a non-printable payload, got none")
+	}
+	if !strings.Contains(err.Error(), "C0612") {
+		t.Fatalf("expected a C0612 (not printable) error, got: %v", err)
+	}
+}
+
 func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A deferred char print routes through the same shared buildPrint, so a
