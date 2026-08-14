@@ -200,29 +200,43 @@ already supports pre-statements). A now-obsolete negative test
 compile-and-run test in place, matching the F5-12 precedent for
 handling stale coverage. Landed clean on the first dispatch.
 
-Picking up F5-15 next (`str` tuple element as a call argument —
-`takes(t.0)` where `t.0` is a `str`-typed tuple element, confirmed
-live: `fn takes(s str) int { if s == "hello" { return 1; } return 0;
-} fn main() int { var t (str, int) = ("hello", 5); return
-takes(t.0); }` fails with: "entry function body expression contains a
-str Load whose place is a TuplePlace, want a FieldPlace (a str-typed
-struct field read)". The fix location is `values.go`'s
-`buildStrOperand` (search for it) — its `Load` case only handles
-`CheckedIndexPlace` (via `buildArrayPlaceRead`) and `FieldPlace` (via
-`buildStructFieldRead`), rejecting anything else including
-`TuplePlace`. A `TuplePlace` reader ALREADY EXISTS and is used
-elsewhere: `places.go`'s `buildTuplePlaceRead` (search for it — reads
-one tuple element via the `Load(TuplePlace)` shape the checker
-actually produces for `t.<ordinal>`, confirmed against a real
-fixture, already used for non-str element types). The fix is a
-one-line addition: in `buildStrOperand`'s `Load` case, add a
-`place.Kind == tir.TuplePlace` branch (alongside the existing
-`CheckedIndexPlace` branch, before the final `FieldPlace`-only check)
-calling `buildTuplePlaceRead(st, unit, snapshot, fileSet, place,
-locals, width, false)` (match `buildArrayPlaceRead`'s exact call
-signature/argument order as the template — check whether
-`buildTuplePlaceRead`'s last two params match `wantBool`-style
-conventions used elsewhere). This is an extremely narrow, low-risk,
-near-trivial single-function change with the exact helper function
-already built and proven elsewhere in the codebase — should be one of
-the lowest-risk items in this whole backlog.)*
+*(empty — F5-15 (`str` tuple element as a call argument) closed in
+`9e6bcdc`. The existing `buildTuplePlaceRead` helper turned out to
+only accept bool/entry-width elements (str is neither), so the fix
+was NOT the one-line reuse originally planned — it added a
+`TuplePlace` branch inline (base-expression/element-lookup/projection
+logic mirroring `buildTuplePlaceRead`'s own body shape, but with an
+`isStr` check instead of the bool/width gate), emitting the same
+`pebble_local_<sym>._<ordinal>` C shape. Verified across call-
+argument (multiple ordinal positions), local-init, comparison, and
+return-value consumer positions — all share this one `buildStrOperand`
+fix. Landed clean on the first dispatch despite the plan needing a
+small course-correction mid-implementation.
+
+Picking up F5-16 next (optional field read as a call argument —
+passing `holder.value` (an optional-typed struct field) where the
+parameter type is optional, confirmed live:
+`type Holder = struct { value ?int; }; fn takes(v ?int) int { if
+v.has_value { return v!; } return 0; } fn main() int { var h Holder =
+Holder.{ value = some 5 }; return takes(h.value); }` fails with:
+"entry function body expression contains a call to symbol N whose
+parameter 0 (symbol N) is a Load whose place is a FieldPlace, want a
+DereferencePlace (a by-value whole-optional read through a pointer)".
+The fix location is `values.go`'s `buildOptionalValue` (search for it
+— shared by BOTH call-argument and return-value positions per its own
+doc comment's context-string convention, so this fix likely helps
+`return holder.value;` too, worth testing both). Its `Load` case only
+handles `DereferencePlace` (`*p` — a by-value whole-optional read
+through a pointer, via `buildDereferencePlaceRead`), rejecting
+anything else including `FieldPlace`. The fix: add a `place.Kind ==
+tir.FieldPlace` branch alongside the existing `DereferencePlace`
+check, reading the field's whole-optional value — check how OTHER
+whole-aggregate-typed field reads in this codebase build their
+FieldPlace projection (e.g. F5-15's own new TuplePlace code, or an
+existing struct/tuple FieldPlace read elsewhere in `values.go`/
+`places.go`) for the exact `buildPlaceLValue`-based pattern to mirror;
+the optional's own typedef should make the by-value field read
+trivially valid C once correctly projected (`<baseExpr>.pebble_field_
+<member>` or similar — confirm the exact field-access naming
+convention this codebase uses by reading a working FieldPlace example
+first, don't guess).)*
