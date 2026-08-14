@@ -2297,6 +2297,32 @@ func buildStrOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fi
 		if place.Kind == tir.CheckedIndexPlace {
 			return buildArrayPlaceRead(st, unit, snapshot, fileSet, place, locals, width, false)
 		}
+		if place.Kind == tir.TuplePlace {
+			// A str-typed tuple element read (`t.0` where t is (str, ...)).
+			// buildTuplePlaceRead validates elements against bool or entry
+			// width (integers), so str is rejected by its type check; emit
+			// the projection inline using the same pattern buildPlaceLValue
+			// uses for TuplePlace: pebble_local_<sym>._<ordinal>.
+			if len(place.Children) != 1 {
+				return "", fmt.Errorf("tuple place wants one base")
+			}
+			baseExpr, tupleType, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
+			if err != nil {
+				return "", err
+			}
+			key, ok := snapshot.Key(tupleType)
+			if !ok {
+				return "", fmt.Errorf("tuple place type %d is not in the type snapshot", tupleType)
+			}
+			elems, ok := key.Elements()
+			if !ok || place.Ordinal >= uint32(len(elems)) {
+				return "", fmt.Errorf("tuple element %d is out of range", place.Ordinal)
+			}
+			if !isStr(snapshot, elems[place.Ordinal]) {
+				return "", fmt.Errorf("tuple element %d has type %s, want str", place.Ordinal, describeType(snapshot, elems[place.Ordinal]))
+			}
+			return fmt.Sprintf("%s._%d", baseExpr, place.Ordinal), nil
+		}
 		if place.Kind != tir.FieldPlace {
 			return "", fmt.Errorf("entry function body expression contains a str Load whose place is a %s, want a FieldPlace (a str-typed struct field read)", place.Kind)
 		}
