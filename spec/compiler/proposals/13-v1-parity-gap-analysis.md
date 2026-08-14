@@ -10,8 +10,12 @@ not stay in this file.
 2. Reproduce it with the current compiler.
 3. Record its minimal source, exact failure, root cause, and scope below.
 4. Dispatch one small implementation slice through Orc.
-5. Review the diff, remove scratch work, run all required tests, and do a
-   causation check.
+5. Review the diff, remove scratch work, run `gofmt`/`go vet` plus the
+   package(s) actually touched, and do a causation check. **Do not run the
+   full backend/repo test suite per item** — it's a periodic checkpoint
+   (roughly every 5 items), not a per-item gate; use `-parallel 12` when a
+   checkpoint run does happen, to reduce contention-driven flaky loop/break
+   failures.
 6. Commit and push the verified fix. Update proposal 14 with the closing
    commit, then clear the active defect from this file.
 7. Do not start another implementation worker until the current worker has
