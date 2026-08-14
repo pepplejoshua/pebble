@@ -44,36 +44,40 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 48 ("`TestEmitRejectsSliceParameterUnsupportedElementType`
-hand-built-IR test failure", tracker 14) closed in `15ad508`. NOT a
-production ordering bug: the fixture's own premise went stale after
-str became a SUPPORTED slice element type (Phase 3 #32, earlier in
-this engagement) — a `[]str` helper parameter no longer reaches the
-element-type gate at all. Confirmed the gate is still live via a
-genuinely unsupported element (slice-of-fixed-array, `[][3]i32`) and
-rebuilt the fixture around that. Full `internal/backend` suite is now
-FULLY GREEN — the last remaining known failure, carried since Phase 3
-#41, is now closed. STANDING NOTE, still open: `examples/arena_alloc.peb`
-fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
-`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
-on when to queue it.
+*(empty — Phase 3 item 49 ("Interpolated string with an int value
+part", tracker 14 line ~347, first slice of the deferred non-bool
+interpolation gap) closed in `7e4bcb4`. Root cause: the runtime's
+`pebble_rt_str_from_parts` used a fixed per-kind length table (bool is
+always 4/5 chars, computed without formatting anything) — cannot work
+for an integer's variable-length decimal output. Refactored to a
+single measure+format pass, formatting each integer part once via
+`snprintf` into a scratch buffer, freed on both return paths (a leak
+in the first implementation pass, found during independent review and
+fixed via a small follow-up dispatch). Runtime smoke test built and
+run directly in both SAFE/RELEASE modes as part of verification (Go
+tests alone don't exercise the C runtime). Float, char, str, and enum
+value parts remain their own follow-up slices of the same
+deliberately-deferred formatting-matrix scope. STANDING NOTE, still
+open: `examples/arena_alloc.peb` fails to compile on pointer
+arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
+tracker 14 row, awaiting the user's decision on when to queue it.
+Picking up the next slice: float (f32/f64) value parts in interpolated
+strings, the same tracker 14 row, same general mechanism now in place
+(the runtime refactor from this item makes adding a new
+variable-length-formatted kind straightforward — extend
+`PebbleStrPartKind`/`pebble_rt_str_from_parts` with a float case using
+the same scratch-buffer approach, then wire the backend the same way
+`buildInterpolatedStringParts`/`buildPrint` were widened for int) next.)*
 
-WELL-SCOPED BUG QUEUE NOW EXHAUSTED: every remaining open tracker 14
-row is either "Decision needed" (Untagged union line ~151, escape
-analysis line ~152, C variadic extern call line ~324, freestanding
-compilation line ~722 — each requires a design decision from the user,
-not a bug fix), "Absent"-by-design pending a decision (explicit tuple
-prefix cast line ~237, struct literal field conversion line ~239,
-explicit structural struct prefix cast line ~240 — each needs the user
-to accept or reject a specific relaxed rule before any implementation
-makes sense), or a single large, already-deliberately-deferred item
-(interpolated string with a non-`bool` value part, line ~347 — a real,
-much larger formatting-matrix scope, not a narrow slice like every
-item closed this sweep). No further item was picked; awaiting the
-user's direction on whether to make any of the pending design
-decisions, start slicing the interpolation item narrowly (e.g. one
-value-type at a time, matching how every other large item in this
-engagement was decomposed), or stop here.)*
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Interpolated string with an int value part (Phase 3 #49),
+tracker 14.**
+
+Closed in `7e4bcb4`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
