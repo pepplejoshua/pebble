@@ -46,5 +46,22 @@ not stay in this file.
 
 ## Active defect
 
-*(empty — the fifth parity audit is complete. Select one item from proposal
-14 before the next implementation dispatch.)*
+*(empty — F5-01 (generic tagged-union method switch subject) closed in
+`73245a0`. Root cause was checker-side: `buildMethodCall`'s specialization
+trigger required `methodSymbol.Generic`, true only for a method declaring
+its own type parameters (`map[U]`), so a method that only INHERITS type
+parameters from its containing generic type (`is_ok`, `unwrap_or`) never
+got a concrete specialization — `self` kept the unspecialized template
+TypeID at every call site, confirmed via `tirdump`. Fixed by triggering
+specialization on non-empty `signature.TypeParams` alone. Broke
+`std/result.peb` end to end before the fix; `is_ok`/`unwrap_or` now
+verified compiling and running correctly. A genuinely separate,
+pre-existing bug was found during investigation and deliberately NOT
+fixed: two DIFFERENT instantiations of the same generic tagged union
+(`Result[int,str]` + `Result[bool,str]` both live at once) emit
+duplicate C enumerators — now its own tracker 14 row, F5-01b. Picking up
+F5-02 next (generic untagged-union field specialization — a generic
+untagged union instantiated with a scalar payload reaches Emit with the
+field type still recorded as a type parameter; per the audit's own note,
+do not combine with F5-01 unless one root cause is proven — check
+current state for staleness first, per the established pattern).)*
