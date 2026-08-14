@@ -191,10 +191,16 @@ func resolveEnumInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 // variants actually constructed — an untagged union's fields must ALL be
 // declared in the typedef, since reading any of them is always legal under the
 // unsafe reinterpret-the-bytes contract). Each member's type comes from
-// TypeDecl.MemberTypes. The type must actually be an untagged union — the
-// declaration-level Union signal — not a struct or tagged union that shares
-// the Nominal key shape, so a collected non-untagged-union Nominal type is a
-// clean rejection, not a guessed layout.
+// TypeDecl.MemberTypes. For a generic instantiation the TypeKey.Nominal
+// arguments are the instantiation's concrete type arguments, so a member whose
+// recorded type is one of the union's own type parameters (the checker records
+// the parameter's TypeID for a directly parameter-typed member) is substituted
+// against those arguments — resolving Box[T]'s `a T` to Box[i32]'s i32 from
+// the instantiation's own evidence rather than the raw type-parameter symbol.
+// The type must actually be an untagged union — the declaration-level Union
+// signal — not a struct or tagged union that shares the Nominal key shape, so
+// a collected non-untagged-union Nominal type is a clean rejection, not a
+// guessed layout.
 func resolveUntaggedUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (unionInfo, error) {
 	key, ok := snapshot.Key(id)
 	if !ok {
@@ -206,13 +212,17 @@ func resolveUntaggedUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types
 	if !isUntaggedUnionType(unit, snapshot, id) {
 		return unionInfo{}, fmt.Errorf("type %s is not an untagged union type", unionTypeName(id))
 	}
-	decl, _, ok := key.Nominal()
+	decl, arguments, ok := key.Nominal()
 	if !ok {
 		return unionInfo{}, fmt.Errorf("type %s has no nominal declaration", unionTypeName(id))
 	}
 	typeDecl, ok := findTypeDeclaration(unit, decl)
 	if !ok {
 		return unionInfo{}, fmt.Errorf("union type %s has no TypeDeclaration for symbol %d in the unit", unionTypeName(id), decl)
+	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
 	}
 	if len(typeDecl.Members) == 0 {
 		return unionInfo{}, fmt.Errorf("union type %s has no declared members", unionTypeName(id))
@@ -222,6 +232,13 @@ func resolveUntaggedUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types
 		fieldType := types.TypeID(0)
 		if i < len(typeDecl.MemberTypes) {
 			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return unionInfo{}, fmt.Errorf("union type %s member symbol %d type substitution: %v", unionTypeName(id), member, err)
+			}
+			fieldType = substituted
 		}
 		if fieldType == 0 {
 			return unionInfo{}, fmt.Errorf("union type %s member symbol %d has no resolvable type in the unit", unionTypeName(id), member)

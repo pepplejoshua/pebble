@@ -165,6 +165,96 @@ fn main() i32 {
 }`, false, 42, false)
 }
 
+// TestEmitUntaggedUnionGenericInstantiateI32CompileAndRun is the exact
+// regression repro for F5-02: a generic untagged union instantiated with a
+// concrete scalar payload (i32) must compile and run, returning the stored
+// value. Before the fix, the member's type reached the union typedef builder
+// as the raw type-parameter symbol instead of being substituted to i32.
+func TestEmitUntaggedUnionGenericInstantiateI32CompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Box[T] = union {
+    a T;
+    b int;
+};
+fn main() i32 {
+    var d Box[i32] = Box[i32].{ a = 5 };
+    return d.a;
+}`, false, 5, false)
+}
+
+// TestEmitUntaggedUnionGenericInstantiateBoolCompileAndRun proves the fix
+// is not width-specific: a generic untagged union instantiated with bool
+// also compiles and runs correctly.
+func TestEmitUntaggedUnionGenericInstantiateBoolCompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Box[T] = union {
+    a T;
+    b int;
+};
+fn main() i32 {
+    var d Box[bool] = Box[bool].{ a = true };
+    if d.a {
+        return 42;
+    }
+    return 0;
+}`, false, 42, false)
+}
+
+// TestEmitUntaggedUnionGenericInstantiateU64CompileAndRun proves the fix
+// works for u64 as well. Uses in-program comparison because 999 exceeds the
+// valid exit-code range (0-255) — 999 mod 256 = 231 — so returning it
+// directly as the exit code would never match regardless of correctness.
+func TestEmitUntaggedUnionGenericInstantiateU64CompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Box[T] = union {
+    a T;
+    b int;
+};
+fn main() i32 {
+    var d Box[u64] = Box[u64].{ a = 999 };
+    if d.a == 999 {
+        return 42;
+    }
+    return 0;
+}`, false, 42, false)
+}
+
+// TestEmitUntaggedUnionGenericTwoInstantiationsInOneProgram proves two
+// different instantiations of the same generic untagged union both live in
+// one program, each gets its own correctly-substituted typedef, and both
+// produce correct results. This also exercises whether the same
+// duplicate-naming class of bug found for tagged unions during F5-01
+// affects untagged unions.
+func TestEmitUntaggedUnionGenericTwoInstantiationsInOneProgram(t *testing.T) {
+	emitAndRun(t, `type Box[T] = union {
+    a T;
+    b int;
+};
+fn main() i32 {
+    var d Box[i32] = Box[i32].{ a = 5 };
+    var e Box[bool] = Box[bool].{ a = true };
+    if d.a == 5 {
+        if e.a {
+            return 42;
+        }
+    }
+    return 0;
+}`, false, 42, false)
+}
+
+// TestEmitUntaggedUnionGenericInstantiateNonScalarRejects pins the
+// out-of-scope boundary for generic untagged unions: when instantiated with
+// a non-scalar concrete type (a struct), the union typedef builder must
+// cleanly reject with the "not supported" message naming the CORRECT
+// substituted type (the concrete struct's typedef name), not a raw
+// type-parameter symbol. This confirms the substitution IS happening — it's
+// just that the resulting concrete type fails the scalar-only gate.
+func TestEmitUntaggedUnionGenericInstantiateNonScalarRejects(t *testing.T) {
+	emitAndRunRejects(t, `type Inner = struct { x i32; };
+type Box[T] = union {
+    a T;
+    b int;
+};
+fn main() i32 { var d Box[Inner] = Box[Inner].{ a = Inner.{ x = 1 } }; return 0; }`, "not supported")
+}
+
 // TestEmitUntaggedUnionRejectsNonScalarFieldCompileAndRun pins the explicit
 // out-of-scope boundary of this slice: a struct field and an array field
 // inside an untagged union are cleanly rejected at Emit with the
