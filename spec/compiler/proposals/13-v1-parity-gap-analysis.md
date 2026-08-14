@@ -93,26 +93,61 @@ referenced only via an interpolation's `node.Parts` (e.g.
 uncollected — the same Parts-not-Children shape `collectDirectCalls`
 already closes for helper calls used as interpolated values.
 
-Picking up F5-08 next (interpolation of a struct value part — same
-rejection, confirmed live with a plain struct:
-`type Point = struct { x int; y int; }; ... print `point={p}`;`
-fails; V1 recursively formats the value. A bare (non-interpolated)
-`print p;` of a struct ALREADY works today, producing
-`Point{ x: 1, y: 2 }` — `buildStructPrintValueCalls` (`statements.go`)
-recurses field-by-field through `buildPrintValueCalls`, so a scalar
-field produces its own `buildScalarPrintParts` call and a nested
-struct/tuple/array field recurses further, joined by static punctuation
-text (`"Point{ "`, `": "`, `", "`, `" }"`). Interpolation needs the
-same field-by-field formatting but producing ONE materialized
-`PebbleStr` (or a sequence of `PebbleStrPart` entries feeding a single
-`pebble_rt_str_from_parts` call) instead of a sequence of `fprintf`
-calls — closer in shape to F5-07's pre-statement-switch pattern than
-to a scalar builder, but with N field parts instead of N enum-variant
-cases, and each field's part built via whichever existing scalar/str/
-char/enum builder already applies to that field's own type (reusing
-the exact same dispatch this task's own F5-05/F5-06/F5-07 slices just
-built into `buildInterpolatedStringParts`, not reinventing it).
-SCOPE PER THE LEDGER'S OWN GUIDANCE: non-nested structs only first
-(every field a scalar/str/char/plain-enum type, no struct/tuple/array
-field) — keep nested-field recursion as a separate, harder follow-up
-if it turns out not to fall out naturally from reusing the dispatch.)*
+*(empty — F5-08 (interpolation of a non-nested struct value part)
+closed in `7696630`. One struct value part expands into MULTIPLE
+`PebbleStrPart` entries directly in `buildInterpolatedStringParts`'s
+own `parts` array (a text label per field boundary, then whichever
+entry kind matches each field's own type, reusing the exact same
+per-type dispatch this function already had for bool/int/float/str/
+char/plain-enum) — no new runtime code, no new `PebbleStrPartKind`.
+`structSourceName`/`fieldSourceName` (the same helpers the bare-print
+path uses) keep an interpolated struct identical to the same struct
+passed straight to `print`. A struct/tuple/array/untagged-union field
+is cleanly rejected — nested-aggregate recursion out of scope. THIS
+ITEM NEEDED TWO VERIFICATION-CAUGHT FOLLOW-UP FIXES, both real bugs
+neither session's own "completed"/"failed" report caught:
+1. A `field.member`/`fieldSourceName` naming mismatch — the new code
+   used `field.name`/`field.symbol`, but `structFieldInfo` only has
+   `.member` (a `symbol.SymbolID`); the source name needed a call to
+   the existing `fieldSourceName(unit, fileSet, field.member)` helper.
+   This failed to COMPILE, caught by `go build`, not by the session's
+   own report (which claimed success).
+2. A `len(node.Parts)` vs `len(parts)` count mismatch — the function's
+   final `return` used `len(node.Parts)` (the ORIGINAL interpolation
+   part count) as the array-length argument to
+   `pebble_rt_str_from_parts`, which was correct for every PRIOR part
+   kind (each expands 1:1 into exactly one `parts` entry) but wrong
+   for struct (one part expands into N entries), silently truncating
+   the output mid-struct. Caught by piping the repro's actual output
+   through `od -c` and finding a stray control byte, not by the
+   session's own report (which claimed success). Fixed by using
+   `len(parts)` (the actual built slice) instead.
+Lesson for future multi-entry-expansion part kinds (if any): always
+re-verify byte-exact output via `od -c`, not just exit code — a
+truncation bug can still exit 0.
+
+Picking up F5-09 next (interpolation of a tuple value part — same
+rejection, confirmed live with `var t (int, int) = (1, 2); ... print
+`tuple={t}`;` fails with "want bool, char, an integer type, a float
+type, or a str type"; V1 recursively formats the value. A bare
+(non-interpolated) `print t;` of a tuple ALREADY works today, printing
+`(1, 2)` — `buildTuplePrintValueCalls`/`buildTuplePrintOperand`/
+`buildTuplePrintValueExpr` (`statements.go`) are the tuple analogues
+of F5-08's struct-print helpers. Same shape as F5-08: one tuple value
+part should expand into multiple `PebbleStrPart` entries (`"("`,
+element 0's entry, `", "`, element 1's entry, ..., `")"`) directly in
+`buildInterpolatedStringParts`'s own array, reusing the exact same
+per-element-type dispatch already built for bool/int/float/str/char/
+plain-enum/struct. SCOPE: non-nested tuples first (every element a
+scalar/str/char/plain-enum/non-nested-struct type — check whether
+reusing the F5-08 struct-element dispatch just works, since struct
+support already landed), rejecting a tuple/array-element with a clear
+error if recursion doesn't fall out naturally. CRITICAL — MUST
+explicitly verify in the dispatch brief AND independently re-verify:
+the SAME `len(parts)` (not `len(node.Parts)`) count fix from F5-08
+already covers this correctly since it's already committed — but
+double-check the tuple case doesn't reintroduce a similar counting
+bug elsewhere (e.g. if it builds its own separate materialization
+path instead of reusing the existing array-append pattern). Verify
+byte-exact output via `od -c` on the original repro before trusting
+"it works," per the lesson above.)*
