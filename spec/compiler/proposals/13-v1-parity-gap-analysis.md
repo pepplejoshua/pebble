@@ -46,27 +46,38 @@ not stay in this file.
 
 ## Active defect
 
-*(empty — F5-03/F5-04 (`str` reassignment from another local and from a
-call) closed together in `7d418bd`, one root cause and fix location for
-both. `buildStoreCore`'s `str` branch manually special-cased only
-`StringLiteral`/`InterpolatedString`; `buildStrOperand` (the general
-str-value builder already used everywhere else in the backend) already
-handled every relevant node kind — `SymbolValue`, `DirectCall`/
-`MethodCall` with correct single-evaluation, `FieldValue`, `Load`, and
-the same two literal shapes. Fixed by deleting the narrow switch and
-delegating entirely to `buildStrOperand`, confirmed byte-identical C
-for the two pre-existing shapes. A follow-up was needed: the
-implementation's own targeted verification missed 3 pre-existing
-negative tests in `validate_test.go` that explicitly asserted the OLD
-rejection behavior for exactly the shapes just fixed — caught during
-the supervisor's own full-suite run, not the session's report; two
-obsolete tests deleted (equivalent positive coverage already existed),
-one still-valid rejection test (string concatenation, still correctly
-rejected) had its message-wording assertion updated. Heavy resource
-contention observed late in this session (a 15-minute full-suite
-timeout/panic at `-parallel 12` on one attempt) resolved cleanly at
-`-parallel 4`; memory updated with this reinforced finding. Picking up
-F5-05 next (interpolation of a `str` value part — general interpolated-
-string materialization rejects it with "want bool, an integer type, or
-a float type"; V1 formats it — check current state for staleness
-first, per the established pattern).)*
+*(empty — F5-05 (interpolation of a `str` value part) closed in
+`a785060`. A `str` needs no formatting/snprintf at all: it already
+carries `.data`/`.len`, so interpolating it is a direct memcpy of its
+own bytes, the same as the existing literal-text part. Added
+`PEBBLE_STR_PART_STR` to `PebbleStrPartKind`/`PebbleStrPart`, a
+matching case in `pebble_rt_str_from_parts`, and widened
+`buildInterpolatedStringParts` plus `buildPrint`'s combined and
+sequential paths to build the value via `buildStrOperand` (the same
+helper F5-03/F5-04 relied on). New runtime smoke coverage (empty str,
+str+text, multiple strs, str mixed with bool/int/float) and Go
+end-to-end tests across local-init, call-argument, return, comparison,
+reassignment, and print positions — all independently reviewed file by
+file before verification. Dispatch's own report was a terse,
+early-stalled "failed"/`provider_stalled` message despite substantial
+real, correct work (359 lines across 6 files) — not trusted at face
+value, verified fully as always. Full `internal/backend` checkpoint
+hit the known rotating loop-test flakiness at `-parallel 12`
+(unrelated range-loop width-matrix tests, exit -1); confirmed flaky by
+isolation rerun (all pass standalone), clean at `-parallel 4` per the
+established fallback. Causation-checked via file-copy swap against
+HEAD (original repro fails with the exact pre-fix error; passes again
+once restored).
+
+Picking up F5-06 next (interpolation of a `char` value part — same
+"want bool, an integer type, or a float type" rejection, confirmed
+live with `var c char = 'x'; print `hello {c}`;`. V1 formats the
+character. A reusable building block already exists:
+`pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5])` in
+`runtime/src/str.c`/`pebble_rt.h` — already used by the "char-to-UTF-8
+encoding" smoke test — encodes a Unicode scalar into up to 4 UTF-8
+bytes plus a length. Unlike the int/float parts, this needs a small
+fixed scratch buffer (5 bytes) per part, similar in shape to those
+cases but calling this existing encoder instead of `snprintf`.
+Include both ASCII and multi-byte Unicode (e.g. `'é'`, matching Phase
+3 #52's non-ASCII precedent) in the proof.)*
