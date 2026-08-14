@@ -240,47 +240,50 @@ contrary to the multi-round budget flagged when this item was picked
 up. A struct with a nested aggregate field stays cleanly rejected;
 general dependency-graph ordering remains deliberately out of scope.
 
-Picking up F5-18 next (fixed array of structs as a struct field —
-`type Path = struct { points [3]Point; };`, confirmed live:
-`type Point = struct { x int; y int; }; type Path = struct { points
-[3]Point; }; fn main() int { var p Path = Path.{ points =
-[Point.{x=1,y=2}, Point.{x=3,y=4}, Point.{x=5,y=6}] }; return
-p.points[0].x + p.points[2].y; }` fails with: "aggregate type
-nominal(symbol N) has more than one level of nesting, which is
-unsupported". The fix location is `typedefs.go`'s
-`orderAggregateTypes` (search for it — the SAME dependency-ordering
-pass F5-17 just touched, and the same function tracker note #17 in
-the master ledger already fixed once for a DIFFERENT bug — generic
-struct-field substitution). Read its internal `depth` closure
-carefully: for a struct field whose type is an array, it sets
-`throughArray = true` whenever the array's ELEMENT is a struct/tuple/
-optional (the doc comment above it explains why — array-of-array is
-self-contained via existing DFS-postorder machinery, but array-of-
-aggregate is flagged as a potential ordering hazard). The check at the
-bottom of the function then unconditionally rejects ANY case where
-`nesting > 1 && throughArray` — this is confirmed OVERLY CONSERVATIVE
-for the plain array-of-struct case: `Path` depends on `[3]Point`
-(depth 1, throughArray=true since element is struct), so `Path`'s own
-computed depth becomes 2, tripping the `nesting > 1` rejection even
-though `Point` itself has NO further nesting (all scalar fields) — a
-case the existing DFS-postorder ordering (further down in the same
-function) could actually order correctly (`Point`'s typedef before
-`[3]Point`'s, before `Path`'s). SCOPE PER THE LEDGER: "Support only
-array-of-struct field ordering and construction. Keep tuple/optional
-elements separate" — do NOT widen array-of-tuple or array-of-optional
-struct fields in this slice, only array-of-PLAIN-struct (a struct with
-no further aggregate nesting of its own, mirroring F5-17's own
-`isPlainStructPayload`-style self-containment check — reuse or mirror
-that predicate rather than inventing a new one if it fits). The fix
-is likely a refinement of the rejection condition (e.g. distinguish
-"depth 2 via a plain struct with no further nesting, safely orderable"
-from "depth 2 via a struct that ITSELF nests further, genuinely
-unsupported") rather than a full rewrite of the depth algorithm.
-Verify construction (`Path.{ points = [...] }`) and field reads
-(`p.points[i].x`) both work end-to-end with a real `cc` compile, not
-just that the typedef ordering no longer errors — a typedef-ordering
-fix that compiles but reads/writes the wrong bytes is a worse outcome
-than a clean rejection. Given F5-17's structural kinship, this may
-also need careful, rigorous verification, but note F5-17 itself landed
-clean on one dispatch despite similar apparent complexity — don't
-assume this one needs multiple rounds, just verify thoroughly.)*
+*(empty — F5-18 (fixed array of a plain struct as a struct field)
+closed in `e05f71f`. Took three dispatch rounds (the first stalled
+with zero diff; the resumed second produced a genuine stuck-loop
+"completed" report that left the tree with a real `go build` failure —
+an incomplete `isArray`/`result.arrays` DFS addition referencing a
+struct field never added to `aggregateTypeOrder`). Round three,
+precisely scoped to investigate rather than guess, empirically
+confirmed (by temporarily disabling the broken line and reading actual
+emitted C) that the minimal `throughArray`-exclusion-only fix was
+insufficient — the array typedef genuinely does emit before the
+struct typedef it references — so it finished the `arrays`-field
+wiring properly instead of reverting it: `aggregateTypeOrder` gained
+an `arrays` field, `orderAggregateTypes`'s DFS now recurses through a
+plain-struct array element and categorizes the array itself via
+DFS-postorder, and `Emit` excludes these "interleaved" arrays from the
+leading field-array block so `buildAggregateTypedefs` emits each one
+at its correct postorder position (after its element's struct
+typedef, before any aggregate that references the array). New
+`isPlainStructField`/`isPlainStructArrayElement` predicates in
+`types.go` (deliberately separate from F5-17's `isPlainStructPayload`,
+matching that item's own precedent of per-call-site duplication over
+forced unification). The session also caught and fixed an unrelated
+pre-existing bug in its own already-written
+`TestEmitArrayOfPlainStructMultiFieldCompilesAndRuns` test fixture
+(mixing `i32`/`int` fields hit a real T0505 checker-level unification
+error, not a backend issue) by making all fields `i32` and adjusting
+the expected sum. Verified: `go build` clean, `gofmt`/`go vet` clean,
+all 3 new tests pass plus the existing
+`TestEmitArrayOfAggregateStructFieldStillRejected` (adjusted to nest
+through a genuinely non-plain struct so it still exercises the
+rejection path) and `TestEmitArrayOfNestedStructStillRejected` (struct-
+in-struct through an array still correctly rejects with "more than one
+level of nesting"), full `internal/backend` suite clean (390s, no
+flaky-signature failures), causation-checked via file-copy swap
+against `HEAD` using `-run` (pre-fix: rejects with "more than one
+level of nesting"; post-fix: compiles and exits 7 for the confirmed
+live repro).
+
+Picking up F5-19 next (aggregate parameter in a function value —
+`fn(Point) int`, rejected by `validateFunctionTypeSignature` per the
+master ledger's own description). Investigate/reproduce directly
+first with a minimal `.peb` snippet before writing a dispatch brief;
+next dispatch should alternate to `vercel/alibaba/qwen3.7-flash` since
+the last real dispatch (F5-18's round 3) used
+`opencode-go/deepseek-v4-flash`. Per the master ledger's own note, do
+NOT combine this with F5-20 (aggregate result in a function value) —
+keep parameter and result work as separate slices.)*
