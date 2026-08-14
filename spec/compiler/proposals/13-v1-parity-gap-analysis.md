@@ -164,26 +164,48 @@ temp). The sibling `ArrayValue` case (a full struct-literal array
 return, not a repeat) was already working and untouched. Landed
 clean on the first dispatch.
 
-Picking up F5-12 next (whole tuple reassignment from a call —
-`pair = make_pair();`, confirmed live:
-`fn makePair() (int, int) { return (1, 2); } fn main() int { var pair
-(int, int) = (0, 0); pair = makePair(); return pair.0; }` fails with
-a precise, deliberate rejection: "reassigns a tuple-typed place of
-type ... from a call to a tuple-returning helper; reassigning a whole
-tuple from a call is not supported yet". `stores.go`'s
-`buildTupleStoreValue` (search for it) already has a full doc comment
-explaining this is a DELIBERATE prior deferral, explicitly modeled on
-`buildStructStoreValue`'s already-resolved `DirectCall` case (the
-same file, immediately above `buildTupleStoreValue` — read both side
-by side). The fix is a direct mirror: add a `DirectCall` case to
-`buildTupleStoreValue` that (1) checks `valueNode.Type == wantType`,
-(2) resolves the callee's declaration via `findCallDeclaration` and
-double-checks `calleeDecl.ResultType == wantType` (defense against
-hand-built IR, exactly as the struct case does), (3) builds the call
-expression via `buildDirectCallNested` (the pure-expression-position
-call builder, not a leading-statement builder — this store-value
-position needs an inline expression), and (4) returns that call
-expression directly as the new value — `lvalue = f(ctx, ...);` is
-already valid C since the callee's C return type is the place's own
-`pebble_tuple_<typeID>_t`. This is a narrow, low-risk, single-function
-change with an exact precedent to copy.)*
+*(empty — F5-12 (whole tuple reassignment from a call) closed in
+`1d85f45`. Mirrored `buildStructStoreValue`'s already-resolved
+`DirectCall` case exactly: result-type check, `findCallDeclaration`/
+`ResultType` double-check, `buildDirectCallNested`, call expression
+returned directly. A now-obsolete negative test asserting the old
+rejection was caught and removed at the periodic full-suite checkpoint
+(NOTE: this checkpoint was run per-item this window, denser than the
+standing ~every-5-items cadence — corrected going forward per the
+user's direct feedback; do not run a full-suite checkpoint again until
+several more items are closed).
+
+Picking up F5-13 next (whole array reassignment from a call —
+`items = make_items();`, confirmed live:
+`fn makeItems() [3]int { return [1, 2, 3]; } fn main() int { var items
+[3]int = [0, 0, 0]; items = makeItems(); return items[0]; }` fails
+with the array analogue's precise rejection: "reassigns an
+array-typed place of type ... from a call to an array-returning
+helper; reassigning a whole array from a call is not supported yet".
+IMPORTANT ARCHITECTURAL DIFFERENCE from F5-12/tuple: `buildArrayStoreValue`
+(in `stores.go`, search for it) does NOT return a value used directly
+as `lvalue = <value>;` — arrays are raw C arrays, so every call site
+wraps the returned string in `memcpy(<lvalue>, <source>, sizeof(<lvalue>))`,
+meaning `buildArrayStoreValue`'s return value must be an ADDRESS
+expression (its existing cases return `&(ArrayValue compound literal)`
+or `&pebble_local_<symbol>`). A C function call's result is an rvalue —
+you cannot take `&make_items()` directly. `buildArrayStoreValue`'s
+signature is `(string, error)`, no pre-statement return, and its call
+sites use the result inline in one `memcpy(...)` expression with no
+room to splice in a separate temp-declaration statement without
+restructuring 2 call sites — AVOID that restructuring if possible.
+Instead, the clean fix is a GNU statement-expression that declares a
+temp inside itself and yields it as its trailing lvalue expression —
+this codebase already uses `({ ... })` GNU statement expressions
+pervasively (e.g. every interpolated-string materialization); the
+address-of-a-statement-expression-whose-tail-is-an-lvalue idiom
+(`&({ T tmp = f(); tmp; })`) is valid GCC/Clang C and keeps the
+function's signature unchanged: `return fmt.Sprintf("&({ %s pebble_tmp_%d = %s; pebble_tmp_%d; })", arrayTypeName(wantType), id, callExpr, id), nil`
+(exact temp-naming scheme is the implementer's call — pick something
+that can't collide with the existing `pebble_repeat_arg_<argID>`/
+`pebble_repeat_ret_<nodeID>` schemes, e.g. `pebble_store_call_<nodeID>`).
+Same `findCallDeclaration`/`ResultType` double-check as F5-12. Confirm
+with a real compile+run test, not just a Go-string-shape assertion —
+the GNU-extension address-of-statement-expression idiom needs an
+actual `cc` round-trip to prove it compiles and the memcpy reads the
+right bytes.)*
