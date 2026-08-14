@@ -175,8 +175,12 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	node.Symbol = method.Method
 	node.FunctionType = functionType
 	node.Convention = convention
-	// A generic method — one declaring type parameters of its own (the resolver
-	// sets Generic only then) — needs a concrete FunctionDeclaration
+	// A method whose signature names type parameters — inherited from its
+	// containing generic type (a NON-generic method like
+	// `fn is_ok(self Result[T, E]) bool`, which the resolver does not mark
+	// Generic because it declares no type parameters of its own) OR declared
+	// on itself (a generic method like `fn map[U](self Result[T, E], f fn(T)
+	// U) Result[U, E]`, marked Generic) — needs a concrete FunctionDeclaration
 	// specialization in the unit with TypeArgs exactly matching this node,
 	// the same contract a free generic function's DirectCall satisfies and what
 	// the backend's findCalledFunctionDeclaration matches against. The full
@@ -186,12 +190,11 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 	// specialization substitution, so a method call inside a generic method
 	// body (`self.rehash(...)` while rehash[K,V] is being specialized) gets its
 	// concrete arguments from the specialized receiver, not the solve-time
-	// symbolic ones. A non-generic method — one declaring no type parameters of
-	// its own, even when it references its containing type's parameters —
-	// keeps empty TypeArgs and resolves to its symbolic declaration downstream.
-	methodSymbol, hasSymbol := s.symbol(method.Method)
+	// symbolic ones. A method with no type parameters at all (on a non-generic
+	// type) keeps empty TypeArgs and resolves to its symbolic declaration
+	// downstream.
 	signature, hasSignature := s.handoff.Semantics.Signature(method.Method)
-	if hasSymbol && methodSymbol.Generic && hasSignature && len(signature.TypeParams) != 0 {
+	if hasSignature && len(signature.TypeParams) != 0 {
 		typeArgs, ok := s.methodSpecializationArgs(call, method, signature)
 		if !ok {
 			return false

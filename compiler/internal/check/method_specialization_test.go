@@ -114,6 +114,91 @@ fn main() int {
 	}
 }
 
+func TestBuildUnitBuildsInheritedParameterMethodSpecialization(t *testing.T) {
+	// F5-01: a NON-generic method on a generic tagged union (`fn is_a(self
+	// Choice[T]) bool`) declares no type parameters of its own, so the resolver
+	// does not mark it Generic — but its signature still inherits the
+	// containing type's parameters. The checker must build a concrete
+	// specialization for it exactly like it does for a free generic function
+	// call, or its body keeps the symbolic `Choice[T]` type and the backend's
+	// switch-subject `.tag` projection misses the specialized instantiation.
+	unit, ok := buildUnitFixture(t, `
+type Choice[T] = union enum {
+    A T;
+    B void;
+
+    fn is_a(self Choice[T]) bool {
+        switch self {
+            case .A: return true;
+            case .B: return false;
+        }
+    }
+};
+fn main() int {
+    var c Choice[int] = Choice[int].{ A = 5 };
+    if c.is_a() {
+        return 0;
+    }
+    return 1;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("non-generic-method-on-generic-union fixture was rejected")
+	}
+	inputs, _ := factInputs(t, checkProvider{"main.peb": []byte(`
+type Choice[T] = union enum {
+    A T;
+    B void;
+
+    fn is_a(self Choice[T]) bool {
+        switch self {
+            case .A: return true;
+            case .B: return false;
+        }
+    }
+};
+fn main() int {
+    var c Choice[int] = Choice[int].{ A = 5 };
+    if c.is_a() {
+        return 0;
+    }
+    return 1;
+}
+`)})
+	isASymbol := methodSymbolByContaining(t, inputs.Resolution, "Choice", "is_a")
+	calls := methodCallNodes(unit)
+	if len(calls) != 1 {
+		t.Fatalf("MethodCall nodes = %d, want exactly one", len(calls))
+	}
+	call := calls[0]
+	if len(call.TypeArgs) != 1 {
+		t.Fatalf("MethodCall TypeArgs = %v, want the receiver-bound [int]", call.TypeArgs)
+	}
+	declarations := methodSpecializations(unit, isASymbol)
+	if len(declarations) != 1 {
+		t.Fatalf("method specializations = %d, want exactly one", len(declarations))
+	}
+	declaration := declarations[0]
+	if declaration.Function == 0 || len(declaration.Parameters) != 1 || len(declaration.TypeArgs) != 1 {
+		t.Fatalf("specialized method declaration = %+v", declaration)
+	}
+	receiverNode, ok := unit.Node(call.Children[0])
+	if !ok {
+		t.Fatalf("method call receiver node %d is missing", call.Children[0])
+	}
+	if receiverNode.Type == 0 || declaration.Parameters[0].Type != receiverNode.Type {
+		t.Fatalf("specialized is_a self parameter type = %d, want the concrete receiver type %d", declaration.Parameters[0].Type, receiverNode.Type)
+	}
+	if len(call.TypeArgs) != len(declaration.TypeArgs) {
+		t.Fatalf("MethodCall TypeArgs = %v do not match specialization TypeArgs %v", call.TypeArgs, declaration.TypeArgs)
+	}
+	for i := range call.TypeArgs {
+		if call.TypeArgs[i] != declaration.TypeArgs[i] {
+			t.Fatalf("MethodCall TypeArgs = %v do not match specialization TypeArgs %v", call.TypeArgs, declaration.TypeArgs)
+		}
+	}
+}
+
 func TestBuildUnitGenericMethodDistinctSpecializations(t *testing.T) {
 	// TWO specializations of the same generic struct calling the SAME method
 	// in one program must each get their OWN method specialization: Box[int]'s
