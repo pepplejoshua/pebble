@@ -213,30 +213,72 @@ return-value consumer positions — all share this one `buildStrOperand`
 fix. Landed clean on the first dispatch despite the plan needing a
 small course-correction mid-implementation.
 
-Picking up F5-16 next (optional field read as a call argument —
-passing `holder.value` (an optional-typed struct field) where the
-parameter type is optional, confirmed live:
-`type Holder = struct { value ?int; }; fn takes(v ?int) int { if
-v.has_value { return v!; } return 0; } fn main() int { var h Holder =
-Holder.{ value = some 5 }; return takes(h.value); }` fails with:
-"entry function body expression contains a call to symbol N whose
-parameter 0 (symbol N) is a Load whose place is a FieldPlace, want a
-DereferencePlace (a by-value whole-optional read through a pointer)".
-The fix location is `values.go`'s `buildOptionalValue` (search for it
-— shared by BOTH call-argument and return-value positions per its own
-doc comment's context-string convention, so this fix likely helps
-`return holder.value;` too, worth testing both). Its `Load` case only
-handles `DereferencePlace` (`*p` — a by-value whole-optional read
-through a pointer, via `buildDereferencePlaceRead`), rejecting
-anything else including `FieldPlace`. The fix: add a `place.Kind ==
-tir.FieldPlace` branch alongside the existing `DereferencePlace`
-check, reading the field's whole-optional value — check how OTHER
-whole-aggregate-typed field reads in this codebase build their
-FieldPlace projection (e.g. F5-15's own new TuplePlace code, or an
-existing struct/tuple FieldPlace read elsewhere in `values.go`/
-`places.go`) for the exact `buildPlaceLValue`-based pattern to mirror;
-the optional's own typedef should make the by-value field read
-trivially valid C once correctly projected (`<baseExpr>.pebble_field_
-<member>` or similar — confirm the exact field-access naming
-convention this codebase uses by reading a working FieldPlace example
-first, don't guess).)*
+*(empty — F5-16 (optional field read as a call argument) closed in
+`8dff13c`. `buildOptionalValue`'s `Load` case gained a `FieldPlace`
+branch mirroring `buildStructFieldRead`'s field-access convention
+(`buildPlaceLValue` for the base, `.`/`->` depending on pointer-vs-
+value receiver, `pebble_field_<member>` projection). Since the
+builder is shared between call-argument and return-value positions,
+the one fix covered both, confirmed by test. Landed clean, no
+follow-up needed for the implementation itself (though the first
+dispatch stalled before writing tests, needing one small dispatch
+just to add the missing test coverage — the implementation itself was
+already correct).
+
+Picking up F5-17 next (struct payload in a tagged union —
+`Choice.rect(Point.{...})` where `Point` is an ordinary struct,
+confirmed live: `type Point = struct { x int; y int; }; type Shape =
+union enum { empty void; rect Point; }; fn main() int { let s =
+Shape.rect(Point.{ x = 3, y = 4 }); switch s { case .empty: return -1;
+case .rect: { var p Point = s.rect; return p.x + p.y; } } }` fails
+with: "union variant symbol N carries a payload of type nominal(symbol
+M), which is not supported as a tagged-union payload". THIS IS A
+GENUINELY BIGGER ITEM THAN F5-10 THROUGH F5-16 — not a simple additive
+fix, matching the ledger's own scope note ("Add only plain-struct
+payload C naming, dependency collection, construction, and narrowed
+read proof").
+
+Investigation findings (do NOT re-investigate, use these directly):
+- `types.go`'s `unionMemberCType` (search for it) ALREADY correctly
+  resolves a plain struct payload's C type (falls through to
+  `structTypeName(id)` in its existing `isStruct` branch) — the
+  runtime NAMING logic is already correct.
+- The actual gate is `types.go`'s `unionPayloadCTypeAdmissible`
+  (search for it, right after `unionMemberCType`) — its own doc
+  comment explains EXACTLY why a plain-struct payload is rejected:
+  "Union typedefs lead the aggregate typedef block... so a union
+  payload whose C representation needs an AGGREGATE typedef (struct,
+  tuple, optional, array) would require that aggregate's typedef to
+  be emitted BEFORE the union block that currently precedes it: a
+  bidirectional ordering only a dependency-aware typedef pass could
+  satisfy." Its `isStruct` branch only admits a plain enum or a
+  nested tagged union (both already ordered correctly), explicitly
+  NOT an ordinary struct.
+- `emit.go`'s typedef assembly (search around line 665-910) shows the
+  actual current order: `collectStructTypes` → ... →
+  `orderAggregateTypes` (a dependency-aware pass that ALREADY handles
+  struct/tuple/optional/array typedef ordering relative to each
+  OTHER) → the struct/aggregate typedef block is emitted, separately,
+  AFTER the union typedef block (`buildUnionTypedefs`, emitted
+  earlier, around line 809-838) — the union block's own doc comment
+  there explains it currently assumes "no union typedef depends on an
+  aggregate typedef."
+- SCOPE: this needs the union typedef block's ordering to become
+  dependency-aware with respect to `orderAggregateTypes`'s existing
+  struct ordering — likely either (a) folding union typedef emission
+  INTO `orderAggregateTypes`'s existing dependency graph so a union
+  with a struct payload is correctly interleaved after the struct(s)
+  it depends on while a union with only scalar/enum/nested-union
+  payloads still emits early, or (b) a smaller-scoped alternative:
+  detect the specific case of a union whose ONLY new dependency is a
+  NON-NESTED plain struct (no further struct-in-struct chains) and
+  special-case its ordering without a full dependency-graph fold-in.
+  GIVE THE DISPATCH EXPLICIT PERMISSION to propose and implement
+  whichever of these is actually smallest/safest once they've read
+  the real code — this tracker note is a starting map, not a
+  prescribed solution. This item is likely to need MULTIPLE dispatch
+  rounds (mirroring F5-08's 3-round history) given its structural
+  nature — budget for that, verify with extra rigor (a real `cc`
+  compile, not just Go-string assertions, given how tricky typedef
+  ordering bugs can be silently wrong), and do not be surprised if the
+  first attempt needs a scoped follow-up.)*
