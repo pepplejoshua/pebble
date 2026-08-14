@@ -1691,6 +1691,19 @@ func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			// enum's own pebble_enum_<typeID>_t value, the same C type the
 			// union's payload member is declared with (see unionMemberCType).
 			payloadExpr, err = buildEnumValue(st, unit, snapshot, fileSet, node.Children[0], scope, width)
+		case isStruct(snapshot, payloadNode.Type):
+			// A PLAIN struct payload (`Shape.rect(Point.{ x = 3, y = 4 })`, a
+			// struct inside a union): built by the struct-value grammar
+			// (buildStructValueNode — a struct literal, a reference to a
+			// struct-typed local, or a struct-returning call), emitted as the
+			// struct's own pebble_struct_<typeID>_t value, the same C type the
+			// union's payload member is declared with (see unionMemberCType).
+			// This case sits after the union/enum cases, which are enum-shaped
+			// nominals (isStruct reports true for them too) with their own C
+			// grammars; an ordinary struct payload reaching this point is
+			// guaranteed plain by unionPayloadCTypeAdmissible's admission at
+			// collection time.
+			payloadExpr, _, err = buildStructValueNode(st, unit, snapshot, fileSet, node.Children[0], scope, width)
 		default:
 			return "", fmt.Errorf("%s constructs union variant symbol %d with an unsupported payload type %s", context, node.Member, describeType(snapshot, payloadNode.Type))
 		}

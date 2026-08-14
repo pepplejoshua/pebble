@@ -1148,6 +1148,39 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 		if !ok {
 			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load referencing invalid place node %d", context, structTypeName(initValue.Type), initValue.Children[0])
 		}
+		if place.Kind == tir.FieldPlace {
+			// The NARROWED tagged-union variant payload read
+			// (`let p Point = s.rect;` inside `case .rect:`, where s.rect is
+			// the variant's struct-typed payload — the F5-17 struct-payload
+			// read shape): the field is the union's variant member, projected
+			// as base.payload.pebble_field_<member> by buildPlaceLValue (the
+			// same projection the construction side fills), carrying the
+			// payload struct's own pebble_struct_<typeID>_t C type. This is
+			// deliberately restricted to the union-payload read — a plain
+			// struct-field read of a struct-typed field as a whole-struct
+			// initializer is a separate, unsupported shape (buildPlaceLValue
+			// would project it, but this slice does not enable it).
+			baseNode, baseOK := unit.Node(place.Children[0])
+			receiverType := types.TypeID(0)
+			if baseOK {
+				receiverType = baseNode.Type
+				if pointee, pointer := pointerPointeeType(snapshot, receiverType); pointer {
+					receiverType = pointee
+				}
+			}
+			if !unionVariantPayloadMember(unit, snapshot, receiverType, place.Member) {
+				return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a FieldPlace that is not a narrowed tagged-union variant payload read", context, structTypeName(initValue.Type))
+			}
+			lvalue, elementType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
+			if err != nil {
+				return "", fmt.Errorf("%s union-payload struct read: %v", context, err)
+			}
+			if elementType != initValue.Type {
+				return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a read of element type %s", context, structTypeName(initValue.Type), describeType(snapshot, elementType))
+			}
+			scope[statement.Symbol] = localInfo{structType: initValue.Type}
+			return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, lvalue, indent, statement.Symbol), nil
+		}
 		if place.Kind != tir.CheckedIndexPlace && place.Kind != tir.DereferencePlace {
 			return "", fmt.Errorf("%s declares a struct-typed local of type %s initialized from a Load whose place is a %s, want a CheckedIndexPlace (a by-value struct-element read) or a DereferencePlace (a by-value whole-struct read through a pointer)", context, structTypeName(initValue.Type), place.Kind)
 		}

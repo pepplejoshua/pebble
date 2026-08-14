@@ -1798,12 +1798,103 @@ func unionPayloadCTypeAdmissible(unit *tir.Unit, snapshot *types.Snapshot, id ty
 		// block, so pebble_enum_<typeID>_t is defined before the union typedef
 		// that uses it as a member); a nested tagged-union payload is admitted
 		// (its own typedef is in the same union block, dependency-ordered
-		// before its user); any other nominal — a struct, or an opaque extern
-		// nominal with no emitted typedef — is rejected by the aggregate-gate
-		// below. isUnionEnumType is the declaration-level test (a payload union
+		// before its user); and a PLAIN struct payload (all scalar/str/char/
+		// bool/enum fields — see isPlainStructPayload) is admitted once Emit
+		// hoists its self-contained typedef ahead of the union block that
+		// references it (see Emit's union-payload-struct hoisting); any other
+		// nominal — a nested-aggregate struct, or an opaque extern nominal
+		// with no emitted typedef — is rejected by the aggregate-gate below.
+		// isUnionEnumType is the declaration-level test (a payload union
 		// with no construction of its own is still a real union typedef);
 		// isDefinitelyEnumType the positive-evidence plain-enum test.
-		return isUnionEnumType(unit, snapshot, id) || isDefinitelyEnumType(unit, snapshot, id)
+		return isUnionEnumType(unit, snapshot, id) || isDefinitelyEnumType(unit, snapshot, id) || isPlainStructPayload(unit, snapshot, id)
+	}
+	return false
+}
+
+// isPlainStructPayload reports whether a nominal struct type is a PLAIN struct
+// whose own C typedef is fully self-contained: every field is a fixed-width
+// integer, bool, char, str, float, or plain enum (see
+// selfContainedStructFieldType), and the struct is not enum-shaped or an
+// untagged union. A plain struct's typedef names only builtin scalar types or
+// the plain-enum typedefs the enum block emits before the union block, so it
+// can be emitted AHEAD of a union block that references it as a variant
+// payload member — the ordering Emit's union-payload-struct hoisting relies on
+// (the union typedef block leads the aggregate block, so a struct payload's
+// typedef must be hoisted above it). A struct with any other field — a struct
+// (struct-in-struct), tuple, optional, array, slice, pointer, tagged or
+// untagged union, or function type — needs that dependency's own typedef
+// emitted at a position the union block's pre-aggregate slot cannot guarantee,
+// so it is NOT plain and stays rejected as a tagged-union payload (a clean
+// rejection, never a silently mis-ordered typedef).
+func isPlainStructPayload(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if isEnumType(unit, snapshot, id) || isUntaggedUnionType(unit, snapshot, id) {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, arguments, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
+	}
+	for i := range typeDecl.Members {
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return false
+			}
+			fieldType = substituted
+		}
+		// A field whose type the declaration does not pin (a template wrapping
+		// a struct parameter) cannot be confirmed plain — reject rather than
+		// guess a layout.
+		if fieldType == 0 || !selfContainedStructFieldType(unit, snapshot, fieldType) {
+			return false
+		}
+	}
+	return true
+}
+
+// selfContainedStructFieldType reports whether one struct field type is
+// self-contained at the union block's position: a fixed-width integer, bool,
+// char, str, float, or a plain enum whose own pebble_enum_<typeID>_t typedef
+// the enum block emits before the union block. Every other type — a struct,
+// tuple, optional, array, slice, pointer, tagged union, untagged union, or
+// function type — needs its own typedef emitted at a position the union
+// block's pre-aggregate slot cannot guarantee, so it disqualifies its struct
+// from the plain-struct-payload slice.
+func selfContainedStructFieldType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
+		return true
+	}
+	if isBool(snapshot, id) || isChar(snapshot, id) || isStr(snapshot, id) || isFloat(snapshot, id) {
+		return true
+	}
+	if isStruct(snapshot, id) {
+		// A plain enum field's typedef is in the enum block, before the union
+		// block — self-contained. A tagged union field is enum-shaped too
+		// (isDefinitelyEnumType reports true for it) but its real typedef is
+		// the union block's own pebble_union_<typeID>_t pair, which the
+		// hoisted struct typedef would reference before it is defined — so the
+		// isUnionEnumType exclusion is what keeps a union-typed field from
+		// slipping through the plain check. An all-void union enum is emitted
+		// as a plain enum typedef (see isUnionEnumType's doc) and is therefore
+		// safe here exactly like a plain enum.
+		return isDefinitelyEnumType(unit, snapshot, id) && !isUnionEnumType(unit, snapshot, id)
 	}
 	return false
 }

@@ -440,6 +440,42 @@ func buildStructTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 	return fmt.Sprintf("%s {\n%s\n} %s;", head, strings.Join(fields, "\n"), structTypeName(info.typ)), nil
 }
 
+// collectUnionPayloadStructs returns, in deterministic order, the PLAIN struct
+// types used as tagged-union variant payloads (see
+// unionPayloadCTypeAdmissible / isPlainStructPayload): each such struct's own
+// typedef must be emitted BEFORE the union typedef block that references it as
+// a payload member, but the union block leads the aggregate block that holds
+// the struct typedefs (see Emit's assembly) — so Emit hoists these
+// self-contained struct typedefs ahead of the union block and removes them
+// from the aggregate block they would otherwise be double-emitted in. The
+// structInfo for each payload type comes from the caller's already-ordered
+// aggregate collection (orderAggregateTypes); a plain-struct payload absent
+// from it — a struct with no construction, field, parameter, or other
+// reference outside the union construction itself — is a clean error, since
+// no typedef text could be built for it.
+func collectUnionPayloadStructs(unit *tir.Unit, snapshot *types.Snapshot, unionInfos []unionInfo, ordered aggregateTypeOrder) ([]structInfo, error) {
+	byType := make(map[types.TypeID]structInfo, len(ordered.structs))
+	for _, info := range ordered.structs {
+		byType[info.typ] = info
+	}
+	seen := make(map[types.TypeID]bool)
+	var out []structInfo
+	for _, info := range unionInfos {
+		for _, member := range info.members {
+			if !isStruct(snapshot, member.payloadType) || !isPlainStructPayload(unit, snapshot, member.payloadType) || seen[member.payloadType] {
+				continue
+			}
+			seen[member.payloadType] = true
+			sinfo, ok := byType[member.payloadType]
+			if !ok {
+				return nil, fmt.Errorf("union type %s references struct payload type %s that was not collected", unionTypeName(info.typ), describeType(snapshot, member.payloadType))
+			}
+			out = append(out, sinfo)
+		}
+	}
+	return out, nil
+}
+
 // buildUnionTypedefs builds the C text of one tagged-union typedef pair per
 // union type in infos, in dependency-first DFS postorder, each joined by a
 // newline. Each pair is the discriminant enum typedef followed by the tagged

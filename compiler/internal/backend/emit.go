@@ -802,7 +802,46 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// The definitions then carry the matching struct or enum tag (see
 	// sliceElementForwardDeclaredTypes), so the forward declaration and the
 	// definition complete the same C type.
-	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, ordered.all, ordered.structs, sliceElementForwardDeclared)
+	// A PLAIN struct used as a tagged-union variant payload (`Shape.rect(
+	// Point.{ x = 3, y = 4 })` — F5-17) breaks the union-block-leads-aggregate-
+	// block invariant the typedef order below assumes: the union typedef's
+	// payload member names the struct's own pebble_struct_<typeID>_t typedef,
+	// so C requires that struct typedef BEFORE the union typedef — the reverse
+	// of the aggregate block's post-union position. A plain struct is
+	// self-contained (all scalar/str/char/bool/enum fields — see
+	// isPlainStructPayload), so its typedef can be hoisted to a block emitted
+	// between the enum block and the union block, where the enum typedefs it
+	// may name are already defined; it is then removed from the aggregate
+	// block (filtered out of ordered) so it is emitted exactly once. This is
+	// the narrow slice the payload gate admits: a struct with a nested
+	// aggregate field is rejected at collection time and never reaches here.
+	earlyStructs, err := collectUnionPayloadStructs(unit, snapshot, unionInfos, ordered)
+	if err != nil {
+		return err
+	}
+	earlyStructIDs := make(map[types.TypeID]bool, len(earlyStructs))
+	earlyStructIDList := make([]types.TypeID, len(earlyStructs))
+	for i, info := range earlyStructs {
+		earlyStructIDs[info.typ] = true
+		earlyStructIDList[i] = info.typ
+	}
+	filteredAll := make([]types.TypeID, 0, len(ordered.all))
+	for _, id := range ordered.all {
+		if !earlyStructIDs[id] {
+			filteredAll = append(filteredAll, id)
+		}
+	}
+	filteredStructs := make([]structInfo, 0, len(ordered.structs))
+	for _, info := range ordered.structs {
+		if !earlyStructIDs[info.typ] {
+			filteredStructs = append(filteredStructs, info)
+		}
+	}
+	aggTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, filteredAll, filteredStructs, sliceElementForwardDeclared)
+	if err != nil {
+		return err
+	}
+	earlyStructTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, earlyStructIDList, earlyStructs, sliceElementForwardDeclared)
 	if err != nil {
 		return err
 	}
@@ -832,12 +871,14 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// before the aggregate typedef that references it. Each union typedef pair
 	// (the discriminant enum typedef followed by the tagged struct typedef, see
 	// buildUnionTypedef) depends only on typedefs emitted before it — scalar
-	// builtins, a plain enum (the enum block leads), or a nested tagged union
+	// builtins, a plain enum (the enum block leads), a nested tagged union
 	// (emitted dependency-first within the union block itself by
-	// buildUnionTypedefs) — so no union typedef depends on an aggregate
-	// typedef, and the whole block can safely lead the aggregate block
+	// buildUnionTypedefs), or a PLAIN struct payload (hoisted into
+	// earlyStructTypedefs just above, between the enum block and the union
+	// block) — so no union typedef depends on an aggregate typedef still in the
+	// aggregate block, and the whole block can safely lead the aggregate block
 	// (mirroring how the plain-enum block leads it for enum-typed fields).
-	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, unionTypedefs))
+	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, appendTypedefBlock(earlyStructTypedefs, unionTypedefs)))
 	arrayTypes, err := collectArrayTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
 		return err

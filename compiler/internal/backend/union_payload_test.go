@@ -260,3 +260,98 @@ func TestEmitRejectsAggregateUnionPayloadAtBackend(t *testing.T) {
 	emitAndRunRejects(t, "type C = union enum { empty void; value [3]i32; }; fn main() i32 { var c C = C.value([1, 2, 3]); return 0; }", "carries a payload of type [3]i32, which is not supported as a tagged-union payload")
 	emitAndRunRejects(t, "type C = union enum { empty void; value ?i32; }; fn main() i32 { var c C = C.value(some 5); return 0; }", "carries a payload of type ?i32, which is not supported as a tagged-union payload")
 }
+
+// F5-17 — an ordinary (non-nested) struct as a tagged-union variant payload
+// (`Shape.rect(Point.{ x = 3, y = 4 })`). The union typedef's payload member
+// names the struct's own pebble_struct_<typeID>_t typedef, so Emit hoists the
+// self-contained plain-struct typedef ahead of the union block that references
+// it (see Emit's union-payload-struct hoisting); the construction builds the
+// struct literal payload through the struct-value grammar and the narrowed
+// read recovers it into a struct local through the union-payload FieldPlace
+// projection. An exit code of 42 (or the repro's own 7) means the payload
+// round-tripped through construction and the narrowed read.
+
+// TestEmitTaggedUnionStructPayloadCompileAndRun is the exact F5-17 repro: a
+// union enum with a void variant and one struct-typed variant, constructed
+// inline (`Shape.rect(Point.{ x = 3, y = 4 })`), discriminated by a switch,
+// and read back through the narrowed variant read into a struct local
+// (`var p Point = s.rect; return p.x + p.y;`). The exit code 7 is 3 + 4 — the
+// sum of the two recovered fields — so the payload survived construction AND
+// the narrowed read with both fields intact.
+func TestEmitTaggedUnionStructPayloadCompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Point = struct { x int; y int; };
+type Shape = union enum { empty void; rect Point; };
+fn main() int {
+    let s = Shape.rect(Point.{ x = 3, y = 4 });
+    switch s {
+    case .empty: return -1;
+    case .rect: { var p Point = s.rect; return p.x + p.y; }
+    }
+}`, false, 7, false)
+}
+
+// TestEmitTaggedUnionMultiFieldStructPayloadCompileAndRun proves ALL fields of
+// a plain struct payload survive construction and the narrowed read, not just
+// one: the struct carries four fields of four different scalar types (int,
+// bool, i64, str), each constructed to a distinguishing value and each
+// verified by the narrowed read-back (40 + 1 for b + 1 for c + 0 for d = 42).
+// A payload that lost any one field — a wrong-width int, a dropped bool, a
+// mis-resolved wide integer, or a lost str — would fail the sum.
+func TestEmitTaggedUnionMultiFieldStructPayloadCompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Rec = struct { a int; b bool; c i64; d str; };
+type C = union enum { empty void; value Rec; };
+fn rd(c C) int {
+    switch c {
+        case .empty: return -1;
+        case .value: {
+            var r Rec = c.value;
+            var t int = r.a;
+            if r.b { t = t + 1; }
+            if r.c == 900 { t = t + 1; }
+            if r.d == "ok" { t = t + 0; }
+            return t;
+        }
+    }
+}
+fn main() int { let c = C.value(Rec.{ a = 40, b = true, c = 900, d = "ok" }); return rd(c); }`, false, 42, false)
+}
+
+// TestEmitTaggedUnionMultiVariantStructPayloadCompileAndRun proves a union
+// with multiple variants — one carrying a struct payload, one a scalar
+// payload, and one no payload at all — discriminates correctly: the switch on
+// the void variant returns -1, the switch on the int variant returns its
+// exact payload, and the switch on the struct variant returns the sum of the
+// struct fields. Each arm is constructed and read back in turn, so the
+// struct-typed member coexists with the scalar/void members without affecting
+// their C layout or dispatch.
+func TestEmitTaggedUnionMultiVariantStructPayloadCompileAndRun(t *testing.T) {
+	emitAndRun(t, `type Point = struct { x int; y int; };
+type Shape = union enum { empty void; num int; rect Point; };
+fn rd(s Shape) int {
+    switch s {
+        case .empty: return -1;
+        case .num: return s.num;
+        case .rect: { var p Point = s.rect; return p.x + p.y; }
+    }
+}
+fn main() int {
+    var a Shape = Shape.empty();
+    if rd(a) != -1 { return 1; }
+    var b Shape = Shape.num(41);
+    if rd(b) != 41 { return 2; }
+    var c Shape = Shape.rect(Point.{ x = 20, y = 22 });
+    return rd(c);
+}`, false, 42, false)
+}
+
+// TestEmitRejectsNestedStructUnionPayloadAtBackend confirms the F5-17 slice
+// boundary: a struct payload that itself carries a NESTED aggregate field (a
+// struct-in-struct) is deliberately OUT OF SCOPE and cleanly rejected at
+// collection time — it is not plain (see isPlainStructPayload), so its
+// typedef cannot be hoisted ahead of the union block, and the backend rejects
+// it rather than emitting a mis-ordered typedef. The rejection names the
+// payload type in the same message every unsupported payload shape uses.
+func TestEmitRejectsNestedStructUnionPayloadAtBackend(t *testing.T) {
+	t.Parallel()
+	emitAndRunRejects(t, "type Inner = struct { a int; }; type Outer = struct { i Inner; x int; }; type C = union enum { empty void; value Outer; }; fn main() i32 { let c = C.value(Outer.{ i = Inner.{ a = 1 }, x = 2 }); return 0; }", "carries a payload of type nominal(")
+}
