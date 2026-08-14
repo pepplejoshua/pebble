@@ -46,22 +46,28 @@ not stay in this file.
 
 ## Active defect
 
-*(empty — F5-01 (generic tagged-union method switch subject) closed in
-`73245a0`. Root cause was checker-side: `buildMethodCall`'s specialization
-trigger required `methodSymbol.Generic`, true only for a method declaring
-its own type parameters (`map[U]`), so a method that only INHERITS type
-parameters from its containing generic type (`is_ok`, `unwrap_or`) never
-got a concrete specialization — `self` kept the unspecialized template
-TypeID at every call site, confirmed via `tirdump`. Fixed by triggering
-specialization on non-empty `signature.TypeParams` alone. Broke
-`std/result.peb` end to end before the fix; `is_ok`/`unwrap_or` now
-verified compiling and running correctly. A genuinely separate,
-pre-existing bug was found during investigation and deliberately NOT
-fixed: two DIFFERENT instantiations of the same generic tagged union
-(`Result[int,str]` + `Result[bool,str]` both live at once) emit
-duplicate C enumerators — now its own tracker 14 row, F5-01b. Picking up
-F5-02 next (generic untagged-union field specialization — a generic
-untagged union instantiated with a scalar payload reaches Emit with the
-field type still recorded as a type parameter; per the audit's own note,
-do not combine with F5-01 unless one root cause is proven — check
-current state for staleness first, per the established pattern).)*
+*(empty — F5-02 (generic untagged-union field specialization) closed in
+`eee586e`. Root cause mirrored F5-01's shape but was independent, as the
+audit anticipated: `resolveStructInfo` recovers a generic instantiation's
+concrete type arguments and substitutes each field's type via
+`structSubstitutions`/`snapshot.Substitute` before it reaches C-type
+naming; `resolveUntaggedUnionInfo` (Phase 3 #51) never did this, reading
+each member's type directly from `typeDecl.MemberTypes` with no
+substitution, so a generic union's field reached Emit still carrying the
+raw type-parameter symbol. Fixed by mirroring `resolveStructInfo`'s
+logic exactly (same helper, no new machinery). Two follow-ups were
+needed during verification: a first implementation pass deleted the
+existing non-generic rejection test coverage without replacing it
+(caught during review, restored via a small dispatch), and the
+supervisor's own full-suite run caught a genuine test-authoring bug (a
+u64 test asserting 999 as a process exit code, which truncates to a
+single byte — 999 mod 256 = 231 — not an implementation bug, fixed by
+switching to the file's established in-program-comparison pattern).
+Also reconfirmed (memory updated): `-parallel 12` full-suite runs can
+still show rotating, unrelated loop-test contention flakiness (always
+exit -1, never the same test twice); `-parallel 4` gave a clean run.
+Picking up F5-03/F5-04 next (`str` reassignment from another local and
+from a call — `buildStoreCore`'s `str` branch only accepts
+`StringLiteral`/`InterpolatedString` sources; V1 handles both cases as
+ordinary string-view assignment — check current state for staleness
+first, per the established pattern).)*
