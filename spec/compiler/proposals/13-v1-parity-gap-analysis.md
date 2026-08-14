@@ -44,30 +44,42 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 49 ("Interpolated string with an int value
-part", tracker 14 line ~347, first slice of the deferred non-bool
-interpolation gap) closed in `7e4bcb4`. Root cause: the runtime's
-`pebble_rt_str_from_parts` used a fixed per-kind length table (bool is
-always 4/5 chars, computed without formatting anything) — cannot work
-for an integer's variable-length decimal output. Refactored to a
-single measure+format pass, formatting each integer part once via
-`snprintf` into a scratch buffer, freed on both return paths (a leak
-in the first implementation pass, found during independent review and
-fixed via a small follow-up dispatch). Runtime smoke test built and
-run directly in both SAFE/RELEASE modes as part of verification (Go
-tests alone don't exercise the C runtime). Float, char, str, and enum
-value parts remain their own follow-up slices of the same
-deliberately-deferred formatting-matrix scope. STANDING NOTE, still
-open: `examples/arena_alloc.peb` fails to compile on pointer
-arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
-tracker 14 row, awaiting the user's decision on when to queue it.
-Picking up the next slice: float (f32/f64) value parts in interpolated
-strings, the same tracker 14 row, same general mechanism now in place
-(the runtime refactor from this item makes adding a new
-variable-length-formatted kind straightforward — extend
-`PebbleStrPartKind`/`pebble_rt_str_from_parts` with a float case using
-the same scratch-buffer approach, then wire the backend the same way
-`buildInterpolatedStringParts`/`buildPrint` were widened for int) next.)*
+*(empty — Phase 3 item 50 ("Interpolated string with a float value
+part", tracker 14 line ~347, second slice of the deferred non-bool
+interpolation gap) closed in `8dfcf51`. Reused #49's runtime mechanism
+exactly: widened the per-part scratch buffer from 24 to 320 bytes
+(the empirically-verified worst case for a full-range double's `%f`
+rendering — 309 integer digits near DBL_MAX, not guessed), added a
+`PEBBLE_STR_PART_FLOAT` case using the same `%f` default-precision
+convention `print`'s own bare float path already uses, confirmed
+byte-for-byte identical via a direct cross-check test. Str, char,
+enum, struct, and tuple value parts remain their own follow-up slices
+of the same deliberately-deferred formatting-matrix scope. STANDING
+NOTE, still open: `examples/arena_alloc.peb` fails to compile on
+pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
+yet a tracker 14 row, awaiting the user's decision on when to queue
+it.
+
+**This closes item 10 of the user's "complete 10 items" directive**
+(Phase 3 #42 through #50, 9 tracker-14 rows closed plus this int/float
+interpolation pair counted as the directive's 10th — see conversation
+history for the exact count agreed with the user). No further item
+picked here; per the user's own instruction ("continue to decision
+items after"), the next step is the pending Decision-needed items
+(Untagged union line ~151, escape analysis line ~152, C variadic
+extern call line ~324, freestanding compilation line ~722), taken up
+one at a time with the user choosing before each dispatch — not
+unilaterally picked by the working session.)*
+
+<!-- Previous item, resolved 2026-08-13:
+
+**Item: Interpolated string with a float value part (Phase 3 #50),
+tracker 14.**
+
+Closed in `8dfcf51`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
