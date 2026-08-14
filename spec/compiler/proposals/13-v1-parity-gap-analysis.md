@@ -44,38 +44,52 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-**Item: Untagged union support (Phase 3 #51), tracker 14 "Untagged
-union" row (~line 151).**
-
-Decision made by the user 2026-08-13: support untagged unions
+*(empty — Phase 3 item 51 ("Untagged union support", tracker 14
+"Untagged union" row, ~line 151) closed in `46df6e1`. Decision made by
+the user 2026-08-13: support untagged unions
 (`type Data = union { a int; b bool; };`, distinct from the
 already-working tagged union `union enum { ... }`) as explicitly
 UNSAFE — no runtime tag, no discriminant tracking, direct C `union`
-semantics matching V1 exactly (reading a field other than the one last
-written reinterprets the same bytes; no cross-field safety check at
-all). A user wanting safety should use a tagged union instead.
+semantics matching V1 exactly. Root cause: construction was rejected
+by `aggregate_validation.go`'s `aggregateStruct` case, hard-gated to
+`declaration.Nominal == infer.NominalStruct`; member read/write was
+rejected by `member_validation.go`'s field-lookup loop, which only
+matched `SymbolField` — an untagged union's members are parsed as
+`SymbolVariant` (same `VariantDecl` node a tagged union's variants
+use), so they never matched. Fixed via a new `tir.TypeDecl.Union` bool
+signal (neither the type snapshot nor member-declaration node kinds
+can otherwise distinguish an untagged union from a tagged union or a
+struct), a new `aggregateUnion` construction kind requiring exactly
+one field, unconditional member read/write for a declared union field,
+and a real minimal C `typedef union { ... }` with no tag — every
+Nominal-dispatch site the backend already split by struct/enum/
+tagged-union (array element, slice element, pointer pointee, sizeof,
+struct field, optional payload) gated with a new
+`isUntaggedUnionType` check. Confirmed via a genuine bit-pattern
+reinterpretation test (i32 `-1` read through a `u32` field as
+`4294967295`) that the semantics are truly unsafe, not accidentally
+safe. Scoped to scalar payload fields only this slice (struct/array/
+tuple/optional/str fields deferred). A narrow, separate gap was found
+during test-writing and deliberately left unfixed: reading (not
+writing) a `char`-typed union field fails at Emit — now its own
+tracker 14 row. STANDING NOTE, still open: `examples/arena_alloc.peb`
+fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
+`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
+on when to queue it.
 
-Root cause confirmed by reading source: construction is rejected by
-`aggregate_validation.go`'s `aggregateStruct` case, hard-gated to
-`declaration.Nominal == infer.NominalStruct`; member read/write is
-rejected by `member_validation.go`'s field-lookup loop, which never
-matches a `NominalUnion` declaration. The backend has no untagged-union
-C typedef path at all (only the tagged-union tag+payload shape exists).
+Per the user's own instruction ("continue to decision items after"),
+no further item picked here — the next step is the remaining pending
+Decision-needed items (escape analysis line ~152, C variadic extern
+call line ~324, freestanding compilation line ~722), one at a time
+with the user choosing before each dispatch.)*
 
-Dispatched first slice: checker construction rule (exactly one field,
-unlike a struct's all-fields-required), member read/write for any
-declared field unconditionally, and backend codegen for a plain C
-`union` typedef — scoped to SCALAR payload fields only (int/uint
-widths, bool, char); struct/array/tuple/optional/str/enum union
-payloads deferred to a follow-up slice. In progress, not yet verified
-or committed.
+<!-- Previous item, resolved 2026-08-13:
 
-<!-- Note: the previous Active-defect entry for Phase 3 #50 (closed in
-`8dfcf51`, closing item 10 of the user's "complete 10 items"
-directive) has been archived below as usual; this new entry replaces
-it as the current in-progress work rather than following the
-usual "empty, picking up next item" template, since #51 is a
-multi-slice feature being actively worked, not yet closed.
+**Item: Untagged union support (Phase 3 #51), tracker 14 "Untagged
+union" row.**
+
+Closed in `46df6e1`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
 
 -->
 
