@@ -76,21 +76,21 @@ fn twice(x int) int { return x * 2; }
 fn main() int { return apply(twice); }`, false, 6, false)
 }
 
-// TestEmitGenericMethodTypeParamOnlyInStructFnParamRejects confirms the
-// checker fix's boundary: the method's own type param now infers correctly
-// even when the function-typed argument's parameter is a struct type (proving
-// the checker fix is general, not narrowly scoped to scalar fn signatures),
-// but the backend still rejects the function VALUE itself — a separate,
-// already-documented, general limitation (a function-typed value's signature
-// may only mention scalar/pointer parameter shapes, tracker 14's "Function
-// type and function value" row), not a generics-specific gap.
-func TestEmitGenericMethodTypeParamOnlyInStructFnParamRejects(t *testing.T) {
-	emitAndRunRejects(t, `type Inner[T] = struct { val T; };
+// TestEmitGenericMethodTypeParamStructFnParamCompilesAndRuns proves the
+// backend admits a function VALUE whose parameter is a struct type, as long as
+// the struct is a plain struct (self-contained scalar fields only) after
+// generic substitution: here `conv fn(Inner[K]) R` specializes to
+// `fn(Inner[int]) int`, and `Inner[int]` substitutes to `struct { val int; }`,
+// which the backend builds directly as a call argument. The method's own type
+// param R is still inferred purely from the function value's concrete
+// signature.
+func TestEmitGenericMethodTypeParamStructFnParamCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, `type Inner[T] = struct { val T; };
 type Outer[K] = struct { inner Inner[K]; fn convert[K, R](self Outer[K], conv fn(Inner[K]) R) R { return conv(self.inner); } };
 fn read(inner Inner[int]) int { return inner.val * 2; }
 fn main() int {
     var o Outer[int] = Outer[int].{ inner = Inner[int].{ val = 3 } };
     let r = o.convert(read);
     return r;
-}`, "a function-typed value's signature may only mention parameter shapes this backend can build as a call argument")
+}`, false, 6, false)
 }

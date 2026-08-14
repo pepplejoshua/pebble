@@ -1581,7 +1581,7 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 		// wherever the field's construction/read value is built
 		// (buildFunctionValue), mirroring how a slice field's element type is
 		// validated separately from this resolver.
-		if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
+		if err := validateFunctionTypeSignature(unit, snapshot, width, id); err != nil {
 			return "", fmt.Errorf("field type %s: %v", describeType(snapshot, id), err)
 		}
 		return functionTypeName(id), nil
@@ -1993,11 +1993,14 @@ func isPlainStructArrayElement(unit *tir.Unit, snapshot *types.Snapshot, id type
 // type (floatCType — float for f32, double for f64, exactly how an ordinary
 // helper's f32/f64 parameter is declared), the pointee's own `<pointee> *` via
 // pointerTypeName for a pointer parameter (the same spelling helperSignature
-// gives an ordinary helper's pointer parameter), and cType(ownWidth) for any
+// gives an ordinary helper's pointer parameter), cType(ownWidth) for any
 // other integer — including the entry's own width and the narrow fixed-width
 // integers (u8, u16, i8, i16, u32, i64), each resolved at ITS OWN width via
 // resolvedBuiltin/cType, independent of the ambient `width` of the context
-// the function type is being resolved from. This mirrors
+// the function type is being resolved from, or a plain struct's own
+// pebble_struct_<typeID>_t (F5-19: admitted by validateFunctionTypeSignature
+// when every field is self-contained scalar-ish, so its typedef is fully
+// self-contained). This mirrors
 // validateFunctionTypeSignature's parameter admission (deliberately
 // width-independent) and buildCallArgument's per-argument own-width
 // resolution, so a parameter's C type always agrees with the C type the
@@ -2005,7 +2008,7 @@ func isPlainStructArrayElement(unit *tir.Unit, snapshot *types.Snapshot, id type
 // validateFunctionTypeSignature admits.
 // Anything else is a clean rejection, defense for hand-built IR (the
 // validation has already ruled every reachable parameter shape out).
-func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
+func functionTypeParamCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, param types.TypeID) (string, error) {
 	switch {
 	case isUint(snapshot, param):
 		return "uint64_t", nil
@@ -2036,6 +2039,17 @@ func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types
 			return ctypeName, nil
 		}
 		return "", fmt.Errorf("function type parameter type %s has a pointee %s whose C type is unsupported", describeType(snapshot, param), describeType(snapshot, pointeeTypeID))
+	case isStruct(snapshot, param):
+		// A plain struct parameter (F5-19): admitted by validateFunctionTypeSignature
+		// only when runtimeType(unit, snapshot, param) == 0 && isPlainStructField
+		// returns true, so its own pebble_struct_<typeID>_t typedef is fully
+		// self-contained (all fields are scalar-ish types) and can be emitted
+		// before this fnptr typedef by Emit's typedef-ordering hoisting. The
+		// same guards are repeated here as defense for hand-built IR.
+		if runtimeType(unit, snapshot, param) == 0 && isPlainStructField(unit, snapshot, param) {
+			return structTypeName(param), nil
+		}
+		return "", fmt.Errorf("function type parameter type %s is a struct but not a plain struct (fields must all be self-contained scalar-ish types)", describeType(snapshot, param))
 	}
 	// Any other fixed-width integer parameter (the entry's own width included,
 	// which is exactly what the former isWidth case resolved, and the narrow
@@ -2047,7 +2061,7 @@ func functionTypeParamCType(st *emitState, snapshot *types.Snapshot, width types
 	if integerParam && cType(paramWidth) != "" {
 		return cType(paramWidth), nil
 	}
-	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, f32, f64, or a pointer type", describeType(snapshot, param), wantName(width))
+	return "", fmt.Errorf("function type parameter type %s is not supported, want %s, uint, bool, char, str, f32, f64, a pointer type, or a plain struct type", describeType(snapshot, param), wantName(width))
 }
 
 // functionTypeResultCType resolves one function type's result to the C return

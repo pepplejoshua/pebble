@@ -1768,7 +1768,7 @@ func buildFunctionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *type
 	if !isFunctionType(snapshot, fnType) {
 		return "", fmt.Errorf("%s declares a local of type %s, want a function type", context, describeType(snapshot, fnType))
 	}
-	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
+	if err := validateFunctionTypeSignature(unit, snapshot, width, fnType); err != nil {
 		return "", fmt.Errorf("%s: %v", context, err)
 	}
 	valueText, err := buildFunctionValue(st, unit, snapshot, fileSet, initValue, scope, context, width)

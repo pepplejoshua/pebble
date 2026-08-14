@@ -835,7 +835,7 @@ func buildFunctionIndirectCall(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	if !isFunctionType(snapshot, fnType) {
 		return "", fmt.Errorf("indirect call has a callee of type %s, want a function type", describeType(snapshot, fnType))
 	}
-	if err := validateFunctionTypeSignature(snapshot, width, fnType); err != nil {
+	if err := validateFunctionTypeSignature(unit, snapshot, width, fnType); err != nil {
 		return "", err
 	}
 	key, ok := snapshot.Key(fnType)

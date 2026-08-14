@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -531,6 +532,104 @@ func collectUnionPayloadStructs(unit *tir.Unit, snapshot *types.Snapshot, unionI
 	return out, nil
 }
 
+// collectFunctionParamStructs returns, in deterministic order, the PLAIN struct
+// types used as first-class function type parameters (F5-19): each such
+// struct's own typedef must be emitted BEFORE the function typedef block that
+// references it as a parameter type, but the function block leads the aggregate
+// block that holds the struct typedefs (see Emit's assembly) — so Emit hoists
+// these self-contained struct typedefs ahead of the function block and removes
+// them from the aggregate block they would otherwise be double-emitted in. The
+// structInfo for each parameter type comes from the caller's already-ordered
+// aggregate collection (orderAggregateTypes); a plain-struct parameter absent
+// from it — a struct with no construction, field, parameter, or other
+// reference outside the function type itself — is a clean error, since no
+// typedef text could be built for it. Only structs that themselves do NOT
+// carry function-typed fields are hoisted (a struct whose field is a function
+// type needs its typedef AFTER the function block, creating a circular
+// dependency if hoisted); such structs stay in the aggregate block where they
+// correctly follow the function block.
+func collectFunctionParamStructs(unit *tir.Unit, snapshot *types.Snapshot, functionTypes []types.TypeID, ordered aggregateTypeOrder) ([]structInfo, error) {
+	byType := make(map[types.TypeID]structInfo, len(ordered.structs))
+	for _, info := range ordered.structs {
+		byType[info.typ] = info
+	}
+	seen := make(map[types.TypeID]bool)
+	var out []structInfo
+	for _, fnTypeID := range functionTypes {
+		key, ok := snapshot.Key(fnTypeID)
+		if !ok || key.Kind() != types.Function {
+			continue
+		}
+		_, params, _, _, ok := key.Function()
+		if !ok {
+			continue
+		}
+		for _, paramType := range params {
+			if !isStruct(snapshot, paramType) || !isPlainStructField(unit, snapshot, paramType) || seen[paramType] {
+				continue
+			}
+			// A struct whose own field is a function type needs its typedef
+			// AFTER the function block (so it can reference function typedefs),
+			// so it must NOT be hoisted — doing so would create a circular C
+			// dependency (the struct's typedef would name an undefined fnptr
+			// typedef, and the fnptr typedef would name an undefined struct
+			// typedef). Such structs stay in the aggregate block below the
+			// function block where the ordering is correct.
+			if hasFunctionTypedFields(unit, snapshot, paramType) {
+				continue
+			}
+			seen[paramType] = true
+			sinfo, ok := byType[paramType]
+			if !ok {
+				return nil, fmt.Errorf("function type %s references struct parameter type %s that was not collected", describeType(snapshot, fnTypeID), describeType(snapshot, paramType))
+			}
+			out = append(out, sinfo)
+		}
+	}
+	return out, nil
+}
+
+// hasFunctionTypedFields reports whether a struct type carries any field whose
+// type is a function type. This is used to determine whether a struct's typedef
+// must come AFTER the function typedef block (so it can reference function
+// typedefs) — if so, the struct should NOT be hoisted ahead of the function
+// block.
+func hasFunctionTypedFields(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, arguments, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
+	}
+	for i := range typeDecl.Members {
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return false
+			}
+			fieldType = substituted
+		}
+		if fieldType != 0 && isFunctionType(snapshot, fieldType) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildUnionTypedefs builds the C text of one tagged-union typedef pair per
 // union type in infos, in dependency-first DFS postorder, each joined by a
 // newline. Each pair is the discriminant enum typedef followed by the tagged
@@ -926,10 +1025,10 @@ func buildSliceTypedef(unit *tir.Unit, snapshot *types.Snapshot, info sliceInfo,
 // pass, so every function type the emitted program references as a first-class
 // value has exactly one typedef here, written before any function definition
 // in the final output.
-func buildFunctionTypedefs(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
+func buildFunctionTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID) (string, error) {
 	texts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		text, err := buildFunctionTypedef(st, snapshot, width, id)
+		text, err := buildFunctionTypedef(st, unit, snapshot, width, id)
 		if err != nil {
 			return "", err
 		}
@@ -956,10 +1055,14 @@ func buildFunctionTypedefs(st *emitState, snapshot *types.Snapshot, width types.
 // type is self-contained (the entry's cType, uint64_t, bool, int32_t,
 // PebbleStr, a float/double via floatCType, a pointer's own `<pointee> *`
 // spelling via pointerTypeName, or
-// void), so the typedef never references an aggregate typedef
-// that might be emitted after it.
-func buildFunctionTypedef(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
-	if err := validateFunctionTypeSignature(snapshot, width, id); err != nil {
+// void, or a plain struct's own pebble_struct_<typeID>_t (F5-19: a struct
+// parameter's typedef is emitted before this fnptr typedef by Emit's
+// typedef-ordering hoisting), so the typedef never references an aggregate
+// typedef that might be emitted after it — except for plain-struct parameters
+// whose self-contained typedefs are explicitly hoisted ahead of the function
+// block by the caller.
+func buildFunctionTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	if err := validateFunctionTypeSignature(unit, snapshot, width, id); err != nil {
 		return "", err
 	}
 	key, ok := snapshot.Key(id)
@@ -976,7 +1079,7 @@ func buildFunctionTypedef(st *emitState, snapshot *types.Snapshot, width types.B
 	}
 	paramCTypes := make([]string, len(parameters))
 	for i, parameter := range parameters {
-		paramCType, err := functionTypeParamCType(st, snapshot, width, parameter)
+		paramCType, err := functionTypeParamCType(st, unit, snapshot, width, parameter)
 		if err != nil {
 			return "", err
 		}

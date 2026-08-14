@@ -236,7 +236,7 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// helper discovery with the same message a function-typed local's
 		// invalid type would name.
 		if isFunctionType(snapshot, param.Type) {
-			if err := validateFunctionTypeSignature(snapshot, width, param.Type); err != nil {
+			if err := validateFunctionTypeSignature(unit, snapshot, width, param.Type); err != nil {
 				return fmt.Errorf("called function symbol %d parameter %d (symbol %d) is a function type with an unsupported signature: %v", decl.Symbol, i, param.Symbol, err)
 			}
 		}
@@ -267,7 +267,7 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		}
 	}
 	if isFunctionType(snapshot, decl.ResultType) {
-		if err := validateFunctionTypeSignature(snapshot, width, decl.ResultType); err != nil {
+		if err := validateFunctionTypeSignature(unit, snapshot, width, decl.ResultType); err != nil {
 			return fmt.Errorf("called function symbol %d has a function result type with an unsupported signature: %v", decl.Symbol, err)
 		}
 	}
@@ -285,9 +285,12 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 // annotation fails typed-IR construction — so it is a clean rejection here,
 // never supported), non-variadic, and every parameter must be one of the
 // entry's resolved width, uint, u64, another fixed-width integer, bool, char,
-// str, a float (f32/f64), or a pointer type, and the result must be one of
-// the entry's resolved width, u64, bool, char, a float (f32/f64), void, or a
-// pointer type. This is deliberately the
+// str, a float (f32/f64), a pointer type, or a plain struct type (F5-19: a
+// struct whose own fields are all self-contained scalar-ish types — see
+// isPlainStructField — so its typedef is fully self-contained and can be
+// emitted before the function typedef that references it), and the result must
+// be one of the entry's resolved width, u64, bool, char, a float (f32/f64),
+// void, or a pointer type. This is deliberately the
 // set of shapes this slice can both BUILD (the parameter grammar is exactly
 // buildCallArgument's, so every fn-typed call argument is buildable; the
 // result grammar is exactly the positions the backend can consume an indirect
@@ -298,14 +301,15 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 // statement via buildExpressionStatement) and whose C types are fully
 // self-contained (the entry's cType, uint64_t, bool, int32_t, PebbleStr, a
 // float/double via floatCType, a
-// pointer's own `<pointee> *` spelling via pointerTypeName, or
+// pointer's own `<pointee> *` spelling via pointerTypeName, a plain struct's
+// own pebble_struct_<typeID>_t via structTypeName, or
 // void — never a tuple/struct/slice/optional C type that would drag an
 // aggregate typedef into the fnptr typedef and require the aggregate collectors
 // to chase function-type signatures). Any other parameter/result shape — a
-// tuple/struct/slice/optional, or an aggregate/str result — is a
+// tuple/slice/optional/nested-aggregate, or an aggregate/str result — is a
 // clean rejection naming what is unsupported, the same gate buildFunctionTypedef
 // re-checks before emitting a typedef.
-func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
+func validateFunctionTypeSignature(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) error {
 	key, ok := snapshot.Key(id)
 	if !ok {
 		return fmt.Errorf("function type %d is not in the type snapshot", id)
@@ -328,15 +332,19 @@ func validateFunctionTypeSignature(snapshot *types.Snapshot, width types.Builtin
 	// entry-width context), or uint/u64 (both resolve to uint64_t), or
 	// bool/char/str, or a float (f32/f64, resolved to its own float/double C
 	// type via floatCType), or a pointer type (spelled via pointerTypeName, the
-	// same way an ordinary helper's pointer parameter is). The signature's
-	// parameter C types are decided by the same resolution in
+	// same way an ordinary helper's pointer parameter is), or a plain struct
+	// type (F5-19: a struct whose own fields are all self-contained scalar-ish
+	// types — see isPlainStructField — so its typedef is fully self-contained
+	// and can be emitted before the function typedef that references it). The
+	// signature's parameter C types are decided by the same resolution in
 	// functionTypeParamCType, and each call argument is built at its
 	// parameter's own resolved width by buildCallArgument, so the kind of
 	// each parameter determines how it is built rather than the ambient width.
 	for i, parameter := range parameters {
 		paramWidth, integerParam := resolvedBuiltin(snapshot, parameter)
-		if !(integerParam && cType(paramWidth) != "") && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) && !isFloat(snapshot, parameter) && !isPointer(snapshot, parameter) {
-			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, u64, or another fixed-width integer, bool, char, str, f32, f64, or a pointer type (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
+		plainStructParam := isStruct(snapshot, parameter) && runtimeType(unit, snapshot, parameter) == 0 && isPlainStructField(unit, snapshot, parameter)
+		if !(integerParam && cType(paramWidth) != "") && !isBool(snapshot, parameter) && !isChar(snapshot, parameter) && !isStr(snapshot, parameter) && !isFloat(snapshot, parameter) && !isPointer(snapshot, parameter) && !plainStructParam {
+			return fmt.Errorf("function type %s parameter %d has type %s, want %s, uint, u64, or another fixed-width integer, bool, char, str, f32, f64, a pointer type, or a plain struct type (a function-typed value's signature may only mention parameter shapes this backend can build as a call argument)", describeType(snapshot, id), i, describeType(snapshot, parameter), wantName(width))
 		}
 	}
 	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isFloat(snapshot, result) && !isVoid(snapshot, result) && !isPointer(snapshot, result) {

@@ -776,7 +776,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			functionTypes = append(functionTypes, field.typ)
 		}
 	}
-	functionTypedefs, err := buildFunctionTypedefs(st, snapshot, width, functionTypes)
+	functionTypedefs, err := buildFunctionTypedefs(st, unit, snapshot, width, functionTypes)
 	if err != nil {
 		return err
 	}
@@ -825,15 +825,39 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		earlyStructIDs[info.typ] = true
 		earlyStructIDList[i] = info.typ
 	}
+	// A PLAIN struct used as a first-class function type parameter (`var f
+	// fn(Point) int` — F5-19) breaks the function-block-leads-aggregate-block
+	// invariant: the function typedef's parameter names the struct's own
+	// pebble_struct_<typeID>_t typedef, so C requires that struct typedef
+	// BEFORE the function typedef — the reverse of the aggregate block's
+	// post-function position. A plain struct is self-contained (all
+	// scalar/str/char/bool/enum fields — see isPlainStructField), so its
+	// typedef can be hoisted to a block emitted before the function block,
+	// where it is fully defined; it is then removed from the aggregate block
+	// (filtered out of ordered) so it is emitted exactly once. Only structs
+	// that themselves do NOT carry function-typed fields are hoisted (a struct
+	// whose field is a function type needs its typedef AFTER the function
+	// block, creating a circular dependency if hoisted); such structs stay in
+	// the aggregate block where they correctly follow the function block.
+	paramStructs, err := collectFunctionParamStructs(unit, snapshot, functionTypes, ordered)
+	if err != nil {
+		return err
+	}
+	paramStructIDs := make(map[types.TypeID]bool, len(paramStructs))
+	paramStructIDList := make([]types.TypeID, len(paramStructs))
+	for i, info := range paramStructs {
+		paramStructIDs[info.typ] = true
+		paramStructIDList[i] = info.typ
+	}
 	filteredAll := make([]types.TypeID, 0, len(ordered.all))
 	for _, id := range ordered.all {
-		if !earlyStructIDs[id] {
+		if !earlyStructIDs[id] && !paramStructIDs[id] {
 			filteredAll = append(filteredAll, id)
 		}
 	}
 	filteredStructs := make([]structInfo, 0, len(ordered.structs))
 	for _, info := range ordered.structs {
-		if !earlyStructIDs[info.typ] {
+		if !earlyStructIDs[info.typ] && !paramStructIDs[info.typ] {
 			filteredStructs = append(filteredStructs, info)
 		}
 	}
@@ -842,6 +866,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 		return err
 	}
 	earlyStructTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, earlyStructIDList, earlyStructs, sliceElementForwardDeclared)
+	if err != nil {
+		return err
+	}
+	preFunctionStructTypedefs, err := buildAggregateTypedefs(st, unit, snapshot, width, paramStructIDList, paramStructs, sliceElementForwardDeclared)
 	if err != nil {
 		return err
 	}
@@ -877,8 +905,12 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// earlyStructTypedefs just above, between the enum block and the union
 	// block) — so no union typedef depends on an aggregate typedef still in the
 	// aggregate block, and the whole block can safely lead the aggregate block
-	// (mirroring how the plain-enum block leads it for enum-typed fields).
-	typedefs := appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, appendTypedefBlock(earlyStructTypedefs, unionTypedefs)))
+	// (mirroring how the plain-enum block leads it for enum-typed fields). A
+	// PLAIN struct used as a first-class function type parameter (F5-19) has
+	// its typedef hoisted into preFunctionStructTypedefs emitted BEFORE the
+	// function block that references it, so C's define-before-use rule is
+	// satisfied without moving the entire function block past aggregates.
+	typedefs := appendTypedefBlock(preFunctionStructTypedefs, appendTypedefBlock(functionTypedefs, appendTypedefBlock(enumTypedefs, appendTypedefBlock(earlyStructTypedefs, unionTypedefs))))
 	arrayTypes, err := collectArrayTypes(unit, snapshot, blockID, helpers)
 	if err != nil {
 		return err
