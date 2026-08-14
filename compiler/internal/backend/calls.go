@@ -2392,6 +2392,15 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, elementType), width)
 		} else if elementWidth, integerElement := resolvedBuiltin(snapshot, elementType); integerElement && cType(elementWidth) != "" {
 			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, elementWidth, width)
+		} else if isStruct(snapshot, elementType) {
+			// A struct-typed array repeat as a return value
+			// (`return [Point.{ x = 1, y = 2 }; 3];`): the single repeated
+			// struct value is built ONCE via buildNestedAggregateValue into
+			// the C temp (pebble_repeat_ret_<nodeID>), then that same temp
+			// name is repeated `length` times inside the compound literal
+			// initializer — evaluate-once, copy-N-times, so a struct
+			// construction with side effects is called exactly once, not N.
+			valueExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, node.Children[0], locals, elementType, "array return", width)
 		} else {
 			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, width, width)
 		}

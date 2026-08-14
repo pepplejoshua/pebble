@@ -91,3 +91,31 @@ func TestStructArrayRepeatMultiFieldAsCallArgument(t *testing.T) {
 func TestStructArrayRepeatEvaluateOnce(t *testing.T) {
 	emitAndRun(t, "type Point = struct { x int; y int; }; var count int = 0; fn mkPoint() Point { count = count + 1; return Point.{ x = 1, y = 2 }; } fn takes(pts [3]Point) int { return pts[0].x; } fn main() int { var _ = takes([mkPoint(); 3]); return count; }", false, 1, false)
 }
+
+// F5-11: struct ArrayRepeat as return value — `return [Point.{ x = 1, y = 2 }; 3];`
+// in a `[3]Point`-returning function. The temp declaration is pebble_repeat_ret_<nodeID>
+// of the struct's typedef type, and the compound literal repeats that temp name.
+func TestStructArrayRepeatAsReturnValueCompilesAndRuns(t *testing.T) {
+	emitAndRun(t, "type Point = struct { x int; y int; }; fn makeAll() [3]Point { return [Point.{ x = 1, y = 2 }; 3]; } fn main() int { var pts [3]Point = makeAll(); return pts[0].x; }", false, 1, false)
+}
+
+// F5-11: struct ArrayRepeat as return value — verify all elements get the
+// correct value (not just element 0). Each repeated struct has its own field
+// values propagated through the array.
+func TestStructArrayRepeatAsReturnValueAllElements(t *testing.T) {
+	emitAndRun(t, "type Point = struct { x int; y int; }; fn makeAll() [3]Point { return [Point.{ x = 10, y = 20 }; 3]; } fn main() int { var pts [3]Point = makeAll(); return pts[0].x + pts[1].y + pts[2].x; }", false, 40, false)
+}
+
+// F5-11: struct with 2+ fields confirming field values propagate correctly
+// through the array when returned via ArrayRepeat.
+func TestStructArrayRepeatMultiFieldAsReturnValue(t *testing.T) {
+	emitAndRun(t, "type RGB = struct { r i32; g i32; b i32; }; fn makeAll() [2]RGB { return [RGB.{ r = 1, g = 2, b = 3 }; 2]; } fn main() i32 { var c [2]RGB = makeAll(); return c[0].r + c[0].g + c[0].b + c[1].r + c[1].g + c[1].b; }", false, 12, false)
+}
+
+// F5-11: evaluate-once property for struct ArrayRepeat as return value — the
+// repeated value expression must be evaluated exactly once, not N times. A
+// helper that constructs a Point increments a global counter each time it
+// runs; the exit code proves it was called exactly once.
+func TestStructArrayRepeatAsReturnValueEvaluateOnce(t *testing.T) {
+	emitAndRun(t, "type Point = struct { x int; y int; }; var count int = 0; fn mkPoint() Point { count = count + 1; return Point.{ x = 1, y = 2 }; } fn makeAll() [3]Point { return [mkPoint(); 3]; } fn main() int { var _ [3]Point = makeAll(); return count; }", false, 1, false)
+}
