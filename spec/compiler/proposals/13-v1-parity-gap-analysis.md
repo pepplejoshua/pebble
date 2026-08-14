@@ -440,25 +440,58 @@ termination not just correct output. Causation-checked against `HEAD`;
 full `internal/backend` (393s–447s across rounds) AND `internal/check`
 suites both 100% clean on the final round.
 
-Picking up F5-24 next (print a function value — V1 has a function-value
-format path, V2 rejects the operand in the checker, per the master
-ledger: "Implement proposal 17's function-value-print slice only" —
-proposal 17's slice 9: "named-function formatting first, indirect
-pointer-address formatting second; lowest priority but not left
-silently rejected"). Given F5-23's four-round history, budget real time
-for investigation before dispatching — a function value has TWO
-distinct print shapes per the proposal (a NAMED function reference vs.
-an indirect/anonymous function pointer), and the "address" half likely
-reuses F5-23's just-added pointer-printing machinery closely (confirm
-this by reading `buildPointerPrintValueCalls`/
-`buildPointerPrintValueExpr` before assuming a parallel implementation
-is needed). Investigate/reproduce directly first with a minimal `.peb`
-snippet (`fn f() int { return 1; } fn main() int { print f; return 0;
-}` and a function-typed local holding an anonymous/hoisted function
-value) to see the exact current checker rejection message and to
-confirm what "named-function formatting" should actually look like (is
-there existing precedent elsewhere in the codebase for printing a
-function's name, e.g. in a panic/stack-trace message?) before writing a
-dispatch brief; next dispatch should use
-`vercel/alibaba/qwen3.7-flash` (the last real dispatch, F5-23's round
-4, used `opencode-go/deepseek-v4-flash`).)*
+*(empty — F5-24 (print a function value, proposal 17 slice 9 — the
+FINAL slice) closed in `460a769`. Proposal 17's entire composite-print
+matrix (slices 1–9) is now fully implemented and resolved.
+`printableType` gained a `types.Function` unconditional LEAF case.
+Backend dispatch is by the print operand's TIR NODE SHAPE, not a
+runtime branch: a bare reference to a known top-level function
+(`HoistedFunctionValue`/`GenericFunctionValue`) prints its declared
+source name (`<fn f>`, new `functionSourceName` helper mirroring the
+existing `structSourceName`/`enumSourceName`/`unionSourceName` family);
+every other shape falls back to F5-23's address format (`<fn @0x...>`).
+Round 1 (main dispatch) implemented both cases correctly at the
+checker/backend-logic level but left a genuine COMPILE bug: the named
+case emitted only a static string literal, never generating any C text
+referencing the underlying `pebble_fn_<symbol>` function, so `cc
+-Wunused-function -Werror` correctly failed the build — caught by hand
+(not by the dispatch's own report) before dispatching a small,
+precisely-scoped round-2 fix (a `(void)` cast referencing the function
+value, mirroring the pervasive `(void)pebble_local_<symbol>;`
+unused-variable-suppression idiom already used throughout this
+backend). Verified with byte-exact captured stdout for both cases
+(including a generic function reference and a function-typed struct
+field), causation-checked against `HEAD`; full `internal/backend` and
+`internal/check` suites clean on the final round. This closes the
+entire proposal-17 F5-22–F5-24 print sub-arc.
+
+Picking up F5-25 next (platform-sized `int`/`uint` not implemented end
+to end — a confirmed, CROSS-LAYER implementation defect, not a print
+gap: the checker has `LiteralTarget.WordBits` but `pebc` hardcodes it
+to 64; the backend then maps `int` to `int32_t` and `uint` to
+`uint64_t` regardless, so on the current 64-bit host `uint` matches by
+accident while `int` is flatly wrong — `let x int = 2147483648;`
+currently passes checking and fails at `cc`). This is a DIFFERENT shape
+of item than the whole F5-05–F5-24 run: a real target-configuration
+plumbing problem touching checker, backend type resolution, AND
+runtime-helper selection together, not a single localized gap. Per the
+master ledger's own scoping note: "First add one authoritative target-
+word configuration and thread it through checking and Emit without
+changing behavior. Then change C spelling and runtime-helper selection
+together, with 32-bit and 64-bit emitted-C tests." Given the size and
+cross-cutting nature, investigate thoroughly first — trace exactly
+where `pebc` hardcodes 64 (`LiteralTarget.WordBits` or equivalent
+call site), where the backend independently hardcodes `int32_t`/
+`uint64_t` for `int`/`uint` (search `internal/backend` for these
+mappings), and confirm the two are genuinely disconnected (not already
+threading a shared config) before scoping a dispatch — this may need to
+be split into multiple sequential dispatch briefs (first the plumbing/
+no-behavior-change step, then the actual width-correctness fix) rather
+than one large one, mirroring how this window split F5-19/F5-20 (
+parameter then result) and F5-05–F5-09 (interpolation, one part-kind
+per item) into separate slices rather than attempting a single big
+change. Investigate/reproduce directly first with the master ledger's
+own repro (`let x int = 2147483648;`) before writing any dispatch
+brief; next dispatch should use `vercel/alibaba/qwen3.7-flash` (the
+last real dispatch, F5-24's round 2, used
+`opencode-go/deepseek-v4-flash`).)*

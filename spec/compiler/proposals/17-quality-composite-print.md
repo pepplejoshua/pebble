@@ -281,6 +281,27 @@ and a runtime switch only for an enum/union discriminant.
    print terminates normally rather than recursing unboundedly.
    Causation-checked against `HEAD`; full `internal/backend` and
    `internal/check` suites clean.
-9. **Function values** — named-function formatting first, indirect
-   pointer-address formatting second; lowest priority but not left
-   silently rejected, since the goal is universal printability.
+9. ~~**Function values**~~ **RESOLVED (`460a769`), the final slice —
+   proposal 17 is now fully implemented.** `printableType` gains a
+   `types.Function` unconditional LEAF case (always printable). The
+   backend dispatches by the print operand's own TIR NODE SHAPE, not a
+   runtime branch: a bare reference to a known top-level function
+   (`HoistedFunctionValue`/`GenericFunctionValue`) prints its declared
+   source name (`<fn f>`, via a new `functionSourceName` helper
+   mirroring the existing `structSourceName`/`enumSourceName`/
+   `unionSourceName` family); every other shape (a function-typed
+   local, parameter, struct field, call result) prints its raw C
+   function pointer address (`<fn @0x...>`), reusing F5-23's `%p`
+   convention. A real compile bug was caught by hand before dispatching
+   a fix: the named case initially emitted ONLY the static name string,
+   never generating any C text that referenced the underlying
+   `pebble_fn_<symbol>` function, so `cc -Wunused-function -Werror`
+   correctly failed the build even though the checker/backend logic was
+   itself correct — fixed by also emitting a `(void)` cast referencing
+   the function value, mirroring this backend's pervasive
+   `(void)pebble_local_<symbol>;` convention for suppressing
+   `-Wunused-variable`. Verified with byte-exact captured stdout for
+   both the named and indirect cases (including a generic function
+   reference and a function-typed struct field), causation-checked
+   against `HEAD`; full `internal/backend` and `internal/check` suites
+   clean.
