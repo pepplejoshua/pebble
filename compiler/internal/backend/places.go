@@ -655,6 +655,9 @@ func buildStructFieldRead(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	if isStr(snapshot, fieldType) {
 		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 	}
+	if isChar(snapshot, fieldType) {
+		return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
+	}
 	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum, or str", place.Member, describeType(snapshot, fieldType))
 }
 
@@ -861,6 +864,9 @@ func buildStructFieldValueRead(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
 	}
 	if isStr(snapshot, fieldType) {
+		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
+	}
+	if isChar(snapshot, fieldType) {
 		return fmt.Sprintf("(%s).pebble_field_%d", receiverExpr, node.Member), nil
 	}
 	return "", fmt.Errorf("field %d has type %s, want a fixed-width integer, bool, pointer, or enum, or str", node.Member, describeType(snapshot, fieldType))

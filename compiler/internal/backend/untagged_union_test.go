@@ -17,13 +17,11 @@ import "testing"
 // the write-then-read tests prove for reassignment (writing one field makes
 // its bytes visible through a DIFFERENT field's read).
 //
-// char union fields are NOT covered by the round-trip table below: construction
-// and write of a char field emit fine, but READING a char field back fails at
-// Emit ("field N has type char, want a fixed-width integer, bool, pointer, or
-// enum, or str") — buildStructFieldRead / buildStructFieldValueRead have no
-// char case, while the typedef declares the field as int32_t and construction
-// builds it via buildCharOperand. That gap is tracked separately; the scalar
-// table stops at bool.
+// char union fields were previously excluded from the round-trip table below
+// because READING a char field back failed at Emit ("field N has type char,
+// want a fixed-width integer, bool, pointer, or enum, or str") —
+// buildStructFieldRead / buildStructFieldValueRead had no char case — but that
+// gap is now closed, so char entries are included alongside the other scalars.
 
 // TestEmitUntaggedUnionScalarRoundTripCompileAndRun proves each supported
 // scalar field kind round-trips through construction-and-read-back: construct
@@ -49,6 +47,8 @@ func TestEmitUntaggedUnionScalarRoundTripCompileAndRun(t *testing.T) {
 		{"u32", "type D = union { a u32; }; fn main() i32 { var d D = D.{ a = 4294967295 }; if d.a == 4294967295 { return 42; } return 0; }"},
 		{"u64", "type D = union { a u64; }; fn main() i32 { var d D = D.{ a = 18446744073709551615 }; if d.a == 18446744073709551615 { return 42; } return 0; }"},
 		{"bool", "type D = union { a bool; }; fn main() i32 { var d D = D.{ a = true }; if d.a { return 42; } return 0; }"},
+		{"char", "type D = union { a char; }; fn main() i32 { var d D = D.{ a = 'x' }; if d.a == 'x' { return 42; } return 0; }"},
+		{"char-non-ascii", "type D = union { a char; }; fn main() i32 { var d D = D.{ a = 'é' }; if d.a == 'é' { return 42; } return 0; }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
