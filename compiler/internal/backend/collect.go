@@ -1671,6 +1671,26 @@ func collectEnumTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.N
 			}
 		}
 	}
+	if node.Kind == tir.InterpolatedString {
+		// An interpolated string's value parts store their evaluated value
+		// nodes in node.Parts ([]InterpolationPart), NOT node.Children, so the
+		// Children-following recursion below never reaches an enum value used
+		// only as an interpolation part (e.g. `let s str = \`pick={Color.green}\`;`
+		// — an EnumVariantValue at Parts[i].Value with no other reference to the
+		// enum type anywhere). Without this recursive walk the enum type is
+		// never collected, so neither its pebble_enum_<typeID>_t typedef nor
+		// the enum interpolation switch's pebble_variant_<sym> case labels are
+		// emitted, leaving the switch naming undeclared C identifiers. This is
+		// the same Parts-not-Children gap collectDirectCalls closes for helper
+		// calls used as interpolated values.
+		for _, part := range node.Parts {
+			if part.Kind == tir.InterpolationValuePart {
+				if err := collectEnumTypesWalk(unit, snapshot, part.Value, out); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	for _, childID := range node.Children {
 		if err := collectEnumTypesWalk(unit, snapshot, childID, out); err != nil {
 			return err

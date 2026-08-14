@@ -849,3 +849,200 @@ func TestEmitInterpolatedStringNulChar(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitInterpolatedStringEnumAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with plain-enum value parts interleaved with text
+	// used as a str-typed local's declaration initializer. Each enum part must
+	// be formatted as its `Type.variant` name — recovered from the enum's own
+	// declared source names, exactly as a bare enum print operand renders them
+	// — and concatenated with surrounding text parts into a single PebbleStr.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"single enum part", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; let s str = `color={c}`; if s == \"color=Color.red\" { return 0; } return 1; }", 0},
+		{"second variant", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; let s str = `color={c}`; if s == \"color=Color.green\" { return 0; } return 1; }", 0},
+		{"third variant", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let s str = `color={c}`; if s == \"color=Color.blue\" { return 0; } return 1; }", 0},
+		{"enum with surrounding text", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; let s str = `before {c} after`; if s == \"before Color.red after\" { return 0; } return 1; }", 0},
+		{"multiple enum parts", "type Color = enum { red, green, blue };\nfn main() i32 { let a Color = Color.red; let b Color = Color.blue; let s str = `{a}-{b}`; if s == \"Color.red-Color.blue\" { return 0; } return 1; }", 0},
+		{"three-variant enum covering two non-default cases", "type Traffic = enum { red, green, blue };\nfn main() i32 { let a Traffic = Traffic.green; let b Traffic = Traffic.blue; let s str = `{a},{b}`; if s == \"Traffic.green,Traffic.blue\" { return 0; } return 1; }", 0},
+		{"enum mixed with bool", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; let b bool = true; let s str = `{c}:{b}`; if s == \"Color.red:true\" { return 0; } return 1; }", 0},
+		{"enum mixed with int", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; let n int = 42; let s str = `{c}={n}`; if s == \"Color.red=42\" { return 0; } return 1; }", 0},
+		{"enum mixed with float", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; let p f64 = 9.99; let s str = `{c}={p}`; if s == \"Color.green=9.990000\" { return 0; } return 1; }", 0},
+		{"enum mixed with str", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let w str = \"world\"; let s str = `{c}-{w}`; if s == \"Color.blue-world\" { return 0; } return 1; }", 0},
+		{"enum mixed with char", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; let ch char = 'x'; let s str = `{c}{ch}`; if s == \"Color.redx\" { return 0; } return 1; }", 0},
+		{"enum mixed with all kinds", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let w str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let ch char = '\u00E9'; let s str = `{c},{w},{ok},{ver},{pi},{ch}`; if s == \"Color.blue,pebble,true,3,3.140000,\u00E9\" { return 0; } return 1; }", 0},
+		{"inline variant literal part", "type Color = enum { red, green, blue };\nfn main() i32 { let s str = `pick={Color.green}`; if s == \"pick=Color.green\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a plain-enum value part used as a call
+	// argument for a str parameter — `takes(`ok={c}`)` — must materialize into
+	// a PebbleStr value (with the enum's switch pre-statement inside the GNU
+	// statement expression the argument builds) that flows through the call to
+	// the callee.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"enum arg", "type Color = enum { red, green, blue };\nfn takes(s str) i32 { if s == \"ok=Color.red\" { return 1; } return 0; }\nfn main() i32 { let c Color = Color.red; return takes(`ok={c}`); }", 1},
+		{"enum arg second variant", "type Color = enum { red, green, blue };\nfn takes(s str) i32 { if s == \"ok=Color.blue\" { return 1; } return 0; }\nfn main() i32 { let c Color = Color.blue; return takes(`ok={c}`); }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a plain-enum value part used as a tail-
+	// position return value from a str-returning helper — `fn make(c Color)
+	// str { return `val={c}`; }` — must materialize into a PebbleStr (with the
+	// enum's switch pre-statement threaded into the return statement's
+	// pre-statements) that is returned to the caller.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"enum return", "type Color = enum { red, green, blue };\nfn make(c Color) str { return `val={c}`; }\nfn main() i32 { let s str = make(Color.red); if s == \"val=Color.red\" { return 0; } return 1; }", 0},
+		{"enum return second variant", "type Color = enum { red, green, blue };\nfn make(c Color) str { return `val={c}`; }\nfn main() i32 { let s str = make(Color.green); if s == \"val=Color.green\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a plain-enum value part used directly in a
+	// comparison expression — `if `prefix={c}` == "prefix=Color.red" { ... }`
+	// — must materialize into a PebbleStr that participates in
+	// pebble_rt_str_eq.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal after interpolation", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; if `prefix={c}` == \"prefix=Color.red\" { return 1; } else { return 0; } }", 1},
+		{"not equal after interpolation", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; if `prefix={c}` == \"prefix=Color.green\" { return 0; } else { return 1; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumPrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with plain-enum value parts used directly as a
+	// print operand must render each enum as its `Type.variant` name. The
+	// combined-print cases print an interpolation and the same enum bare in ONE
+	// print statement, so the two paths' text can be compared byte-for-byte in
+	// the captured output — proving an interpolated enum and a directly-printed
+	// enum (whose output buildEnumPrintValueCalls produces from the very same
+	// enumSourceName/variantSourceName helpers) render identically.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print enum", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; print `color={c}`; return 0; }", "color=Color.red\n"},
+		{"print enum second variant", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; print `color={c}`; return 0; }", "color=Color.green\n"},
+		{"print multiple enums", "type Color = enum { red, green, blue };\nfn main() i32 { let a Color = Color.green; let b Color = Color.blue; print `{a}-{b}`; return 0; }", "Color.green-Color.blue\n"},
+		{"print enum mixed with all kinds", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let w str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let ch char = 'x'; print `{c},{w},{ok},{ver},{pi},{ch}`; return 0; }", "Color.blue,pebble,true,3,3.140000,x\n"},
+		{"print inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { print `pick={Color.blue}`; return 0; }", "pick=Color.blue\n"},
+		{"interpolated matches bare print", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; print `c={c}`, c; return 0; }", "c=Color.greenColor.green\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-typed local reassigned from an interpolated string with a plain-
+	// enum value part — `var s str = "initial"; s = `new={c}`;` — must
+	// materialize the interpolated string into a PebbleStr and store it into
+	// the local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"reassign with enum", "type Color = enum { red, green, blue };\nfn main() i32 { var s str = \"old\"; let c Color = Color.red; s = `v={c}`; if s == \"v=Color.red\" { return 0; } return 1; }", 0},
+		{"reassign with enum second variant", "type Color = enum { red, green, blue };\nfn main() i32 { var s str = \"old\"; let c Color = Color.blue; s = `v={c}`; if s == \"v=Color.blue\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumPrintWithStructOperandCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a plain-enum value part appearing alongside a
+	// composite (struct) operand switches the whole print statement to the
+	// direct-sequential-fprintf path; the interpolated string must still
+	// materialize (with its enum switch pre-statement) and render the enum
+	// name identically.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"enum interpolation with struct operand", "type Color = enum { red, green, blue };\ntype P = struct { x i32; };\nfn main() i32 { let c Color = Color.green; let p P = P.{ x = 7 }; print `c={c}`, p; return 0; }", "c=Color.greenP{ x: 7 }\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitInterpolatedStringEnumTaggedUnionRejected(t *testing.T) {
+	t.Parallel()
+	// A tagged-union (payload-carrying enum) value part must be REJECTED with
+	// a clear error, never silently interpolated as a plain enum and never a
+	// crash — tagged-union interpolation is out of scope (a separate
+	// follow-up). Each fixture interpolates a tagged-union value in one of the
+	// positions the widening touches (a print operand, a local declaration
+	// initializer, and an expression-position comparison).
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"print operand", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); print `r={r}`; return 0; }"},
+		{"local initializer", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); let s str = `r={r}`; return 0; }"},
+		{"comparison expression", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); if `r={r}` == \"r=Result.ok(42)\" { return 0; } return 1; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRunRejects(t, tc.src, "tagged-union type")
+		})
+	}
+}

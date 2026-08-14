@@ -1682,12 +1682,23 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		// Each text part uses escapeCString (same as buildPrint); each bool
 		// value part is validated against types.Bool and built with buildBoolExpr
 		// (same scope as buildPrint's restricted bool-only interpolation).
-		callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, initValue, scope, width)
+		callExpr, pres, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, initValue, scope, width)
 		if err != nil {
 			return "", err
 		}
 		scope[statement.Symbol] = localInfo{isStr: true}
-		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol), nil
+		decl := fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol)
+		if len(pres) == 0 {
+			return decl, nil
+		}
+		// A plain-enum value part's switch pre-statements must run before the
+		// pebble_rt_str_from_parts call its parts reference, so they are
+		// threaded as leading indented statements ahead of the declaration.
+		lines := make([]string, 0, len(pres)+1)
+		for _, pre := range pres {
+			lines = append(lines, indent+pre)
+		}
+		return strings.Join(append(lines, decl), "\n"), nil
 	}
 	if initValue.Kind != tir.StringLiteral {
 		return "", fmt.Errorf("%s declares a str-typed local initialized from a %s, want a StringLiteral (a string literal), a call to a str-returning helper, or a reference to a str-typed local in scope", context, initValue.Kind)

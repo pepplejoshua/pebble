@@ -2865,11 +2865,13 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		}
 		if child.Kind == tir.InterpolatedString {
 			// Check whether this interpolated string contains any str value
-			// parts — those cannot fold into the combined printf because a
-			// PebbleStr is a struct, not a C scalar; we must materialize the
-			// whole interpolation into a temp first.  Bool, integer, and float
+			// part or plain-enum value part — a PebbleStr is a struct (not a C
+			// scalar) so a str cannot fold into the combined printf, and an
+			// enum's formatted name needs a runtime tag-comparison switch (a
+			// pre-statement), so either forces materializing the whole
+			// interpolation into a temp first.  Bool, integer, float, and char
 			// value parts still format inline.
-			hasStrPart := false
+			needsMaterialization := false
 			for _, part := range child.Parts {
 				if part.Kind != tir.InterpolationValuePart {
 					continue
@@ -2878,19 +2880,25 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 				if !ok {
 					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 				}
-				if isStr(snapshot, vn.Type) {
-					hasStrPart = true
+				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) {
+					needsMaterialization = true
 					break
 				}
 			}
-			if hasStrPart {
+			if needsMaterialization {
 				// Materialize the entire interpolated string into a temp
-				// PebbleStr, then print it as a single %s.
+				// PebbleStr, then print it as a single %s. A plain-enum value
+				// part's switch pre-statements are threaded into the leading
+				// pre-statements so the temp it fills exists before the
+				// materialization call runs.
 				st.interpolatedStringCounter++
 				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
-				materialized, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
+				materialized, pres, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
 				if err != nil {
 					return "", "", err
+				}
+				for _, pre := range pres {
+					preParts = append(preParts, indent+pre)
 				}
 				preParts = append(preParts, indent+fmt.Sprintf("PebbleStr %s = %s;", tempName, materialized))
 				formatParts = append(formatParts, `"%s"`)
@@ -3325,11 +3333,13 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		}
 		if child.Kind == tir.InterpolatedString {
 			// Check whether this interpolated string contains any str value
-			// parts — those cannot format inline because a PebbleStr is a
-			// struct, not a C scalar; we must materialize the whole
-			// interpolation into a temp first.  Bool, integer, and float
-			// value parts still format as individual fprintf calls.
-			hasStrPart := false
+			// part or plain-enum value part — a PebbleStr is a struct (not a C
+			// scalar) so a str cannot format inline, and an enum's formatted
+			// name needs a runtime tag-comparison switch (a pre-statement), so
+			// either forces materializing the whole interpolation into a temp
+			// first.  Bool, integer, float, and char value parts still format
+			// as individual fprintf calls.
+			needsMaterialization := false
 			for _, part := range child.Parts {
 				if part.Kind != tir.InterpolationValuePart {
 					continue
@@ -3338,17 +3348,20 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 				if !ok {
 					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 				}
-				if isStr(snapshot, vn.Type) {
-					hasStrPart = true
+				if isStr(snapshot, vn.Type) || isEnumType(unit, snapshot, vn.Type) {
+					needsMaterialization = true
 					break
 				}
 			}
-			if hasStrPart {
+			if needsMaterialization {
 				st.interpolatedStringCounter++
 				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
-				materialized, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
+				materialized, pres, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
 				if err != nil {
 					return "", "", err
+				}
+				for _, pre := range pres {
+					preParts = append(preParts, indent+pre)
 				}
 				preParts = append(preParts, indent+fmt.Sprintf("PebbleStr %s = %s;", tempName, materialized))
 				calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{tempName + ".data"}})

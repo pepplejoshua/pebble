@@ -1438,41 +1438,60 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 }
 
 // buildInterpolatedStringParts builds the C text for the PebbleStrPart array
-// and the pebble_rt_str_from_parts call for an InterpolatedString node. It
-// iterates over node.Parts: each InterpolationTextPart becomes a
+// and the pebble_rt_str_from_parts call for an InterpolatedString node, plus
+// any PRE-STATEMENTS that must run before the call (a plain-enum value part's
+// temp-PebbleStr switch — see buildEnumInterpolationSwitch). It iterates over
+// node.Parts: each InterpolationTextPart becomes a
 // { PEBBLE_STR_PART_TEXT, .text = "<escaped>" } entry (using escapeCString,
 // exactly as buildPrint does), each InterpolationValuePart is validated to be
-// bool-, integer-, float-, str-, or char-typed and becomes the matching entry
-// — a bool becomes { PEBBLE_STR_PART_BOOL, .bool_value = (<bool-expr> ? 1 : 0) }
+// bool-, integer-, float-, str-, char-, or plain-enum-typed and becomes the
+// matching entry — a bool becomes { PEBBLE_STR_PART_BOOL, .bool_value = (<bool-expr> ? 1 : 0) }
 // (reusing buildBoolExpr, matching buildPrint's same restriction), an unsigned
 // integer becomes { PEBBLE_STR_PART_UINT, .uint_value = <expr> }, a signed
 // integer becomes { PEBBLE_STR_PART_INT, .int_value = <expr> }, a float
 // becomes { PEBBLE_STR_PART_FLOAT, .float_value = <expr> }, a str becomes
-// { PEBBLE_STR_PART_STR, .str_value = <expr> }, and a char becomes
-// { PEBBLE_STR_PART_CHAR, .char_value = <expr> } — the integer, float, and str
-// expressions built at the value's own resolved kind so any builtin width
-// (not just the entry's) interpolates at full width: the runtime formats the
-// promoted value, so narrow widths print their value, not their storage width.
-// Float value parts reuse buildFloatExpr (the same builder buildScalarPrintOperand's
-// float case uses), and the runtime formats the .float_value with the same %f
-// convention print uses, so an interpolated float renders identically to a
-// directly-printed float. Str value parts reuse buildStrOperand, and since a
-// PebbleStr already carries its own .data/.len the runtime appends those bytes
-// directly without any snprintf formatting — the measure pass adds str_value.len
-// and the write pass memcpy's str_value.data, sharing the same byte-append logic
-// PEBBLE_STR_PART_TEXT uses for literal text. Char value parts reuse
-// buildCharOperand (the same builder buildScalarPrintOperand's char case and a
-// char switch subject use), carrying the raw int32_t Unicode scalar into the
-// runtime, which encodes it to UTF-8 with pebble_rt_char_to_utf8 exactly as a
-// bare char print operand is encoded — so an interpolated char renders
-// byte-for-byte identically to the same char passed straight to print. Returns
-// the full runtime-call expression text, ready to be used as a GNU statement
+// { PEBBLE_STR_PART_STR, .str_value = <expr> }, a char becomes
+// { PEBBLE_STR_PART_CHAR, .char_value = <expr> }, and a plain enum becomes
+// { PEBBLE_STR_PART_STR, .str_value = <temp> } where <temp> is a fresh
+// PebbleStr the pre-statement switch fills with the enum value's formatted
+// `Type.variant` name — a plain enum's formatted representation is a RUNTIME
+// tag comparison across N static strings, not a single C expression, so it
+// cannot become an inline entry and reuses the str-part machinery instead (no
+// new PebbleStrPartKind). A tagged-union (payload-carrying enum) value part is
+// rejected here with a clear error, never silently handled as a plain enum.
+// The integer, float, and str expressions are built at the value's own
+// resolved kind so any builtin width (not just the entry's) interpolates at
+// full width: the runtime formats the promoted value, so narrow widths print
+// their value, not their storage width. Float value parts reuse buildFloatExpr
+// (the same builder buildScalarPrintOperand's float case uses), and the
+// runtime formats the .float_value with the same %f convention print uses, so
+// an interpolated float renders identically to a directly-printed float. Str
+// value parts reuse buildStrOperand, and since a PebbleStr already carries its
+// own .data/.len the runtime appends those bytes directly without any snprintf
+// formatting — the measure pass adds str_value.len and the write pass memcpy's
+// str_value.data, sharing the same byte-append logic PEBBLE_STR_PART_TEXT uses
+// for literal text. Char value parts reuse buildCharOperand (the same builder
+// buildScalarPrintOperand's char case and a char switch subject use), carrying
+// the raw int32_t Unicode scalar into the runtime, which encodes it to UTF-8
+// with pebble_rt_char_to_utf8 exactly as a bare char print operand is encoded —
+// so an interpolated char renders byte-for-byte identically to the same char
+// passed straight to print. Plain-enum value parts reuse buildEnumValue (the
+// same builder an enum switch subject and a bare enum print operand use) for
+// the switch's subject expression and the enum print path's own
+// enumSourceName/variantSourceName/enumVariantName naming helpers for the
+// per-case static strings, so an interpolated enum renders byte-for-byte
+// identically to the same enum passed straight to print. The returned
+// pre-statements are NOT indented (each caller prefixes indent, exactly as
+// buildScalarPrintParts' pres work); the enum switch's internal case/body lines
+// carry their own relative indentation. Returns the full runtime-call
+// expression text plus any pre-statements, ready to be used as a GNU statement
 // expression body or a local-declaration initializer.
-func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
+func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, []string, error) {
 	if node.Kind != tir.InterpolatedString {
-		return "", fmt.Errorf("interpolated-string builder contains a %s, want an InterpolatedString", node.Kind)
+		return "", nil, fmt.Errorf("interpolated-string builder contains a %s, want an InterpolatedString", node.Kind)
 	}
 	var parts []string
+	var pres []string
 	for _, part := range node.Parts {
 		switch part.Kind {
 		case tir.InterpolationTextPart:
@@ -1480,43 +1499,65 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 		case tir.InterpolationValuePart:
 			valueNode, ok := unit.Node(part.Value)
 			if !ok {
-				return "", fmt.Errorf("interpolated-string builder references invalid value node %d", part.Value)
+				return "", nil, fmt.Errorf("interpolated-string builder references invalid value node %d", part.Value)
+			}
+			if isEnumType(unit, snapshot, valueNode.Type) {
+				if isTaggedUnionType(unit, snapshot, valueNode.Type) {
+					// A tagged union's formatted representation needs its
+					// payload recursion (composite print slice 6), a harder
+					// follow-up; a clear rejection here, never a silent
+					// plain-enum handling.
+					return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of tagged-union type %s, want a plain enum, bool, char, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))
+				}
+				enumExpr, err := buildEnumValue(st, unit, snapshot, fileSet, part.Value, locals, width)
+				if err != nil {
+					return "", nil, err
+				}
+				st.interpolatedStringCounter++
+				enumTemp := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+				pre, err := buildEnumInterpolationSwitch(st, unit, snapshot, fileSet, valueNode, enumExpr, enumTemp)
+				if err != nil {
+					return "", nil, err
+				}
+				pres = append(pres, pre)
+				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", enumTemp))
+				continue
 			}
 			if isStr(snapshot, valueNode.Type) {
 				strExpr, err := buildStrOperand(st, unit, snapshot, fileSet, part.Value, locals, width)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", strExpr))
 				continue
 			}
 			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
 			if !ok || (valueKind != types.Bool && valueKind != types.Char && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
-				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool, char, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))
+				return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want a plain enum, bool, char, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))
 			}
 			switch {
 			case valueKind == types.Bool:
 				boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, locals, width)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", boolExpr))
 			case valueKind == types.Char:
 				charExpr, err := buildCharOperand(st, unit, snapshot, fileSet, part.Value, locals, width)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_CHAR, .char_value = %s }", charExpr))
 			case valueKind == types.F32 || valueKind == types.F64:
 				floatExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, part.Value, locals, valueKind, width)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_FLOAT, .float_value = %s }", floatExpr))
 			default:
 				intExpr, err := buildExpr(st, unit, snapshot, fileSet, part.Value, locals, valueKind, width)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				if isUnsignedWidth(valueKind) {
 					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_UINT, .uint_value = %s }", intExpr))
@@ -1525,11 +1566,78 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 				}
 			}
 		default:
-			return "", fmt.Errorf("interpolated-string builder has an unknown part kind %d", part.Kind)
+			return "", nil, fmt.Errorf("interpolated-string builder has an unknown part kind %d", part.Kind)
 		}
 	}
 	partsList := strings.Join(parts, ", ")
-	return fmt.Sprintf("pebble_rt_str_from_parts(ctx, ((PebbleStrPart []){ %s }), %d)", partsList, len(node.Parts)), nil
+	return fmt.Sprintf("pebble_rt_str_from_parts(ctx, ((PebbleStrPart []){ %s }), %d)", partsList, len(node.Parts)), pres, nil
+}
+
+// buildEnumInterpolationSwitch emits the pre-statement block that assigns one
+// plain-enum value's formatted name to a temp PebbleStr, so an interpolated
+// string can reference it as a { PEBBLE_STR_PART_STR, .str_value = <temp> }
+// part. A plain enum's formatted representation depends on a RUNTIME tag
+// comparison across N static strings — `Color.red` when the discriminant
+// equals Color.red's constant, `Color.green` for Color.green's, etc. — so
+// there is no single C expression that names it; instead this emits a small C
+// switch as a PRE-STATEMENT:
+//
+//	PebbleStr pebble_tmp_N;
+//	switch (<enumExpr>) {
+//	    case pebble_variant_<m1>:
+//	        pebble_tmp_N = (PebbleStr){ .data = (const uint8_t *)"Color.red", .len = 9 };
+//	        break;
+//	    ...
+//	    default:
+//	        pebble_tmp_N = (PebbleStr){ .data = (const uint8_t *)"Color<invalid>", .len = 14 };
+//	        break;
+//	}
+//
+// and the interpolated string's parts array then carries the temp as a plain
+// str part, reusing the F5-05 str-part machinery with NO new runtime code and
+// NO new PebbleStrPartKind. The switch's subject is built by buildEnumValue —
+// the same builder an enum switch subject and a bare enum print operand use —
+// and the per-case static strings reuse the enum print path's own naming
+// helpers (enumSourceName for the type name, variantSourceName for each
+// variant's declared source name, enumVariantName for the case labels), so an
+// interpolated enum renders byte-for-byte identically to the same enum passed
+// straight to print (whose output buildEnumPrintValueCalls produces from the
+// very same helpers). The default case is the display-only defensive fallback
+// for an out-of-range discriminant, genuinely unreachable for a well-formed
+// program; it carries a fixed string rather than embedding the numeric
+// discriminant, because interpolation's failure mode there is display-only and
+// a fixed string is simpler and sufficient. The return value is one unindented
+// multi-line C block (the declaration and the switch); each caller prefixes
+// the statement indent to its first line, and its internal case/body lines
+// carry their own relative indentation.
+func buildEnumInterpolationSwitch(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueNode tir.Node, enumExpr, tempName string) (string, error) {
+	info, err := resolveEnumInfo(unit, snapshot, valueNode.Type)
+	if err != nil {
+		return "", fmt.Errorf("enum interpolation value of type %s: %v", describeType(snapshot, valueNode.Type), err)
+	}
+	typeName, err := enumSourceName(unit, fileSet, info.decl)
+	if err != nil {
+		return "", err
+	}
+	var block strings.Builder
+	block.WriteString("PebbleStr " + tempName + ";\n")
+	block.WriteString("switch (" + enumExpr + ") {\n")
+	for _, variant := range info.variants {
+		variantName, err := variantSourceName(unit, fileSet, variant)
+		if err != nil {
+			return "", err
+		}
+		text := typeName + "." + variantName
+		block.WriteString("    case " + enumVariantName(variant) + ":\n")
+		block.WriteString("        " + tempName + " = (PebbleStr){ .data = (const uint8_t *)\"" + escapeCString(text) + "\", .len = " + fmt.Sprintf("%d", len(text)) + " };\n")
+		block.WriteString("        break;\n")
+	}
+	invalidText := typeName + "<invalid>"
+	block.WriteString("    default:\n")
+	block.WriteString("        " + tempName + " = (PebbleStr){ .data = (const uint8_t *)\"" + escapeCString(invalidText) + "\", .len = " + fmt.Sprintf("%d", len(invalidText)) + " };\n")
+	block.WriteString("        break;\n")
+	block.WriteString("}")
+	return block.String(), nil
 }
 
 // buildCharLiteralValue builds the C text for one CharLiteral node: its
@@ -1933,13 +2041,22 @@ func buildStrOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fi
 		// Each text part uses escapeCString (same as buildPrint); each bool
 		// value part is validated against types.Bool and built with buildBoolExpr
 		// (same scope as buildPrint's restricted bool-only interpolation).
-		callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, node, locals, width)
+		callExpr, pres, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, node, locals, width)
 		if err != nil {
 			return "", err
 		}
 		st.interpolatedStringCounter++
 		tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
-		return fmt.Sprintf("({ PebbleStr %s = %s; %s; })", tempName, callExpr, tempName), nil
+		if len(pres) == 0 {
+			return fmt.Sprintf("({ PebbleStr %s = %s; %s; })", tempName, callExpr, tempName), nil
+		}
+		// A plain-enum value part's switch pre-statements must run before the
+		// pebble_rt_str_from_parts call its parts reference (the .str_value
+		// temp), so they are threaded into the GNU statement expression ahead
+		// of the assignment — a statement expression is a full C compound
+		// block, so the declarations and switch sit inside it as ordinary
+		// statements.
+		return fmt.Sprintf("({ %s\nPebbleStr %s = %s; %s; })", strings.Join(pres, "\n"), tempName, callExpr, tempName), nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a str-typed local reference, a string literal, or a call to a str-returning function", node.Kind)
 	}
