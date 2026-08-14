@@ -903,12 +903,23 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// struct/tuple/optional-only chains may nest deeper — but a chain that
 	// passes through an array keeps the depth>1 rejection), so every
 	// field-referenced array is self-contained and safe to emit ahead of the
-	// aggregate block.
+	// aggregate block. The ONE exception is an array-of-PLAIN-struct (F5-18):
+	// its element's plain-struct typedef lives in the aggregate block, so the
+	// array itself is interleaved INTO the aggregate block at its
+	// DFS-postorder position (after the element's typedef, before the
+	// aggregate that references it — see orderAggregateTypes' Array case and
+	// buildAggregateTypedefs), and must therefore be EXCLUDED from this
+	// leading field-array block or it would reference a not-yet-defined
+	// struct typedef.
+	interleavedArrays := make(map[types.TypeID]bool, len(ordered.arrays))
+	for _, id := range ordered.arrays {
+		interleavedArrays[id] = true
+	}
 	inFieldArrays := make(map[types.TypeID]bool)
 	var fieldArrayTypes []types.TypeID
 	for _, structInfo := range structInfos {
 		for _, field := range structInfo.fields {
-			if !isArray(snapshot, field.typ) || inFieldArrays[field.typ] {
+			if !isArray(snapshot, field.typ) || inFieldArrays[field.typ] || interleavedArrays[field.typ] {
 				continue
 			}
 			inFieldArrays[field.typ] = true
@@ -933,7 +944,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			continue
 		}
 		payload, ok := key.Child()
-		if !ok || !isArray(snapshot, payload) || inFieldArrays[payload] {
+		if !ok || !isArray(snapshot, payload) || inFieldArrays[payload] || interleavedArrays[payload] {
 			continue
 		}
 		inFieldArrays[payload] = true
@@ -961,7 +972,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 			continue
 		}
 		for _, element := range elements {
-			if isArray(snapshot, element) && !inFieldArrays[element] {
+			if isArray(snapshot, element) && !inFieldArrays[element] && !interleavedArrays[element] {
 				inFieldArrays[element] = true
 				fieldArrayTypes = append(fieldArrayTypes, element)
 			}
@@ -1365,6 +1376,7 @@ type aggregateTypeOrder struct {
 	tuples    []types.TypeID
 	optionals []types.TypeID
 	structs   []structInfo
+	arrays    []types.TypeID
 }
 
 // enumInfo is one distinct plain enum type the emitted program references,

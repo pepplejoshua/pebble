@@ -100,11 +100,17 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 					// flag throughArray when the array's element is a struct/
 					// tuple/optional — the genuine ordering hazard where the
 					// array's inline .data member needs an aggregate typedef not
-					// yet defined.
+					// yet defined.  Plain struct elements are excluded from this
+					// hazard check (F5-18): their own typedef names only scalar
+					// or plain-enum C types, so the DFS-postorder ordering in
+					// the same pass can correctly emit the element's typedef
+					// before the aggregate that holds the array field references
+					// it; an array-of-plain-struct therefore does not require
+					// the array block to lead the aggregate block.
 					key, ok := snapshot.Key(d)
 					if ok {
 						_, elem, ok := key.Array()
-						if ok && (isTuple(snapshot, elem) || isOptional(snapshot, elem) || (isStruct(snapshot, elem) && runtimeType(unit, snapshot, elem) == 0)) {
+						if ok && (isTuple(snapshot, elem) || isOptional(snapshot, elem) || (isStruct(snapshot, elem) && runtimeType(unit, snapshot, elem) == 0 && !isPlainStructField(unit, snapshot, elem))) {
 							throughArray = true
 						}
 					}
@@ -150,6 +156,18 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			if c, ok := key.Child(); ok {
 				deps = []types.TypeID{c}
 			}
+		case types.Array:
+			// An array-of-plain-struct type's inline `elem data[length]` member
+			// names its element's OWN pebble_struct_<typeID>_t typedef (see
+			// arrayElementCType), which lives in the aggregate block — so the
+			// element (or a nested array chain that bottoms out in a plain
+			// struct) must be pushed BEFORE the array in the postorder, exactly
+			// like a tuple/optional/struct dependency. Recursing through the
+			// element here guarantees the plain struct's typedef precedes the
+			// array's regardless of root iteration order (F5-18).
+			if _, c, ok := key.Array(); ok && (isPlainStructField(unit, snapshot, c) || isPlainStructArrayElement(unit, snapshot, c)) {
+				deps = []types.TypeID{c}
+			}
 		case types.Nominal:
 			if in, ok := structByType[id]; ok {
 				for _, f := range in.fields {
@@ -167,7 +185,7 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			// into the postorder and buildStructTypedef would reject it. Skip it
 			// entirely — mirroring collectStructTypesWalk's runtimeType==0 guard
 			// (a runtime type needs no typedef of its own).
-			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || (isStruct(snapshot, dep) && runtimeType(unit, snapshot, dep) == 0)) && !isEnumType(unit, snapshot, dep) && !isUntaggedUnionType(unit, snapshot, dep) {
+			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || isPlainStructArrayElement(unit, snapshot, dep) || (isStruct(snapshot, dep) && runtimeType(unit, snapshot, dep) == 0)) && !isEnumType(unit, snapshot, dep) && !isUntaggedUnionType(unit, snapshot, dep) {
 				if err := dfs(dep); err != nil {
 					return err
 				}
@@ -193,6 +211,8 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			result.tuples = append(result.tuples, id)
 		} else if isOptional(snapshot, id) {
 			result.optionals = append(result.optionals, id)
+		} else if isArray(snapshot, id) {
+			result.arrays = append(result.arrays, id)
 		} else if isStruct(snapshot, id) {
 			result.structs = append(result.structs, structByType[id])
 		}
@@ -238,7 +258,7 @@ func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 		if !ok {
 			return fmt.Errorf("array type %d is not in the type snapshot", id)
 		}
-		length, element, ok := key.Array()
+		_, element, ok := key.Array()
 		if !ok {
 			return fmt.Errorf("type %s is not an array type", describeType(snapshot, id))
 		}
@@ -248,11 +268,11 @@ func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 			}
 		}
 		emitted[id] = true
-		ctype, err := arrayElementCType(unit, snapshot, width, element)
+		text, err := buildArrayTypedefText(unit, snapshot, width, id)
 		if err != nil {
-			return fmt.Errorf("array type %s: %v", describeType(snapshot, id), err)
+			return err
 		}
-		texts = append(texts, fmt.Sprintf("typedef struct {\n    %s data[%d];\n} %s;", ctype, length, arrayTypeName(id)))
+		texts = append(texts, text)
 		return nil
 	}
 	for _, id := range ids {
@@ -261,6 +281,31 @@ func buildArrayTypedefs(unit *tir.Unit, snapshot *types.Snapshot, width types.Bu
 		}
 	}
 	return strings.Join(texts, "\n"), nil
+}
+
+// buildArrayTypedefText builds one array type's struct typedef:
+//
+//	typedef struct {
+//	    <elem> data[<length>];
+//	} pebble_array_<typeID>_t;
+//
+// with the element's C type from arrayElementCType (which validates the
+// element). The caller is responsible for the element's own typedef (or
+// builtin) being defined before this text is emitted.
+func buildArrayTypedefText(unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, id types.TypeID) (string, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return "", fmt.Errorf("array type %d is not in the type snapshot", id)
+	}
+	length, element, ok := key.Array()
+	if !ok {
+		return "", fmt.Errorf("type %s is not an array type", describeType(snapshot, id))
+	}
+	ctype, err := arrayElementCType(unit, snapshot, width, element)
+	if err != nil {
+		return "", fmt.Errorf("array type %s: %v", describeType(snapshot, id), err)
+	}
+	return fmt.Sprintf("typedef struct {\n    %s data[%d];\n} %s;", ctype, length, arrayTypeName(id)), nil
 }
 
 func buildAggregateTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, ids []types.TypeID, infos []structInfo, tagged map[types.TypeID]bool) (string, error) {
@@ -277,6 +322,16 @@ func buildAggregateTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 			text, err = buildTupleTypedef(unit, snapshot, width, id, tagged)
 		case isOptional(snapshot, id):
 			text, err = buildOptionalTypedef(st, unit, snapshot, width, id, tagged)
+		case isArray(snapshot, id):
+			// An array-of-plain-struct type reached through an aggregate's
+			// field/payload/element dependency is interleaved into this block
+			// at its DFS-postorder position (see orderAggregateTypes' Array
+			// case): its element's plain-struct typedef has already been
+			// emitted earlier in this same block, and the aggregate that
+			// references the array follows it, so emitting the array's own
+			// typedef here satisfies C's define-before-use rule without the
+			// field-array block leading the aggregate block (F5-18).
+			text, err = buildArrayTypedefText(unit, snapshot, width, id)
 		case isStruct(snapshot, id):
 			text, err = buildStructTypedef(st, unit, snapshot, width, structs[id], tagged)
 		}

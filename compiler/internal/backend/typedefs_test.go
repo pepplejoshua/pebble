@@ -526,13 +526,68 @@ func TestEmitArrayOfAggregateStructFieldStillRejected(t *testing.T) {
 	// field-referenced array typedef BEFORE the aggregate block (see Emit's
 	// fieldArrayTypedefs) while its inline `pebble_struct_<Inner> data[2]`
 	// member names a struct typedef not yet defined — a silent C-ordering bug.
-	// The shape must be CONSTRUCTED (reachable) for the check to run; an
-	// unreferenced Holder never reaches orderAggregateTypes.
-	unit, snapshot, entryID, sources := buildFixture(t, "type Inner = struct { value int; };\ntype Holder = struct { arr [2]Inner; };\nfn main() int { let h = Holder.{ arr = [Inner.{ value = 1 }, Inner.{ value = 2 }] }; return h.arr[0].value; }", "main", false)
+	// The element struct must be a genuinely NON-plain aggregate for the guard
+	// to fire: F5-18 admits a PLAIN struct element (its typedef names only
+	// scalar C types and is emitted dependency-first in the aggregate block),
+	// so this fixture nests Inner into another struct (Inner -> Outer), which
+	// keeps the depth>1-through-array rejection. The shape must be CONSTRUCTED
+	// (reachable) for the check to run; an unreferenced Holder never reaches
+	// orderAggregateTypes.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Outer = struct { value int; };\ntype Inner = struct { outer Outer; };\ntype Holder = struct { arr [2]Inner; };\nfn main() int { let h = Holder.{ arr = [Inner.{ outer = Outer.{ value = 1 } }, Inner.{ outer = Outer.{ value = 2 } }] }; return h.arr[0].outer.value; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
 		t.Fatal("Emit accepted a struct whose field is an array of an aggregate, which would emit the array typedef before the element struct typedef is defined")
 	} else if !strings.Contains(err.Error(), "more than one level of nesting") {
 		t.Fatalf("unexpected rejection: %v", err)
+	}
+}
+
+func TestEmitArrayOfPlainStructFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The target of this change: Path contains [3]Point where Point is a
+	// plain struct (only scalar fields). Before the fix this was rejected as
+	// "more than one level of nesting"; after the fix it should compile and
+	// run, returning 7 (p.points[0].x + p.points[2].y = 1 + 6 — points[2] is
+	// { x = 5, y = 6 }, so its y field is 6).
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x i32; y i32; };\ntype Path = struct { points [3]Point; };\nfn main() i32 { var p Path = Path.{ points = [Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }, Point.{ x = 5, y = 6 }] }; return p.points[0].x + p.points[2].y; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Verify all three typedefs exist: Point, Path, and the array type.
+	if !strings.Contains(out, "} pebble_struct_") || strings.Count(out, "} pebble_struct_") < 2 {
+		t.Fatalf("expected at least two struct typedefs:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 7, false)
+}
+
+func TestEmitArrayOfPlainStructMultiFieldCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct with 3+ fields proves no field is lost across the whole array.
+	// Point3D has three distinct fields, and the program reads every field at
+	// every index. All fields are i32 (the source language rejects mixing i32
+	// and int in one addition), and the expected sum 45 fits the 8-bit process
+	// exit code the harness asserts on (an earlier 666 truncated to 154).
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point3D = struct { x i32; y i32; z i32; };\ntype Line = struct { pts [3]Point3D; };\nfn main() i32 { var l Line = Line.{ pts = [Point3D.{ x = 1, y = 2, z = 3 }, Point3D.{ x = 4, y = 5, z = 6 }, Point3D.{ x = 7, y = 8, z = 9 }] }; var sum i32 = 0; sum += l.pts[0].x + l.pts[0].y + l.pts[0].z; sum += l.pts[1].x + l.pts[1].y + l.pts[1].z; sum += l.pts[2].x + l.pts[2].y + l.pts[2].z; return sum; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	// Expected: (1+2+3) + (4+5+6) + (7+8+9) = 6 + 15 + 24 = 45
+	compileAndRun(t, buf.Bytes(), 45, false)
+}
+
+func TestEmitArrayOfNestedStructStillRejected(t *testing.T) {
+	t.Parallel()
+	// Genuinely unsupported case: Holder contains [2]Inner where Inner itself
+	// nests further into another struct (Inner -> Child). This must STILL
+	// cleanly reject with a clear error, not a crash or silent miscompile.
+	unit, snapshot, entryID, sources := buildFixture(t, "type Child = struct { val i32; };\ntype Inner = struct { child Child; };\ntype Holder = struct { arr [2]Inner; };\nfn main() i32 { var h Holder = Holder.{ arr = [Inner.{ child = Child.{ val = 1 } }, Inner.{ child = Child.{ val = 2 } }] }; return h.arr[0].child.val; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
+		t.Fatal("Emit accepted a struct whose field is an array of a struct that itself nests further — this should be rejected")
+	} else if !strings.Contains(err.Error(), "more than one level of nesting") {
+		t.Fatalf("unexpected rejection message: %v", err)
 	}
 }

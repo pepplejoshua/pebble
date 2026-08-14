@@ -1899,6 +1899,93 @@ func selfContainedStructFieldType(unit *tir.Unit, snapshot *types.Snapshot, id t
 	return false
 }
 
+// isPlainStructField reports whether a nominal struct type is a PLAIN struct
+// whose own field set contains only self-contained scalar types (fixed-width
+// integer, bool, char, str, float, or plain enum) — never another struct,
+// tuple, optional, array, slice, pointer, tagged union, untagged union, or
+// function type. This mirrors isPlainStructPayload for a different call site:
+// orderAggregateTypes uses it to decide whether an array-of-struct element
+// is safe to admit past the nesting guard (the DFS-postorder ordering can
+// correctly emit the element's typedef before the array's inline data member
+// references it), while isPlainStructPayload decides whether a struct payload
+// can be hoisted ahead of a union block that names its typedef.
+func isPlainStructField(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if isEnumType(unit, snapshot, id) || isUntaggedUnionType(unit, snapshot, id) {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, arguments, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return false
+	}
+	var substitutions map[symbol.SymbolID]types.TypeID
+	if len(arguments) > 0 {
+		substitutions = structSubstitutions(unit, snapshot, decl, arguments)
+	}
+	for i := range typeDecl.Members {
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType != 0 && substitutions != nil {
+			substituted, err := snapshot.Substitute(fieldType, substitutions)
+			if err != nil {
+				return false
+			}
+			fieldType = substituted
+		}
+		if fieldType == 0 || !selfContainedStructFieldType(unit, snapshot, fieldType) {
+			return false
+		}
+	}
+	return true
+}
+
+// isPlainStructArrayElement reports whether a fixed-array type's element
+// chain bottoms out in a PLAIN struct (see isPlainStructField): the array's
+// inline `elem data[length]` C member names the plain struct's OWN
+// pebble_struct_<typeID>_t typedef (see arrayElementCType's struct case), and
+// that typedef lives in the aggregate block — so such an array type must be
+// emitted interleaved with the aggregates (after its element's typedef, before
+// the aggregate whose field/payload/element references the array), not in the
+// field-array block that leads the aggregate block. An array whose element is
+// a plain enum, tagged/untagged union, tuple, optional, or another aggregate
+// is never admitted here: enum/union elements are rejected by
+// arrayElementCType or the nesting guard, and a tuple/optional element is an
+// aggregate the nesting guard rejects (see orderAggregateTypes' depth check),
+// so the only array element whose typedef names an aggregate-block typedef is
+// a plain struct. A nested array chain ([2][3]Point) is admitted when its
+// leaf is a plain struct, since every array in the chain references the leaf's
+// typedef through its own element chain.
+func isPlainStructArrayElement(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Array {
+		return false
+	}
+	_, elem, ok := key.Array()
+	if !ok {
+		return false
+	}
+	for isArray(snapshot, elem) {
+		key, ok = snapshot.Key(elem)
+		if !ok {
+			return false
+		}
+		_, elem, ok = key.Array()
+		if !ok {
+			return false
+		}
+	}
+	return isStruct(snapshot, elem) && runtimeType(unit, snapshot, elem) == 0 && isPlainStructField(unit, snapshot, elem)
+}
+
 // functionTypeParamCType resolves one function type's parameter to the C type
 // an ordinary Pebble-convention helper's parameter of that type is declared
 // with (see buildHelperFunctions): uint64_t for uint/u64, bool for bool,
