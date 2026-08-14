@@ -549,27 +549,6 @@ func TestEmitRejectsNestedStructFieldAccess(t *testing.T) {
 	emitAndRun(t, "type Inner = struct { x i32; };\ntype Outer = struct { inner Inner; y i32; };\nfn main() i32 { let i Inner = Inner.{ x = 7 }; let o Outer = Outer.{ inner = i, y = 8 }; return o.inner.x; }", false, 7, false)
 }
 
-func TestEmitRejectsStrReassignmentFromLocal(t *testing.T) {
-	t.Parallel()
-	// Reassigning a str local from another str local (s = t) is reachable from
-	// real source (confirmed against a real fixture dump: the Store's value
-	// child is a SymbolValue) but out of scope — this slice is deliberately
-	// literal-to-literal only — so it is a clean rejection naming what was
-	// found.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { var s str = \"hi\"; var t str = \"ho\"; s = t; return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a SymbolValue")
-}
-
-func TestEmitRejectsStrReassignmentFromCall(t *testing.T) {
-	t.Parallel()
-	// Reassigning a str local from a str-returning call (s = g()) is reachable
-	// from real source (confirmed against a real fixture dump: the Store's
-	// value child is a DirectCall) but out of scope — literal-to-literal only —
-	// so it is a clean rejection naming what was found.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn g() str { return \"ho\"; } fn main() i32 { var s str = \"hi\"; s = g(); return 0; }", "main", false)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a DirectCall")
-}
-
 func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
 	t.Parallel()
 	// Reassigning a str local from concatenation (s = "h" + "i") lowers to a
@@ -581,7 +560,7 @@ func TestEmitRejectsStrReassignmentFromConcat(t *testing.T) {
 	// rejection — concatenation/interpolation needs runtime primitives this
 	// backend has none of — as a clean rejection naming what was found.
 	unit, snapshot, entryID := buildStrConcatReassignmentUnit(t)
-	assertEmitRejectsContaining(t, unit, snapshot, entryID, "from a BinaryValue")
+	assertEmitRejectsContaining(t, unit, snapshot, entryID, "BinaryValue")
 }
 
 func TestEmitRejectsNonStrCheckedIndex(t *testing.T) {

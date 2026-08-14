@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -357,6 +358,95 @@ func TestEmitCharReassignmentCompilesAndRuns(t *testing.T) {
 	// then compared against 'b' — the process exits 1 only if the reassignment
 	// actually changed the stored int32_t value.
 	emitAndRun(t, "fn main() i32 { var c char = 'a'; c = 'b'; if c == 'b' { return 1; } else { return 0; } }", false, 1, false)
+}
+
+func TestEmitStrReassignmentFromLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// F5-03: reassigning a str-typed local from ANOTHER str-typed local
+	// (`a = b;`) — the shape buildStoreCore used to reject with "reassigning a
+	// str local from anything other than a string literal is not supported
+	// yet". The new value is a SymbolValue naming an in-scope str local, so
+	// the store must be a whole-struct PebbleStr copy. The effect is observed
+	// indirectly (this backend has no way to return or print a str's
+	// contents): after a = b, both a and b must hold "b" — a == "b" (the
+	// copied value) is true and b == "b" (the source unchanged) is true — so
+	// the then-arm runs and the process exits 7. If the copy were wrong or
+	// skipped, the else-arm would exit 3.
+	emitAndRun(t, "fn main() i32 { var a str = \"a\"; var b str = \"b\"; a = b; if a == \"b\" && b == \"b\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// F5-04: reassigning a str-typed local from a str-returning CALL
+	// (`a = get_str();`) — the shape buildStoreCore used to reject with the
+	// same message, naming a DirectCall instead of a SymbolValue. The store's
+	// new value is built by buildDirectCall (the same machinery buildExpr's
+	// DirectCall case uses), so the emitted C is
+	// `pebble_local_<a> = pebble_fn_<get_str>(ctx);`. The effect is observed
+	// indirectly: a == "hi" (the callee's return) is true after the
+	// reassignment, so the process exits 7; the else-arm would exit 3.
+	emitAndRun(t, "fn get_str() str { return \"hi\"; } fn main() i32 { var a str = \"a\"; a = get_str(); if a == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReassignmentFromCallEvaluatesExactlyOnce(t *testing.T) {
+	t.Parallel()
+	// A call-source str reassignment must evaluate the call exactly ONCE, not
+	// once per use or per splice: counter_and_get() increments a global
+	// counter and returns "hi", so after `a = counter_and_get();` the counter
+	// must be exactly 1 and a must hold "hi". If the call text were duplicated
+	// anywhere in the store's emitted C the counter would be 2 and the else-
+	// arm would exit 3 instead of 7. This mirrors the single-evaluation
+	// discipline proven for every other DirectCall usage in this codebase.
+	emitAndRun(t, "var counter int = 0; fn counter_and_get() str { counter = counter + 1; return \"hi\"; } fn main() i32 { var a str = \"a\"; a = counter_and_get(); if a == \"hi\" && counter == 1 { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrReassignmentFromCallEmittedExactlyOnce(t *testing.T) {
+	t.Parallel()
+	// The emitted-C proof of single evaluation for a call-source str
+	// reassignment: the helper call text must appear exactly once — in the
+	// store's RHS (`pebble_local_<a> = pebble_fn_<get_str>(ctx);`), the same
+	// buildDirectCall machinery a scalar-width call uses — never spliced into
+	// any comparison. The helper body's own pebble_rt_str_from_parts return
+	// text is excluded by anchoring the count to the pebble_fn_ call form.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn get_str() str { return \"hi\"; } fn main() i32 { var a str = \"a\"; a = get_str(); if a == \"hi\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the str-returning helper %d time(s), want exactly once (the store's RHS):\n%s", callCount, out)
+	}
+}
+
+func TestEmitStrReassignmentLiteralAndInterpolatedCShapeUnchanged(t *testing.T) {
+	t.Parallel()
+	// Regression: the two new-value shapes buildStoreCore used to special-case
+	// must keep emitting byte-identical C after the delegation to
+	// buildStrOperand. A literal reassignment is a whole-struct PebbleStr
+	// assignment whose inner construction text is byte-identical to the
+	// declaration's from the same literal —
+	// `pebble_local_<sym> = (PebbleStr){ .data = ..., .len = <N> };` — and an
+	// interpolated-string reassignment is
+	// `pebble_local_<sym> = ({ PebbleStr pebble_tmp_N =
+	// pebble_rt_str_from_parts(ctx, ...); pebble_tmp_N; });`. Both exact C
+	// shapes are asserted, then the program is compiled and run to confirm it
+	// still behaves identically.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var s str = \"x\"; var b bool = true; s = \"hi\"; s = `v={b}`; if s == \"v=true\" { return 7; } else { return 3; } }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"= (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"= ({ PebbleStr pebble_tmp_1 = pebble_rt_str_from_parts(ctx, ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	compileAndRun(t, buf.Bytes(), 7, false)
 }
 
 func TestEmitPointerReassignCompilesAndRuns(t *testing.T) {

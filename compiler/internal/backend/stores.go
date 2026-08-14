@@ -519,42 +519,22 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		}
 		if targetInfo.isStr {
 			// A Store whose place names a str-typed local is a whole-str
-			// reassignment. Two new-value shapes are supported: a string
-			// literal (a StringLiteral), the same single shape a str local's
-			// declaration accepts — this keeps `s = "hi";` working as a
-			// literal-to-literal copy — and an interpolated string
-			// (an InterpolatedString), which must be materialized into a
-			// PebbleStr via the runtime helper pebble_rt_str_from_parts.
-			// The emitted C is a whole-struct reassignment,
-			// `pebble_local_<sym> = (PebbleStr){ .data = ..., .len = <N> };`
-			// for literals, or `pebble_local_<sym> = ({ PebbleStr tmp =
-			// pebble_rt_str_from_parts(...); tmp; });` for interpolated
-			// strings. Reassigning a str local from anything else — a
-			// str-typed local (s = t;), a call result (s = g();), all
-			// confirmed reachable from real source against real fixtures —
-			// is a clean rejection naming what was found, never a guessed
-			// lowering.
-			storeValue, ok := unit.Node(statement.Children[1])
-			if !ok {
-				return "", fmt.Errorf("%s reassignment references invalid value node %d", context, statement.Children[1])
-			}
-			if storeValue.Kind == tir.InterpolatedString {
-				callExpr, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, storeValue, scope, width)
-				if err != nil {
-					return "", err
-				}
-				st.interpolatedStringCounter++
-				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
-				return fmt.Sprintf("%s = ({ PebbleStr %s = %s; %s; })", lvalue, tempName, callExpr, tempName), nil
-			}
-			if storeValue.Kind != tir.StringLiteral {
-				return "", fmt.Errorf("%s reassigns symbol %d, a str-typed local, from a %s; reassigning a str local from anything other than a string literal is not supported yet", context, place.Symbol, storeValue.Kind)
-			}
-			valueText, err := buildStrLiteralValue(storeValue)
+			// reassignment — `s = "hi";`, `s = t;`, `s = g();`,
+			// `s = `v={x}`;`. The new value is built by buildStrOperand,
+			// the same general str-value builder comparison operands, call
+			// arguments, and str-returning tails use — a strict superset of
+			// the two shapes this case used to special-case (a StringLiteral
+			// and an InterpolatedString, both still emitted byte-identically
+			// to the old dedicated code below), so a str local can now be
+			// reassigned from any str value the grammar accepts, including a
+			// str-typed local reference (s = t;) and a str-returning call
+			// result (s = g();). The emitted C is a whole-struct
+			// reassignment, `pebble_local_<sym> = <strValue>;`.
+			storeValue, err := buildStrOperand(st, unit, snapshot, fileSet, statement.Children[1], scope, width)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s = (PebbleStr)%s", lvalue, valueText), nil
+			return fmt.Sprintf("%s = %s", lvalue, storeValue), nil
 		}
 		if targetInfo.isChar {
 			// A Store whose place names a char-typed local is a char
