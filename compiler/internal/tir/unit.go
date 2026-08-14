@@ -152,6 +152,7 @@ func (u *Unit) TypeDeclarations() []TypeDecl {
 			Members:     append([]symbol.SymbolID(nil), d.Members...),
 			MemberTypes: append([]types.TypeID(nil), d.MemberTypes...),
 			Node:        d.Node,
+			Union:       d.Union,
 		}
 	}
 	return out

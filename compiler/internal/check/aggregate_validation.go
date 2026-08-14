@@ -64,18 +64,33 @@ func validateAggregateRecords(handoff *solveHandoff, records *solvedRecords, dia
 			}
 		}
 
+		// byName resolves a construction-literal field name to its declared
+		// member symbol. It is shared by the struct and union cases below: a
+		// record literal's field may be resolved by the resolver when the
+		// literal carries a base-type name (Data.{ a = 5 }) and stay unresolved
+		// for the anonymous form (.{ a = 5 }), where the member is re-derived
+		// by name against the solved destination declaration here. Both kinds
+		// are indexed so the union case (whose members are registered as
+		// SymbolVariant, like a tagged union's) can re-derive an anonymous
+		// literal's field too; a struct's members are all SymbolField.
+		byName := make(map[string]symbol.SymbolID)
+		for _, id := range orderedMembers {
+			selected, found := symbolsByID[id]
+			if found && (selected.Kind == symbol.SymbolField || selected.Kind == symbol.SymbolVariant) {
+				byName[selected.Name] = id
+			}
+		}
+
 		switch aggregate.Kind {
 		case aggregateStruct:
 			if declaration.Nominal != infer.NominalStruct {
 				report(CodeAggregate, aggregate.Header)
 				continue
 			}
-			byName := make(map[string]symbol.SymbolID)
 			orderedFields := make([]symbol.SymbolID, 0, len(orderedMembers))
 			for _, id := range orderedMembers {
 				selected, found := symbolsByID[id]
 				if found && selected.Kind == symbol.SymbolField {
-					byName[selected.Name] = id
 					orderedFields = append(orderedFields, id)
 				}
 			}
@@ -101,6 +116,37 @@ func validateAggregateRecords(handoff *solveHandoff, records *solvedRecords, dia
 				if !seen[id] {
 					fieldReport(CodeMember, fieldValue{}, aggregate.Header)
 				}
+			}
+
+		case aggregateUnion:
+			if declaration.Nominal != infer.NominalUnion {
+				report(CodeAggregate, aggregate.Header)
+				continue
+			}
+			// An untagged union's construction must specify exactly one field:
+			// every field shares the same storage, so setting more than one (or
+			// none) has no meaning. Zero and multi-field literals are rejected
+			// with the construction diagnostic, matching how the struct case
+			// reports a whole-construction problem on the header.
+			if len(aggregate.Fields) != 1 {
+				report(CodeAggregate, aggregate.Header)
+				continue
+			}
+			field := aggregate.Fields[0]
+			id := field.Member
+			selected, found := symbolsByID[id]
+			if id == 0 {
+				id, found = byName[field.Name]
+				selected, found = symbolsByID[id]
+			}
+			// The parser registers an untagged union's members as SymbolVariant
+			// exactly like a tagged union's, but under the untagged-union
+			// contract they are real fields: a construction must name one of
+			// them, and any one of them is a valid construction target. Both
+			// kinds are accepted here; the nominal check above already
+			// restricted this case to NominalUnion.
+			if !found || (selected.Kind != symbol.SymbolField && selected.Kind != symbol.SymbolVariant) {
+				fieldReport(CodeMember, field, aggregate.Header)
 			}
 
 		case aggregateEnumVariant:

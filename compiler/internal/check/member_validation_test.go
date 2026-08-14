@@ -256,6 +256,71 @@ type Result[T, E] = union enum {
 	}
 }
 
+func TestValidateMemberRecordsAcceptsUntaggedUnionFieldReadWrite(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn check() void {
+    var d Data = Data.{ a = 5 };
+    let x i32 = d.a;
+    let y u32 = d.b;
+    d.a = 10;
+    d.b = 20;
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if !validateMemberRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("untagged-union field read/write of any declared member was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsRejectsUnknownUntaggedUnionField(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn read(d Data) i32 {
+    return d.nope;
+}
+`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	if !diagnostics.HasErrors() {
+		t.Fatalf("unknown untagged-union field read was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateMemberRecordsTaggedUnionNarrowingUnchanged(t *testing.T) {
+	source := `
+type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    switch self {
+    case .Ok: return self.Ok;
+    case .Err: return 0;
+    }
+    return 0;
+}
+fn check() void {
+    var d Data = Data.{ Ok = 42 };
+    let x int = get(d);
+}
+`
+	diagnostics, handoff, records := runMemberValidation(t, source)
+	if !validateMemberRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("tagged-union construction and narrowed variant read was rejected: %+v", diagnostics.Items())
+	}
+	wrongCase := `
+type Data = union enum { Ok i32; Err str; };
+fn get(self Data) int {
+    switch self {
+    case .Err: return self.Ok;
+    case .Ok: return 0;
+    }
+    return 0;
+}
+`
+	diagnostics, handoff, records = runMemberValidation(t, wrongCase)
+	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("variant read in a different case arm was not rejected: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateMemberRecordsRejectsGenericSelfVariantReadOutsideSwitch(t *testing.T) {
 	// And a generic-self variant read outside any narrowing arm stays rejected.
 	source := `

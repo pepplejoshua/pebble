@@ -90,7 +90,7 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			// dependency — mirroring collectStructTypesWalk's runtimeType==0
 			// guard). Without it a struct containing a runtime-typed field would
 			// be miscounted as nested and rejected by the depth check below.
-			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || (isStruct(snapshot, d) && runtimeType(unit, snapshot, d) == 0)) && !isEnumType(unit, snapshot, d) {
+			if (isTuple(snapshot, d) || isOptional(snapshot, d) || isArray(snapshot, d) || (isStruct(snapshot, d) && runtimeType(unit, snapshot, d) == 0)) && !isEnumType(unit, snapshot, d) && !isUntaggedUnionType(unit, snapshot, d) {
 				if isArray(snapshot, d) {
 					// An array whose element is itself an array is fully
 					// self-contained within the array-typedef machinery:
@@ -167,7 +167,7 @@ func orderAggregateTypes(unit *tir.Unit, snapshot *types.Snapshot, tuples, optio
 			// into the postorder and buildStructTypedef would reject it. Skip it
 			// entirely — mirroring collectStructTypesWalk's runtimeType==0 guard
 			// (a runtime type needs no typedef of its own).
-			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || (isStruct(snapshot, dep) && runtimeType(unit, snapshot, dep) == 0)) && !isEnumType(unit, snapshot, dep) {
+			if (isTuple(snapshot, dep) || isOptional(snapshot, dep) || (isStruct(snapshot, dep) && runtimeType(unit, snapshot, dep) == 0)) && !isEnumType(unit, snapshot, dep) && !isUntaggedUnionType(unit, snapshot, dep) {
 				if err := dfs(dep); err != nil {
 					return err
 				}
@@ -560,6 +560,99 @@ func buildUnionTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, 
 	}
 	structText := fmt.Sprintf("typedef struct {\n    %s tag;\n    union {\n%s\n    } payload;\n} %s;", enumTypeName(info.typ), strings.Join(members, "\n"), unionTypeName(info.typ))
 	return enumText + "\n" + structText, nil
+}
+
+// untaggedUnionFieldCType is the C type one untagged-union field of the given
+// type is declared with in its union's typedef, restricted to the SCALAR field
+// types this slice supports: any fixed-width integer builtin resolved to its
+// OWN width (int32_t/int64_t for the entry's width, uint64_t for uint/u64, and
+// the narrow-width int8_t/int16_t/uint8_t/uint16_t/uint32_t for i8/i16/u8/u16/
+// u32 — each at its own width, independent of the ambient entry width), bool
+// for a bool field, and int32_t for a char field. Any other field type — a
+// struct, array, tuple, optional, str, plain enum, or tagged union — is a
+// clean rejection naming what is unsupported, leaving non-scalar untagged-union
+// fields for a future slice.
+func untaggedUnionFieldCType(snapshot *types.Snapshot, id types.TypeID) (string, error) {
+	if fieldWidth, integerField := resolvedBuiltin(snapshot, id); integerField && cType(fieldWidth) != "" {
+		return cType(fieldWidth), nil
+	}
+	if isBool(snapshot, id) {
+		return "bool", nil
+	}
+	if isChar(snapshot, id) {
+		return "int32_t", nil
+	}
+	return "", fmt.Errorf("untagged-union field type %s is not supported: this slice supports only scalar (fixed-width integer, uint, bool, char) untagged-union fields; struct, array, tuple, optional, str, and enum fields are a future slice", describeType(snapshot, id))
+}
+
+// buildUntaggedUnionTypedefs builds the C text of one real C union typedef per
+// untagged-union type in infos, in order, each joined by a newline:
+//
+//	typedef union {
+//	    int32_t pebble_field_25;
+//	    bool pebble_field_26;
+//	} pebble_union_<typeID>_t;
+//
+// The caller (Emit) supplies infos from the untagged-union-type collection
+// pass, so every untagged union type the emitted program references has
+// exactly one typedef here, written before any function definition in the
+// final output. An untagged union's typedef carries NO tag field at all: it is
+// the deliberate unsafe reinterpret-the-bytes contract, matching V1's direct C
+// union semantics — the caller's collection pass has already excluded every
+// untagged union from the struct collection, so no pebble_struct_<typeID>_t
+// typedef ever duplicates this one.
+func buildUntaggedUnionTypedefs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, infos []unionInfo) (string, error) {
+	texts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		text, err := buildUntaggedUnionTypedef(st, unit, snapshot, width, info)
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+// buildUntaggedUnionTypedef builds the C text of one untagged-union type's
+// real C union typedef:
+//
+//	typedef union {
+//	    int32_t pebble_field_25;
+//	    bool pebble_field_26;
+//	} pebble_union_<typeID>_t;
+//
+// with one member per declared field, in the union's *declared* order (from
+// the TypeDecl's Members list, resolved by resolveUntaggedUnionInfo), each
+// named pebble_field_<memberSymbolID> exactly like a struct field, so a field
+// read (`d.a`) and a field write (`d.a = e;`) are plain `.pebble_field_<m>`
+// projections on the same C union storage. Each member's C type comes from
+// untaggedUnionFieldCType, which restricts this first slice to scalar field
+// types. There is NO tag field and no discriminant enum — the tagged-union
+// shape buildUnionTypedef emits is deliberately absent, since there is nothing
+// to track or check under the unsafe contract. A unionInfo whose TypeID is not
+// an untagged-union Nominal type in the snapshot is a clean rejection, not a
+// guessed layout (defense for hand-built IR; collectUntaggedUnionTypes has
+// already resolved every collected TypeID through resolveUntaggedUnionInfo).
+func buildUntaggedUnionTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, info unionInfo) (string, error) {
+	key, ok := snapshot.Key(info.typ)
+	if !ok {
+		return "", fmt.Errorf("union type %d is not in the type snapshot", info.typ)
+	}
+	if key.Kind() != types.Nominal {
+		return "", fmt.Errorf("type %s is a %v, want an untagged-union type", unionTypeName(info.typ), key.Kind())
+	}
+	if !isUntaggedUnionType(unit, snapshot, info.typ) {
+		return "", fmt.Errorf("type %s is not an untagged union type", unionTypeName(info.typ))
+	}
+	members := make([]string, len(info.members))
+	for i, member := range info.members {
+		ctype, err := untaggedUnionFieldCType(snapshot, member.payloadType)
+		if err != nil {
+			return "", fmt.Errorf("union type %s: %v", unionTypeName(info.typ), err)
+		}
+		members[i] = "    " + ctype + fmt.Sprintf(" pebble_field_%d;", member.member)
+	}
+	return fmt.Sprintf("typedef union {\n%s\n} %s;", strings.Join(members, "\n"), unionTypeName(info.typ)), nil
 }
 
 // buildEnumTypedefs builds the C text of one enum typedef per plain enum type

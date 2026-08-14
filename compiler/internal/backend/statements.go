@@ -2543,6 +2543,17 @@ func buildLeadingStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 			}
 			return buildEnumLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
 		}
+		if isUntaggedUnionType(unit, snapshot, initValue.Type) {
+			// An untagged-union-typed local (`var d = Data.{ a = 5 };`): its
+			// type is the initializer value's Type (the Initialize node
+			// carries no Type itself — same as the compound locals above). It
+			// is Nominal exactly like a struct's, so this check must precede
+			// the struct check below; the union's own C typedef is a real
+			// `typedef union { ... }` (see buildUntaggedUnionTypedef), NOT the
+			// pebble_struct_<typeID>_t the struct path would declare, so a
+			// union local is emitted by its own builder.
+			return buildUntaggedUnionLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)
+		}
 		if isStruct(snapshot, initValue.Type) {
 			if runtimeType(unit, snapshot, initValue.Type) != 0 {
 				return buildRuntimeLocalDeclaration(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width)

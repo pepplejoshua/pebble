@@ -326,6 +326,16 @@ type TypeDecl struct {
 	Members     []symbol.SymbolID
 	MemberTypes []types.TypeID
 	Node        NodeID
+	// Union marks an UNTAGGED union declaration (`union { ... }`, NominalUnion
+	// in the checker): every member is a real field exactly like a struct's,
+	// but all members overlap in the same storage. The backend needs this to
+	// distinguish an untagged union's C shape (a real `typedef union { ... }`)
+	// from a plain struct's, since the two are indistinguishable in the type
+	// snapshot (both Nominal with FieldDeclaration members) and in the TIR node
+	// shapes they construct through (both use RecordConstruct/FieldPlace). It
+	// is deliberately false for a struct, a plain enum, and a tagged union
+	// (`union enum { ... }`, whose members are variants).
+	Union bool
 }
 
 // FunctionDecl is the immutable function declaration container stored in a Unit.

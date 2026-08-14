@@ -239,6 +239,18 @@ func helperSignature(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, he
 			}
 			params = append(params, ctypeName+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{enumType: param.Type}
+		case isUntaggedUnionType(unit, snapshot, param.Type):
+			// An untagged-union-typed parameter seeds the callee's locals scope
+			// as a nominal aggregate local (localInfo.structType, the same slot
+			// a struct-typed parameter uses), exactly as a struct-typed
+			// parameter does, so field reads and writes inside the body resolve
+			// through the existing Load(FieldPlace)/FieldPlace machinery
+			// unchanged. The C parameter is declared with the union's own real
+			// `typedef union { ... }` name (pebble_union_<typeID>_t, see
+			// buildUntaggedUnionTypedef), so passing the whole union by value
+			// is trivially valid C — the direct C-union pass-by-value contract.
+			params = append(params, unionTypeName(param.Type)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{structType: param.Type}
 		case isStruct(snapshot, param.Type):
 			// A struct-typed parameter seeds the callee's locals scope as a
 			// struct local (localInfo.structType), exactly as a struct
@@ -433,6 +445,22 @@ func helperSignature(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, he
 		// would reject an enum-typed value.
 		returnType = enumTypeName(helper.decl.ResultType)
 		result = resultInfo{enumType: helper.decl.ResultType}
+	case isUntaggedUnionType(unit, snapshot, helper.decl.ResultType):
+		// An untagged-union-result helper is declared with the union's own
+		// real `typedef union { ... }` name (pebble_union_<typeID>_t, see
+		// buildUntaggedUnionTypedef) as its C return type — the same typedef a
+		// union local is declared with, no new typedef shape needed — and
+		// resultInfo records the aggregate-result shape
+		// (resultInfo.structType, the same slot a struct result uses) so
+		// buildBlock's tail-position Return builds its value via
+		// buildAggregateReturnValue (a SymbolValue naming a union-typed local
+		// or a fresh RecordConstruct union literal), which accepts an
+		// untagged-union-typed aggregate value through its nominal dispatch
+		// (see buildNestedAggregateValue). This must precede the isStruct case
+		// below: an untagged union is Nominal exactly like a struct, but its
+		// real C type is the union typedef, never a struct typedef.
+		returnType = unionTypeName(helper.decl.ResultType)
+		result = resultInfo{structType: helper.decl.ResultType}
 	case isStruct(snapshot, helper.decl.ResultType):
 		returnType = runtimeTypeName(unit, snapshot, helper.decl.ResultType)
 		result = resultInfo{structType: helper.decl.ResultType}
@@ -2155,6 +2183,13 @@ func buildAggregateReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	if node.Kind == tir.RecordConstruct {
 		if node.Type != result.structType {
 			return "", "", fmt.Errorf("%s returns a RecordConstruct of type %s, not a struct-typed value of type %s", context, describeType(snapshot, node.Type), structTypeName(result.structType))
+		}
+		if isUntaggedUnionType(unit, snapshot, result.structType) {
+			// An untagged-union construction returned by value: emitted as the
+			// union's own `typedef union { ... }` compound literal, never the
+			// struct compound literal a struct return would build.
+			expr, err := buildUntaggedUnionValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
+			return "", expr, err
 		}
 		expr, err := buildStructValueExpr(st, unit, snapshot, fileSet, node, locals, context, width)
 		return "", expr, err

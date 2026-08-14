@@ -177,7 +177,7 @@ func (s *irBuildState) buildEnumVariantShorthand(record *expressionRecord, node 
 
 func (s *irBuildState) buildRecordConstruct(record *expressionRecord, node *tir.Node) bool {
 	aggregate, ok := s.aggregatesByRecord[record.Specialized]
-	if !ok || aggregate == nil || aggregate.Kind != aggregateStruct || aggregate.Declaration == 0 {
+	if !ok || aggregate == nil || (aggregate.Kind != aggregateStruct && aggregate.Kind != aggregateUnion) || aggregate.Declaration == 0 {
 		return false
 	}
 	sorted := make([]fieldValue, len(aggregate.Fields))

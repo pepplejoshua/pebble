@@ -299,15 +299,23 @@ func substituteDeclarationSignature(snapshot *types.Snapshot, decl tir.Node, sub
 // from usage evidence: a type whose first member has a FieldDeclaration node is
 // a struct, and one whose first member has a VariantDeclaration node is an
 // enum, regardless of whether the type is ever constructed or field-accessed
-// anywhere in the program. (An older version of this function guessed from
-// FieldPlace/RecordConstruct usage evidence and defaulted to "enum" when no
-// evidence was found either way — wrong for a struct that is declared but
-// never constructed or field-accessed anywhere, e.g. only ever named as a
-// `none`-optional's payload type, which produced an invalid reference to an
-// enum typedef that was never emitted. The declaration-node signal has no such
-// blind spot: it needs no usage evidence at all.)
+// anywhere in the program. An UNTAGGED union is deliberately NOT enum-shaped
+// here even though its members are parsed as VariantDeclaration nodes (the
+// parser emits VariantDecl for both union forms): it is its own Nominal family
+// with a real `typedef union { ... }` C shape (see isUntaggedUnionType), so the
+// enum tests it gates must report false for it or an untagged union would be
+// collected/emitted as a plain enum or tagged union. (An older version of this
+// function guessed from FieldPlace/RecordConstruct usage evidence and defaulted
+// to "enum" when no evidence was found either way — wrong for a struct that is
+// declared but never constructed or field-accessed anywhere, e.g. only ever
+// named as a `none`-optional's payload type, which produced an invalid
+// reference to an enum typedef that was never emitted. The declaration-node
+// signal has no such blind spot: it needs no usage evidence at all.)
 func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
 	if snapshot == nil || unit == nil {
+		return false
+	}
+	if isUntaggedUnionType(unit, snapshot, id) {
 		return false
 	}
 	key, ok := snapshot.Key(id)
@@ -343,6 +351,35 @@ func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool 
 	return true
 }
 
+// isUntaggedUnionType reports whether id is an UNTAGGED union type (`union {
+// ... }`, the checker's NominalUnion) rather than a plain struct, a plain enum,
+// or a tagged union (`union enum { ... }`). The type snapshot cannot tell these
+// apart — every one is a Nominal key carrying only the declaration symbol — and
+// the unit's member-declaration nodes cannot either (an untagged union's
+// members are parsed as VariantDeclaration exactly like a tagged union's), so
+// the discriminator is the checker's declaration-level signal, published onto
+// the TypeDecl container as its Union flag (see tir.TypeDecl and
+// buildTypes). An untagged union's C shape is a real minimal `typedef union {
+// ... }` with no tag field (see buildUntaggedUnionTypedef), so every backend
+// dispatch that chooses between a struct typedef, an enum typedef, and a
+// tagged-union typedef pair must route an untagged union to its own union
+// typedef name instead.
+func isUntaggedUnionType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
+	if unit == nil || snapshot == nil {
+		return false
+	}
+	key, ok := snapshot.Key(id)
+	if !ok || key.Kind() != types.Nominal {
+		return false
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return false
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	return ok && typeDecl.Union
+}
+
 // isDefinitelyEnumType reports whether id is a Nominal type whose declared
 // members are enum variants by positive declaration-node evidence: at least
 // one member carries a VariantDeclaration node and none carries a
@@ -355,6 +392,9 @@ func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool 
 // "is this enum-shaped" test everywhere else.
 func isDefinitelyEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool {
 	if unit == nil || snapshot == nil {
+		return false
+	}
+	if isUntaggedUnionType(unit, snapshot, id) {
 		return false
 	}
 	key, ok := snapshot.Key(id)
@@ -546,6 +586,9 @@ func arrayElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 		if isEnumType(unit, snapshot, id) {
 			return "", fmt.Errorf("array element type %s is an enum type; enum-typed array elements are not supported yet", enumTypeName(id))
 		}
+		if isUntaggedUnionType(unit, snapshot, id) {
+			return "", fmt.Errorf("array element type %s is an untagged-union type; untagged-union array elements are not supported yet", unionTypeName(id))
+		}
 		return structTypeName(id), nil
 	}
 	// A scalar integer element resolves to its OWN width, not the ambient
@@ -603,6 +646,9 @@ func sliceElementCType(unit *tir.Unit, snapshot *types.Snapshot, width types.Bui
 	if isStruct(snapshot, id) {
 		if isUnionEnumType(unit, snapshot, id) {
 			return "", fmt.Errorf("slice element type %s is a tagged-union (union enum) type; tagged-union slice elements are not supported yet", describeType(snapshot, id))
+		}
+		if isUntaggedUnionType(unit, snapshot, id) {
+			return "", fmt.Errorf("slice element type %s is an untagged-union type; untagged-union slice elements are not supported yet", describeType(snapshot, id))
 		}
 		if isDefinitelyEnumType(unit, snapshot, id) {
 			return enumTypeName(id), nil
@@ -1157,6 +1203,15 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	if isDefinitelyEnumType(unit, snapshot, pointee) {
 		return enumTypeName(pointee) + " *"
 	}
+	// An untagged-union pointee (a pointer to an untagged union value) is
+	// declared with the union's own real `typedef union { ... }` name followed
+	// by ` *` — it must be resolved before the isStruct fall-through (an
+	// untagged union is Nominal exactly like a struct — see
+	// isUntaggedUnionType), which would otherwise name a nonexistent
+	// pebble_struct_<id>_t.
+	if isUntaggedUnionType(unit, snapshot, pointee) {
+		return unionTypeName(pointee) + " *"
+	}
 	if isStruct(snapshot, pointee) {
 		return structTypeName(pointee) + " *"
 	}
@@ -1329,6 +1384,13 @@ func sizeofCTypeName(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, id
 	if isEnumType(unit, snapshot, id) {
 		return enumTypeName(id), nil
 	}
+	// An untagged union's `sizeof` sizes its own real `typedef union { ... }`
+	// (pebble_union_<typeID>_t, see buildUntaggedUnionTypedef), never the
+	// struct typedef the isStruct fall-through would name — it must be resolved
+	// before isStruct, which reports true for any Nominal including a union.
+	if isUntaggedUnionType(unit, snapshot, id) {
+		return unionTypeName(id), nil
+	}
 	if isStruct(snapshot, id) {
 		return structTypeName(id), nil
 	}
@@ -1468,6 +1530,15 @@ func structFieldCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, w
 	if runtimeType(unit, snapshot, id) != 0 {
 		return runtimeTypeName(unit, snapshot, id), nil
 	}
+	// An untagged-union field's C type is the union's own real `typedef union
+	// { ... }` name (pebble_union_<typeID>_t, see buildUntaggedUnionTypedef),
+	// the same C type a union local is declared with — it must be resolved
+	// before the isStruct case (an untagged union is Nominal exactly like a
+	// struct — see isUntaggedUnionType), which would otherwise name a
+	// nonexistent pebble_struct_<id>_t.
+	if isUntaggedUnionType(unit, snapshot, id) {
+		return unionTypeName(id), nil
+	}
 	if isStruct(snapshot, id) {
 		// A tagged union and a plain enum are both enum-shaped (isEnumType
 		// reports true for each), but only a plain enum's C representation is a
@@ -1573,6 +1644,13 @@ func optionalPayloadCType(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		}
 		if isEnumType(unit, snapshot, id) {
 			return enumTypeName(id), nil
+		}
+		if isUntaggedUnionType(unit, snapshot, id) {
+			// An untagged-union optional payload is out of scope for this first
+			// slice (untagged-union values as optional payloads are a future
+			// slice): cleanly rejected here, at the typedef build, rather than
+			// mis-emitted as a nonexistent struct typedef.
+			return "", fmt.Errorf("optional payload type %s is an untagged-union type; untagged-union optional payloads are not supported yet", describeType(snapshot, id))
 		}
 		return structTypeName(id), nil
 	}

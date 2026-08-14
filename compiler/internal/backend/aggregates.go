@@ -181,6 +181,56 @@ func resolveEnumInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) 
 	return enumInfo{typ: id, decl: decl, variants: append([]symbol.SymbolID(nil), typeDecl.Members...)}, nil
 }
 
+// resolveUntaggedUnionInfo turns one collected UNTAGGED union TypeID into a
+// unionInfo with every declared member resolved. The declaration symbol comes
+// from the type's own Nominal key (TypeKey.Nominal); the declared member order
+// comes from the corresponding TypeDecl's Members (unit.TypeDeclarations), the
+// same mechanism resolveStructInfo uses for a struct's declared field order.
+// Every declared member is a real field whose C union member the typedef
+// declares (unlike a tagged union's unionInfo, whose members list only the
+// variants actually constructed — an untagged union's fields must ALL be
+// declared in the typedef, since reading any of them is always legal under the
+// unsafe reinterpret-the-bytes contract). Each member's type comes from
+// TypeDecl.MemberTypes. The type must actually be an untagged union — the
+// declaration-level Union signal — not a struct or tagged union that shares
+// the Nominal key shape, so a collected non-untagged-union Nominal type is a
+// clean rejection, not a guessed layout.
+func resolveUntaggedUnionInfo(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (unionInfo, error) {
+	key, ok := snapshot.Key(id)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %d is not in the type snapshot", id)
+	}
+	if key.Kind() != types.Nominal {
+		return unionInfo{}, fmt.Errorf("type %s is a %v, want an untagged-union type", unionTypeName(id), key.Kind())
+	}
+	if !isUntaggedUnionType(unit, snapshot, id) {
+		return unionInfo{}, fmt.Errorf("type %s is not an untagged union type", unionTypeName(id))
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return unionInfo{}, fmt.Errorf("type %s has no nominal declaration", unionTypeName(id))
+	}
+	typeDecl, ok := findTypeDeclaration(unit, decl)
+	if !ok {
+		return unionInfo{}, fmt.Errorf("union type %s has no TypeDeclaration for symbol %d in the unit", unionTypeName(id), decl)
+	}
+	if len(typeDecl.Members) == 0 {
+		return unionInfo{}, fmt.Errorf("union type %s has no declared members", unionTypeName(id))
+	}
+	members := make([]unionMemberInfo, len(typeDecl.Members))
+	for i, member := range typeDecl.Members {
+		fieldType := types.TypeID(0)
+		if i < len(typeDecl.MemberTypes) {
+			fieldType = typeDecl.MemberTypes[i]
+		}
+		if fieldType == 0 {
+			return unionInfo{}, fmt.Errorf("union type %s member symbol %d has no resolvable type in the unit", unionTypeName(id), member)
+		}
+		members[i] = unionMemberInfo{member: member, payloadType: fieldType}
+	}
+	return unionInfo{typ: id, decl: decl, members: members}, nil
+}
+
 // containsVariant reports whether id is one of the variant symbols in variants.
 func containsVariant(variants []symbol.SymbolID, id symbol.SymbolID) bool {
 	for _, variant := range variants {
@@ -1175,6 +1225,21 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 				return "", "", err
 			}
 			expr = built
+		case isUntaggedUnionType(unit, snapshot, fieldType):
+			// An untagged-union-typed field's construction value (`Holder.{ u =
+			// Data.{ a = 5 } }`): the field's C type is the union's own
+			// pebble_union_<typeID>_t typedef (see structFieldCType), and the
+			// value is a union construction built by the same
+			// buildUntaggedUnionValueExpr a nested aggregate or inline call
+			// argument uses — NOT the nested-aggregate grammar the isStruct case
+			// below would send it to (an untagged union is Nominal exactly like a
+			// struct — see isUntaggedUnionType — but its value is a C union
+			// compound literal, never a struct one).
+			built, err := buildUntaggedUnionValueExpr(st, unit, snapshot, fileSet, valueNode, scope, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			expr = built
 		case isEnumType(unit, snapshot, fieldType):
 			// An enum-typed field's construction value (Entry's `state = .Empty`,
 			// std/hmap.peb's insert) is a variant literal — an EnumVariantValue or
@@ -1301,6 +1366,60 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		preStatements = strings.Join(pres, "\n")
 	}
 	return preStatements, "{ " + strings.Join(inits, ", ") + " }", nil
+}
+
+// buildUntaggedUnionBraceList builds the C brace-list content of one UNTAGGED
+// union construction (a `Data.{ a = 5 }` RecordConstruct), `{ .pebble_field_<m>
+// = <expr> }`, with exactly one designated member — the single field the
+// union literal specifies. The field's member symbol is resolved from the
+// RecordConstruct's Fields (the checker names it from the construction site),
+// its C type from the union's declared members (declaredFieldType), and the
+// field value is built by the grammar its own scalar type selects — buildExpr
+// at the field's OWN resolved integer width, buildUintExpr for a uint field,
+// buildBoolExpr for a bool field, buildCharOperand for a char field. This
+// first slice supports only scalar (integer, uint, bool, char) union fields;
+// any other field type is a clean rejection naming what is unsupported. The
+// returned brace list is shared by the local-declaration path
+// (buildUntaggedUnionLocalDeclaration embeds it in the declaration statement)
+// and the value path (buildUntaggedUnionValueExpr wraps it in a C99 compound
+// literal), exactly as buildStructBraceList is shared by structs.
+func buildUntaggedUnionBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if !isUntaggedUnionType(unit, snapshot, node.Type) {
+		return "", fmt.Errorf("%s contains a construction of type %s, which is not an untagged-union type", context, describeType(snapshot, node.Type))
+	}
+	if len(node.Fields) != 1 {
+		return "", fmt.Errorf("%s constructs an untagged union of type %s with %d field initializer(s), want exactly one (every union field shares the same storage)", context, unionTypeName(node.Type), len(node.Fields))
+	}
+	field := node.Fields[0]
+	valueNode, ok := unit.Node(field.Value)
+	if !ok {
+		return "", fmt.Errorf("%s contains an untagged-union construction of type %s referencing invalid field value node %d", context, unionTypeName(node.Type), field.Value)
+	}
+	fieldType, found := declaredFieldType(unit, snapshot, node.Type, field.Field)
+	if !found {
+		fieldType = valueNode.Type
+	}
+	var expr string
+	var err error
+	fieldWidth, integerField := resolvedBuiltin(snapshot, fieldType)
+	switch {
+	case integerField && cType(fieldWidth) != "" && !isUint(snapshot, fieldType):
+		// Any fixed-width integer field other than uint is built at its OWN
+		// resolved width, mirroring buildStructBraceList.
+		expr, err = buildExpr(st, unit, snapshot, fileSet, field.Value, scope, fieldWidth, width)
+	case isUint(snapshot, fieldType):
+		expr, err = buildUintExpr(st, unit, snapshot, fileSet, field.Value, scope, width)
+	case isBool(snapshot, fieldType):
+		expr, err = buildBoolExpr(st, unit, snapshot, fileSet, field.Value, scope, width)
+	case isChar(snapshot, fieldType):
+		expr, err = buildCharOperand(st, unit, snapshot, fileSet, field.Value, scope, width)
+	default:
+		return "", fmt.Errorf("%s union field %d is %s, which is not supported as an untagged-union field: this slice supports only scalar (fixed-width integer, uint, bool, char) untagged-union fields; struct, array, tuple, optional, str, and enum fields are a future slice", context, field.Field, describeType(snapshot, fieldType))
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("{ .pebble_field_%d = %s }", field.Field, expr), nil
 }
 
 // buildStructArrayFieldValue builds the C expression a fixed-array-typed struct

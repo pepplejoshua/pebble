@@ -276,7 +276,7 @@ func (value retainedRecord) payloadResources() ([]valueID, uint64, bool) {
 	if value.Aggregate != nil {
 		payloads++
 		aggregate := value.Aggregate
-		if aggregate.Header != value.Header || aggregate.Kind < aggregateStruct || aggregate.Kind > aggregateTaggedVariant || aggregate.Result == 0 {
+		if aggregate.Header != value.Header || aggregate.Kind < aggregateStruct || aggregate.Kind > aggregateUnion || aggregate.Result == 0 {
 			return nil, 0, false
 		}
 		add(aggregate.Result, aggregate.Receiver)

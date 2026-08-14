@@ -110,6 +110,7 @@ func (b *Builder) AddTypeDecl(t TypeDecl) error {
 		Members:     append([]symbol.SymbolID(nil), t.Members...),
 		MemberTypes: append([]types.TypeID(nil), t.MemberTypes...),
 		Node:        t.Node,
+		Union:       t.Union,
 	})
 	return nil
 }

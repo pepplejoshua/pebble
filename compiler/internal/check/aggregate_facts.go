@@ -14,6 +14,7 @@ const (
 	aggregateStruct aggregateKind = iota + 1
 	aggregateEnumVariant
 	aggregateTaggedVariant
+	aggregateUnion
 )
 
 type fieldValue struct {
@@ -310,14 +311,24 @@ func (w *walker) prepareRecord(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 // so the array literal's own element inference/coercion can unify against it
 // (`.{ data = [1, 2, 3] }` into a [3]i32 field). When the destination is not
 // concrete at walk time (rp.declaration == 0), the member stays deferred and
-// buildRecordConstruct's post-solve re-derivation closes the gap.
+// buildRecordConstruct's post-solve re-derivation closes the gap. An untagged
+// union's members are registered as SymbolVariant (the parser emits VariantDecl
+// for both union forms), so they are accepted here as well when the declaration
+// is an untagged union — the anonymous .{ a = 5 } form against a union
+// destination re-derives its member exactly like a struct's.
 func (w *walker) memberByName(declaration symbol.SymbolID, name string) symbol.SymbolID {
 	if declaration == 0 || name == "" {
 		return 0
 	}
+	untagged := false
+	if decl, ok := w.program.TypeDeclaration(declaration); ok {
+		untagged = decl.Nominal == infer.NominalUnion
+	}
 	for _, member := range w.generation.inputs.Resolution.Members(declaration) {
-		if value, found := w.generation.inputs.Resolution.Symbols.Symbol(member); found && value.Kind == symbol.SymbolField && value.Name == name {
-			return member
+		if value, found := w.generation.inputs.Resolution.Symbols.Symbol(member); found && value.Name == name {
+			if value.Kind == symbol.SymbolField || (untagged && value.Kind == symbol.SymbolVariant) {
+				return member
+			}
 		}
 	}
 	return 0
@@ -456,12 +467,20 @@ func (w *walker) recordReceiverTerm(ctx walkContext, plan *recordPlan, origin in
 }
 
 // recordConstructionKind selects the aggregate record kind for a .{ } literal.
-// A single-field literal against a tagged-union (union enum) destination is a
-// variant construction (.{ Int = 42 } is sugar for Data.Int(42)) and builds an
-// aggregateTaggedVariant; every other shape is an ordinary aggregateStruct.
-// Multi-field literals against a tagged union stay aggregateStruct so the
-// existing rejection path reports them.
+// A literal against an untagged-union (NominalUnion) destination is an
+// aggregateUnion construction regardless of field count (a multi-field literal
+// stays aggregateUnion so the union validator can report its dedicated
+// "exactly one field" diagnostic rather than the struct's every-field-required
+// rule). A single-field literal against a tagged-union (union enum)
+// destination is a variant construction (.{ Int = 42 } is sugar for
+// Data.Int(42)) and builds an aggregateTaggedVariant; every other shape is an
+// ordinary aggregateStruct.
 func (w *walker) recordConstructionKind(rp *recordPlan) aggregateKind {
+	if rp.declaration != 0 {
+		if declaration, ok := w.program.TypeDeclaration(rp.declaration); ok && declaration.Nominal == infer.NominalUnion {
+			return aggregateUnion
+		}
+	}
 	if len(rp.fields) != 1 {
 		return aggregateStruct
 	}

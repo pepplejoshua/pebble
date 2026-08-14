@@ -1042,7 +1042,7 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		if !ok {
 			continue
 		}
-		if isStruct(snapshot, payload) && !isEnumType(unit, snapshot, payload) {
+		if isStruct(snapshot, payload) && !isEnumType(unit, snapshot, payload) && !isUntaggedUnionType(unit, snapshot, payload) {
 			collected = append(collected, payload)
 		}
 	}
@@ -1055,7 +1055,7 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		// the helper's C signature even if no reachable body ever constructs a
 		// struct of that type, so its typedef must be discovered here too.
 		for _, param := range helper.decl.Parameters {
-			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) && !isOpaqueExternType(st, snapshot, param.Type) {
+			if isStruct(snapshot, param.Type) && runtimeType(unit, snapshot, param.Type) == 0 && !isDefinitelyEnumType(unit, snapshot, param.Type) && !isOpaqueExternType(st, snapshot, param.Type) && !isUntaggedUnionType(unit, snapshot, param.Type) {
 				collected = append(collected, param.Type)
 			}
 			// A pointer-typed parameter whose pointee is a struct (including
@@ -1063,7 +1063,7 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			// pointee's typedef in its own C signature, the same reason a
 			// plain struct parameter does above.
 			if isPointer(snapshot, param.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, param.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) && !isUntaggedUnionType(unit, snapshot, pointee) {
 					collected = append(collected, pointee)
 				}
 			}
@@ -1078,11 +1078,11 @@ func collectStructTypes(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		// produce a struct to return — and resolveStructInfo still needs the
 		// field types the body walk accumulates — so this closes the same class
 		// of gap 10.24's Parameters scan closed, for the return side.)
-		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) && !isOpaqueExternType(st, snapshot, helper.decl.ResultType) {
+		if isStruct(snapshot, helper.decl.ResultType) && runtimeType(unit, snapshot, helper.decl.ResultType) == 0 && !isDefinitelyEnumType(unit, snapshot, helper.decl.ResultType) && !isOpaqueExternType(st, snapshot, helper.decl.ResultType) && !isUntaggedUnionType(unit, snapshot, helper.decl.ResultType) {
 			collected = append(collected, helper.decl.ResultType)
 		}
 		if isPointer(snapshot, helper.decl.ResultType) {
-			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) {
+			if pointee, ok := pointerPointeeType(snapshot, helper.decl.ResultType); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isDefinitelyEnumType(unit, snapshot, pointee) && !isOpaqueExternType(st, snapshot, pointee) && !isUntaggedUnionType(unit, snapshot, pointee) {
 				collected = append(collected, pointee)
 			}
 		}
@@ -1135,7 +1135,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 	if !ok {
 		return fmt.Errorf("struct-type walk references invalid node %d", nodeID)
 	}
-	if node.Kind == tir.SizeofType && isStruct(snapshot, node.TypeArg) && runtimeType(unit, snapshot, node.TypeArg) == 0 && !isEnumType(unit, snapshot, node.TypeArg) {
+	if node.Kind == tir.SizeofType && isStruct(snapshot, node.TypeArg) && runtimeType(unit, snapshot, node.TypeArg) == 0 && !isEnumType(unit, snapshot, node.TypeArg) && !isUntaggedUnionType(unit, snapshot, node.TypeArg) {
 		// A bare `sizeof` of a plain struct (no construction, field access,
 		// local declaration, or helper signature anywhere, so no other node
 		// carries the type): the struct's pebble_struct_<typeID>_t typedef
@@ -1164,7 +1164,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		if !ok {
 			return fmt.Errorf("struct-type walk: sizeof array type %s is not in the type snapshot", describeType(snapshot, node.TypeArg))
 		}
-		if _, elementType, ok := key.Array(); ok && isStruct(snapshot, elementType) && runtimeType(unit, snapshot, elementType) == 0 && !isEnumType(unit, snapshot, elementType) {
+		if _, elementType, ok := key.Array(); ok && isStruct(snapshot, elementType) && runtimeType(unit, snapshot, elementType) == 0 && !isEnumType(unit, snapshot, elementType) && !isUntaggedUnionType(unit, snapshot, elementType) {
 			*out = append(*out, elementType)
 		}
 	}
@@ -1187,7 +1187,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 		// value types are still recorded and its field values still recurse
 		// below, so nested ordinary structs inside a runtime construction keep
 		// their typedefs.
-		if runtimeType(unit, snapshot, node.Type) == 0 {
+		if runtimeType(unit, snapshot, node.Type) == 0 && !isUntaggedUnionType(unit, snapshot, node.Type) {
 			*out = append(*out, node.Type)
 		}
 		for _, field := range node.Fields {
@@ -1223,7 +1223,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			// as a struct and resolveStructInfo would fail trying to resolve
 			// its members as fields. Enums are collected by
 			// collectEnumTypes instead.
-			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && runtimeType(unit, snapshot, child.Type) == 0 && !isEnumType(unit, snapshot, child.Type) {
+			if child, ok := unit.Node(childID); ok && isStruct(snapshot, child.Type) && runtimeType(unit, snapshot, child.Type) == 0 && !isEnumType(unit, snapshot, child.Type) && !isUntaggedUnionType(unit, snapshot, child.Type) {
 				*out = append(*out, child.Type)
 			}
 			// A pointer-typed local whose pointee is a struct (`let p *Point =
@@ -1233,7 +1233,7 @@ func collectStructTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir
 			// walk above only ever inspects a node's own Type, so this case
 			// is collected separately here.
 			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
-				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isEnumType(unit, snapshot, pointee) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isStruct(snapshot, pointee) && runtimeType(unit, snapshot, pointee) == 0 && !isEnumType(unit, snapshot, pointee) && !isUntaggedUnionType(unit, snapshot, pointee) {
 					*out = append(*out, pointee)
 				}
 			}
@@ -1266,6 +1266,170 @@ func findTypeDeclaration(unit *tir.Unit, symbolID symbol.SymbolID) (tir.TypeDecl
 		}
 	}
 	return tir.TypeDecl{}, false
+}
+
+// collectUntaggedUnionTypes resolves, in first-encountered order, every
+// UNTAGGED union type (`union { ... }`) the emitted program actually
+// references: the entry body (root) followed by every reachable helper's body,
+// each walked by the same Children + DeferChain traversal collectStructTypesWalk
+// uses. An untagged union is referenced by the same node shapes a struct is —
+// a construction (a RecordConstruct whose Type is the union type), a union-
+// typed local's declaration (an Initialize whose initializer value carries the
+// union type), a union field access (a FieldPlace whose base resolves to the
+// union type), a bare `sizeof` of the union — plus a reachable helper's own
+// parameter and result types and every collected struct's field types (a
+// struct field of untagged-union type names the union's own
+// pebble_union_<typeID>_t typedef, see structFieldCType, so the union typedef
+// must exist for the struct's typedef to compile — the same backfill the
+// struct/union collection already performs for slice, array, function, and
+// tagged-union fields). The returned unionInfos are deduplicated by union
+// TypeID and each resolved to its declared member order, so every distinct
+// untagged-union type yields exactly one `typedef union { ... }` (see
+// buildUntaggedUnionTypedef), emitted before any aggregate typedef that may
+// reference it.
+func collectUntaggedUnionTypes(unit *tir.Unit, snapshot *types.Snapshot, entryBlockID tir.NodeID, helpers []helperInfo, structInfos []structInfo) ([]unionInfo, error) {
+	var collected []types.TypeID
+	if err := collectUntaggedUnionTypesWalk(unit, snapshot, entryBlockID, &collected); err != nil {
+		return nil, err
+	}
+	for _, helper := range helpers {
+		if err := collectUntaggedUnionTypesWalk(unit, snapshot, helper.block, &collected); err != nil {
+			return nil, err
+		}
+		// A reachable helper's own parameter list is a source of union types
+		// the body walk cannot see: an untagged-union-typed parameter is
+		// referenced by the helper's C signature (its C declaration names
+		// pebble_union_<typeID>_t) even if no reachable body ever constructs a
+		// union of that type — mirroring collectStructTypes' identical
+		// Parameters scan.
+		for _, param := range helper.decl.Parameters {
+			if isUntaggedUnionType(unit, snapshot, param.Type) {
+				collected = append(collected, param.Type)
+			}
+		}
+		// A reachable helper's own result type is the same kind of source for
+		// the typedef its C signature names as its return type (mirroring
+		// collectStructTypes' ResultType scan).
+		if isUntaggedUnionType(unit, snapshot, helper.decl.ResultType) {
+			collected = append(collected, helper.decl.ResultType)
+		}
+	}
+	// A struct field of untagged-union type (`Holder.{ u = ... }`) names the
+	// union's pebble_union_<typeID>_t typedef as the field's C type (see
+	// structFieldCType), so every struct field that is an untagged union must
+	// drag its union typedef in even when the only reference to the union is
+	// the field declaration itself — the same struct-field backfill the
+	// slice/array/function/tagged-union collectors perform.
+	for _, structInfo := range structInfos {
+		for _, field := range structInfo.fields {
+			if isUntaggedUnionType(unit, snapshot, field.typ) {
+				collected = append(collected, field.typ)
+			}
+		}
+	}
+	seen := make(map[types.TypeID]bool, len(collected))
+	var infos []unionInfo
+	for _, id := range collected {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		info, err := resolveUntaggedUnionInfo(unit, snapshot, id)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// collectUntaggedUnionTypesWalk appends every untagged-union type encountered
+// in the tree rooted at nodeID to out, in first-encountered order, following
+// Children and DeferChain exactly like collectStructTypesWalk so it visits the
+// same reachable region of the node graph the body builders consume. The node
+// shapes mirror a struct's: a RecordConstruct whose Type is the union type (a
+// union construction), an Initialize whose initializer value carries the union
+// type (a union-typed local declaration — the local's type is recorded on the
+// initializer value node, not on the Initialize node itself), a FieldPlace
+// whose base resolves to the union type (a union field read or write target,
+// including through a pointer), a SizeofType node whose TypeArg is the union
+// type (a bare `sizeof` with no other reference anywhere), and a pointer-typed
+// local whose pointee is the union type. A RecordConstruct's field values are
+// walked explicitly (they live in node.Fields, not node.Children), the same
+// special-case every sibling collect*Types walk makes, so a union constructed
+// as a nested struct field value is still collected.
+func collectUntaggedUnionTypesWalk(unit *tir.Unit, snapshot *types.Snapshot, nodeID tir.NodeID, out *[]types.TypeID) error {
+	node, ok := unit.Node(nodeID)
+	if !ok {
+		return fmt.Errorf("untagged-union walk references invalid node %d", nodeID)
+	}
+	if node.Kind == tir.SizeofType && isUntaggedUnionType(unit, snapshot, node.TypeArg) {
+		// A bare `sizeof` of an untagged union (no construction, field access,
+		// local declaration, or helper signature anywhere, so no other node
+		// carries the type): the union's pebble_union_<typeID>_t typedef must
+		// still be collected and emitted, or the lowered
+		// sizeof(pebble_union_<typeID>_t) names an undeclared C type (see
+		// sizeofCTypeName).
+		*out = append(*out, node.TypeArg)
+	}
+	if node.Kind == tir.Initialize {
+		for _, childID := range node.Children {
+			if child, ok := unit.Node(childID); ok && isUntaggedUnionType(unit, snapshot, child.Type) {
+				*out = append(*out, child.Type)
+			}
+			// A pointer-typed local whose pointee is an untagged union (`var
+			// pu *Data = nil;`) references the union's typedef in its own C
+			// declaration (`pebble_union_<typeID>_t *`), even though the
+			// local's own Type is the pointer type — the mirror of
+			// collectStructTypesWalk's own pointer-pointee rule.
+			if child, ok := unit.Node(childID); ok && isPointer(snapshot, child.Type) {
+				if pointee, ok := pointerPointeeType(snapshot, child.Type); ok && isUntaggedUnionType(unit, snapshot, pointee) {
+					*out = append(*out, pointee)
+				}
+			}
+		}
+	}
+	if node.Kind == tir.RecordConstruct && isUntaggedUnionType(unit, snapshot, node.Type) {
+		// A union construction: node.Type is the union's own TypeID, exactly
+		// as a struct construction carries its struct type.
+		*out = append(*out, node.Type)
+	}
+	if node.Kind == tir.FieldPlace && len(node.Children) == 1 {
+		base, ok := unit.Node(node.Children[0])
+		ownerType := types.TypeID(0)
+		if ok {
+			ownerType = base.Type
+			if pointee, pointer := pointerPointeeType(snapshot, ownerType); pointer {
+				ownerType = pointee
+			}
+		}
+		if ok && isUntaggedUnionType(unit, snapshot, ownerType) {
+			*out = append(*out, ownerType)
+		}
+	}
+	if node.Kind == tir.RecordConstruct {
+		// A construction's field values are stored in node.Fields
+		// ([]FieldInit), NOT node.Children, so the Children-following
+		// recursion below never reaches a union value used only as a field's
+		// construction value — the same special-case every collect*Types walk
+		// makes for this reason.
+		for _, field := range node.Fields {
+			if err := collectUntaggedUnionTypesWalk(unit, snapshot, field.Value, out); err != nil {
+				return err
+			}
+		}
+	}
+	for _, childID := range node.Children {
+		if err := collectUntaggedUnionTypesWalk(unit, snapshot, childID, out); err != nil {
+			return err
+		}
+	}
+	for _, deferID := range node.DeferChain {
+		if err := collectUntaggedUnionTypesWalk(unit, snapshot, deferID, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // collectEnumTypes resolves, in first-encountered order, every plain enum type

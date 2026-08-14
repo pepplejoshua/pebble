@@ -215,6 +215,8 @@ func buildNestedAggregateValue(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	switch {
 	case isTuple(snapshot, typ):
 		return buildTupleValueExpr(st, unit, snapshot, fileSet, node, scope, typ, context, width)
+	case isUntaggedUnionType(unit, snapshot, typ):
+		return buildUntaggedUnionValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isStruct(snapshot, typ):
 		return buildStructValueExpr(st, unit, snapshot, fileSet, node, scope, context, width)
 	case isOptional(snapshot, typ):
@@ -901,6 +903,28 @@ func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return fmt.Sprintf("({ %s (%s)%s; })", preStatements, structTypeName(node.Type), braceList), nil
 	}
 	return fmt.Sprintf("(%s)%s", structTypeName(node.Type), braceList), nil
+}
+
+// buildUntaggedUnionValueExpr builds a freshly-constructed UNTAGGED union value
+// as an ordinary C expression: a RecordConstruct node lowered to a
+// designated-initializer C99 compound literal,
+// `(pebble_union_<typeID>_t){ .pebble_field_<m> = <expr> }`. The single-field
+// brace list is built and validated by buildUntaggedUnionBraceList (the same
+// logic an untagged-union-typed local's declaration initializer uses), so a
+// construction site's value builds exactly as a local declaration's does. The
+// cast makes the compound literal a value usable anywhere a union-typed value
+// is needed — in this slice, a struct field of untagged-union type and an
+// inline union call argument. The node must be a RecordConstruct; the caller
+// already guarantees this, so the kind check is defense for hand-built IR.
+func buildUntaggedUnionValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if node.Kind != tir.RecordConstruct {
+		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (an untagged-union literal)", context, node.Kind)
+	}
+	braceList, err := buildUntaggedUnionBraceList(st, unit, snapshot, fileSet, node, scope, "", context, width)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s)%s", unionTypeName(node.Type), braceList), nil
 }
 
 // buildEnumValue builds the C expression text for a plain enum value node of

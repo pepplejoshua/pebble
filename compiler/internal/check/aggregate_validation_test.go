@@ -233,6 +233,118 @@ func TestValidateAggregateRecordsRejectsWrongVariantCategoryAndUnknownVariant(t 
 	}
 }
 
+func TestValidateAggregateRecordsAcceptsUntaggedUnionSingleFieldConstruction(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn check() void {
+    var qualified Data = Data.{ a = 42 };
+    var inferred Data = .{ a = 43 };
+    var other Data = Data.{ b = 7 };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if !validateAggregateRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("valid untagged-union constructions were rejected: %+v", diagnostics.Items())
+	}
+	found := false
+	for _, aggregate := range aggregateRecords(handoff) {
+		if aggregate.Kind == aggregateUnion {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("fixture did not produce an untagged-union aggregate")
+	}
+}
+
+func TestValidateAggregateRecordsRejectsUntaggedUnionZeroFieldConstruction(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn check() void {
+    var d Data = Data.{};
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("zero-field untagged-union construction was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsRejectsUntaggedUnionMultiFieldConstruction(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn check() void {
+    var d Data = Data.{ a = 1, b = 2 };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("multi-field untagged-union construction was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsRejectsUntaggedUnionUnknownFieldConstruction(t *testing.T) {
+	source := `
+type Data = union { a i32; b u32; };
+fn check() void {
+    var d Data = Data.{ nope = 1 };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("unknown untagged-union construction field was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsStructEveryFieldRequiredUnchanged(t *testing.T) {
+	complete := `
+type Box = struct { value i32; other i32; };
+fn check() void {
+    let box Box = Box.{ value = 1, other = 2 };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, complete)
+	if !validateAggregateRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("complete struct construction was rejected: %+v", diagnostics.Items())
+	}
+	partial := `
+type Box = struct { value i32; other i32; };
+fn check() void {
+    let box Box = Box.{ value = 1 };
+}
+`
+	diagnostics, handoff, records = runAggregateValidation(t, partial)
+	if validateAggregateRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
+		t.Fatalf("partial struct construction was not rejected with the every-field-required rule: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateAggregateRecordsTaggedUnionConstructionUnchanged(t *testing.T) {
+	source := `
+type Data = union enum { Int i32; Str str; };
+fn check() void {
+    var qualified Data = Data.{ Int = 42 };
+    var inferred Data = .{ Int = 43 };
+    var other Data = Data.{ Str = "x" };
+}
+`
+	diagnostics, handoff, records := runAggregateValidation(t, source)
+	if !validateAggregateRecords(handoff, records, diagnostics, Config{}) || hasValidationDiagnostic(diagnostics, CodeMember) || hasValidationDiagnostic(diagnostics, CodeAggregate) {
+		t.Fatalf("valid tagged-union variant constructions were rejected: %+v", diagnostics.Items())
+	}
+	var tagged *aggregateRecord
+	for _, aggregate := range aggregateRecords(handoff) {
+		if aggregate.Kind == aggregateTaggedVariant {
+			tagged = aggregate
+			break
+		}
+	}
+	if tagged == nil {
+		t.Fatal("fixture did not produce a tagged-variant aggregate")
+	}
+}
+
 func TestValidateAggregateRecordsIgnoresInactiveAggregate(t *testing.T) {
 	diagnostics, handoff, records := runAggregateValidation(t, aggregateValidationSource)
 	var aggregate *aggregateRecord

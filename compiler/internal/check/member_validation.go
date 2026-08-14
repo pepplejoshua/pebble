@@ -9,6 +9,21 @@ import (
 
 const CodeMember diagnostic.Code = "C0605"
 
+// untaggedUnionDeclaration reports whether declaration is an UNTAGGED union
+// (`union { ... }`, NominalUnion) rather than a tagged union (`union enum { ... }`).
+// The two are distinguished only at the checker's declaration level: the parser
+// and resolver register the members of BOTH union forms as SymbolVariant, so a
+// validators that must treat an untagged union's members as real fields (reads
+// and writes of any declared member, unconditionally — the deliberate unsafe
+// reinterpret-the-bytes contract) keys off this Nominal kind instead.
+func untaggedUnionDeclaration(handoff *solveHandoff, declaration symbol.SymbolID) bool {
+	if handoff == nil || handoff.Semantics == nil || declaration == 0 {
+		return false
+	}
+	typeDecl, ok := handoff.Semantics.TypeDeclaration(declaration)
+	return ok && typeDecl.Nominal == infer.NominalUnion
+}
+
 func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
 	if handoff == nil || handoff.Solution == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil {
 		return true
@@ -90,7 +105,23 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 			matched := false
 			for _, id := range resolution.Members(declaration) {
 				selected, found := resolution.Symbols.Symbol(id)
-				if found && selected.Name == member.Name && selected.Kind == symbol.SymbolField {
+				if !found || selected.Name != member.Name {
+					continue
+				}
+				if selected.Kind == symbol.SymbolField {
+					matched = true
+					break
+				}
+				// An untagged union's members are registered as SymbolVariant
+				// (the parser emits VariantDecl for both union forms), but they
+				// are real fields under the untagged-union contract: a read or
+				// write of any declared member is unconditionally legal, with
+				// no switch-case narrowing and no "was this field last written"
+				// tracking — the deliberate unsafe semantics. Only an UNTAGGED
+				// union member is accepted here; a tagged union's variant
+				// member stays gated by narrowedUnionVariantAccess /
+				// unionVariantPayloadWrite below.
+				if selected.Kind == symbol.SymbolVariant && untaggedUnionDeclaration(handoff, declaration) {
 					matched = true
 					break
 				}

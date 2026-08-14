@@ -689,6 +689,18 @@ func buildStructValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		}
 		return fmt.Sprintf("pebble_local_%d", node.Symbol), info.structType, nil
 	case tir.RecordConstruct:
+		if isUntaggedUnionType(unit, snapshot, node.Type) {
+			// An untagged-union construction used in a value position (a call
+			// argument for an untagged-union-typed parameter, a whole-union
+			// read): emitted as the union's own `typedef union { ... }`
+			// compound literal, never the struct compound literal a struct
+			// construction would build.
+			expr, err := buildUntaggedUnionValueExpr(st, unit, snapshot, fileSet, node, locals, "union value", width)
+			if err != nil {
+				return "", 0, err
+			}
+			return expr, node.Type, nil
+		}
 		expr, err := buildStructValueExpr(st, unit, snapshot, fileSet, node, locals, "struct value", width)
 		if err != nil {
 			return "", 0, err

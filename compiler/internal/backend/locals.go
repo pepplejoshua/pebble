@@ -1474,6 +1474,59 @@ func buildUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.S
 	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, unionTypeName(initValue.Type), statement.Symbol, construction, indent, statement.Symbol), nil
 }
 
+// buildUntaggedUnionLocalDeclaration builds one UNTAGGED union-typed local's
+// declaration: a `pebble_union_<typeID>_t pebble_local_<symbol> = { .pebble_field_<m> =
+// <expr> };` whose initializer is a RecordConstruct (a `Data.{ a = 5 }` union
+// literal), lowered to a C99 designated-initializer brace list over the
+// union's own real C `typedef union { ... }` (see buildUntaggedUnionTypedef),
+// with exactly one designated member — the one field the construction
+// specifies. The brace-list content is built and validated by
+// buildUntaggedUnionBraceList, which restricts this first slice to scalar
+// field types. The union local's scope entry records its type as the same
+// nominal slot a struct local uses (localInfo.structType), so a later field
+// read or write projects through the ordinary FieldPlace machinery
+// (declaredFieldType resolves the field's type from the union's declared
+// members, and buildPlaceLValue emits the plain `.pebble_field_<m>` C access
+// on the shared union storage). Like every local, the declaration is followed
+// by a (void) cast against -Wunused-variable.
+func buildUntaggedUnionLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, statement, initValue tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) (string, error) {
+	if !isUntaggedUnionType(unit, snapshot, initValue.Type) {
+		return "", fmt.Errorf("%s declares a local of type %s, which is not an untagged-union type", context, describeType(snapshot, initValue.Type))
+	}
+	if initValue.Kind == tir.DirectCall || initValue.Kind == tir.MethodCall {
+		// A call to an untagged-union-returning helper used as the direct
+		// initializer of a matching union-typed local — `var d Data = f();` —
+		// the same aggregate-call-initializer shape buildAggregateCallInitializer
+		// uses for struct-typed locals: the call's C result type IS the union's
+		// own pebble_union_<typeID>_t typedef (see helperSignature's untagged-
+		// union result case), so the whole call expression directly initializes
+		// the union local. The callee's declared result type must be exactly
+		// the local's type (defense for hand-built IR).
+		calleeDecl, err := findCallDeclaration(unit, snapshot, initValue)
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != initValue.Type {
+			return "", fmt.Errorf("%s declares an untagged-union-typed local of type %s initialized from a call to symbol %d whose declared result type %s does not match", context, unionTypeName(initValue.Type), initValue.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callPre, callExpr, err := buildDirectCallWithPre(st, unit, snapshot, fileSet, initValue, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type}
+		return withLeadingPre(callPre, indent, fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, unionTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol)), nil
+	}
+	if initValue.Kind != tir.RecordConstruct {
+		return "", fmt.Errorf("%s declares an untagged-union-typed local of type %s initialized from a %s, want a RecordConstruct (a union literal) or a call to an untagged-union-returning helper", context, unionTypeName(initValue.Type), initValue.Kind)
+	}
+	braceList, err := buildUntaggedUnionBraceList(st, unit, snapshot, fileSet, initValue, scope, indent, context, width)
+	if err != nil {
+		return "", err
+	}
+	scope[statement.Symbol] = localInfo{structType: initValue.Type}
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, unionTypeName(initValue.Type), statement.Symbol, braceList, indent, statement.Symbol), nil
+}
+
 // buildStrLocalDeclaration builds one str-typed local's declaration: a
 // `PebbleStr pebble_local_<symbol> = { .data = (const uint8_t *)"<escaped>",
 // .len = <N> };` whose initializer is a StringLiteral (a string literal), a

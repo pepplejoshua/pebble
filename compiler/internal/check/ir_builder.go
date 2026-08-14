@@ -353,7 +353,7 @@ func (s *irBuildState) buildTypes() bool {
 					return false
 				}
 			}
-			if err := s.builder.AddTypeDecl(tir.TypeDecl{Symbol: id, Span: sym.Span, Members: members, MemberTypes: memberTypes, Node: nodeID}); err != nil {
+			if err := s.builder.AddTypeDecl(tir.TypeDecl{Symbol: id, Span: sym.Span, Members: members, MemberTypes: memberTypes, Node: nodeID, Union: d.Nominal == infer.NominalUnion}); err != nil {
 				return false
 			}
 			for _, parameter := range d.Parameters {

@@ -666,6 +666,10 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	untaggedUnionInfos, err := collectUntaggedUnionTypes(unit, snapshot, blockID, helpers, structInfos)
+	if err != nil {
+		return err
+	}
 	unionInfos, err := collectUnionTypes(unit, snapshot, width, blockID, helpers, optionalTypes)
 	if err != nil {
 		return err
@@ -806,6 +810,21 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	if err != nil {
 		return err
 	}
+	// An UNTAGGED union's typedef is a real `typedef union { ... }` with the
+	// same pebble_union_<typeID>_t name as a tagged union's (a TypeID is unique
+	// across both families, so the names never collide), but it is a single
+	// self-contained typedef with no tag enum dependency — it can share the
+	// tagged-union block's position (before the aggregate block, since a struct
+	// field or optional payload of untagged-union type names the union's
+	// typedef, see structFieldCType / optionalPayloadCType) and is appended
+	// after the tagged pairs. Unlike the tagged pairs, an untagged union's
+	// typedef depends only on scalar builtins in this first slice, so it needs
+	// no dependency-first ordering of its own.
+	untaggedUnionTypedefs, err := buildUntaggedUnionTypedefs(st, unit, snapshot, width, untaggedUnionInfos)
+	if err != nil {
+		return err
+	}
+	unionTypedefs = appendTypedefBlock(unionTypedefs, untaggedUnionTypedefs)
 	// The union typedef block is emitted BEFORE the aggregate typedef block: a
 	// struct field or optional payload whose type is a tagged union names the
 	// union's own typedef (pebble_union_<typeID>_t, see structFieldCType /
