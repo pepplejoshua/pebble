@@ -315,20 +315,59 @@ against `HEAD` using `-run` (pre-fix: rejects with the original "want
 int, uint, u64, ... or a pointer type" message; post-fix: compiles and
 exits 7 for the confirmed live repro).
 
-Picking up F5-20 next (aggregate result in a function value — e.g.
-`fn() Point`, rejected by the same `validateFunctionTypeSignature`
-result-admission check). Per the master ledger's own note, start with
-one plain-struct result and do NOT combine this with F5-19's parameter
-work (already done) — the typedef-ordering question is likely similar
-in shape (a plain-struct RESULT's typedef also needs to precede the
-function typedef that names it as a return type) but verify this
-directly rather than assuming F5-19's exact hoisting mechanism
-transfers unchanged; the buildable-result-position set is also
-narrower than the buildable-argument set (per
-`validateFunctionTypeSignature`'s own doc comment: entry-width, u64,
-bool, char, float, void, or a pointer — never str), so confirm how an
-indirect call's aggregate result would actually be consumed by
-`buildFunctionIndirectCall`'s callers before writing a dispatch brief.
-Investigate/reproduce directly first with a minimal `.peb` snippet;
-next dispatch should use `vercel/alibaba/qwen3.7-flash` (the last
-dispatch, F5-19's follow-up, used `opencode-go/deepseek-v4-flash`).)*
+*(empty — F5-20 (plain-struct result in a first-class function type)
+closed in `a059058`. `validateFunctionTypeSignature` and
+`functionTypeResultCType` admit a plain struct result, mirroring
+F5-19's parameter case exactly (reusing `isPlainStructField`
+unchanged). The typedef-hoisting collector F5-19 added
+(`collectFunctionParamStructs`) was widened rather than duplicated —
+renamed `collectFunctionParamAndResultStructs`, now walking each
+function type's `result` in addition to its `params`, with the same
+`hasFunctionTypedFields` circular-dependency exclusion applying
+identically to a result-position struct. The genuinely NEW piece (no
+F5-19 analogue): `buildStructLocalDeclaration`
+(internal/backend/locals.go) had no `tir.IndirectCall` case at all —
+only `DirectCall`/`MethodCall` were handled for a struct-typed local's
+initializer — so `var p Point = f();` was unreachable independent of
+the validation gate; added an `IndirectCall` case delegating to
+`buildFunctionIndirectCall` (which already builds a correct call
+expression for any result type) and consuming it as the local's
+whole-value initializer, mirroring the DirectCall case's shape.
+Verification surfaced one trivial, expected fallout: a narrow-integer-
+result regression test's expected-rejection substring went stale (the
+admitted-types list in the error message grew to include "a plain
+struct type"), fixed by a tiny one-line follow-up dispatch — the
+underlying rejection behavior itself was never wrong, only the string
+assertion. Full `internal/backend` suite clean after both rounds
+(403s then 415s), causation-checked via file-copy swap against `HEAD`
+using `-run` (pre-fix: rejects with the original "want int, u64, bool,
+char, f32, f64, void, or a pointer type" message; post-fix: compiles
+and exits 7 for the confirmed live repro). New tests also proved a
+struct chained through BOTH a result and a parameter position across
+two indirect calls in sequence.
+
+Picking up F5-21 next (`str` result in a function value — e.g. `fn()
+str`, rejected by the same `validateFunctionTypeSignature`
+result-admission check, per the master ledger: "Add only `str` result
+C naming and indirect-call result handling"). This is a MUCH smaller
+slice than F5-19/F5-20 — `str` (`PebbleStr`) has no aggregate-typedef-
+ordering hazard at all (it is a plain, always-available runtime
+struct, not a program-defined typedef — see `functionTypeParamCType`'s
+existing `isStr` case, which already admits `str` as a PARAMETER with
+zero typedef-ordering complexity), so this should require no
+typedef-hoisting work, just: (1) `validateFunctionTypeSignature`'s
+result-admission check gains `isStr(snapshot, result)`; (2)
+`functionTypeResultCType` gains an `isStr` case returning
+`"PebbleStr"` (mirroring `functionTypeParamCType`'s own `isStr` case
+exactly); (3) confirm whether `buildStructLocalDeclaration`'s sibling,
+whatever function handles a `str`-typed local's initializer (likely
+`buildStrLocalDeclaration` or similar — check `locals.go`), already
+has or needs an `IndirectCall` case the way F5-20 needed one for
+struct locals. Investigate/reproduce directly first with a minimal
+`.peb` snippet (`fn() str` returning a literal, called through a
+function-typed local, bound to a `str` local, compared or interpolated
+to prove the actual bytes survived) before writing a dispatch brief;
+next dispatch should use `vercel/alibaba/qwen3.7-flash` (the last two
+real dispatches, F5-20 main + follow-up, used qwen then
+deepseek-v4-flash, so this one continues the alternation back to
+qwen).)*
