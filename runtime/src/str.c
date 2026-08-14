@@ -170,24 +170,24 @@ size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]) {
  * measure+format pass computes each part's contribution to the total byte
  * length — text parts contribute strlen, bool parts 4 for "true" or 5 for
  * "false", integer parts the length of their decimal representation, float
- * parts the length of their %f rendering — and formats each non-text part
- * ONCE into its own fixed scratch buffer (20 decimal digits fit the widest
- * uint64_t, a leading '-' fits a negative signed value, plus the NUL; and a
- * full-range double's %f output needs at most 317 characters — a leading '-'
- * plus the 309 integer digits of DBL_MAX plus '.' plus the 6 default-precision
- * fractional digits — plus the NUL, so 320 covers every value any field can
- * hold; the int and float widths share one block, each part's 320-byte slot
- * far exceeding what its own kind writes). The scratch buffers are allocated
- * through the context allocator (a `count`-wide `char[count][320]` block, the
- * ABI's only allocation path — a stack VLA would be C11-optional and
- * undefined at count 0). The second pass allocates exactly total_len bytes via
- * the context allocator and copies each part's bytes in sequence, integer and
- * float parts from their already-formatted scratch buffer — so no value is
+ * parts the length of their %f rendering, and str parts the str's own .len —
+ * and formats each non-text/non-str part ONCE into its own fixed scratch
+ * buffer (20 decimal digits fit the widest uint64_t, a leading '-' fits a
+ * negative signed value, plus the NUL; and a full-range double's %f output
+ * needs at most 317 characters — a leading '-' plus the 309 integer digits of
+ * DBL_MAX plus '.' plus the 6 default-precision fractional digits — plus the
+ * NUL, so 320 covers every value any field can hold; the int, float, and str
+ * widths share one block, each part's 320-byte slot far exceeding what its own
+ * kind writes). The scratch buffers are allocated through the context allocator
+ * (a `count`-wide `char[count][320]` block, the ABI's only allocation path — a
+ * stack VLA would be C11-optional and undefined at count 0). The second pass
+ * allocates exactly total_len bytes via the context allocator and copies each
+ * part's bytes in sequence, integer and float parts from their already-formatted
+ * scratch buffer, str parts directly from the str's own data — so no value is
  * ever formatted twice, and the length each part contributes in the measure
  * pass and the bytes copied in the write pass come from the same source and
  * cannot disagree (snprintf never truncates into a 320-byte slot, so its
- * return value equals the bytes actually written). Only text, bool, integer,
- * and float parts are supported.
+ * return value equals the bytes actually written).
  */
 #define PEBBLE_STR_PART_SCRATCH_SIZE 320
 
@@ -222,6 +222,11 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
              * float passed straight to print. f32/f64 both promote to double
              * here, so the one specifier covers both. */
             total_len += (size_t)snprintf(scratch_bufs[i], PEBBLE_STR_PART_SCRATCH_SIZE, "%f", parts[i].float_value);
+            break;
+        case PEBBLE_STR_PART_STR:
+            /* A str part contributes its own .len bytes — no formatting,
+             * no snprintf, just a direct copy of the str's existing data. */
+            total_len += parts[i].str_value.len;
             break;
         }
     }
@@ -261,6 +266,11 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
             size_t len = strlen(scratch_bufs[i]);
             memcpy(buf + offset, scratch_bufs[i], len);
             offset += len;
+            break;
+        }
+        case PEBBLE_STR_PART_STR: {
+            memcpy(buf + offset, parts[i].str_value.data, parts[i].str_value.len);
+            offset += parts[i].str_value.len;
             break;
         }
         }

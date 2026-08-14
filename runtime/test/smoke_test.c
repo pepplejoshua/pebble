@@ -800,6 +800,62 @@ static void test_str_from_parts(void) {
         assert(s.len == strlen(want));
         assert(memcmp(s.data, want, s.len) == 0);
     }
+
+    /* Str value parts: an empty str contributes zero bytes. */
+    {
+        PebbleStr empty = { NULL, 0 };
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_STR, .str_value = empty},
+        };
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == 0);
+        assert(s.data == NULL || s.data[0] == '\0');
+    }
+
+    /* Str value parts: a short str concatenated with text. */
+    {
+        PebbleStr word = { (const uint8_t *)"world", 5 };
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "hello "},
+            {PEBBLE_STR_PART_STR, .str_value = word},
+        };
+        static const char want[] = "hello world";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 2);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Multiple str value parts in one string. */
+    {
+        PebbleStr first = { (const uint8_t *)"foo", 3 };
+        PebbleStr second = { (const uint8_t *)"bar", 3 };
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_STR, .str_value = first},
+            {PEBBLE_STR_PART_TEXT, .text = "-"},
+            {PEBBLE_STR_PART_STR, .str_value = second},
+        };
+        static const char want[] = "foo-bar";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 3);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Str parts mixed with text, bool, int, and float parts in one string. */
+    {
+        PebbleStr name = { (const uint8_t *)"pebble", 6 };
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "lang="},
+            {PEBBLE_STR_PART_STR, .str_value = name},
+            {PEBBLE_STR_PART_TEXT, .text=",v="},
+            {PEBBLE_STR_PART_FLOAT, .float_value = 1.5},
+            {PEBBLE_STR_PART_TEXT, .text=",ok="},
+            {PEBBLE_STR_PART_BOOL, .bool_value = 1},
+        };
+        static const char want[] = "lang=pebble,v=1.500000,ok=true";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 6);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
 }
 
 static void test_checked_index_normal(void) {

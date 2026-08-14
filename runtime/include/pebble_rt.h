@@ -430,15 +430,16 @@ typedef struct PebbleStr {
  * formatted as "true"/"false", integer values formatted as their decimal
  * representation (a signed value with a leading '-' when negative, an
  * unsigned value with no sign — the runtime formats by value, so any integer
- * width promotes to the fixed int64_t/uint64_t fields below), and float
- * values formatted with %f (the default precision, 6 decimal digits — the
- * same convention buildPrint's own scalar float print path uses, so an
+ * width promotes to the fixed int64_t/uint64_t fields below), float values
+ * formatted with %f (the default precision, 6 decimal digits — the same
+ * convention buildPrint's own scalar float print path uses, so an
  * interpolated float and a directly-printed float render identically; both
- * f32 and f64 promote to double). Used by the compiler to materialize an
+ * f32 and f64 promote to double), and str values whose existing .data/.len
+ * bytes are appended directly into the result without formatting (the same
+ * byte-append logic PEBBLE_STR_PART_TEXT uses, just sourcing from a PebbleStr
+ * instead of a raw C string). Used by the compiler to materialize an
  * interpolated string expression as an ordinary str value (not just in print
- * statements). Only text, bool, integer, and float parts are supported —
- * interpolating other types (char, str, enum, etc.) is a separate follow-up
- * task.
+ * statements).
  */
 typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_TEXT,
@@ -446,6 +447,7 @@ typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_INT,   /* signed integer, int_value */
     PEBBLE_STR_PART_UINT,  /* unsigned integer, uint_value */
     PEBBLE_STR_PART_FLOAT, /* float, float_value */
+    PEBBLE_STR_PART_STR,   /* str, str_value */
 } PebbleStrPartKind;
 
 typedef struct PebbleStrPart {
@@ -455,6 +457,7 @@ typedef struct PebbleStrPart {
     int64_t int_value;      /* for PEBBLE_STR_PART_INT */
     uint64_t uint_value;    /* for PEBBLE_STR_PART_UINT */
     double float_value;     /* for PEBBLE_STR_PART_FLOAT */
+    PebbleStr str_value;    /* for PEBBLE_STR_PART_STR */
 } PebbleStrPart;
 
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count);

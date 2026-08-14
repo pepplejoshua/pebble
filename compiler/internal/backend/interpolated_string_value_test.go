@@ -488,3 +488,148 @@ func TestEmitInterpolatedStringFloatPrint(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitInterpolatedStringWithStrPartsAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with str value parts interleaved with text used
+	// as a str-typed local's declaration initializer. Each str part is copied
+	// directly (no formatting) and concatenated with surrounding text parts
+	// into a single PebbleStr. We verify by comparing the local against a
+	// plain string literal.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"str true", "fn main() i32 { let s str = \"world\"; let t str = `hello {s}`; if t == \"hello world\" { return 0; } return 1; }", 0},
+		{"str false", "fn main() i32 { let s str = \"world\"; let t str = `goodbye {s}`; if t == \"goodbye world\" { return 0; } return 1; }", 0},
+		{"empty str", "fn main() i32 { let s str = \"\"; let t str = `prefix={s}suffix`; if t == \"prefix=suffix\" { return 0; } return 1; }", 0},
+		{"multiple strs", "fn main() i32 { let a str = \"foo\"; let b str = \"bar\"; let t str = `{a}-{b}`; if t == \"foo-bar\" { return 0; } return 1; }", 0},
+		{"str with surrounding text", "fn main() i32 { let s str = \"rusty\"; let t str = `lang={s}`; if t == \"lang=rusty\" { return 0; } return 1; }", 0},
+		{"str expression", "fn main() i32 { let s str = \"test\"; let t str = `result={s}`; if t == \"result=test\" { return 0; } return 1; }", 0},
+		{"str mixed with bool", "fn main() i32 { let name str = \"pebble\"; let b bool = true; let t str = `{name}:{b}`; if t == \"pebble:true\" { return 0; } return 1; }", 0},
+		{"str mixed with int", "fn main() i32 { let name str = \"version\"; let n int = 42; let t str = `{name}={n}`; if t == \"version=42\" { return 0; } return 1; }", 0},
+		{"str mixed with float", "fn main() i32 { let name str = \"price\"; let p f64 = 9.99; let t str = `{name}={p}`; if t == \"price=9.990000\" { return 0; } return 1; }", 0},
+		{"str mixed with all kinds", "fn main() i32 { let lang str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let t str = `{lang},{ok},{ver},{pi}`; if t == \"pebble,true,3,3.140000\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStrAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a str value part used as a call argument
+	// for a str parameter — `takes(`ok={s}`)` — must materialize into a
+	// PebbleStr value that flows through the call to the callee.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"str arg", "fn takes(s str) i32 { if s == \"hello=world\" { return 1; } return 0; }\nfn main() i32 { let w str = \"world\"; return takes(`hello={w}`); }", 1},
+		{"empty str arg", "fn takes(s str) i32 { if s == \"x=\" { return 1; } return 0; }\nfn main() i32 { let e str = \"\"; return takes(`x={e}`); }", 1},
+		{"multiple str args", "fn takes(s str) i32 { if s == \"foo-bar-baz\" { return 1; } return 0; }\nfn main() i32 { let a str = \"foo\"; let b str = \"bar\"; let c str = \"baz\"; return takes(`{a}-{b}-{c}`); }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStrAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a str value part used as a tail-position
+	// return value from a str-returning helper — `fn make(s str) str { return
+	// \`val={s}\`; }` — must materialize into a PebbleStr that is returned to
+	// the caller.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"str return", "fn make(s str) str { return `greet={s}`; }\nfn main() i32 { let s str = \"hi\"; let t str = make(s); if t == \"greet=hi\" { return 0; } return 1; }", 0},
+		{"empty str return", "fn make(s str) str { return `tag={s}`; }\nfn main() i32 { let s str = \"\"; let t str = make(s); if t == \"tag=\" { return 0; } return 1; }", 0},
+		{"multiple str returns", "fn make(a str, b str) str { return `{a}:{b}`; }\nfn main() i32 { let x str = \"one\"; let y str = \"two\"; let t str = make(x, y); if t == \"one:two\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStrInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a str value part used directly in a
+	// comparison expression — `if `prefix={s}` == "prefix=hello" { ... }` —
+	// must materialize into a PebbleStr that participates in
+	// pebble_rt_str_eq.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal after interpolation", "fn main() i32 { let s str = \"hello\"; if `prefix={s}` == \"prefix=hello\" { return 1; } else { return 0; } }", 1},
+		{"not equal after interpolation", "fn main() i32 { let s str = \"hello\"; if `prefix={s}` == \"prefix=world\" { return 0; } else { return 1; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStrReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-typed local reassigned from an interpolated string with a str
+	// value part — `var s str = "initial"; s = `new={t}`;` — must materialize
+	// the interpolated string into a PebbleStr and store it into the local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"reassign with str", "fn main() i32 { var s str = \"old\"; let t str = \"new\"; s = `v={t}`; if s == \"v=new\" { return 0; } return 1; }", 0},
+		{"reassign with empty str", "fn main() i32 { var s str = \"old\"; let t str = \"\"; s = `v={t}`; if s == \"v=\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringStrPrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with str value parts used directly as a print
+	// operand must materialize the whole interpolation into a temp PebbleStr
+	// and print it as %s. The combined-print cases print an interpolation and
+	// the same str bare in ONE print statement, so the two paths' text can be
+	// compared byte-for-byte in the captured output — proving an interpolated
+	// str and a directly-printed str render identically.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print str", "fn main() i32 { let s str = \"world\"; print `hello {s}`; return 0; }", "hello world\n"},
+		{"print empty str", "fn main() i32 { let s str = \"\"; print `prefix={s}suffix`; return 0; }", "prefix=suffix\n"},
+		{"print multiple strs", "fn main() i32 { let a str = \"foo\"; let b str = \"bar\"; print `{a}-{b}`; return 0; }", "foo-bar\n"},
+		{"print str with bool", "fn main() i32 { let s str = \"yes\"; let b bool = true; print `{s}={b}`; return 0; }", "yes=true\n"},
+		{"print str with int", "fn main() i32 { let s str = \"count\"; let n int = 7; print `{s}={n}`; return 0; }", "count=7\n"},
+		{"print str with float", "fn main() i32 { let s str = \"val\"; let f f64 = 2.5; print `{s}={f}`; return 0; }", "val=2.500000\n"},
+		{"interpolated matches bare print", "fn main() i32 { let s str = \"hello\"; print `msg={s}`, s; return 0; }", "msg=hellohello\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}

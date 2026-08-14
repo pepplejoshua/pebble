@@ -2864,6 +2864,39 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
 		}
 		if child.Kind == tir.InterpolatedString {
+			// Check whether this interpolated string contains any str value
+			// parts — those cannot fold into the combined printf because a
+			// PebbleStr is a struct, not a C scalar; we must materialize the
+			// whole interpolation into a temp first.  Bool, integer, and float
+			// value parts still format inline.
+			hasStrPart := false
+			for _, part := range child.Parts {
+				if part.Kind != tir.InterpolationValuePart {
+					continue
+				}
+				vn, ok := unit.Node(part.Value)
+				if !ok {
+					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
+				}
+				if isStr(snapshot, vn.Type) {
+					hasStrPart = true
+					break
+				}
+			}
+			if hasStrPart {
+				// Materialize the entire interpolated string into a temp
+				// PebbleStr, then print it as a single %s.
+				st.interpolatedStringCounter++
+				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+				materialized, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
+				if err != nil {
+					return "", "", err
+				}
+				preParts = append(preParts, indent+fmt.Sprintf("PebbleStr %s = %s;", tempName, materialized))
+				formatParts = append(formatParts, `"%s"`)
+				args = append(args, tempName+".data")
+				continue
+			}
 			for _, part := range child.Parts {
 				switch part.Kind {
 				case tir.InterpolationTextPart:
@@ -3266,6 +3299,36 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			return "", "", fmt.Errorf("%s print statement references invalid operand node %d", context, operandID)
 		}
 		if child.Kind == tir.InterpolatedString {
+			// Check whether this interpolated string contains any str value
+			// parts — those cannot format inline because a PebbleStr is a
+			// struct, not a C scalar; we must materialize the whole
+			// interpolation into a temp first.  Bool, integer, and float
+			// value parts still format as individual fprintf calls.
+			hasStrPart := false
+			for _, part := range child.Parts {
+				if part.Kind != tir.InterpolationValuePart {
+					continue
+				}
+				vn, ok := unit.Node(part.Value)
+				if !ok {
+					return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
+				}
+				if isStr(snapshot, vn.Type) {
+					hasStrPart = true
+					break
+				}
+			}
+			if hasStrPart {
+				st.interpolatedStringCounter++
+				tempName := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+				materialized, err := st.buildInterpolatedStringParts(unit, snapshot, fileSet, child, scope, width)
+				if err != nil {
+					return "", "", err
+				}
+				preParts = append(preParts, indent+fmt.Sprintf("PebbleStr %s = %s;", tempName, materialized))
+				calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{tempName + ".data"}})
+				continue
+			}
 			for _, part := range child.Parts {
 				switch part.Kind {
 				case tir.InterpolationTextPart:
@@ -3275,15 +3338,42 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 					if !ok {
 						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 					}
-					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-					if !ok || valueKind != types.Bool {
-						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					if isStr(snapshot, valueNode.Type) {
+						strExpr, err := buildStrOperand(st, unit, snapshot, fileSet, part.Value, scope, width)
+						if err != nil {
+							return "", "", err
+						}
+						calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{strExpr + ".data"}})
+						continue
 					}
-					boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
+					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
+					if !ok || (valueKind != types.Bool && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, an integer type, a float type, or a str type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					}
+					if valueKind == types.Bool {
+						boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
+						if err != nil {
+							return "", "", err
+						}
+						calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{"(" + boolExpr + ` ? "true" : "false")`}})
+						continue
+					}
+					if valueKind == types.F32 || valueKind == types.F64 {
+						floatExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, part.Value, scope, valueKind, width)
+						if err != nil {
+							return "", "", err
+						}
+						calls = append(calls, printFprintfCall{format: `"%f"`, args: []string{floatExpr}})
+						continue
+					}
+					intExpr, err := buildExpr(st, unit, snapshot, fileSet, part.Value, scope, valueKind, width)
 					if err != nil {
 						return "", "", err
 					}
-					calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{"(" + boolExpr + ` ? "true" : "false")`}})
+					if valueKind == types.Uint && printOperandLenRead(unit, snapshot, valueNode) {
+						intExpr = "(uint64_t)(" + intExpr + ")"
+					}
+					calls = append(calls, printFprintfCall{format: `"%"` + printfSpecifier(valueKind), args: []string{intExpr}})
 				default:
 					return "", "", fmt.Errorf("%s interpolated-string print operand has an unknown part kind %d", context, part.Kind)
 				}
