@@ -44,44 +44,46 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 51 ("Untagged union support", tracker 14
-"Untagged union" row, ~line 151) closed in `46df6e1`. Decision made by
-the user 2026-08-13: support untagged unions
-(`type Data = union { a int; b bool; };`, distinct from the
-already-working tagged union `union enum { ... }`) as explicitly
-UNSAFE — no runtime tag, no discriminant tracking, direct C `union`
-semantics matching V1 exactly. Root cause: construction was rejected
-by `aggregate_validation.go`'s `aggregateStruct` case, hard-gated to
-`declaration.Nominal == infer.NominalStruct`; member read/write was
-rejected by `member_validation.go`'s field-lookup loop, which only
-matched `SymbolField` — an untagged union's members are parsed as
-`SymbolVariant` (same `VariantDecl` node a tagged union's variants
-use), so they never matched. Fixed via a new `tir.TypeDecl.Union` bool
-signal (neither the type snapshot nor member-declaration node kinds
-can otherwise distinguish an untagged union from a tagged union or a
-struct), a new `aggregateUnion` construction kind requiring exactly
-one field, unconditional member read/write for a declared union field,
-and a real minimal C `typedef union { ... }` with no tag — every
-Nominal-dispatch site the backend already split by struct/enum/
-tagged-union (array element, slice element, pointer pointee, sizeof,
-struct field, optional payload) gated with a new
-`isUntaggedUnionType` check. Confirmed via a genuine bit-pattern
-reinterpretation test (i32 `-1` read through a `u32` field as
-`4294967295`) that the semantics are truly unsafe, not accidentally
-safe. Scoped to scalar payload fields only this slice (struct/array/
-tuple/optional/str fields deferred). A narrow, separate gap was found
-during test-writing and deliberately left unfixed: reading (not
-writing) a `char`-typed union field fails at Emit — now its own
-tracker 14 row. STANDING NOTE, still open: `examples/arena_alloc.peb`
-fails to compile on pointer arithmetic in `std/mem/arena.peb` (T0505,
-`ptr + int`) — not yet a tracker 14 row, awaiting the user's decision
-on when to queue it.
+*(empty — Phase 3 item 52 ("`char`-typed untagged-union field read",
+tracker 14, ~line 152) closed in `67f82b9`. Root cause: same bug class
+seen throughout this engagement — `buildStructFieldRead`/
+`buildStructFieldValueRead` each dispatch a field read by type kind,
+falling through to a plain `pebble_field_<member>` C projection for
+bool/integer/pointer/enum/str, but had no case for `isChar`, so a
+char-typed field fell through to the final rejection. Construction and
+write already worked via `buildCharOperand`; only the read path was
+missing the case. Fixed with a two-line addition (one per function),
+mirroring the existing pointer/enum/str cases exactly. Test coverage
+added a non-ASCII (`'é'`) round-trip case, not just ASCII, proving the
+full Unicode scalar value survives. This closes the last small,
+narrowly-scoped follow-up from Phase 3 #51's untagged-union work.
+
+Decision items resolved this window: escape analysis (left as-is,
+logged in the new `18-future-safety-and-ergonomics-roadmap.md`),
+C-ABI variadic extern support (decided as unsafe passthrough but
+deferred — no current dependency), freestanding compilation
+(confirmed not pressing, still genuinely undecided). No further items
+picked; the user is about to run a fresh audit pass to find what's
+still missing, per this file's own workflow step 5. STANDING NOTE,
+still open: `examples/arena_alloc.peb` fails to compile on pointer
+arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not yet a
+tracker 14 row, awaiting the user's decision on when to queue it.
 
 Per the user's own instruction ("continue to decision items after"),
 no further item picked here — the next step is the remaining pending
 Decision-needed items (escape analysis line ~152, C variadic extern
 call line ~324, freestanding compilation line ~722), one at a time
 with the user choosing before each dispatch.)*
+
+<!-- Previous item, resolved 2026-08-14:
+
+**Item: `char`-typed untagged-union field read (Phase 3 #52),
+tracker 14.**
+
+Closed in `67f82b9`. See the Active defect entry above for the full
+summary; kept brief here since that entry already carries it.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
