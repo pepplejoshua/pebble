@@ -3743,11 +3743,45 @@ func buildOptionalValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		if !ok {
 			return "", fmt.Errorf("%s is a Load referencing invalid place node %d", context, node.Children[0])
 		}
-		if place.Kind != tir.DereferencePlace {
-			return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-optional read through a pointer)", context, place.Kind)
+		if place.Kind != tir.DereferencePlace && place.Kind != tir.FieldPlace {
+			return "", fmt.Errorf("%s is a Load whose place is a %s, want a DereferencePlace (a by-value whole-optional read through a pointer) or a FieldPlace (a by-value whole-optional read of an optional struct field)", context, place.Kind)
 		}
 		if node.Type != optionalType {
 			return "", fmt.Errorf("%s is a Load of type %s, not an optional-typed value of type %s", context, describeType(snapshot, node.Type), optionalTypeName(optionalType))
+		}
+		if place.Kind == tir.FieldPlace {
+			// A whole-optional struct field read used directly as the optional
+			// value — `takes(h.value)` passing an ?int struct field as a call
+			// argument, or `return h.value;` in an optional-returning helper.
+			// The field's own C type is already the target optional's typedef
+			// (pebble_optional_<typeID>_t, see structFieldCType), so the
+			// projected field-access expression IS the whole-optional value
+			// directly — no unwrapping/wrapping needed, the same direct read
+			// shape buildStructFieldRead establishes for a regular field
+			// projection (baseExpr + "."/-> + pebble_field_<member>). The
+			// field's resolved type must be exactly the target optional type
+			// (defense for hand-built IR).
+			baseExpr, structType, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
+			if err != nil {
+				return "", err
+			}
+			access := "."
+			if key, found := snapshot.Key(structType); found && key.Kind() == types.Pointer {
+				pointee, childOK := key.Child()
+				if !childOK {
+					return "", fmt.Errorf("%s field read pointer has no pointee", context)
+				}
+				structType = pointee
+				access = "->"
+			}
+			fieldType, ok := declaredFieldType(unit, snapshot, structType, place.Member)
+			if !ok {
+				return "", fmt.Errorf("%s is a Load of field %d, which is not declared on struct type %s", context, place.Member, describeType(snapshot, structType))
+			}
+			if fieldType != optionalType {
+				return "", fmt.Errorf("%s is a Load of field %d of type %s, not an optional-typed value of type %s", context, place.Member, describeType(snapshot, fieldType), optionalTypeName(optionalType))
+			}
+			return fmt.Sprintf("%s%spebble_field_%d", baseExpr, access, place.Member), nil
 		}
 		value, err := buildDereferencePlaceRead(st, unit, snapshot, fileSet, place, locals, width, node.Span, false)
 		if err != nil {

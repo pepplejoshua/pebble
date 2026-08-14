@@ -2684,3 +2684,139 @@ func TestEmitStrTupleElementTwoLocalsCombinedCompilesAndRuns(t *testing.T) {
 	src := "fn takes(s str) int { if s == \"first\" { return 1; } return 0; } fn main() int { var t1 (str, int) = (\"first\", 1); var t2 (str, int) = (\"second\", 2); var result = takes(t1.0); var match = t2.0 == \"second\"; if result == 1 && match { return 1; } return 0; }"
 	emitAndRun(t, src, false, 1, false)
 }
+
+func TestF516OptionalStructFieldAsCallArgumentSomeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact minimal repro of F5-16: an optional-typed struct field read
+	// passed as a call argument. Holder has `value ?int`; h.value is some 5,
+	// passed to takes(?int) which checks .has_value and force-unwraps. The
+	// callee's has_value must be true and v! must yield 5, so exit code 5.
+	src := `type Holder = struct { value ?int; };
+fn takes(v ?int) int {
+    if v.has_value { return v!; }
+    return 0;
+}
+fn main() int {
+    var h Holder = Holder.{ value = some 5 };
+    return takes(h.value);
+}`
+	emitAndRun(t, src, false, 5, false)
+}
+
+func TestF516OptionalStructFieldAsCallArgumentNoneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The none twin of F5-16: the struct's optional field is none instead of
+	// some, passed as a call argument. The callee's .has_value check must
+	// correctly see false, proving the has_value = false path through
+	// buildOptionalValue's FieldPlace branch works too, not just the some/true
+	// case. Exit code 0 proves the has_value-false arm ran inside takes.
+	src := `type Holder = struct { value ?int; };
+fn takes(v ?int) int {
+    if v.has_value { return v!; }
+    return 0;
+}
+fn main() int {
+    var h Holder = Holder.{ value = none };
+    return takes(h.value);
+}`
+	emitAndRun(t, src, false, 0, false)
+}
+
+func TestF516OptionalStructFieldAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An optional-typed struct field used as a return value from a helper
+	// function. getValue returns h.value directly (a Load of a FieldPlace),
+	// and main receives it into an optional local, checks has_value, and
+	// force-unwraps. Exit code 7 proves the optional round-tripped correctly
+	// through the return-value position.
+	src := `type Holder = struct { value ?int; };
+fn getValue(h Holder) ?int {
+    return h.value;
+}
+fn main() int {
+    var h Holder = Holder.{ value = some 7 };
+    var v ?int = getValue(h);
+    if v.has_value { return v!; }
+    return 0;
+}`
+	emitAndRun(t, src, false, 7, false)
+}
+
+func TestF516OptionalStructFieldAsReturnValueNoneCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The none twin of the return-value case: the struct field is none,
+	// returned from the helper, received as an optional local whose has_value
+	// is false. Exit code 0 proves the has_value-false path in main runs.
+	src := `type Holder = struct { value ?int; };
+fn getValue(h Holder) ?int {
+    return h.value;
+}
+fn main() int {
+    var h Holder = Holder.{ value = none };
+    var v ?int = getValue(h);
+    if v.has_value { return v!; }
+    return 0;
+}`
+	emitAndRun(t, src, false, 0, false)
+}
+
+func TestF516OptionalStructFieldPointerReceiverAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The pointer-receiver variant of F5-16: self.value on a *Holder receiver
+	// passed as a call argument. Exercises the -> access-kind branch of
+	// buildOptionalValue's FieldPlace case (vs . for a value receiver). The
+	// holder has some 42, passes through takes, unwrapped value is 42.
+	src := `type Holder = struct { value ?int; };
+fn takes(v ?int) int {
+    if v.has_value { return v!; }
+    return 0;
+}
+fn getHolder(self *Holder) ?int {
+    return self.value;
+}
+fn main() int {
+    var h Holder = Holder.{ value = some 42 };
+    return takes(getHolder(&h));
+}`
+	emitAndRun(t, src, false, 42, false)
+}
+
+func TestF516OptionalStructFieldPointerReceiverAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The pointer-receiver variant of the return-value case: self.value on a
+	// *Holder receiver returned directly from a helper. Exercises the ->
+	// access-kind branch for the return-value position. Exit code 99 proves
+	// the whole pipeline compiles and runs correctly.
+	src := `type Holder = struct { value ?int; };
+fn getValue(self *Holder) ?int {
+    return self.value;
+}
+fn main() int {
+    var h Holder = Holder.{ value = some 99 };
+    var v ?int = getValue(&h);
+    if v.has_value { return v!; }
+    return 0;
+}`
+	emitAndRun(t, src, false, 99, false)
+}
+
+func TestF516OptionalStructFieldPointerReceiverNoneAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The pointer-receiver + none combination: self.value on a *Holder
+	// receiver where the field is none, passed as a call argument. Proves the
+	// -> branch with has_value = false flows correctly through both the
+	// FieldPlace emission and the runtime has_value check.
+	src := `type Holder = struct { value ?int; };
+fn takes(v ?int) int {
+    if v.has_value { return v!; }
+    return 0;
+}
+fn getHolder(self *Holder) ?int {
+    return self.value;
+}
+fn main() int {
+    var h Holder = Holder.{ value = none };
+    return takes(getHolder(&h));
+}`
+	emitAndRun(t, src, false, 0, false)
+}
