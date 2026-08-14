@@ -254,9 +254,33 @@ and a runtime switch only for an enum/union discriminant.
    checker (pointers are slice 8, not yet printable). Causation-checked
    against `HEAD`. Full `internal/backend` and `internal/check` suites
    clean.
-8. **Pointers** — nil-safe address-only printing; a dedicated test
-   proving a self-referential (`Node`) pointer cycle cannot cause
-   unbounded print recursion.
+8. ~~**Pointers**~~ **RESOLVED (`a8c48b8`).** `printableType` gains a
+   `types.Pointer` LEAF case (`return true`, no `key.Child()`
+   recursion) — printing a pointer never dereferences the pointee, so
+   printability is unconditional regardless of pointee type; this is
+   exactly what makes a self-referential pointer cycle trivially safe.
+   Backend emits `"&" + %p` for a non-nil pointer and the bare `"nil"`
+   literal for a null one (nil-check via `== NULL`, the same idiom the
+   runtime's checked dereference uses).
+   `buildPointerPrintValueExpr` covers every real pointer-value operand
+   shape (`SymbolValue`, `Load`, `FieldValue`, `AddressOf`,
+   `NilPointer`, `DirectCall`, `PointerCast`, `SourceAlias`). Printing a
+   self-referential struct (`type Node = struct { next *Node; };`)
+   required the struct's own C typedef to carry a tag name so the
+   pointer field can reference the enclosing type via C's tag namespace
+   before the typedef completes — detected precisely via a
+   pointer-field cycle graph (`structIsCyclic`/`structCycleSet`, DFS
+   cycle detection) rather than tagging every struct unconditionally;
+   an earlier, broader attempt at this regressed 22 existing tests
+   asserting the plain untagged spelling for the overwhelming
+   non-cyclic common case, caught and corrected by the full-suite
+   checkpoint. Two now-obsolete negative tests (an optional and a
+   tagged union with a pointer payload, previously rejected as
+   unprintable) were converted to positive compile-and-run tests. A
+   dedicated test constructs a self-referential `Node` and proves the
+   print terminates normally rather than recursing unboundedly.
+   Causation-checked against `HEAD`; full `internal/backend` and
+   `internal/check` suites clean.
 9. **Function values** — named-function formatting first, indirect
    pointer-address formatting second; lowest priority but not left
    silently rejected, since the goal is universal printability.

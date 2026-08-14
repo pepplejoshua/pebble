@@ -400,20 +400,65 @@ Causation-checked against `HEAD`; full `internal/backend` AND
 made the `internal/check` suite a new checkpoint addition, not run for
 prior F5 items).
 
-Picking up F5-23 next (print a pointer value — V1 has a pointer format
-path, V2 rejects the operand in the checker, per the master ledger:
-"Implement proposal 17's pointer-print slice only" — this is proposal
-17's slice 8, "nil-safe address-only printing; a dedicated test proving
-a self-referential (`Node`) pointer cycle cannot cause unbounded print
-recursion"). Re-read proposal 17's slice 8 description closely before
-scoping a dispatch brief — the cycle-safety requirement is explicit and
-non-obvious (a pointer to a struct containing a pointer back to itself
-must NOT be printed recursively the way F5-22's optional-of-struct
-recursion does; "address-only" strongly suggests printing the pointer's
-raw address rather than dereferencing and recursing into the pointee at
-all, sidestepping the cycle question entirely — confirm this reading is
-correct before dispatching, don't assume). Investigate/reproduce
-directly first with a minimal `.peb` snippet (`print(some_ptr);` where
-`some_ptr *int` or similar) to see the exact current checker rejection
-message; next dispatch should use `opencode-go/deepseek-v4-flash` (the
-last dispatch, F5-22, used `vercel/alibaba/qwen3.7-flash`).)*
+*(empty — F5-23 (print a pointer value, proposal 17 slice 8) closed in
+`a8c48b8`. `printableType` gained a `types.Pointer` LEAF case
+(unconditionally printable, no `key.Child()` recursion — pointers are
+never dereferenced for printing, which is exactly what makes a
+self-referential cycle trivially safe). Backend emits
+`"&" + %p` for a non-nil pointer and the bare `"nil"` literal for null.
+`buildPointerPrintValueExpr` covers every real pointer-value print-
+operand shape (`SymbolValue`, `Load`, `FieldValue`, `AddressOf`,
+`NilPointer`, `DirectCall`, `PointerCast`, `SourceAlias`). This item
+took FOUR total dispatch rounds — by far the most of any F5 item this
+window — because printing a self-referential struct
+(`type Node = struct { next *Node; };`) surfaced a genuine, necessary
+structural requirement: C requires a struct's own typedef to carry a
+tag name so a pointer field can reference the enclosing type before the
+typedef completes. Round 1 (main implementation) worked but stopped
+without tests. Round 2 (test-coverage follow-up) discovered the missing
+piece, wrote the required self-referential-cycle test the proposal
+explicitly calls for, and fixed it by making `buildStructTypedef`/
+`pointerTypeNameForUnit` ALWAYS emit a C tag — too broad: the next
+full-suite checkpoint found 22 regressed tests, all asserting the plain
+untagged spelling for the overwhelming non-cyclic common case. Round 3
+narrowed the fix correctly: `structIsCyclic`/`structCycleSet` (a
+directed graph over pointer-typed fields, DFS cycle detection) tags
+ONLY structs that actually participate in a pointer-reachable cycle,
+restoring the untagged form everywhere else — full suite dropped from
+22 failures to 1. Round 4 fixed that last one, another instance of the
+same "now legitimately printable" pattern seen throughout this window:
+a tagged-union variant with a pointer payload is now printable too
+(the union's printability check recurses into payload types), so the
+old negative test asserting rejection was obsolete; discovered
+mid-fix that pointer-payload union VARIANT CONSTRUCTION itself remains
+a separate, unrelated, still-unimplemented backend restriction
+(`unionPayloadCTypeAdmissible`), correctly identified as out of scope
+and left alone rather than chased. Two now-obsolete negative tests
+(optional-of-pointer, union-with-pointer-payload) converted to positive
+tests; a dedicated self-referential-cycle test added, proving
+termination not just correct output. Causation-checked against `HEAD`;
+full `internal/backend` (393s–447s across rounds) AND `internal/check`
+suites both 100% clean on the final round.
+
+Picking up F5-24 next (print a function value — V1 has a function-value
+format path, V2 rejects the operand in the checker, per the master
+ledger: "Implement proposal 17's function-value-print slice only" —
+proposal 17's slice 9: "named-function formatting first, indirect
+pointer-address formatting second; lowest priority but not left
+silently rejected"). Given F5-23's four-round history, budget real time
+for investigation before dispatching — a function value has TWO
+distinct print shapes per the proposal (a NAMED function reference vs.
+an indirect/anonymous function pointer), and the "address" half likely
+reuses F5-23's just-added pointer-printing machinery closely (confirm
+this by reading `buildPointerPrintValueCalls`/
+`buildPointerPrintValueExpr` before assuming a parallel implementation
+is needed). Investigate/reproduce directly first with a minimal `.peb`
+snippet (`fn f() int { return 1; } fn main() int { print f; return 0;
+}` and a function-typed local holding an anonymous/hoisted function
+value) to see the exact current checker rejection message and to
+confirm what "named-function formatting" should actually look like (is
+there existing precedent elsewhere in the codebase for printing a
+function's name, e.g. in a panic/stack-trace message?) before writing a
+dispatch brief; next dispatch should use
+`vercel/alibaba/qwen3.7-flash` (the last real dispatch, F5-23's round
+4, used `opencode-go/deepseek-v4-flash`).)*
