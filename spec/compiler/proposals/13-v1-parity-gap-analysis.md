@@ -175,37 +175,45 @@ standing ~every-5-items cadence — corrected going forward per the
 user's direct feedback; do not run a full-suite checkpoint again until
 several more items are closed).
 
-Picking up F5-13 next (whole array reassignment from a call —
-`items = make_items();`, confirmed live:
-`fn makeItems() [3]int { return [1, 2, 3]; } fn main() int { var items
-[3]int = [0, 0, 0]; items = makeItems(); return items[0]; }` fails
-with the array analogue's precise rejection: "reassigns an
-array-typed place of type ... from a call to an array-returning
-helper; reassigning a whole array from a call is not supported yet".
-IMPORTANT ARCHITECTURAL DIFFERENCE from F5-12/tuple: `buildArrayStoreValue`
-(in `stores.go`, search for it) does NOT return a value used directly
-as `lvalue = <value>;` — arrays are raw C arrays, so every call site
-wraps the returned string in `memcpy(<lvalue>, <source>, sizeof(<lvalue>))`,
-meaning `buildArrayStoreValue`'s return value must be an ADDRESS
-expression (its existing cases return `&(ArrayValue compound literal)`
-or `&pebble_local_<symbol>`). A C function call's result is an rvalue —
-you cannot take `&make_items()` directly. `buildArrayStoreValue`'s
-signature is `(string, error)`, no pre-statement return, and its call
-sites use the result inline in one `memcpy(...)` expression with no
-room to splice in a separate temp-declaration statement without
-restructuring 2 call sites — AVOID that restructuring if possible.
-Instead, the clean fix is a GNU statement-expression that declares a
-temp inside itself and yields it as its trailing lvalue expression —
-this codebase already uses `({ ... })` GNU statement expressions
-pervasively (e.g. every interpolated-string materialization); the
-address-of-a-statement-expression-whose-tail-is-an-lvalue idiom
-(`&({ T tmp = f(); tmp; })`) is valid GCC/Clang C and keeps the
-function's signature unchanged: `return fmt.Sprintf("&({ %s pebble_tmp_%d = %s; pebble_tmp_%d; })", arrayTypeName(wantType), id, callExpr, id), nil`
-(exact temp-naming scheme is the implementer's call — pick something
-that can't collide with the existing `pebble_repeat_arg_<argID>`/
-`pebble_repeat_ret_<nodeID>` schemes, e.g. `pebble_store_call_<nodeID>`).
-Same `findCallDeclaration`/`ResultType` double-check as F5-12. Confirm
-with a real compile+run test, not just a Go-string-shape assertion —
-the GNU-extension address-of-statement-expression idiom needs an
-actual `cc` round-trip to prove it compiles and the memcpy reads the
-right bytes.)*
+*(empty — F5-13 (whole array reassignment from a call) closed in
+`ea5a52b`. The suggested GNU statement-expression address trick did
+NOT work — Apple's Clang rejects taking the address of a statement
+expression's result, even though it accepts the basic `({ ... })`
+form. The implementer found a more portable alternative: an anonymous
+struct-wrapper compound literal with a designated initializer,
+`&(struct { T val; }){ .val = make_items(ctx) }.val` — standard C99,
+valid on both GCC and Clang, no GNU-extension edge case. Verified via
+REAL `cc -Wall -Wextra` compilation (not just Go-string assertions,
+given how non-obvious this C shape is) across plain-local, 5-element,
+pointer-deref, and struct-field reassignment shapes, plus a single-
+evaluation proof. LESSON for any future similar "need an address of a
+call result" shape: prefer the struct-wrapper compound-literal idiom
+over `&({ ... })` — it's portable, this one already isn't.
+
+Picking up F5-14 next (tuple-return forwarding —
+`return make_pair();` forwarding a tuple-returning call's result as
+another function's own tuple return, confirmed live:
+`fn makePair() (int, int) { return (1, 2); } fn forward() (int, int) {
+return makePair(); } fn main() int { var p (int, int) = forward();
+return p.0; }` fails with: "return statement returns a DirectCall,
+want a reference to a tuple-typed local in scope or a tuple literal
+(a TupleValue); only returning an already-declared tuple-typed local
+or constructing a fresh tuple literal inline is supported". The fix
+location is `calls.go`'s `buildAggregateReturnValue` (search for it —
+the SAME function handles both tuple and struct returns, branching on
+`result.tuple != 0` early). The STRUCT side of this exact function
+ALREADY has a working `DirectCall` case (search further down in the
+same function for `if node.Kind == tir.DirectCall` — it's below the
+struct branch, not inside the `if result.tuple != 0 { ... }` block):
+`findCallDeclaration` + `calleeDecl.ResultType != result.structType`
+check, then `buildDirectCallWithPre` (which returns a `(pre, expr,
+error)` triple — note this function ALREADY supports pre-statements
+via its own `(string, string, error)` return signature, unlike
+`buildTupleStoreValue`/`buildArrayStoreValue` — no signature change
+needed here). The fix is to add an EXACTLY ANALOGOUS `DirectCall`
+case INSIDE the `if result.tuple != 0 { ... }` block (before its
+current final generic-rejection line), using `result.tuple` instead
+of `result.structType` and `buildDirectCallWithPre` the same way.
+This is a narrow, low-risk, single-function change with an exact
+precedent already present in the very same function — should be
+even lower-risk than F5-12/F5-13 were.)*
