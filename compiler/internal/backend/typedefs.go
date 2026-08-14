@@ -532,23 +532,23 @@ func collectUnionPayloadStructs(unit *tir.Unit, snapshot *types.Snapshot, unionI
 	return out, nil
 }
 
-// collectFunctionParamStructs returns, in deterministic order, the PLAIN struct
-// types used as first-class function type parameters (F5-19): each such
-// struct's own typedef must be emitted BEFORE the function typedef block that
-// references it as a parameter type, but the function block leads the aggregate
-// block that holds the struct typedefs (see Emit's assembly) — so Emit hoists
-// these self-contained struct typedefs ahead of the function block and removes
-// them from the aggregate block they would otherwise be double-emitted in. The
-// structInfo for each parameter type comes from the caller's already-ordered
-// aggregate collection (orderAggregateTypes); a plain-struct parameter absent
-// from it — a struct with no construction, field, parameter, or other
-// reference outside the function type itself — is a clean error, since no
-// typedef text could be built for it. Only structs that themselves do NOT
-// carry function-typed fields are hoisted (a struct whose field is a function
-// type needs its typedef AFTER the function block, creating a circular
-// dependency if hoisted); such structs stay in the aggregate block where they
-// correctly follow the function block.
-func collectFunctionParamStructs(unit *tir.Unit, snapshot *types.Snapshot, functionTypes []types.TypeID, ordered aggregateTypeOrder) ([]structInfo, error) {
+// collectFunctionParamAndResultStructs returns, in deterministic order, the
+// PLAIN struct types used as first-class function type parameters or results
+// (F5-19 for parameters, F5-20 for results): each such struct's own typedef
+// must be emitted BEFORE the function typedef block that references it, but the
+// function block leads the aggregate block that holds the struct typedefs (see
+// Emit's assembly) — so Emit hoists these self-contained struct typedefs ahead
+// of the function block and removes them from the aggregate block they would
+// otherwise be double-emitted in. The structInfo for each parameter or result
+// type comes from the caller's already-ordered aggregate collection
+// (orderAggregateTypes); a plain-struct parameter or result absent from it — a
+// struct with no construction, field, parameter, or other reference outside the
+// function type itself — is a clean error, since no typedef text could be built
+// for it. Only structs that themselves do NOT carry function-typed fields are
+// hoisted (a struct whose field is a function type needs its typedef AFTER the
+// function block, creating a circular dependency if hoisted); such structs stay
+// in the aggregate block where they correctly follow the function block.
+func collectFunctionParamAndResultStructs(unit *tir.Unit, snapshot *types.Snapshot, functionTypes []types.TypeID, ordered aggregateTypeOrder) ([]structInfo, error) {
 	byType := make(map[types.TypeID]structInfo, len(ordered.structs))
 	for _, info := range ordered.structs {
 		byType[info.typ] = info
@@ -560,7 +560,7 @@ func collectFunctionParamStructs(unit *tir.Unit, snapshot *types.Snapshot, funct
 		if !ok || key.Kind() != types.Function {
 			continue
 		}
-		_, params, _, _, ok := key.Function()
+		_, params, result, _, ok := key.Function()
 		if !ok {
 			continue
 		}
@@ -582,6 +582,21 @@ func collectFunctionParamStructs(unit *tir.Unit, snapshot *types.Snapshot, funct
 			sinfo, ok := byType[paramType]
 			if !ok {
 				return nil, fmt.Errorf("function type %s references struct parameter type %s that was not collected", describeType(snapshot, fnTypeID), describeType(snapshot, paramType))
+			}
+			out = append(out, sinfo)
+		}
+		// Plain struct results (F5-20): same hoisting discipline as parameters —
+		// the result's typedef must precede the function typedef, and only plain
+		// structs (all scalar-ish fields) qualify because their typedef is fully
+		// self-contained; non-plain structs, tuples, optionals, slices, arrays,
+		// pointers, and function-typed results are rejected here and remain in
+		// the aggregate block. The circular-dependency guard applies identically:
+		// a struct whose field is a function type cannot be hoisted.
+		if !seen[result] && isStruct(snapshot, result) && isPlainStructField(unit, snapshot, result) && !hasFunctionTypedFields(unit, snapshot, result) {
+			seen[result] = true
+			sinfo, ok := byType[result]
+			if !ok {
+				return nil, fmt.Errorf("function type %s references struct result type %s that was not collected", describeType(snapshot, fnTypeID), describeType(snapshot, result))
 			}
 			out = append(out, sinfo)
 		}
@@ -1073,7 +1088,7 @@ func buildFunctionTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	if !ok {
 		return "", fmt.Errorf("type %s is not a function type", describeType(snapshot, id))
 	}
-	resultCType, err := functionTypeResultCType(st, snapshot, width, result)
+	resultCType, err := functionTypeResultCType(st, unit, snapshot, width, result)
 	if err != nil {
 		return "", err
 	}

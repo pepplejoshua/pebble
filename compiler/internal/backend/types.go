@@ -2075,7 +2075,7 @@ func functionTypeParamCType(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // self-contained set validateFunctionTypeSignature admits. Anything else is a
 // clean rejection, defense for hand-built IR (the validation has already ruled
 // every reachable result shape out).
-func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
+func functionTypeResultCType(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, width types.BuiltinKind, result types.TypeID) (string, error) {
 	switch {
 	case isWidth(snapshot, width, result):
 		return cType(width), nil
@@ -2106,8 +2106,19 @@ func functionTypeResultCType(st *emitState, snapshot *types.Snapshot, width type
 			return ctypeName, nil
 		}
 		return "", fmt.Errorf("function type result type %s has a pointee %s whose C type is unsupported", describeType(snapshot, result), describeType(snapshot, pointeeTypeID))
+	case isStruct(snapshot, result):
+		// A plain struct result (F5-20): admitted by validateFunctionTypeSignature
+		// only when runtimeType(unit, snapshot, result) == 0 && isPlainStructField
+		// returns true, so its own pebble_struct_<typeID>_t typedef is fully
+		// self-contained (all fields are scalar-ish types) and can be emitted
+		// before this fnptr typedef by Emit's typedef-ordering hoisting. The
+		// same guards are repeated here as defense for hand-built IR.
+		if runtimeType(unit, snapshot, result) == 0 && isPlainStructField(unit, snapshot, result) {
+			return structTypeName(result), nil
+		}
+		return "", fmt.Errorf("function type result type %s is a struct but not a plain struct (fields must all be self-contained scalar-ish types)", describeType(snapshot, result))
 	}
-	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, f32, f64, void, or a pointer type", describeType(snapshot, result), wantName(width))
+	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, f32, f64, void, a pointer type, or a plain struct type", describeType(snapshot, result), wantName(width))
 }
 
 // resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names

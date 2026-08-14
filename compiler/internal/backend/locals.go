@@ -1118,6 +1118,27 @@ func buildStructLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.
 		// a struct-returning helper is supported.
 		return buildAggregateCallInitializer(st, unit, snapshot, fileSet, statement, initValue, scope, indent, context, width, false)
 	}
+	if initValue.Kind == tir.IndirectCall {
+		// An indirect call to a function-typed local whose result type is a
+		// plain struct used as the direct initializer of a matching struct-typed
+		// local — `var p Point = f();` where f is fn() Point — the F5-20 shape.
+		// The call expression is built by buildFunctionIndirectCall, which emits
+		// <callee>(ctx, <args>) regardless of result type; here we consume that
+		// expression as the whole-value initializer of a struct local, producing
+		// `pebble_struct_<typeID>_t pebble_local_<symbol> = <indirect call
+		// expr>;`. Like every local, the declaration is followed by a (void) cast
+		// against -Wunused-variable.
+		calleeNode, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares a struct-typed local of type %s from an IndirectCall referencing invalid callee node %d", context, structTypeName(initValue.Type), initValue.Children[0])
+		}
+		callExpr, err := buildFunctionIndirectCall(st, unit, snapshot, fileSet, initValue, calleeNode, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{structType: initValue.Type}
+		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, structTypeName(initValue.Type), statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
 	if initValue.Kind == tir.Load {
 		// A by-value read used as the whole-struct initializer, in two shapes:
 		//

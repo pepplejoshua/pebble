@@ -1808,7 +1808,7 @@ func TestEmitNarrowU8FunctionTypeResultStillRejected(t *testing.T) {
 	// (entry width, u64, bool, char, f32, f64, void, pointer). The regression
 	// guards against the float widening leaking into an unrestricted result
 	// gate — the narrow fixed-width integer results stay rejected.
-	emitAndRunRejects(t, "fn get_u8() u8 { return 5; } fn main() int { var f fn() u8 = get_u8; return f() as int; }", "has result type u8, want int, u64, bool, char, f32, f64, void, or a pointer type")
+	emitAndRunRejects(t, "fn get_u8() u8 { return 5; } fn main() int { var f fn() u8 = get_u8; return f() as int; }", "has result type u8, want int, u64, bool, char, f32, f64, void, a pointer type, or a plain struct type")
 }
 
 func TestCheckStdModuleGenericMethodIndexedFieldWrite(t *testing.T) {

@@ -839,7 +839,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// whose field is a function type needs its typedef AFTER the function
 	// block, creating a circular dependency if hoisted); such structs stay in
 	// the aggregate block where they correctly follow the function block.
-	paramStructs, err := collectFunctionParamStructs(unit, snapshot, functionTypes, ordered)
+	paramStructs, err := collectFunctionParamAndResultStructs(unit, snapshot, functionTypes, ordered)
 	if err != nil {
 		return err
 	}

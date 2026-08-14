@@ -663,3 +663,85 @@ func TestEmitFunctionTypeOptionalParamStillRejected(t *testing.T) {
 	t.Parallel()
 	emitAndRunRejects(t, "fn get_val(x ?int) int { return 0; }\nfn main() int { var f fn(?int) int = get_val; return 0; }", "function type")
 }
+
+// TestEmitFunctionTypePlainStructResultCompileAndRun is the exact F5-20 repro:
+// a plain Point struct returned from a first-class function value. The function
+// is called indirectly through a function-typed local, and the struct result is
+// bound to a struct-typed local. The exit code 7 is 3 + 4 — the sum of the two
+// recovered fields — so the struct result survived the indirect call.
+func TestEmitFunctionTypePlainStructResultCompileAndRun(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Point = struct { x int; y int; };
+
+fn make_point() Point {
+    return Point.{ x = 3, y = 4 };
+}
+
+fn main() int {
+    var f fn() Point = make_point;
+    var p Point = f();
+    return p.x + p.y;
+}`, false, 7, false)
+}
+
+// TestEmitFunctionTypePlainStructResultMultiFieldCompileAndRun proves ALL fields
+// of a plain struct result survive an indirect call, not just one: the struct
+// carries four fields of four different scalar types (int, bool, i64, str), each
+// returned through a function-typed local and each verified by the caller. The
+// sum 42 = 40 + 1 (b) + 1 (c) + 0 (d) confirms no field is lost.
+func TestEmitFunctionTypePlainStructResultMultiFieldCompileAndRun(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Rec = struct { a int; b bool; c i64; d str; };
+
+fn mk_rec() Rec {
+    return Rec.{ a = 40, b = true, c = 900, d = "ok" };
+}
+
+fn main() int {
+    var f fn() Rec = mk_rec;
+    var r Rec = f();
+    var t int = r.a;
+    if r.b { t = t + 1; }
+    if r.c == 900 { t = t + 1; }
+    if r.d == "ok" { t = t + 0; }
+    return t;
+}`, false, 42, false)
+}
+
+// TestEmitRejectsNonPlainStructFunctionResultAtBackend confirms the F5-20 slice
+// boundary: a struct result that itself carries a NESTED aggregate field
+// (a struct-in-struct) is deliberately OUT OF SCOPE and cleanly rejected at
+// validation time — it is not plain (see isPlainStructField), so its typedef
+// cannot be hoisted ahead of the function block, and the backend rejects it
+// rather than emitting a mis-ordered typedef. The rejection names the
+// result position and type.
+func TestEmitRejectsNonPlainStructFunctionResultAtBackend(t *testing.T) {
+	t.Parallel()
+	emitAndRunRejects(t, "type Inner = struct { val int; };\ntype Outer = struct { inner Inner; x int; };\nfn get_outer() Outer { return Outer.{ inner = Inner.{ val = 1 }, x = 2 }; }\nfn main() int { var f fn() Outer = get_outer; return 0; }", "has result type nominal(symbol ")
+}
+
+// TestEmitFunctionTypePlainStructResultChainedCompileAndRun proves a plain struct
+// result can flow through multiple levels of indirect calls: main calls f which
+// returns Point, then passes that Point through g (which takes Point as param and
+// returns Point) via another function-typed local, verifying the struct survives
+// both the result and parameter positions across chained indirect calls.
+func TestEmitFunctionTypePlainStructResultChainedCompileAndRun(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `type Point = struct { x int; y int; };
+
+fn make_point() Point {
+    return Point.{ x = 3, y = 4 };
+}
+
+fn add_point(p Point) Point {
+    return Point.{ x = p.x + 1, y = p.y + 2 };
+}
+
+fn main() int {
+    var f fn() Point = make_point;
+    var g fn(Point) Point = add_point;
+    var p Point = f();
+    var q Point = g(p);
+    return q.x + q.y;
+}`, false, 10, false)
+}
