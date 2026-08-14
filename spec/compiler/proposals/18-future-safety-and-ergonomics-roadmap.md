@@ -60,6 +60,26 @@ Pebble specifically.
   but the same aliasing-analysis foundation as borrow checking would
   make this cheaper to add later.
 
+## Decided, not yet scheduled
+
+Unlike the static-analysis section above (open ideas, no decision
+made), these have an accepted design decision already — they're just
+not pressing enough to schedule as active work right now.
+
+- **C-ABI variadic extern support.** Decided 2026-08-13 (see
+  `14-v2-v1-checker-backend-parity-audit.md`'s "C variadic extern
+  call" row): support a real C-ABI bare `...` (untyped, no name) as
+  the final parameter of an `extern fn` declaration, with NO interop
+  type checking on the variadic call-site tail — pure unsafe
+  passthrough, the same "unsafe, Pebble-land gets its own real
+  checked alternative" treatment as untagged unions. Confirmed nothing
+  in `std/` or the example programs needs this today, so it stays
+  parked rather than scheduled. A first implementation attempt was
+  dispatched and then abandoned mid-run once this "not needed right
+  now" call was made — do not resume or trust any leftover
+  working-tree state from that attempt; start fresh from the decision
+  above when this is picked up.
+
 ## Notes for whoever picks one of these up
 
 - Read `11-raw-pointers-and-unsafe-ops.md` and `open-language-decisions.md`
