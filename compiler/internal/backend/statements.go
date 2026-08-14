@@ -3063,6 +3063,9 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isPointer(snapshot, child.Type) {
 			hasComposite = true
 		}
+		if isFunctionType(snapshot, child.Type) {
+			hasComposite = true
+		}
 	}
 	return operands, hasComposite, nil
 }
@@ -3476,6 +3479,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildOptionalPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isPointer(snapshot, child.Type):
 			compositeCalls, pres, err = buildPointerPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isFunctionType(snapshot, child.Type):
+			compositeCalls, pres, err = buildFunctionPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
 			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
@@ -3922,6 +3927,13 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return buildOptionalPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	case types.Pointer:
 		return buildPointerPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	case types.Function:
+		// A function-typed value inside a composite (e.g., a struct field of
+		// function type) is always indirect — it's accessed via a field
+		// projection, not a bare function reference. Print its raw C function
+		// pointer address in <fn @0x...> format. No nil check needed: Pebble
+		// function values cannot be nil, unlike pointer types.
+		return []printFprintfCall{{format: `"<fn @%p>"`, args: []string{"(void *)" + expr}}}, nil, nil
 	default:
 		if isTaggedUnionType(unit, snapshot, valueType) {
 			// A tagged union is checked BEFORE the plain-enum branch below,
@@ -4697,4 +4709,75 @@ func variantSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.Sy
 		}
 	}
 	return "", fmt.Errorf("enum variant symbol %d has no VariantDeclaration node in the unit", member)
+}
+
+// functionSourceName resolves one top-level function's declared source name (add)
+// by slicing the function's own FunctionDeclaration node span out of its source
+// file — the same span mechanism structSourceName/enumSourceName use for a
+// type's declared name, shared because a FunctionDeclaration node carries the
+// declared identifier for every function declaration.
+func functionSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
+	for _, node := range unit.Nodes() {
+		if node.Kind == tir.FunctionDeclaration && node.Symbol == decl {
+			return sourceNameAt(fileSet, node.Span)
+		}
+	}
+	return "", fmt.Errorf("function declaration symbol %d has no FunctionDeclaration node in the unit", decl)
+}
+
+// buildFunctionPrintOperand emits one function-typed print operand as either
+// its declared source name (<fn add>) when the operand directly names a known,
+// top-level Pebble function (a HoistedFunctionValue or GenericFunctionValue),
+// or the underlying C function pointer's raw address (<fn @0x...>) for any
+// other shape (a function-typed local, a parameter, a struct field, a call
+// result, etc.). A SourceAlias grouping wrapper is transparently unwrapped
+// before the dispatch, exactly as unwrapPrintOperands peels them off. No
+// recursion into parameter or result types happens — a function value is a
+// leaf printable type (composite print slice 9).
+func buildFunctionPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	// Transparently unwrap SourceAlias grouping parens.
+	for child.Kind == tir.SourceAlias {
+		if len(child.Children) != 1 {
+			return nil, nil, fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
+		}
+		child = mustNode(unit, child.Children[0])
+	}
+	// Named-function case: the operand directly names a declared top-level
+	// function, so its identity is known at compile time even though its
+	// runtime representation is a C function pointer. Emit <fn <name>>.
+	if child.Kind == tir.HoistedFunctionValue || child.Kind == tir.GenericFunctionValue {
+		fnName, err := functionSourceName(unit, fileSet, child.Symbol)
+		if err != nil {
+			return nil, nil, err
+		}
+		// The printed output is ONLY the static source-name string above, but
+		// the referenced function must still appear somewhere in the emitted C:
+		// the reachability walk treats `print f;` as a genuine use of the
+		// function value, so pebble_fn_<symbol> is declared and DEFINED in the
+		// translation unit, and cc -Wunused-function -Werror rejects a static
+		// function with no textual reference. buildFunctionValue produces that
+		// reference (pebble_fn_<symbol>, or pebble_fn_<symbol>_<function> for a
+		// generic specialization) and a (void) cast pre-statement naming it —
+		// mirroring the pervasive (void)pebble_local_<symbol>; convention this
+		// backend uses to suppress -Wunused-variable on declared-but-unused
+		// locals — marks the function used without affecting the printed output.
+		fnExpr, err := buildFunctionValue(st, unit, snapshot, fileSet, child, scope, context, width)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []printFprintfCall{{format: `"<fn ` + fnName + `>` + `"`}}, []string{"(void)" + fnExpr + ";"}, nil
+	}
+	// Indirect/address case: the operand is a function-typed value whose
+	// actual target is not statically known from the print syntax alone — a
+	// function-typed local, a parameter, a struct field, a call result, etc.
+	// Treat it as a function pointer and print its raw address via %p,
+	// reusing the same (void *) cast convention F5-23 uses for regular
+	// pointers. buildFunctionValue produces the C expression for whatever
+	// shape this operand represents (SymbolValue → pebble_local_<id>,
+	// DirectCall → pebble_fn_<callee>(...), FieldValue → receiver.field, …).
+	valueExpr, err := buildFunctionValue(st, unit, snapshot, fileSet, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []printFprintfCall{{format: `"<fn @%p>"`, args: []string{"(void *)" + valueExpr}}}, nil, nil
 }

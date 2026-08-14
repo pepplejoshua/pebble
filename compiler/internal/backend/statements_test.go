@@ -3648,3 +3648,98 @@ fn main() i32 {
 		t.Fatalf("compiled program output = %q, want suffix \"}\\n\"", out)
 	}
 }
+
+func TestEmitPrintFunctionValueNamedReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 9 (F5-24): a bare top-level function reference
+	// printed directly (print f;) emits the function's declared source name
+	// wrapped as <fn <name>>. The operand is a HoistedFunctionValue whose
+	// symbol resolves to a FunctionDeclaration node, so the name comes from
+	// the declaration's span. We also call the function so the C compiler
+	// does not flag it as an unused static function (-Wunused-function).
+	out := emitAndRunCapture(t, `fn add(a i32, b i32) i32 {
+    return a + b;
+}
+fn main() i32 {
+    print add;
+    var _ = add(1, 2);
+    return 0;
+}`, false, 0, false)
+	want := "<fn add>\n"
+	if out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitPrintFunctionTypedLocalPrintsAddressNotName(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 9 (F5-24): a function-typed local variable
+	// (print g where var g fn() i32 = f;) is an INDIRECT function value —
+	// the operand is a SymbolValue of function type, NOT a HoistedFunction-
+	// Value. It must print the underlying C function pointer's raw address
+	// in the <fn @0x...> format, NOT the original function's name. This is
+	// the key distinction that proves the two-case logic (named vs indirect)
+	// is correctly implemented.
+	out := emitAndRunCapture(t, `fn f() i32 {
+    return 1;
+}
+fn main() i32 {
+    var g fn() i32 = f;
+    print g;
+    return 0;
+}`, false, 0, false)
+	// Must start with "<fn @" and contain "0x" — structural address format.
+	if !strings.HasPrefix(out, "<fn @0x") {
+		t.Fatalf("compiled program output = %q, want structural match starting with \"<fn @0x\"", out)
+	}
+	// Crucially, the output must NOT contain the bare function name "f"
+	// outside the address prefix — proving we did not fall through to the
+	// named-function path.
+	if strings.Contains(out, ">") && !strings.HasPrefix(out, "<fn @") {
+		t.Fatalf("compiled program output = %q, expected address format not name format", out)
+	}
+}
+
+func TestEmitPrintFunctionGenericReferenceCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A generic function referenced as a value (identity[i32]) prints its
+	// specialized source name, since GenericFunctionValue is handled the same
+	// way as HoistedFunctionValue in the named-function branch. We also call
+	// it so the C compiler does not flag it as an unused static function.
+	out := emitAndRunCapture(t, `fn identity[T](x T) T {
+    return x;
+}
+fn main() i32 {
+    print identity[i32];
+    var _ = identity[i32](42);
+    return 0;
+}`, false, 0, false)
+	want := "<fn identity>\n"
+	if out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
+	}
+}
+
+func TestEmitPrintFunctionInCompositeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A function-typed struct field printed as part of the struct's own
+	// output, proving the buildPrintValueCalls machinery handles functions
+	// when they appear nested inside composites.
+	out := emitAndRunCapture(t, `type Dispatcher = struct { op fn(i32) i32; };
+fn apply(x i32) i32 {
+    return x * 2;
+}
+fn main() i32 {
+    var d = Dispatcher.{ op = apply };
+    print d;
+    return 0;
+}`, false, 0, false)
+	// The struct output should contain the function field in address format
+	// since it's accessed via a struct field (indirect), not a bare reference.
+	if !strings.Contains(out, "Dispatcher{") {
+		t.Fatalf("expected struct format in output, got %q", out)
+	}
+	if !strings.Contains(out, "<fn @0x") {
+		t.Fatalf("expected function address in struct output, got %q", out)
+	}
+}

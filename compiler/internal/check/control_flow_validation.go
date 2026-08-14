@@ -201,6 +201,14 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 			// makes a self-referential pointer cycle trivially safe to print:
 			// there is no recursion into the pointee at all, for ANY pointer.
 			return true
+		case types.Function:
+			// A function type is a LEAF printable case (composite print slice
+			// 9): printing a function value either emits its declared source
+			// name when the operand directly names a top-level function, or
+			// falls back to the underlying C function pointer's raw address —
+			// neither branch recurses into parameter or result types, so every
+			// function type is unconditionally printable.
+			return true
 		case types.Nominal:
 		default:
 			return false
