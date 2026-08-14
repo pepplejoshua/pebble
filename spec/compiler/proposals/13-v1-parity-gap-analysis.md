@@ -346,28 +346,42 @@ and exits 7 for the confirmed live repro). New tests also proved a
 struct chained through BOTH a result and a parameter position across
 two indirect calls in sequence.
 
-Picking up F5-21 next (`str` result in a function value — e.g. `fn()
-str`, rejected by the same `validateFunctionTypeSignature`
-result-admission check, per the master ledger: "Add only `str` result
-C naming and indirect-call result handling"). This is a MUCH smaller
-slice than F5-19/F5-20 — `str` (`PebbleStr`) has no aggregate-typedef-
-ordering hazard at all (it is a plain, always-available runtime
-struct, not a program-defined typedef — see `functionTypeParamCType`'s
-existing `isStr` case, which already admits `str` as a PARAMETER with
-zero typedef-ordering complexity), so this should require no
-typedef-hoisting work, just: (1) `validateFunctionTypeSignature`'s
-result-admission check gains `isStr(snapshot, result)`; (2)
-`functionTypeResultCType` gains an `isStr` case returning
-`"PebbleStr"` (mirroring `functionTypeParamCType`'s own `isStr` case
-exactly); (3) confirm whether `buildStructLocalDeclaration`'s sibling,
-whatever function handles a `str`-typed local's initializer (likely
-`buildStrLocalDeclaration` or similar — check `locals.go`), already
-has or needs an `IndirectCall` case the way F5-20 needed one for
-struct locals. Investigate/reproduce directly first with a minimal
-`.peb` snippet (`fn() str` returning a literal, called through a
-function-typed local, bound to a `str` local, compared or interpolated
-to prove the actual bytes survived) before writing a dispatch brief;
-next dispatch should use `vercel/alibaba/qwen3.7-flash` (the last two
-real dispatches, F5-20 main + follow-up, used qwen then
-deepseek-v4-flash, so this one continues the alternation back to
-qwen).)*
+*(empty — F5-21 (`str` result in a first-class function type) closed
+in `1f7939e`. Exactly as sized: `validateFunctionTypeSignature` and
+`functionTypeResultCType` each gained an `isStr` case mirroring the
+existing parameter-side `isStr` case; NO typedef-ordering work was
+needed (confirmed correct — `PebbleStr` is the runtime's fixed C
+struct, never a program-defined typedef, so `collectFunctionParamAndResultStructs`
+needed no changes). The one genuinely new piece:
+`buildStrLocalDeclaration` (`locals.go`) had no `tir.IndirectCall`
+case — only `DirectCall`/`MethodCall` were handled for a str-typed
+local's initializer — so `var s str = f();` was unreachable
+independent of the validation gate; added an `IndirectCall` case
+mirroring F5-20's struct-local `IndirectCall` case exactly (delegate
+to `buildFunctionIndirectCall`, consume as the whole-value
+initializer), but using `buildStrLocalDeclaration`'s own
+`PebbleStr`/`localInfo{isStr: true}` conventions rather than the
+struct case's. Verification surfaced the SAME trivial fallout pattern
+as F5-20 (a narrow-integer-result regression test's expected-rejection
+substring going stale as the admitted-types message list grew again),
+fixed by an equally tiny one-line follow-up dispatch. Full
+`internal/backend` suite clean after both rounds (440s then 426s),
+causation-checked via file-copy swap against `HEAD` using `-run`
+(pre-fix: rejects with the original message; post-fix: compiles and
+runs, correctly comparing the round-tripped string).
+
+Picking up F5-22 next (print an optional value — V1 has an optional
+format path, V2 rejects the operand in the checker, per the master
+ledger: "Implement proposal 17's optional-print slice only"). This is
+a DIFFERENT category of item than F5-05 through F5-21 — a
+checker-level rejection (not a backend typedef/ABI gap), and the
+ledger points at a specific existing proposal document (17) rather
+than describing the shape inline, so READ `spec/compiler/proposals/17-*.md`
+first (find its exact filename) to understand the scoped slice before
+reproducing or writing a dispatch brief — do not guess the intended
+print format from first principles when a proposal doc already defines
+it. Investigate/reproduce directly first with a minimal `.peb` snippet
+(`print(some(5));` or similar) to see the exact current checker
+rejection message before writing a dispatch brief; next dispatch
+should use `vercel/alibaba/qwen3.7-flash` (the last dispatch, F5-21's
+follow-up, used `opencode-go/deepseek-v4-flash`).)*
