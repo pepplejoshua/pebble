@@ -46,28 +46,27 @@ not stay in this file.
 
 ## Active defect
 
-*(empty — F5-02 (generic untagged-union field specialization) closed in
-`eee586e`. Root cause mirrored F5-01's shape but was independent, as the
-audit anticipated: `resolveStructInfo` recovers a generic instantiation's
-concrete type arguments and substitutes each field's type via
-`structSubstitutions`/`snapshot.Substitute` before it reaches C-type
-naming; `resolveUntaggedUnionInfo` (Phase 3 #51) never did this, reading
-each member's type directly from `typeDecl.MemberTypes` with no
-substitution, so a generic union's field reached Emit still carrying the
-raw type-parameter symbol. Fixed by mirroring `resolveStructInfo`'s
-logic exactly (same helper, no new machinery). Two follow-ups were
-needed during verification: a first implementation pass deleted the
-existing non-generic rejection test coverage without replacing it
-(caught during review, restored via a small dispatch), and the
-supervisor's own full-suite run caught a genuine test-authoring bug (a
-u64 test asserting 999 as a process exit code, which truncates to a
-single byte — 999 mod 256 = 231 — not an implementation bug, fixed by
-switching to the file's established in-program-comparison pattern).
-Also reconfirmed (memory updated): `-parallel 12` full-suite runs can
-still show rotating, unrelated loop-test contention flakiness (always
-exit -1, never the same test twice); `-parallel 4` gave a clean run.
-Picking up F5-03/F5-04 next (`str` reassignment from another local and
-from a call — `buildStoreCore`'s `str` branch only accepts
-`StringLiteral`/`InterpolatedString` sources; V1 handles both cases as
-ordinary string-view assignment — check current state for staleness
+*(empty — F5-03/F5-04 (`str` reassignment from another local and from a
+call) closed together in `7d418bd`, one root cause and fix location for
+both. `buildStoreCore`'s `str` branch manually special-cased only
+`StringLiteral`/`InterpolatedString`; `buildStrOperand` (the general
+str-value builder already used everywhere else in the backend) already
+handled every relevant node kind — `SymbolValue`, `DirectCall`/
+`MethodCall` with correct single-evaluation, `FieldValue`, `Load`, and
+the same two literal shapes. Fixed by deleting the narrow switch and
+delegating entirely to `buildStrOperand`, confirmed byte-identical C
+for the two pre-existing shapes. A follow-up was needed: the
+implementation's own targeted verification missed 3 pre-existing
+negative tests in `validate_test.go` that explicitly asserted the OLD
+rejection behavior for exactly the shapes just fixed — caught during
+the supervisor's own full-suite run, not the session's report; two
+obsolete tests deleted (equivalent positive coverage already existed),
+one still-valid rejection test (string concatenation, still correctly
+rejected) had its message-wording assertion updated. Heavy resource
+contention observed late in this session (a 15-minute full-suite
+timeout/panic at `-parallel 12` on one attempt) resolved cleanly at
+`-parallel 4`; memory updated with this reinforced finding. Picking up
+F5-05 next (interpolation of a `str` value part — general interpolated-
+string materialization rejects it with "want bool, an integer type, or
+a float type"; V1 formats it — check current state for staleness
 first, per the established pattern).)*
