@@ -852,6 +852,13 @@ func buildOptionalValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // RecordConstruct; the caller already guarantees this, so the kind check is
 // defense for hand-built IR.
 func buildStructValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	if node.Kind == tir.DirectCall || node.Kind == tir.MethodCall {
+		// A struct-typed call result used as a value — e.g. `[mkPoint(); 3]`
+		// where mkPoint() returns Point. buildDirectCall emits the helper
+		// call expression (`pebble_fn_XX(ctx)`) whose result is the struct
+		// value, stored once in the ArrayRepeat temp then repeated N times.
+		return buildDirectCall(st, unit, snapshot, fileSet, node, scope, width)
+	}
 	if node.Kind != tir.RecordConstruct {
 		return "", fmt.Errorf("%s contains a %s, want a RecordConstruct (a struct literal)", context, node.Kind)
 	}

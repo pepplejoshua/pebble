@@ -1573,6 +1573,13 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 				// pebble_array_<innerID>_t wrapper compound literal by the same
 				// nested aggregate value builder an outer array literal uses.
 				value, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, childID, locals, element, "array argument", width)
+			} else if isStruct(snapshot, element) {
+				// A struct-typed array element as a call argument
+				// (`f([Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }])`):
+				// each struct element is built via buildNestedAggregateValue
+				// which dispatches to buildStructValueExpr for RecordConstruct
+				// literals or reads an in-scope struct local.
+				value, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, childID, locals, element, "array argument", width)
 			} else {
 				return "", "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, child.Type))
 			}
@@ -1628,6 +1635,15 @@ func buildArrayArgument(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 			valueExpr, err = buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, elementWidth, width)
 		} else if isFloat(snapshot, element) {
 			valueExpr, err = buildFloatExpr(st, unit, snapshot, fileSet, node.Children[0], locals, resolvedFloatKind(snapshot, element), width)
+		} else if isStruct(snapshot, element) {
+			// A struct-typed array repeat as a call argument
+			// (`[Point.{ x = 1, y = 2 }; 3]`): the single repeated struct
+			// value is built ONCE via buildNestedAggregateValue into the C
+			// temp (pebble_repeat_arg_<argID>), then that same temp name is
+			// repeated `length` times inside the compound literal
+			// initializer — evaluate-once, copy-N-times, so a struct
+			// construction with side effects is called exactly once, not N.
+			valueExpr, err = buildNestedAggregateValue(st, unit, snapshot, fileSet, node.Children[0], locals, element, "array argument", width)
 		} else {
 			return "", "", fmt.Errorf("array argument element type %s is unsupported", describeType(snapshot, element))
 		}
