@@ -2864,15 +2864,37 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 					}
 					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-					if !ok || valueKind != types.Bool {
-						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					if !ok || (valueKind != types.Bool && cType(valueKind) == "") {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool or an integer type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
-					formatParts = append(formatParts, `"%s"`)
-					boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
+					if valueKind == types.Bool {
+						formatParts = append(formatParts, `"%s"`)
+						boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
+						if err != nil {
+							return "", "", err
+						}
+						args = append(args, "("+boolExpr+` ? "true" : "false")`)
+						continue
+					}
+					// An integer value part prints with the same exact-width
+					// PRI* specifier a bare scalar integer operand uses (the
+					// buildScalarPrintOperand integer path): the value is
+					// built by buildExpr at its own resolved kind, so a u64
+					// interpolated in an int-entry program prints at full
+					// width. A .len-sourced uint operand's C expression
+					// carries the runtime aggregate's real size_t type,
+					// which is not what the PRIu64 specifier demands, so it
+					// is cast to uint64_t exactly as buildScalarPrintOperand
+					// does.
+					intExpr, err := buildExpr(st, unit, snapshot, fileSet, part.Value, scope, valueKind, width)
 					if err != nil {
 						return "", "", err
 					}
-					args = append(args, "("+boolExpr+` ? "true" : "false")`)
+					if valueKind == types.Uint && printOperandLenRead(unit, snapshot, valueNode) {
+						intExpr = "(uint64_t)(" + intExpr + ")"
+					}
+					formatParts = append(formatParts, `"%"`+printfSpecifier(valueKind))
+					args = append(args, intExpr)
 				default:
 					return "", "", fmt.Errorf("%s interpolated-string print operand has an unknown part kind %d", context, part.Kind)
 				}

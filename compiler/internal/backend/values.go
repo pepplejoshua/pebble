@@ -1417,12 +1417,17 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 // and the pebble_rt_str_from_parts call for an InterpolatedString node. It
 // iterates over node.Parts: each InterpolationTextPart becomes a
 // { PEBBLE_STR_PART_TEXT, .text = "<escaped>" } entry (using escapeCString,
-// exactly as buildPrint does), and each InterpolationValuePart is validated
-// to be bool-typed and becomes a { PEBBLE_STR_PART_BOOL, .bool_value =
-// (<bool-expr> ? 1 : 0) } entry (reusing buildBoolExpr, matching buildPrint's
-// same restriction to bool-only value parts). Returns the full runtime-call
-// expression text, ready to be used as a GNU statement expression body or a
-// local-declaration initializer.
+// exactly as buildPrint does), each InterpolationValuePart is validated to be
+// bool- or integer-typed and becomes the matching entry — a bool becomes
+// { PEBBLE_STR_PART_BOOL, .bool_value = (<bool-expr> ? 1 : 0) } (reusing
+// buildBoolExpr, matching buildPrint's same restriction), an unsigned integer
+// becomes { PEBBLE_STR_PART_UINT, .uint_value = <expr> }, and a signed
+// integer becomes { PEBBLE_STR_PART_INT, .int_value = <expr> }, both built by
+// buildExpr at the value's own resolved kind so any builtin width (not just
+// the entry's) interpolates at full width — the runtime formats the promoted
+// value, so narrow widths print their value, not their storage width. Returns
+// the full runtime-call expression text, ready to be used as a GNU statement
+// expression body or a local-declaration initializer.
 func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.InterpolatedString {
 		return "", fmt.Errorf("interpolated-string builder contains a %s, want an InterpolatedString", node.Kind)
@@ -1438,14 +1443,26 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 				return "", fmt.Errorf("interpolated-string builder references invalid value node %d", part.Value)
 			}
 			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-			if !ok || valueKind != types.Bool {
-				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool", valueNode.Kind, describeType(snapshot, valueNode.Type))
+			if !ok || (valueKind != types.Bool && cType(valueKind) == "") {
+				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool or an integer type", valueNode.Kind, describeType(snapshot, valueNode.Type))
 			}
-			boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, locals, width)
-			if err != nil {
-				return "", err
+			if valueKind == types.Bool {
+				boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, locals, width)
+				if err != nil {
+					return "", err
+				}
+				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", boolExpr))
+			} else {
+				intExpr, err := buildExpr(st, unit, snapshot, fileSet, part.Value, locals, valueKind, width)
+				if err != nil {
+					return "", err
+				}
+				if isUnsignedWidth(valueKind) {
+					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_UINT, .uint_value = %s }", intExpr))
+				} else {
+					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_INT, .int_value = %s }", intExpr))
+				}
 			}
-			parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", boolExpr))
 		default:
 			return "", fmt.Errorf("interpolated-string builder has an unknown part kind %d", part.Kind)
 		}

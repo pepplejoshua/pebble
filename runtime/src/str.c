@@ -1,6 +1,7 @@
 #include "pebble_rt.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 static void pebble_rt_str_index_panic(PebbleSourceLoc loc) {
@@ -165,33 +166,66 @@ size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]) {
     return 4;
 }
 
-/* Materialize an interpolated string from parts (see pebble_rt.h). Computes
- * the total byte length (text parts contribute strlen, bool parts contribute
- * 4 for "true" or 5 for "false"), allocates exactly that many bytes via the
- * context allocator, writes each part's bytes in sequence, and returns the
- * resulting PebbleStr. Only text and bool parts are supported.
+/* Materialize an interpolated string from parts (see pebble_rt.h). A single
+ * measure+format pass computes each part's contribution to the total byte
+ * length — text parts contribute strlen, bool parts 4 for "true" or 5 for
+ * "false", integer parts the length of their decimal representation — and
+ * formats each integer part ONCE into its own fixed 24-byte scratch buffer
+ * (20 decimal digits fit the widest uint64_t, a leading '-' fits a negative
+ * signed value, plus the NUL; 24 is therefore enough for any value the
+ * fields can hold). The scratch buffers are allocated through the context
+ * allocator (a `count`-wide `char[count][24]` block, the ABI's only
+ * allocation path — a stack VLA would be C11-optional and undefined at
+ * count 0). The second pass allocates exactly total_len bytes via the
+ * context allocator and copies each part's bytes in sequence, integer parts
+ * from their already-formatted scratch buffer — so no integer is ever
+ * formatted twice, and the length each part contributes in the measure pass
+ * and the bytes copied in the write pass come from the same source and
+ * cannot disagree. Only text, bool, and integer parts are supported.
  */
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count) {
+    char (*int_bufs)[24] = NULL;
+    if (count > 0) {
+        int_bufs = (char (*)[24])ctx->allocator.alloc(ctx, count * sizeof(char[24]));
+        if (int_bufs == NULL) {
+            return (PebbleStr){ NULL, 0 };
+        }
+    }
     size_t total_len = 0;
     for (size_t i = 0; i < count; i++) {
-        if (parts[i].kind == PEBBLE_STR_PART_TEXT) {
+        switch (parts[i].kind) {
+        case PEBBLE_STR_PART_TEXT:
             total_len += strlen(parts[i].text);
-        } else {
+            break;
+        case PEBBLE_STR_PART_BOOL:
             /* "true" = 4 chars, "false" = 5 chars — must match the write paths below */
             total_len += parts[i].bool_value ? 4 : 5;
+            break;
+        case PEBBLE_STR_PART_INT:
+            total_len += (size_t)snprintf(int_bufs[i], 24, "%lld", (long long)parts[i].int_value);
+            break;
+        case PEBBLE_STR_PART_UINT:
+            total_len += (size_t)snprintf(int_bufs[i], 24, "%llu", (unsigned long long)parts[i].uint_value);
+            break;
         }
     }
     uint8_t *buf = (uint8_t *)ctx->allocator.alloc(ctx, total_len);
     if (buf == NULL) {
+        if (int_bufs != NULL) {
+            ctx->allocator.free(ctx, int_bufs);
+        }
         return (PebbleStr){ NULL, 0 };
     }
     size_t offset = 0;
     for (size_t i = 0; i < count; i++) {
-        if (parts[i].kind == PEBBLE_STR_PART_TEXT) {
+        switch (parts[i].kind) {
+        case PEBBLE_STR_PART_TEXT: {
             size_t len = strlen(parts[i].text);
             memcpy(buf + offset, parts[i].text, len);
             offset += len;
-        } else {
+            break;
+        }
+        case PEBBLE_STR_PART_BOOL:
             if (parts[i].bool_value) {
                 buf[offset++] = 't';
                 buf[offset++] = 'r';
@@ -204,7 +238,18 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
                 buf[offset++] = 's';
                 buf[offset++] = 'e';
             }
+            break;
+        case PEBBLE_STR_PART_INT:
+        case PEBBLE_STR_PART_UINT: {
+            size_t len = strlen(int_bufs[i]);
+            memcpy(buf + offset, int_bufs[i], len);
+            offset += len;
+            break;
         }
+        }
+    }
+    if (int_bufs != NULL) {
+        ctx->allocator.free(ctx, int_bufs);
     }
     PebbleStr result;
     result.data = buf;

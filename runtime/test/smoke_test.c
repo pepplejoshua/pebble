@@ -93,6 +93,14 @@
  *      gate. This is the mode-independence requirement: wrapping must not
  *      behave differently in SAFE (which panics on checked overflow) and
  *      RELEASE, so it runs unconditionally in main.
+ *  21. Interpolated-string materialization (pebble_rt_str_from_parts): text,
+ *      bool, signed-integer, and unsigned-integer parts concatenate into a
+ *      single PebbleStr, each result verified byte-for-byte against a plain
+ *      literal. The integer cases cover the length-math edge cases that
+ *      would corrupt the buffer if miscalculated — INT64_MIN (a leading '-'
+ *      plus 19 digits) and UINT64_MAX (20 digits, the widest output any part
+ *      can produce) — plus narrow-width values whose VALUE (not storage
+ *      width) is formatted. Mode-independent, so it runs unconditionally.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -605,6 +613,77 @@ static void trigger_str_char_at_invalid_lead_byte(void) {
     (void)pebble_rt_str_char_at_i32(s, 0, (PebbleSourceLoc){0});
 }
 
+/* Interpolated-string materialization (pebble_rt_str_from_parts): text,
+ * bool, signed-integer, and unsigned-integer parts concatenate into a single
+ * PebbleStr, each result verified byte-for-byte against a plain literal via
+ * memcmp. The integer cases cover the length-math edge cases that would
+ * corrupt the result buffer if miscalculated: a signed value near its
+ * minimum (a leading '-' plus 19 digits) and a u64 at its maximum (20
+ * decimal digits — the widest output any part can produce). Narrow-width
+ * values prove the VALUE is formatted, not the storage width. The allocator
+ * returns zeroed memory, so any bytes the writer failed to fill would read
+ * back as NULs and fail the memcmp. Mode-independent, so it runs
+ * unconditionally in main in both builds.
+ */
+static void test_str_from_parts(void) {
+    PebbleContext ctx = pebble_rt_default_context();
+
+    /* Text, bool, signed, and unsigned parts in one string, mixed order. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "value="},
+            {PEBBLE_STR_PART_BOOL, .bool_value = 1},
+            {PEBBLE_STR_PART_INT, .int_value = -42},
+            {PEBBLE_STR_PART_UINT, .uint_value = 7},
+            {PEBBLE_STR_PART_BOOL, .bool_value = 0},
+        };
+        static const char want[] = "value=true-427false";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 5);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* INT64_MIN: the widest signed value, a '-' plus 19 digits. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_INT, .int_value = INT64_MIN},
+        };
+        static const char want[] = "-9223372036854775808";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* UINT64_MAX: 20 decimal digits, the widest output any part can
+     * produce. A one-byte length miscalculation here would read or write
+     * past the result buffer (or leave a NUL byte that fails the memcmp). */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_UINT, .uint_value = UINT64_MAX},
+        };
+        static const char want[] = "18446744073709551615";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Narrow-width values format their VALUE, not their storage width:
+     * int8_t -5 prints "-5" and uint8_t 255 prints "255", each promoted to
+     * the wide fields. */
+    {
+        int8_t neg = -5;
+        uint8_t big = 255;
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_INT, .int_value = neg},
+            {PEBBLE_STR_PART_UINT, .uint_value = big},
+        };
+        static const char want[] = "-5255";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 2);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+}
+
 static void test_checked_index_normal(void) {
     assert(pebble_rt_checked_index_i32(0, 3, (PebbleSourceLoc){0}) == 0);
     assert(pebble_rt_checked_index_i32(2, 3, (PebbleSourceLoc){0}) == 2);
@@ -1053,6 +1132,9 @@ int main(void) {
 
     test_char_to_utf8();
     printf("ok: char-to-UTF-8 encoding\n");
+
+    test_str_from_parts();
+    printf("ok: interpolated-string materialization from parts\n");
 
     if (verify_panic_aborts() != 0) {
         fprintf(stderr, "smoke_test: panic subprocess check FAILED\n");

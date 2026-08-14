@@ -426,21 +426,29 @@ typedef struct PebbleStr {
 } PebbleStr;
 
 /* ---- interpolated string materialization ----------------------------------
- * Builds a PebbleStr from a sequence of parts: literal text and bool values
- * formatted as "true"/"false". Used by the compiler to materialize an
- * interpolated string expression as an ordinary str value (not just in
- * print statements). Only text and bool parts are supported — interpolating
- * other types (int, float, str, enum, etc.) is a separate follow-up task.
+ * Builds a PebbleStr from a sequence of parts: literal text, bool values
+ * formatted as "true"/"false", and integer values formatted as their decimal
+ * representation (a signed value with a leading '-' when negative, an
+ * unsigned value with no sign — the runtime formats by value, so any integer
+ * width promotes to the fixed int64_t/uint64_t fields below). Used by the
+ * compiler to materialize an interpolated string expression as an ordinary
+ * str value (not just in print statements). Only text, bool, and integer
+ * parts are supported — interpolating other types (float, str, enum, etc.)
+ * is a separate follow-up task.
  */
 typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_TEXT,
     PEBBLE_STR_PART_BOOL,
+    PEBBLE_STR_PART_INT,  /* signed integer, int_value */
+    PEBBLE_STR_PART_UINT, /* unsigned integer, uint_value */
 } PebbleStrPartKind;
 
 typedef struct PebbleStrPart {
     PebbleStrPartKind kind;
-    const char *text;     /* for PEBBLE_STR_PART_TEXT */
-    int bool_value;       /* for PEBBLE_STR_PART_BOOL: 0 or 1 */
+    const char *text;      /* for PEBBLE_STR_PART_TEXT */
+    int bool_value;        /* for PEBBLE_STR_PART_BOOL: 0 or 1 */
+    int64_t int_value;     /* for PEBBLE_STR_PART_INT */
+    uint64_t uint_value;   /* for PEBBLE_STR_PART_UINT */
 } PebbleStrPart;
 
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count);
