@@ -863,16 +863,51 @@ func buildArrayStoreValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	}
 	if valueNode.Kind == tir.DirectCall {
 		// A reassignment from a call to an array-returning helper —
-		// `a = make_arr();` — is reachable from real source but out of scope
-		// this slice: the supported new-value shapes are a reference to an
-		// in-scope array-typed local or an array literal (an ArrayValue),
-		// mirroring buildStructArrayFieldValue's array value shapes and the
-		// struct reassignment's own DirectCall deferral. A DirectCall value
-		// reaches buildStoreCore's array branch and is a clean rejection
-		// naming the unsupported shape, never a guessed lowering — the
-		// deliberate deferral mirroring how buildStructStoreValue's DirectCall
-		// shape landed only in a follow-up commit.
-		return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a call to an array-returning helper; reassigning a whole array from a call is not supported yet", context, arrayTypeName(wantType))
+		// `a = make_items();` — the reproduction's shape. The call's result
+		// type is the DirectCall node's own Type, which is the callee's
+		// resolved result type, and it must be exactly the place's array
+		// type — double-checked against the callee's declared ResultType
+		// (defense for hand-built IR), exactly as buildAggregateCallInitializer
+		// and buildAggregateReturnValue's DirectCall shape do, so the
+		// emitted C never assigns a value of one array type into a place of
+		// another. The call itself is built by buildDirectCallNested, the
+		// pure-expression-position call machinery (this store value position
+		// is not a leading statement, so an inline slice-construction
+		// argument folds its temp declaration into a GNU statement-expression
+		// argument rather than returning a pre). Because arrays are passed
+		// by memcpy in stores (buildArrayStoreValue's return value is wrapped
+		// in memcpy(<lvalue>, <source>, sizeof(<lvalue>)) at both call sites
+		// in buildStoreCore), the returned text must be an ADDRESS expression.
+		// A bare C function call is an rvalue — `&make_items()` is invalid C —
+		// so a GNU statement-expression wraps the call: `&({ pebble_array_<id>_t
+		// pebble_store_call_<N> = make_items(ctx); pebble_store_call_<N>; })`,
+		// whose trailing lvalue reference yields the address of a locally-
+		// declared temp whose automatic storage duration remains valid through
+		// the enclosing memcpy call. However, Apple's Clang does not support
+		// taking the address of a statement-expression result (even though it
+		// supports basic statement expressions), and in strict -std=c11 mode
+		// it also rejects compound-literal initialization from a struct value
+		// (`&(T){ f() }` where f returns T).  So we use a struct-wrapper
+		// compound literal with a designated initializer — the designated
+		// initializer `.val = make_items(ctx)` initializes the wrapper's own
+		// pebble_array_<id>_t member from the call result, which is standard
+		// C99 and accepted by all compilers.  We then take the address of
+		// that member (.val) which is an lvalue of the compound literal.
+		if valueNode.Type != wantType {
+			return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a call of result type %s", context, arrayTypeName(wantType), describeType(snapshot, valueNode.Type))
+		}
+		calleeDecl, err := findCallDeclaration(unit, snapshot, valueNode)
+		if err != nil {
+			return "", err
+		}
+		if calleeDecl.ResultType != wantType {
+			return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a call to symbol %d whose declared result type %s does not match", context, arrayTypeName(wantType), valueNode.Symbol, describeType(snapshot, calleeDecl.ResultType))
+		}
+		callExpr, err := buildDirectCallNested(st, unit, snapshot, fileSet, valueNode, scope, width)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("&(struct { %s val; }){ .val = %s }.val", arrayTypeName(wantType), callExpr), nil
 	}
 	if valueNode.Kind != tir.SymbolValue {
 		return "", fmt.Errorf("%s reassigns an array-typed place of type %s from a %s, want a reference to an array-typed local in scope or an array literal (an ArrayValue)", context, arrayTypeName(wantType), valueNode.Kind)

@@ -546,3 +546,110 @@ func TestEmitTupleReassignmentFromMismatchedCallIsRejected(t *testing.T) {
 		t.Fatalf("check error %q does not indicate a type mismatch", err.Error())
 	}
 }
+
+func TestEmitArrayWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// F5-13: Reassigning a whole array-typed local from a call to an
+	// array-returning helper (`items = make_items();`), the reproduction's
+	// plain-local shape: the Store's place names an array-typed local and the
+	// new value is a DirectCall whose result type matches the local's array
+	// type, emitted as a GNU statement-expression address fed into memcpy —
+	// `memcpy(pebble_local_<items>, &(pebble_array_<id>_t pebble_store_call_<N>
+	// = make_items(ctx); pebble_store_call_<N>; ), sizeof(pebble_local_<items>))`.
+	// The reassigned local's first element must reflect the value make_items
+	// returns (1), not the original (0).
+	emitAndRun(t, "fn makeItems() [3]int { return [1, 2, 3]; }\nfn main() int { var items [3]int = [0, 0, 0]; items = makeItems(); return items[0]; }", false, 1, false)
+}
+
+func TestEmitArrayFiveElementReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A 5-element array reassignment from a call proves buildArrayStoreValue's
+	// DirectCall case works with arrays larger than 3 elements and that ALL
+	// elements copy correctly via memcpy, not just element 0. The callee
+	// returns [10, 20, 30, 40, 50], so after items = makeBig(), items[4] must
+	// be 50 (the last element), proving the full array was copied.
+	emitAndRun(t, "fn makeBig() [5]int { return [10, 20, 30, 40, 50]; }\nfn main() int { var items [5]int = [0, 0, 0, 0, 0]; items = makeBig(); return items[4]; }", false, 50, false)
+}
+
+func TestEmitArrayAllElementsCopiedFromCall(t *testing.T) {
+	t.Parallel()
+	// A 5-element array reassignment where we sum all elements to prove ALL
+	// values were copied by memcpy, not just some. The callee returns
+	// [1, 2, 3, 4, 5], so the sum must be 15. This is stronger than checking
+	// a single index because it verifies every byte of the array was copied.
+	emitAndRun(t, "fn makeSeq() [5]int { return [1, 2, 3, 4, 5]; }\nfn main() int { var items [5]int = [0, 0, 0, 0, 0]; items = makeSeq(); var total int = 0; total = total + items[0]; total = total + items[1]; total = total + items[2]; total = total + items[3]; total = total + items[4]; return total; }", false, 15, false)
+}
+
+func TestEmitArrayPointerDerefWholeReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole array through a pointer deref from a call to an
+	// array-returning helper (`*self = make_items();`), the reproduction's
+	// reset shape: the Store's place is a DereferencePlace whose resolved
+	// element type is the array type, and the new value is a DirectCall whose
+	// result type matches, emitted as memcpy through the null-checked deref
+	// lvalue — the same GNU statement-expression address trick as the
+	// plain-local shape, just reaching the store through the pointer. The
+	// reassigned local's first element must reflect the value make_items
+	// returns (7), not the original (0).
+	emitAndRun(t, "fn makeItems() [3]int { return [7, 8, 9]; }\nfn reset(self *[3]int) void { *self = makeItems(); }\nfn main() int { var items [3]int = [0, 0, 0]; reset(&items); return items[0]; }", false, 7, false)
+}
+
+func TestEmitArrayFieldReassignmentFromCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Reassigning a whole array through a struct field write from a call to
+	// an array-returning helper (`h.values = make_items();`), the reproduction's
+	// field-place shape: the Store's place is a FieldPlace whose resolved
+	// element type is the array type, and the new value is a DirectCall whose
+	// result type matches, emitted as memcpy of the GNU statement-expression
+	// address into the field's .data member. The reassigned field's first
+	// element must reflect the value make_items returns (42), not the original (0).
+	emitAndRun(t, "type HashTable = struct { values [3]int; }; fn makeItems() [3]int { return [42, 50, 60]; }\nfn reset(h *HashTable) void { h.values = makeItems(); }\nfn main() int { var h HashTable = HashTable.{ values = [0, 0, 0] }; reset(&h); return h.values[0]; }", false, 42, false)
+}
+
+func TestEmitArrayReassignmentFromCallEmittedExactlyOnce(t *testing.T) {
+	t.Parallel()
+	// The emitted-C proof of single evaluation for a call-source array
+	// reassignment: the helper call text must appear exactly once — in the
+	// store's memcpy source (`&(pebble_array_<id>_t pebble_store_call_<N> =
+	// make_items(ctx); pebble_store_call_<N>; )`), the same
+	// buildDirectCallNested machinery a scalar-width call uses — never spliced
+	// into any comparison. The helper body's own return text is excluded by
+	// anchoring the count to the pebble_fn_ call form.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn makeItems() [3]int { return [1, 2, 3]; }\nfn main() int { var items [3]int = [0, 0, 0]; items = makeItems(); return items[0]; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if callCount := len(regexp.MustCompile(`pebble_fn_\d+\(ctx\)`).FindAllString(out, -1)); callCount != 1 {
+		t.Errorf("emitted C calls the array-returning helper %d time(s), want exactly once (the store's memcpy source):\n%s", callCount, out)
+	}
+}
+
+func TestEmitArrayReassignmentFromMismatchedCallIsRejected(t *testing.T) {
+	t.Parallel()
+	// A call returning a DIFFERENT array type than the place is rejected by the
+	// checker (C0601 type mismatch) before the backend ever sees it — confirming
+	// the checker's own discipline. This is the negative counterpart to the
+	// positive tests above: if the checker did not catch this, the backend would
+	// emit an assignment of one array typedef into a place of another, which is
+	// UB in C.
+	unit, snapshot, entryID, _, err := buildFixtureMaybeFailing(t, "fn makeOther() [4]int { return [1, 2, 3, 4]; }\nfn main() int { var items [3]int = [0, 0, 0]; items = makeOther(); return items[0]; }", "main", false)
+	if err == nil {
+		// If the checker somehow passes, verify the backend still rejects it at
+		// the DirectCall type-check level in buildArrayStoreValue.
+		var buf bytes.Buffer
+		emitErr := Emit(unit, snapshot, entryID, nil, nil, &buf)
+		if emitErr == nil {
+			t.Fatal("expected rejection but emit succeeded")
+		}
+		if !strings.Contains(emitErr.Error(), "reassigns an array-typed place") {
+			t.Fatalf("emission error %q does not contain 'reassigns an array-typed place'", emitErr.Error())
+		}
+		return
+	}
+	// The checker rejected it; confirm the diagnostic mentions the mismatch.
+	if !strings.Contains(err.Error(), "cannot convert") && !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("check error %q does not indicate a type mismatch", err.Error())
+	}
+}
