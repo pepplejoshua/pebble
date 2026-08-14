@@ -278,12 +278,57 @@ against `HEAD` using `-run` (pre-fix: rejects with "more than one
 level of nesting"; post-fix: compiles and exits 7 for the confirmed
 live repro).
 
-Picking up F5-19 next (aggregate parameter in a function value —
-`fn(Point) int`, rejected by `validateFunctionTypeSignature` per the
-master ledger's own description). Investigate/reproduce directly
-first with a minimal `.peb` snippet before writing a dispatch brief;
-next dispatch should alternate to `vercel/alibaba/qwen3.7-flash` since
-the last real dispatch (F5-18's round 3) used
-`opencode-go/deepseek-v4-flash`. Per the master ledger's own note, do
-NOT combine this with F5-20 (aggregate result in a function value) —
-keep parameter and result work as separate slices.)*
+*(empty — F5-19 (plain-struct parameter in a first-class function
+type) closed in `4839a31`. `validateFunctionTypeSignature` gained a
+plain-struct parameter case reusing F5-18's `isPlainStructField`
+predicate unchanged; `functionTypeParamCType` gained a matching struct
+case spelling `structTypeName(param)`; `unit *tir.Unit` had to be
+threaded through `validateFunctionTypeSignature` and its four call
+sites (all already had `unit` in scope). The real work was typedef
+ordering: function typedefs are emitted FIRST in the output (before
+even the enum block), which is correct today because a struct can
+already carry a function-typed FIELD (needing the function typedef
+defined first) — but a function type with a plain-struct PARAMETER
+needs the reverse. Resolved by hoisting only the specific struct
+typedefs used as function-type parameters into a new
+`preFunctionStructTypedefs` block emitted before the function block
+(`collectFunctionParamStructs`, new in `typedefs.go`), while
+explicitly excluding any struct that itself carries a function-typed
+field from that hoist (`hasFunctionTypedFields`, new) — hoisting one
+of those would create a genuine circular C dependency, so those stay
+in the ordinary aggregate block below the function block, unchanged.
+Landed clean on the first real dispatch round (an initial "failed"/
+stalled report actually had produced a complete, working diff, caught
+only by verifying directly rather than trusting the status — the
+build succeeded and the repro ran correctly despite the report).
+Verification surfaced one genuine, expected regression in the full
+suite: `TestEmitGenericMethodTypeParamOnlyInStructFnParamRejects`
+asserted rejection of a generic struct-typed function-value parameter
+that, after substitution (`Inner[int]` → `struct { val int; }`), is
+now a legitimately-admitted plain struct — confirmed correct by hand
+(`pebc -run` now exits 6, the right answer) before dispatching a
+small, precisely-scoped follow-up that converted the obsolete negative
+test into a positive compile-and-run test in place, matching the
+established F5-12/F5-14 precedent. Full `internal/backend` suite
+clean after the follow-up (425s), causation-checked via file-copy swap
+against `HEAD` using `-run` (pre-fix: rejects with the original "want
+int, uint, u64, ... or a pointer type" message; post-fix: compiles and
+exits 7 for the confirmed live repro).
+
+Picking up F5-20 next (aggregate result in a function value — e.g.
+`fn() Point`, rejected by the same `validateFunctionTypeSignature`
+result-admission check). Per the master ledger's own note, start with
+one plain-struct result and do NOT combine this with F5-19's parameter
+work (already done) — the typedef-ordering question is likely similar
+in shape (a plain-struct RESULT's typedef also needs to precede the
+function typedef that names it as a return type) but verify this
+directly rather than assuming F5-19's exact hoisting mechanism
+transfers unchanged; the buildable-result-position set is also
+narrower than the buildable-argument set (per
+`validateFunctionTypeSignature`'s own doc comment: entry-width, u64,
+bool, char, float, void, or a pointer — never str), so confirm how an
+indirect call's aggregate result would actually be consumed by
+`buildFunctionIndirectCall`'s callers before writing a dispatch brief.
+Investigate/reproduce directly first with a minimal `.peb` snippet;
+next dispatch should use `vercel/alibaba/qwen3.7-flash` (the last
+dispatch, F5-19's follow-up, used `opencode-go/deepseek-v4-flash`).)*
