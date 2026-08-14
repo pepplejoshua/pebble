@@ -1213,7 +1213,14 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 		return unionTypeName(pointee) + " *"
 	}
 	if isStruct(snapshot, pointee) {
-		return structTypeName(pointee) + " *"
+		name := structTypeName(pointee)
+		// Only spell a cyclic struct pointer as `struct <tag> *` so that the
+		// type can be referenced before its own typedef completes; every other
+		// struct pointer keeps the plain typedef-name spelling.
+		if st != nil && st.cyclic != nil && st.cyclic[pointee] {
+			return "struct " + strings.TrimSuffix(name, "_t") + " *"
+		}
+		return name + " *"
 	}
 	if isSlice(snapshot, pointee) {
 		return sliceTypeName(pointee) + " *"

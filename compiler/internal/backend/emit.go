@@ -508,6 +508,13 @@ type emitState struct {
 	// values in pure expression positions (each occurrence gets its own scoped
 	// temp so the same node used in multiple contexts doesn't collide).
 	interpolatedStringCounter int
+	// cyclic marks struct types that participate in a pointer-reachable
+	// cycle back to themselves — directly or transitively through other
+	// structs each reachable via a pointer field. A cyclic struct's C
+	// typedef must carry a tag name so that pointer fields can refer to it
+	// via `struct <tag> *` before its own typedef completes; non-cyclic
+	// structs keep the untagged form.
+	cyclic map[types.TypeID]bool
 }
 
 func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID, fileSet *source.FileSet, symbols *symbol.Result, w io.Writer) error {
@@ -736,6 +743,17 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	ordered, err := orderAggregateTypes(unit, snapshot, tupleTypes, optionalTypes, structInfos)
 	if err != nil {
 		return err
+	}
+	// Detect which struct types participate in a pointer-reachable cycle back
+	// to themselves — directly or transitively through other structs each
+	// reachable via a pointer field. Cyclic structs need a C tag name so that
+	// pointer fields can refer to them via `struct <tag> *` before their own
+	// typedef completes; non-cyclic structs keep the untagged form.
+	st.cyclic = make(map[types.TypeID]bool)
+	for _, info := range structInfos {
+		if structIsCyclic(unit, snapshot, info.typ, structInfos) {
+			st.cyclic[info.typ] = true
+		}
 	}
 	// The element types a slice's .data pointer names in its typedef text (a
 	// struct/tuple/optional — or a plain enum) must have their typedef NAMES

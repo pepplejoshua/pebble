@@ -3060,6 +3060,9 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isOptional(snapshot, child.Type) {
 			hasComposite = true
 		}
+		if isPointer(snapshot, child.Type) {
+			hasComposite = true
+		}
 	}
 	return operands, hasComposite, nil
 }
@@ -3471,6 +3474,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			compositeCalls, pres, err = buildEnumPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		case isOptional(snapshot, child.Type):
 			compositeCalls, pres, err = buildOptionalPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+		case isPointer(snapshot, child.Type):
+			compositeCalls, pres, err = buildPointerPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		default:
 			compositeCalls, pres, err = buildStructPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
 		}
@@ -3718,6 +3723,153 @@ func buildOptionalPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.
 	return buildOptionalValueExpr(st, unit, snapshot, fileSet, child, scope, context, width)
 }
 
+// buildPointerPrintOperand emits one pointer-typed operand of a print statement
+// as its sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's ONE raw C if/else over
+// the pointer's null-ness (composite print slice 8). The operand is materialized
+// once into a per-operand temp (pebble_print_ptr_<nodeID>, declared with the
+// pointer's own C type — `<pointee> *`) so a pointer-returning call operand is
+// evaluated exactly once, and the if/else checks the temp against NULL (see
+// buildPointerPrintValueCalls).
+func buildPointerPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	valueExpr, err := buildPointerPrintValueExpr(st, unit, snapshot, fileSet, operandID, child, scope, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	pointeeTypeID, ok := pointerPointeeType(snapshot, child.Type)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print operand of pointer type %s has no pointee type", context, describeType(snapshot, child.Type))
+	}
+	tempName := fmt.Sprintf("pebble_print_ptr_%d", operandID)
+	pres := []string{indent + fmt.Sprintf("%s %s = %s;", pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID), tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
+// buildPointerPrintValueExpr builds the C expression naming one pointer-typed
+// print operand's value, of the shapes real source produces (all built by the
+// same machinery a pointer value uses anywhere in this backend — buildExpr's
+// pointer branch is the one shared lowering): a reference to a pointer-typed
+// local (a SymbolValue, emitted as its pebble_local_<id> C name), a freshly
+// constructed pointer (&x as an AddressOf, nil as a NilPointer), a Load of a
+// pointer-typed place (a struct field read such as `print node.next`, emitted
+// as the field projection), a pointer-typed struct field read off a value (a
+// FieldValue), a call to a pointer-returning helper (a DirectCall), a PointerCast,
+// or a SourceAlias (transparent grouped-expression parens). Any other shape is
+// a clean rejection, never a guessed lowering. Pointer globals do not exist in
+// this backend (buildGlobalStorage rejects a pointer-typed global outright), so
+// a SymbolValue operand is always a pointer-typed local.
+func buildPointerPrintValueExpr(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, context string, width types.BuiltinKind) (string, error) {
+	switch child.Kind {
+	case tir.SymbolValue:
+		if name, ok := localOrGlobalName(st, child.Symbol, scope); ok {
+			return name, nil
+		}
+		return "", fmt.Errorf("%s print operand references symbol %d, which is not a pointer-typed local or global in scope", context, child.Symbol)
+	case tir.Load:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is a Load with %d child(ren), want exactly one place", context, len(child.Children))
+		}
+		place, ok := unit.Node(child.Children[0])
+		if ok && place.Kind == tir.FieldPlace {
+			return buildStructFieldRead(st, unit, snapshot, fileSet, place, scope, width, false)
+		}
+		lvalue, placeType, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+		if err != nil {
+			return "", err
+		}
+		if !isPointer(snapshot, placeType) {
+			return "", fmt.Errorf("%s print operand is a Load of a place of type %s, want a pointer-typed place", context, describeType(snapshot, placeType))
+		}
+		return lvalue, nil
+	case tir.FieldValue:
+		return buildStructFieldValueRead(st, unit, snapshot, fileSet, operandID, scope, width, false, false)
+	case tir.AddressOf:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is an AddressOf with %d children, want exactly one", context, len(child.Children))
+		}
+		placeLValue, _, err := buildPlaceLValue(st, unit, snapshot, fileSet, child.Children[0], scope, width)
+		if err != nil {
+			return "", fmt.Errorf("%s print operand address-of place: %v", context, err)
+		}
+		pointeeTypeID, ok := pointerPointeeType(snapshot, child.Type)
+		if !ok {
+			return "", fmt.Errorf("%s print operand is an AddressOf with unsupported pointer type %s", context, describeType(snapshot, child.Type))
+		}
+		return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(&" + placeLValue + ")", nil
+	case tir.NilPointer:
+		pointeeTypeID, ok := pointerPointeeType(snapshot, child.Type)
+		if !ok {
+			return "", fmt.Errorf("%s print operand is a NilPointer with unsupported pointer type %s", context, describeType(snapshot, child.Type))
+		}
+		return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(NULL)", nil
+	case tir.DirectCall:
+		return buildDirectCall(st, unit, snapshot, fileSet, child, scope, width)
+	case tir.PointerCast:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is a PointerCast with %d children, want exactly one", context, len(child.Children))
+		}
+		castChild, err := buildExpr(st, unit, snapshot, fileSet, child.Children[0], scope, width, width)
+		if err != nil {
+			return "", fmt.Errorf("%s print operand pointer cast child: %v", context, err)
+		}
+		pointeeTypeID, ok := pointerPointeeType(snapshot, child.Type)
+		if !ok {
+			return "", fmt.Errorf("%s print operand is a PointerCast with unsupported pointer type %s", context, describeType(snapshot, child.Type))
+		}
+		return "(" + pointerTypeNameForUnit(st, unit, snapshot, pointeeTypeID) + ")(" + castChild + ")", nil
+	case tir.SourceAlias:
+		if len(child.Children) != 1 {
+			return "", fmt.Errorf("%s print operand is a SourceAlias with %d child(ren), want exactly one", context, len(child.Children))
+		}
+		return buildPointerPrintValueExpr(st, unit, snapshot, fileSet, child.Children[0], mustNode(unit, child.Children[0]), scope, context, width)
+	}
+	return "", fmt.Errorf("%s print operand is a %s of pointer type %s, which this backend does not lower as a print operand", context, child.Kind, describeType(snapshot, child.Type))
+}
+
+// buildPointerPrintValueCalls emits one pointer VALUE (a whole operand temp, or
+// a nested pointer field/element off an enclosing temp) as its ONE raw pre-
+// rendered C if/else over the pointer's null-ness (composite print slice 8).
+// When the pointer is NULL at runtime the emitted output is the literal text
+// "nil"; otherwise it is "&" followed by the pointer's raw address via %p —
+// ADDRESS ONLY, the pointee is NEVER dereferenced or recursed into. That
+// deliberate leaf-ness is exactly what makes a self-referential pointer cycle
+// trivially safe to print: there is no recursion into the pointee for ANY
+// pointer, cyclic or not, so a Node whose next field points back at itself
+// prints its address and terminates. The null-check is `== NULL`, the same
+// comparison idiom the runtime's checked dereference uses. A trailing empty-
+// string label call follows the raw if/else: it is a no-op (fprintf(stdout,
+// "");) in the middle of a multi-operand statement, and buildSequentialPrint's
+// trailing-newline append turns it into fprintf(stdout, "\n"); when the pointer
+// is the statement's last operand — the raw if/else block itself cannot receive
+// that append, so the no-op carrier is how the one-newline-per-print rule stays
+// uniform. No pres are returned — a pointer print has no pre-statements.
+func buildPointerPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	key, ok := snapshot.Key(valueType)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not in the type snapshot", context, describeType(snapshot, valueType))
+	}
+	if key.Kind() != types.Pointer {
+		return nil, nil, fmt.Errorf("%s print value of type %s, which is not a pointer type", context, describeType(snapshot, valueType))
+	}
+	caseIndent := indent + "    "
+	bodyIndent := indent + "        "
+	var block strings.Builder
+	block.WriteString(indent + "if (" + expr + " == NULL) {\n")
+	block.WriteString(caseIndent + "fprintf(stdout, " + strconv.Quote("nil") + ");\n")
+	block.WriteString(caseIndent + "} else {\n")
+	block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote("&%p") + ", (void *)(" + expr + "));\n")
+	block.WriteString(caseIndent + "}\n")
+	block.WriteString(indent + "")
+	return []printFprintfCall{
+		{raw: block.String()},
+		{format: `""`},
+	}, nil, nil
+}
+
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
 // materialized operand temp (the common case, from the build*PrintOperand
@@ -3768,6 +3920,8 @@ func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		return buildSlicePrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	case types.Optional:
 		return buildOptionalPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	case types.Pointer:
+		return buildPointerPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
 	default:
 		if isTaggedUnionType(unit, snapshot, valueType) {
 			// A tagged union is checked BEFORE the plain-enum branch below,

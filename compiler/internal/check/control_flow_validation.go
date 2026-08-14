@@ -120,7 +120,8 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	// a scalar builtin (bool, char, str, any integer width, any float width), or
 	// — composite print slice 1 — a struct value, or — slice 2 — a tuple or
 	// fixed array, or — slice 4 — a slice, or — slice 5 — a plain enum value,
-	// or — slice 6 — a tagged union value, provided every field/element/
+	// or — slice 6 — a tagged union value, or — slice 8 — a pointer value (a
+	// LEAF: address-only, never recursed into), provided every field/element/
 	// variant-payload is itself printable by this same rule (slice 3: nested
 	// aggregates). The recursion terminates because a field/element type is a
 	// strictly nested by-value aggregate; Pebble rejects a genuinely
@@ -128,8 +129,8 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	// can reach here (verified against a self-referential struct fixture). A
 	// plain enum is a LEAF case — it has no fields to recurse into — but it is
 	// still routed through this shared function (slice 5). A struct with any
-	// non-struct/non-scalar field (a pointer, an optional) still rejects —
-	// those are later slices. A field/element of a type that is not a concrete
+	// non-struct/non-scalar field (a function value — slice 9) still rejects.
+	// A field/element of a type that is not a concrete
 	// known type (a generic struct's parameter-typed field, which resolves only
 	// against a specific instantiation's type arguments) is not provably
 	// printable at the declaration level, so it rejects too.
@@ -191,6 +192,15 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 		case types.Optional:
 			payload, ok := key.Child()
 			return ok && printableType(payload)
+		case types.Pointer:
+			// A pointer is a LEAF printable case (composite print slice 8),
+			// exactly like a plain enum: printing a pointer emits only its
+			// address (or the nil literal) and NEVER dereferences the pointee,
+			// so a pointer type is printable REGARDLESS of what its pointee
+			// type is — no key.Child() recursion here, by design. This is what
+			// makes a self-referential pointer cycle trivially safe to print:
+			// there is no recursion into the pointee at all, for ANY pointer.
+			return true
 		case types.Nominal:
 		default:
 			return false

@@ -10,6 +10,126 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
+// structCycleSet builds a directed graph where struct A has an edge to struct B
+// if A has a pointer field whose pointee resolves (after generic substitution)
+// to B, then returns the set of all struct TypeIDs that participate in a
+// pointer-reachable cycle back to themselves — directly or transitively. Only
+// POINTER edges matter: by-value fields never create such cycles because
+// Pebble's aggregate-nesting rules already prevent unbounded by-value nesting.
+func structCycleSet(unit *tir.Unit, snapshot *types.Snapshot, infos []structInfo) map[types.TypeID]bool {
+	out := make(map[types.TypeID]bool)
+	byType := make(map[types.TypeID]structInfo, len(infos))
+	for _, info := range infos {
+		byType[info.typ] = info
+	}
+	adj := make(map[types.TypeID][]types.TypeID)
+	for _, info := range infos {
+		key, ok := snapshot.Key(info.typ)
+		if !ok || key.Kind() != types.Nominal {
+			continue
+		}
+		decl, arguments, ok := key.Nominal()
+		if !ok {
+			continue
+		}
+		typeDecl, ok := findTypeDeclaration(unit, decl)
+		if !ok {
+			continue
+		}
+		var substitutions map[symbol.SymbolID]types.TypeID
+		if len(arguments) > 0 {
+			substitutions = structSubstitutions(unit, snapshot, decl, arguments)
+		}
+		var targets []types.TypeID
+		for i := range typeDecl.Members {
+			fieldType := types.TypeID(0)
+			if i < len(typeDecl.MemberTypes) {
+				fieldType = typeDecl.MemberTypes[i]
+			}
+			if fieldType != 0 && substitutions != nil {
+				substituted, err := snapshot.Substitute(fieldType, substitutions)
+				if err == nil {
+					fieldType = substituted
+				}
+			}
+			if fieldType == 0 {
+				continue
+			}
+			if !isPointer(snapshot, fieldType) {
+				continue
+			}
+			pointeeKey, ok := snapshot.Key(fieldType)
+			if !ok {
+				continue
+			}
+			pointee, ok := pointeeKey.Child()
+			if !ok {
+				continue
+			}
+			if !isStruct(snapshot, pointee) || runtimeType(unit, snapshot, pointee) != 0 {
+				continue
+			}
+			targets = append(targets, pointee)
+		}
+		if len(targets) > 0 {
+			adj[info.typ] = targets
+		}
+	}
+	for src := range adj {
+		out[src] = false
+	}
+	visited := make(map[types.TypeID]bool)
+	var dfs func(id types.TypeID, target types.TypeID) bool
+	dfs = func(id types.TypeID, target types.TypeID) bool {
+		if visited[id] {
+			return false
+		}
+		visited[id] = true
+		for _, dep := range adj[id] {
+			if dep == target {
+				return true
+			}
+			if dfs(dep, target) {
+				return true
+			}
+		}
+		return false
+	}
+	for id := range adj {
+		for _, dep := range adj[id] {
+			if dep == id {
+				out[id] = true
+				break
+			}
+			visited = make(map[types.TypeID]bool)
+			if dfs(dep, id) {
+				out[id] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// structIsCyclic reports whether a struct type participates in a pointer-
+// reachable cycle back to itself: directly (a field whose pointee resolves to
+// this very struct) or transitively through a chain of other structs each
+// reachable via a pointer field from the next. This is used to decide whether
+// the struct's C typedef must carry a tag name so that pointer fields can
+// refer to it via `struct <tag> *` before its own typedef completes — exactly
+// the condition needed for self-referential types like linked-list nodes.
+// Only POINTER edges matter: by-value struct/tuple/optional/array fields never
+// create such cycles because Pebble's aggregate-nesting rules already prevent
+// unbounded by-value nesting. The caller supplies all struct infos so the
+// function can resolve pointer fields across the whole program at once.
+func structIsCyclic(unit *tir.Unit, snapshot *types.Snapshot, target types.TypeID, allInfos []structInfo) bool {
+	if snapshot == nil || unit == nil {
+		return false
+	}
+	cycleSet := structCycleSet(unit, snapshot, allInfos)
+	return cycleSet[target]
+}
+
 // appendTypedefBlock appends a second typedef block onto a first, joining them
 // with a blank line when both are non-empty. Either may be empty; the result is
 // the non-empty one when only one is non-empty, and empty when both are.
@@ -489,8 +609,13 @@ func buildStructTypedef(st *emitState, unit *tir.Unit, snapshot *types.Snapshot,
 		}
 		fields[i] = "    " + ctype + fmt.Sprintf(" pebble_field_%d;", field.member)
 	}
+	// Emit a C tag name (e.g. `typedef struct pebble_struct_19 { ... }`) only
+	// when the struct participates in a pointer-reachable cycle back to itself
+	// or when it must complete a slice-element forward declaration: C requires
+	// a tag name for a struct to reference itself via a pointer field before
+	// its own typedef is complete. Non-cyclic structs keep the untagged form.
 	head := "typedef struct"
-	if tagged[info.typ] {
+	if tagged[info.typ] || (st != nil && st.cyclic != nil && st.cyclic[info.typ]) {
 		head = "typedef struct " + strings.TrimSuffix(structTypeName(info.typ), "_t")
 	}
 	return fmt.Sprintf("%s {\n%s\n} %s;", head, strings.Join(fields, "\n"), structTypeName(info.typ)), nil

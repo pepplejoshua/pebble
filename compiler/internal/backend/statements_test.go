@@ -1267,19 +1267,28 @@ func TestEmitPrintTaggedUnionWritesRuntimeSwitch(t *testing.T) {
 	}
 }
 
-func TestEmitPrintTaggedUnionRejectsNonPrintablePayload(t *testing.T) {
+func TestEmitPrintTaggedUnionPointerPayloadCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// A union with a not-yet-printable payload type in ANY declared variant
-	// (a pointer, here) must be rejected by the checker, mirroring slice 1's
-	// conservative struct-field rule: the checker cannot know at compile
-	// time which variant will be active at runtime, so it must reject the
-	// whole type if any variant's payload isn't printable.
-	_, _, _, _, err := buildFixtureMaybeFailing(t, "type Box = union enum { p *i32; n i32; };\nfn main() i32 { let b = Box.n(1); print b; return 0; }", "main", false)
-	if err == nil {
-		t.Fatalf("expected a checker error rejecting a union with a pointer-payload variant, got none")
-	}
-	if !strings.Contains(err.Error(), "C0612") {
-		t.Fatalf("expected a C0612 (not printable) error, got: %v", err)
+	// Composite print slice 8 (F5-23): the checker no longer rejects an entire
+	// tagged-union type just because one of its DECLARED variants carries a
+	// pointer payload.  Before F5-23 the whole `Box` type was rejected at
+	// check-time because the declaration contained `p *i32`.  After F5-23 the
+	// type is accepted (pointers are a leaf-printable type), and a program that
+	// constructs an int-payload variant (`Box.n(1)`) compiles, emits correct C,
+	// and prints `Box.n(1)` at runtime.
+	//
+	// Constructing a pointer-payload VARIANT at runtime (e.g. `Box.p(&x)`) is
+	// still rejected by a separate backend restriction
+	// (`unionPayloadCTypeAdmissible` in internal/backend/types.go) that is
+	// unrelated to F5-23.  That limitation is intentionally out of scope here;
+	// proving the type itself is accepted via the int-payload variant is
+	// sufficient.
+	const src = `type Box = union enum { p *i32; n i32; };
+fn main() i32 { let b = Box.n(1); print b; return 0; }`
+	out := emitAndRunCapture(t, src, false, 0, false)
+	want := "Box.n(1)\n"
+	if out != want {
+		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
 }
 
@@ -1410,20 +1419,42 @@ func TestEmitPrintOptionalNestedCompositeCompilesAndRuns(t *testing.T) {
 	}
 }
 
-func TestEmitPrintOptionalRejectsNonPrintablePayload(t *testing.T) {
+func TestEmitPrintOptionalOfPointerCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// An optional whose payload type is not yet printable (a pointer, here —
-	// pointers are slice 8) must be rejected by the checker, mirroring the
-	// conservative struct-field rule: printability is a property of the
-	// optional TYPE decided once from its payload, not per-value.
-	_, _, _, _, err := buildFixtureMaybeFailing(t,
-		"fn main() i32 { var x ?*i32 = none; print x; return 0; }",
-		"main", false)
-	if err == nil {
-		t.Fatalf("expected a checker error rejecting an optional with a non-printable payload, got none")
-	}
-	if !strings.Contains(err.Error(), "C0612") {
-		t.Fatalf("expected a C0612 (not printable) error, got: %v", err)
+	// Composite print slice 8 (F5-23): an optional whose payload is a pointer
+	// type is now printable — the optional machinery recurses into its payload,
+	// and since pointers are a leaf printable type, ?*i32 prints as
+	// `some(&0x...)` or `none`. This replaces the old negative test that
+	// asserted ?*i32 was rejected before pointers were supported.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string // empty means structural check instead of exact match
+	}{
+		{
+			"some pointer",
+			"fn main() i32 { var x i32 = 5; var p ?*i32 = some(&x); print p; return 0; }",
+			"", // structural: must start with "some(&0x"
+		},
+		{
+			"nil optional pointer",
+			"fn main() i32 { var p ?*i32 = none; print p; return 0; }",
+			"none\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if tc.want != "" {
+				if out != tc.want {
+					t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+				}
+			} else {
+				if !strings.HasPrefix(out, "some(&0x") {
+					t.Fatalf("compiled program output = %q, want prefix \"some(&0x\"", out)
+				}
+			}
+		})
 	}
 }
 
@@ -3526,4 +3557,94 @@ fn main() int {
   side(1);
   return 42;
 }`, false, 42, false)
+}
+
+func TestEmitPrintPointerCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Composite print slice 8 (F5-23): a pointer operand prints as the hex
+	// address prefixed with '&', or as the bare literal 'nil' for a nil
+	// pointer. The non-nil address varies across runs, so we assert the nil
+	// case exactly and use a structural regex check for the non-nil case.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string // empty means structural check instead of exact match
+	}{
+		{
+			"nil pointer",
+			"fn main() i32 { var n *i32 = nil; print n; return 0; }",
+			"nil\n",
+		},
+		{
+			"non-nil pointer",
+			"fn main() i32 { var x i32 = 5; var p *i32 = &x; print p; return 0; }",
+			"", // structural: must start with "&0x"
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if tc.want != "" {
+				if out != tc.want {
+					t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+				}
+			} else {
+				if !strings.HasPrefix(out, "&0x") || len(out) < 5 {
+					t.Fatalf("compiled program output = %q, want structural match starting with \"&0x\"", out)
+				}
+			}
+		})
+	}
+}
+
+func TestEmitPrintSelfReferentialPointerCycleCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Proposal 17 slice 8 explicitly calls out a dedicated test proving a
+	// self-referential (Node) pointer cycle cannot cause unbounded print
+	// recursion. We construct a Node whose `next` field points back at the
+	// Node itself, then print it — if the printer tried to follow pointers
+	// recursively this would hang/overflow; instead it prints the pointer
+	// as a raw address and terminates normally.
+	out := emitAndRunCapture(t, `type Node = struct { value int; next *Node; };
+fn main() i32 {
+    var n Node = Node.{ value = 1, next = nil };
+    n.next = &n;
+    print n;
+    return 0;
+}`, false, 0, false)
+	// The output should contain the struct format with a pointer address,
+	// NOT recurse infinitely. The key proof is that the program terminated
+	// normally (we got here at all) and printed a single line.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one line of output, got %d lines: %q", len(lines), out)
+	}
+	// The struct should show next as an address, not recurse.
+	if !strings.Contains(lines[0], "Node{") {
+		t.Fatalf("expected struct format in output, got %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "&0x") {
+		t.Fatalf("expected pointer address in struct output, got %q", lines[0])
+	}
+}
+
+func TestEmitPrintPointerInCompositeCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A struct field of pointer type prints as part of the struct's own
+	// output, proving the buildPrintValueCalls machinery handles pointers
+	// when they appear nested inside composites (not just as bare print
+	// operands).
+	out := emitAndRunCapture(t, `type Container = struct { val int; ptr *i32; };
+fn main() i32 {
+    var x i32 = 42;
+    var c = Container.{ val = 1, ptr = &x };
+    print c;
+    return 0;
+}`, false, 0, false)
+	if want := "Container{ val: 1, ptr: &0x"; !strings.HasPrefix(out, want) {
+		t.Fatalf("compiled program output = %q, want prefix %q", out, want)
+	}
+	if !strings.HasSuffix(out, "}\n") {
+		t.Fatalf("compiled program output = %q, want suffix \"}\\n\"", out)
+	}
 }
