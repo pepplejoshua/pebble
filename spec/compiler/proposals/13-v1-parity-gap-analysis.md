@@ -225,60 +225,62 @@ dispatch stalled before writing tests, needing one small dispatch
 just to add the missing test coverage — the implementation itself was
 already correct).
 
-Picking up F5-17 next (struct payload in a tagged union —
-`Choice.rect(Point.{...})` where `Point` is an ordinary struct,
-confirmed live: `type Point = struct { x int; y int; }; type Shape =
-union enum { empty void; rect Point; }; fn main() int { let s =
-Shape.rect(Point.{ x = 3, y = 4 }); switch s { case .empty: return -1;
-case .rect: { var p Point = s.rect; return p.x + p.y; } } }` fails
-with: "union variant symbol N carries a payload of type nominal(symbol
-M), which is not supported as a tagged-union payload". THIS IS A
-GENUINELY BIGGER ITEM THAN F5-10 THROUGH F5-16 — not a simple additive
-fix, matching the ledger's own scope note ("Add only plain-struct
-payload C naming, dependency collection, construction, and narrowed
-read proof").
+*(empty — F5-17 (struct payload in a tagged union) closed in
+`ac60dc1`. `isPlainStructPayload` admits a struct only if every field
+is self-contained at the union block's position (never another
+struct/tuple/optional/array/slice/pointer/union field); Emit hoists
+each qualifying struct's typedef into a new block emitted between the
+enum block and the union block, filtered out of the main aggregate
+block to avoid double emission. Construction and the narrowed read
+both gained struct-payload cases. Verified against the full existing
+union-payload test suite (scalar/bool/char/str/float/enum/nested-
+union payloads) with zero regressions. Landed clean on the FIRST
+dispatch despite the structural nature — no follow-up rounds needed,
+contrary to the multi-round budget flagged when this item was picked
+up. A struct with a nested aggregate field stays cleanly rejected;
+general dependency-graph ordering remains deliberately out of scope.
 
-Investigation findings (do NOT re-investigate, use these directly):
-- `types.go`'s `unionMemberCType` (search for it) ALREADY correctly
-  resolves a plain struct payload's C type (falls through to
-  `structTypeName(id)` in its existing `isStruct` branch) — the
-  runtime NAMING logic is already correct.
-- The actual gate is `types.go`'s `unionPayloadCTypeAdmissible`
-  (search for it, right after `unionMemberCType`) — its own doc
-  comment explains EXACTLY why a plain-struct payload is rejected:
-  "Union typedefs lead the aggregate typedef block... so a union
-  payload whose C representation needs an AGGREGATE typedef (struct,
-  tuple, optional, array) would require that aggregate's typedef to
-  be emitted BEFORE the union block that currently precedes it: a
-  bidirectional ordering only a dependency-aware typedef pass could
-  satisfy." Its `isStruct` branch only admits a plain enum or a
-  nested tagged union (both already ordered correctly), explicitly
-  NOT an ordinary struct.
-- `emit.go`'s typedef assembly (search around line 665-910) shows the
-  actual current order: `collectStructTypes` → ... →
-  `orderAggregateTypes` (a dependency-aware pass that ALREADY handles
-  struct/tuple/optional/array typedef ordering relative to each
-  OTHER) → the struct/aggregate typedef block is emitted, separately,
-  AFTER the union typedef block (`buildUnionTypedefs`, emitted
-  earlier, around line 809-838) — the union block's own doc comment
-  there explains it currently assumes "no union typedef depends on an
-  aggregate typedef."
-- SCOPE: this needs the union typedef block's ordering to become
-  dependency-aware with respect to `orderAggregateTypes`'s existing
-  struct ordering — likely either (a) folding union typedef emission
-  INTO `orderAggregateTypes`'s existing dependency graph so a union
-  with a struct payload is correctly interleaved after the struct(s)
-  it depends on while a union with only scalar/enum/nested-union
-  payloads still emits early, or (b) a smaller-scoped alternative:
-  detect the specific case of a union whose ONLY new dependency is a
-  NON-NESTED plain struct (no further struct-in-struct chains) and
-  special-case its ordering without a full dependency-graph fold-in.
-  GIVE THE DISPATCH EXPLICIT PERMISSION to propose and implement
-  whichever of these is actually smallest/safest once they've read
-  the real code — this tracker note is a starting map, not a
-  prescribed solution. This item is likely to need MULTIPLE dispatch
-  rounds (mirroring F5-08's 3-round history) given its structural
-  nature — budget for that, verify with extra rigor (a real `cc`
-  compile, not just Go-string assertions, given how tricky typedef
-  ordering bugs can be silently wrong), and do not be surprised if the
-  first attempt needs a scoped follow-up.)*
+Picking up F5-18 next (fixed array of structs as a struct field —
+`type Path = struct { points [3]Point; };`, confirmed live:
+`type Point = struct { x int; y int; }; type Path = struct { points
+[3]Point; }; fn main() int { var p Path = Path.{ points =
+[Point.{x=1,y=2}, Point.{x=3,y=4}, Point.{x=5,y=6}] }; return
+p.points[0].x + p.points[2].y; }` fails with: "aggregate type
+nominal(symbol N) has more than one level of nesting, which is
+unsupported". The fix location is `typedefs.go`'s
+`orderAggregateTypes` (search for it — the SAME dependency-ordering
+pass F5-17 just touched, and the same function tracker note #17 in
+the master ledger already fixed once for a DIFFERENT bug — generic
+struct-field substitution). Read its internal `depth` closure
+carefully: for a struct field whose type is an array, it sets
+`throughArray = true` whenever the array's ELEMENT is a struct/tuple/
+optional (the doc comment above it explains why — array-of-array is
+self-contained via existing DFS-postorder machinery, but array-of-
+aggregate is flagged as a potential ordering hazard). The check at the
+bottom of the function then unconditionally rejects ANY case where
+`nesting > 1 && throughArray` — this is confirmed OVERLY CONSERVATIVE
+for the plain array-of-struct case: `Path` depends on `[3]Point`
+(depth 1, throughArray=true since element is struct), so `Path`'s own
+computed depth becomes 2, tripping the `nesting > 1` rejection even
+though `Point` itself has NO further nesting (all scalar fields) — a
+case the existing DFS-postorder ordering (further down in the same
+function) could actually order correctly (`Point`'s typedef before
+`[3]Point`'s, before `Path`'s). SCOPE PER THE LEDGER: "Support only
+array-of-struct field ordering and construction. Keep tuple/optional
+elements separate" — do NOT widen array-of-tuple or array-of-optional
+struct fields in this slice, only array-of-PLAIN-struct (a struct with
+no further aggregate nesting of its own, mirroring F5-17's own
+`isPlainStructPayload`-style self-containment check — reuse or mirror
+that predicate rather than inventing a new one if it fits). The fix
+is likely a refinement of the rejection condition (e.g. distinguish
+"depth 2 via a plain struct with no further nesting, safely orderable"
+from "depth 2 via a struct that ITSELF nests further, genuinely
+unsupported") rather than a full rewrite of the depth algorithm.
+Verify construction (`Path.{ points = [...] }`) and field reads
+(`p.points[i].x`) both work end-to-end with a real `cc` compile, not
+just that the typedef ordering no longer errors — a typedef-ordering
+fix that compiles but reads/writes the wrong bytes is a worse outcome
+than a clean rejection. Given F5-17's structural kinship, this may
+also need careful, rigorous verification, but note F5-17 itself landed
+clean on one dispatch despite similar apparent complexity — don't
+assume this one needs multiple rounds, just verify thoroughly.)*
