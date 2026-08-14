@@ -190,30 +190,39 @@ evaluation proof. LESSON for any future similar "need an address of a
 call result" shape: prefer the struct-wrapper compound-literal idiom
 over `&({ ... })` — it's portable, this one already isn't.
 
-Picking up F5-14 next (tuple-return forwarding —
-`return make_pair();` forwarding a tuple-returning call's result as
-another function's own tuple return, confirmed live:
-`fn makePair() (int, int) { return (1, 2); } fn forward() (int, int) {
-return makePair(); } fn main() int { var p (int, int) = forward();
-return p.0; }` fails with: "return statement returns a DirectCall,
-want a reference to a tuple-typed local in scope or a tuple literal
-(a TupleValue); only returning an already-declared tuple-typed local
-or constructing a fresh tuple literal inline is supported". The fix
-location is `calls.go`'s `buildAggregateReturnValue` (search for it —
-the SAME function handles both tuple and struct returns, branching on
-`result.tuple != 0` early). The STRUCT side of this exact function
-ALREADY has a working `DirectCall` case (search further down in the
-same function for `if node.Kind == tir.DirectCall` — it's below the
-struct branch, not inside the `if result.tuple != 0 { ... }` block):
-`findCallDeclaration` + `calleeDecl.ResultType != result.structType`
-check, then `buildDirectCallWithPre` (which returns a `(pre, expr,
-error)` triple — note this function ALREADY supports pre-statements
-via its own `(string, string, error)` return signature, unlike
-`buildTupleStoreValue`/`buildArrayStoreValue` — no signature change
-needed here). The fix is to add an EXACTLY ANALOGOUS `DirectCall`
-case INSIDE the `if result.tuple != 0 { ... }` block (before its
-current final generic-rejection line), using `result.tuple` instead
-of `result.structType` and `buildDirectCallWithPre` the same way.
-This is a narrow, low-risk, single-function change with an exact
-precedent already present in the very same function — should be
-even lower-risk than F5-12/F5-13 were.)*
+*(empty — F5-14 (tuple-return forwarding) closed in `dc8de85`. The
+struct branch of `buildAggregateReturnValue` already had a working
+`DirectCall` case for this exact shape; added the exact tuple analogue
+(same `findCallDeclaration`/`ResultType` check, same
+`buildDirectCallWithPre` — no signature change needed, the function
+already supports pre-statements). A now-obsolete negative test
+(two-hop forwarding chain) was converted into a positive
+compile-and-run test in place, matching the F5-12 precedent for
+handling stale coverage. Landed clean on the first dispatch.
+
+Picking up F5-15 next (`str` tuple element as a call argument —
+`takes(t.0)` where `t.0` is a `str`-typed tuple element, confirmed
+live: `fn takes(s str) int { if s == "hello" { return 1; } return 0;
+} fn main() int { var t (str, int) = ("hello", 5); return
+takes(t.0); }` fails with: "entry function body expression contains a
+str Load whose place is a TuplePlace, want a FieldPlace (a str-typed
+struct field read)". The fix location is `values.go`'s
+`buildStrOperand` (search for it) — its `Load` case only handles
+`CheckedIndexPlace` (via `buildArrayPlaceRead`) and `FieldPlace` (via
+`buildStructFieldRead`), rejecting anything else including
+`TuplePlace`. A `TuplePlace` reader ALREADY EXISTS and is used
+elsewhere: `places.go`'s `buildTuplePlaceRead` (search for it — reads
+one tuple element via the `Load(TuplePlace)` shape the checker
+actually produces for `t.<ordinal>`, confirmed against a real
+fixture, already used for non-str element types). The fix is a
+one-line addition: in `buildStrOperand`'s `Load` case, add a
+`place.Kind == tir.TuplePlace` branch (alongside the existing
+`CheckedIndexPlace` branch, before the final `FieldPlace`-only check)
+calling `buildTuplePlaceRead(st, unit, snapshot, fileSet, place,
+locals, width, false)` (match `buildArrayPlaceRead`'s exact call
+signature/argument order as the template — check whether
+`buildTuplePlaceRead`'s last two params match `wantBool`-style
+conventions used elsewhere). This is an extremely narrow, low-risk,
+near-trivial single-function change with the exact helper function
+already built and proven elsewhere in the codebase — should be one of
+the lowest-risk items in this whole backlog.)*
