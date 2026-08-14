@@ -427,28 +427,34 @@ typedef struct PebbleStr {
 
 /* ---- interpolated string materialization ----------------------------------
  * Builds a PebbleStr from a sequence of parts: literal text, bool values
- * formatted as "true"/"false", and integer values formatted as their decimal
+ * formatted as "true"/"false", integer values formatted as their decimal
  * representation (a signed value with a leading '-' when negative, an
  * unsigned value with no sign — the runtime formats by value, so any integer
- * width promotes to the fixed int64_t/uint64_t fields below). Used by the
- * compiler to materialize an interpolated string expression as an ordinary
- * str value (not just in print statements). Only text, bool, and integer
- * parts are supported — interpolating other types (float, str, enum, etc.)
- * is a separate follow-up task.
+ * width promotes to the fixed int64_t/uint64_t fields below), and float
+ * values formatted with %f (the default precision, 6 decimal digits — the
+ * same convention buildPrint's own scalar float print path uses, so an
+ * interpolated float and a directly-printed float render identically; both
+ * f32 and f64 promote to double). Used by the compiler to materialize an
+ * interpolated string expression as an ordinary str value (not just in print
+ * statements). Only text, bool, integer, and float parts are supported —
+ * interpolating other types (char, str, enum, etc.) is a separate follow-up
+ * task.
  */
 typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_TEXT,
     PEBBLE_STR_PART_BOOL,
-    PEBBLE_STR_PART_INT,  /* signed integer, int_value */
-    PEBBLE_STR_PART_UINT, /* unsigned integer, uint_value */
+    PEBBLE_STR_PART_INT,   /* signed integer, int_value */
+    PEBBLE_STR_PART_UINT,  /* unsigned integer, uint_value */
+    PEBBLE_STR_PART_FLOAT, /* float, float_value */
 } PebbleStrPartKind;
 
 typedef struct PebbleStrPart {
     PebbleStrPartKind kind;
-    const char *text;      /* for PEBBLE_STR_PART_TEXT */
-    int bool_value;        /* for PEBBLE_STR_PART_BOOL: 0 or 1 */
-    int64_t int_value;     /* for PEBBLE_STR_PART_INT */
-    uint64_t uint_value;   /* for PEBBLE_STR_PART_UINT */
+    const char *text;       /* for PEBBLE_STR_PART_TEXT */
+    int bool_value;         /* for PEBBLE_STR_PART_BOOL: 0 or 1 */
+    int64_t int_value;      /* for PEBBLE_STR_PART_INT */
+    uint64_t uint_value;    /* for PEBBLE_STR_PART_UINT */
+    double float_value;     /* for PEBBLE_STR_PART_FLOAT */
 } PebbleStrPart;
 
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count);

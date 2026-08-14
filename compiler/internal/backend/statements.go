@@ -2864,8 +2864,8 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 					}
 					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-					if !ok || (valueKind != types.Bool && cType(valueKind) == "") {
-						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool or an integer type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					if !ok || (valueKind != types.Bool && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, an integer type, or a float type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
 					if valueKind == types.Bool {
 						formatParts = append(formatParts, `"%s"`)
@@ -2874,6 +2874,22 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 							return "", "", err
 						}
 						args = append(args, "("+boolExpr+` ? "true" : "false")`)
+						continue
+					}
+					// A float value part prints with the same %f specifier a
+					// bare scalar float operand uses (the
+					// buildScalarPrintOperand float path): f32/f64 promote to
+					// double in the variadic call either way, so %f covers
+					// both, and %f's default precision (6 decimal digits)
+					// makes the interpolation render byte-for-byte
+					// identically to the same float passed directly to print.
+					if valueKind == types.F32 || valueKind == types.F64 {
+						floatExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, part.Value, scope, valueKind, width)
+						if err != nil {
+							return "", "", err
+						}
+						formatParts = append(formatParts, `"%f"`)
+						args = append(args, floatExpr)
 						continue
 					}
 					// An integer value part prints with the same exact-width

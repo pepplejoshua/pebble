@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -300,6 +301,189 @@ func TestEmitInterpolatedStringIntPrint(t *testing.T) {
 			out := emitAndRunCapture(t, tc.src, false, 0, false)
 			if out != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitInterpolatedStringWithFloatPartsAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with float value parts (f32 or f64) used as a
+	// str-typed local's declaration initializer. Each float part must be
+	// formatted with %f's default precision (6 decimal digits — the same
+	// convention buildPrint's bare scalar float print path uses, so an
+	// interpolated float renders identically to a directly-printed float), a
+	// leading '-' for a negative value, and concatenated with surrounding
+	// text parts into a single PebbleStr. The large-exponent f64 cases
+	// (1e300's %f rendering is 302 integer digits plus ".000000", far beyond
+	// any integer part and near the runtime's per-part scratch-buffer bound —
+	// the Go-level analog of the smoke test's DBL_MAX check) are generated
+	// from a Go fmt.Sprintf reference rather than hand-written literals.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"positive f64", "fn main() i32 { let x f64 = 3.5; let s str = `n={x}`; if s == \"n=3.500000\" { return 0; } return 1; }", 0},
+		{"negative f64", "fn main() i32 { let x f64 = -2.25; let s str = `n={x}`; if s == \"n=-2.250000\" { return 0; } return 1; }", 0},
+		{"zero f64", "fn main() i32 { let x f64 = 0.0; let s str = `n={x}`; if s == \"n=0.000000\" { return 0; } return 1; }", 0},
+		{"positive f32", "fn main() i32 { let x f32 = 0.5; let s str = `n={x}`; if s == \"n=0.500000\" { return 0; } return 1; }", 0},
+		{"negative f32", "fn main() i32 { let x f32 = -3.5; let s str = `n={x}`; if s == \"n=-3.500000\" { return 0; } return 1; }", 0},
+		{"very small f64", "fn main() i32 { let x f64 = 1.0e-10; let s str = `n={x}`; if s == \"n=0.000000\" { return 0; } return 1; }", 0},
+		{"very small f32", "fn main() i32 { let x f32 = 1.0e-10; let s str = `n={x}`; if s == \"n=0.000000\" { return 0; } return 1; }", 0},
+		{"very large f32", "fn main() i32 { let x f32 = 1.8446744073709552e19; let s str = `n={x}`; if s == \"n=18446744073709551616.000000\" { return 0; } return 1; }", 0},
+		{"float with surrounding text", "fn main() i32 { let x f64 = -3.5; let s str = `before {x} after`; if s == \"before -3.500000 after\" { return 0; } return 1; }", 0},
+		{"multiple float parts", "fn main() i32 { let a f32 = 1.25; let b f64 = 2.5; let s str = `{a}:{b}`; if s == \"1.250000:2.500000\" { return 0; } return 1; }", 0},
+		{"float, bool, and int parts", "fn main() i32 { let f f64 = -3.5; let b bool = true; let n int = 42; let s str = `v={f},b={b},i={n}`; if s == \"v=-3.500000,b=true,i=42\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		lit  string
+		v    float64
+	}{
+		{"very large f64", "1.0e300", 1.0e300},
+		{"very large negative f64", "-1.0e300", -1.0e300},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want := "n=" + fmt.Sprintf("%f", tc.v)
+			src := fmt.Sprintf("fn main() i32 { let x f64 = %s; let s str = `n={x}`; if s == %q { return 0; } return 1; }", tc.lit, want)
+			emitAndRun(t, src, false, 0, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringFloatAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a float value part used as a call argument
+	// for a str parameter — `takes(`ok={x}`)` — must materialize into a
+	// PebbleStr value that flows through the call to the callee. The
+	// large-exponent cases are generated from a Go fmt.Sprintf reference, as
+	// in the local-declaration test above.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"f64 arg", "fn takes(s str) i32 { if s == \"ok=3.500000\" { return 1; } return 0; }\nfn main() i32 { let x f64 = 3.5; return takes(`ok={x}`); }", 1},
+		{"negative f64 arg", "fn takes(s str) i32 { if s == \"ok=-2.250000\" { return 1; } return 0; }\nfn main() i32 { let x f64 = -2.25; return takes(`ok={x}`); }", 1},
+		{"zero arg", "fn takes(s str) i32 { if s == \"ok=0.000000\" { return 1; } return 0; }\nfn main() i32 { let x f64 = 0.0; return takes(`ok={x}`); }", 1},
+		{"f32 arg", "fn takes(s str) i32 { if s == \"ok=0.500000\" { return 1; } return 0; }\nfn main() i32 { let x f32 = 0.5; return takes(`ok={x}`); }", 1},
+		{"very small arg", "fn takes(s str) i32 { if s == \"ok=0.000000\" { return 1; } return 0; }\nfn main() i32 { let x f64 = 1.0e-10; return takes(`ok={x}`); }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		lit  string
+		v    float64
+	}{
+		{"very large f64 arg", "1.0e300", 1.0e300},
+		{"very large negative f64 arg", "-1.0e300", -1.0e300},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want := "ok=" + fmt.Sprintf("%f", tc.v)
+			src := fmt.Sprintf("fn takes(s str) i32 { if s == %q { return 1; } return 0; }\nfn main() i32 { let x f64 = %s; return takes(`ok={x}`); }", want, tc.lit)
+			emitAndRun(t, src, false, 1, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringFloatAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a float value part used as a tail-position
+	// return value from a str-returning helper — `fn make(x f64) str { return
+	// \`val={x}\`; }` — must materialize into a PebbleStr that is returned to
+	// the caller. The large-exponent cases are generated from a Go fmt.Sprintf
+	// reference, as in the local-declaration test above.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"f64 return", "fn make(x f64) str { return `val={x}`; }\nfn main() i32 { let s str = make(-3.5); if s == \"val=-3.500000\" { return 0; } return 1; }", 0},
+		{"f32 return", "fn make(x f32) str { return `val={x}`; }\nfn main() i32 { let s str = make(1.25); if s == \"val=1.250000\" { return 0; } return 1; }", 0},
+		{"zero return", "fn make(x f64) str { return `val={x}`; }\nfn main() i32 { let s str = make(0.0); if s == \"val=0.000000\" { return 0; } return 1; }", 0},
+		{"very small return", "fn make(x f64) str { return `val={x}`; }\nfn main() i32 { let s str = make(1.0e-10); if s == \"val=0.000000\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		lit  string
+		v    float64
+	}{
+		{"very large f64 return", "1.0e300", 1.0e300},
+		{"very large negative f64 return", "-1.0e300", -1.0e300},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want := "val=" + fmt.Sprintf("%f", tc.v)
+			src := fmt.Sprintf("fn make(x f64) str { return `val={x}`; }\nfn main() i32 { let s str = make(%s); if s == %q { return 0; } return 1; }", tc.lit, want)
+			emitAndRun(t, src, false, 0, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringFloatPrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with float value parts used directly as a print
+	// operand must fold into the combined printf path exactly as a bare float
+	// print operand does, formatting each float with %f (default precision, 6
+	// decimal digits). The combined-print cases print an interpolation and
+	// the same float bare in ONE print statement, so the two paths' text can
+	// be compared byte-for-byte in the captured output — proving an
+	// interpolated float and a directly-printed float render identically. The
+	// large-exponent cases are generated from a Go fmt.Sprintf reference, as
+	// in the local-declaration test above.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print positive f64", "fn main() i32 { let x f64 = 3.5; print `v={x}`; return 0; }", "v=3.500000\n"},
+		{"print negative f64", "fn main() i32 { let x f64 = -2.25; print `v={x}`; return 0; }", "v=-2.250000\n"},
+		{"print zero", "fn main() i32 { let x f64 = 0.0; print `v={x}`; return 0; }", "v=0.000000\n"},
+		{"print f32", "fn main() i32 { let x f32 = 0.5; print `v={x}`; return 0; }", "v=0.500000\n"},
+		{"print very small f64", "fn main() i32 { let x f64 = 1.0e-10; print `v={x}`; return 0; }", "v=0.000000\n"},
+		{"print multiple floats with text", "fn main() i32 { let a f64 = 1.25; let b f32 = -3.5; print `{a} and {b}`; return 0; }", "1.250000 and -3.500000\n"},
+		{"interpolated matches bare print", "fn main() i32 { let x f64 = 3.5; print `v={x}`, x; return 0; }", "v=3.5000003.500000\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		lit  string
+		v    float64
+	}{
+		{"print very large f64", "1.0e300", 1.0e300},
+		{"print very large negative f64", "-1.0e300", -1.0e300},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf("fn main() i32 { let x f64 = %s; print `v={x}`, x; return 0; }", tc.lit)
+			want := "v=" + fmt.Sprintf("%f", tc.v) + fmt.Sprintf("%f", tc.v) + "\n"
+			out := emitAndRunCapture(t, src, false, 0, false)
+			if out != want {
+				t.Fatalf("compiled program output = %q, want %q", out, want)
 			}
 		})
 	}

@@ -169,25 +169,33 @@ size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]) {
 /* Materialize an interpolated string from parts (see pebble_rt.h). A single
  * measure+format pass computes each part's contribution to the total byte
  * length — text parts contribute strlen, bool parts 4 for "true" or 5 for
- * "false", integer parts the length of their decimal representation — and
- * formats each integer part ONCE into its own fixed 24-byte scratch buffer
- * (20 decimal digits fit the widest uint64_t, a leading '-' fits a negative
- * signed value, plus the NUL; 24 is therefore enough for any value the
- * fields can hold). The scratch buffers are allocated through the context
- * allocator (a `count`-wide `char[count][24]` block, the ABI's only
- * allocation path — a stack VLA would be C11-optional and undefined at
- * count 0). The second pass allocates exactly total_len bytes via the
- * context allocator and copies each part's bytes in sequence, integer parts
- * from their already-formatted scratch buffer — so no integer is ever
- * formatted twice, and the length each part contributes in the measure pass
- * and the bytes copied in the write pass come from the same source and
- * cannot disagree. Only text, bool, and integer parts are supported.
+ * "false", integer parts the length of their decimal representation, float
+ * parts the length of their %f rendering — and formats each non-text part
+ * ONCE into its own fixed scratch buffer (20 decimal digits fit the widest
+ * uint64_t, a leading '-' fits a negative signed value, plus the NUL; and a
+ * full-range double's %f output needs at most 317 characters — a leading '-'
+ * plus the 309 integer digits of DBL_MAX plus '.' plus the 6 default-precision
+ * fractional digits — plus the NUL, so 320 covers every value any field can
+ * hold; the int and float widths share one block, each part's 320-byte slot
+ * far exceeding what its own kind writes). The scratch buffers are allocated
+ * through the context allocator (a `count`-wide `char[count][320]` block, the
+ * ABI's only allocation path — a stack VLA would be C11-optional and
+ * undefined at count 0). The second pass allocates exactly total_len bytes via
+ * the context allocator and copies each part's bytes in sequence, integer and
+ * float parts from their already-formatted scratch buffer — so no value is
+ * ever formatted twice, and the length each part contributes in the measure
+ * pass and the bytes copied in the write pass come from the same source and
+ * cannot disagree (snprintf never truncates into a 320-byte slot, so its
+ * return value equals the bytes actually written). Only text, bool, integer,
+ * and float parts are supported.
  */
+#define PEBBLE_STR_PART_SCRATCH_SIZE 320
+
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count) {
-    char (*int_bufs)[24] = NULL;
+    char (*scratch_bufs)[PEBBLE_STR_PART_SCRATCH_SIZE] = NULL;
     if (count > 0) {
-        int_bufs = (char (*)[24])ctx->allocator.alloc(ctx, count * sizeof(char[24]));
-        if (int_bufs == NULL) {
+        scratch_bufs = (char (*)[PEBBLE_STR_PART_SCRATCH_SIZE])ctx->allocator.alloc(ctx, count * sizeof(char[PEBBLE_STR_PART_SCRATCH_SIZE]));
+        if (scratch_bufs == NULL) {
             return (PebbleStr){ NULL, 0 };
         }
     }
@@ -202,17 +210,25 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
             total_len += parts[i].bool_value ? 4 : 5;
             break;
         case PEBBLE_STR_PART_INT:
-            total_len += (size_t)snprintf(int_bufs[i], 24, "%lld", (long long)parts[i].int_value);
+            total_len += (size_t)snprintf(scratch_bufs[i], PEBBLE_STR_PART_SCRATCH_SIZE, "%lld", (long long)parts[i].int_value);
             break;
         case PEBBLE_STR_PART_UINT:
-            total_len += (size_t)snprintf(int_bufs[i], 24, "%llu", (unsigned long long)parts[i].uint_value);
+            total_len += (size_t)snprintf(scratch_bufs[i], PEBBLE_STR_PART_SCRATCH_SIZE, "%llu", (unsigned long long)parts[i].uint_value);
+            break;
+        case PEBBLE_STR_PART_FLOAT:
+            /* %f — default precision, 6 decimal digits — the exact convention
+             * buildPrint's own scalar float print path uses, so an
+             * interpolated float renders byte-for-byte identically to the same
+             * float passed straight to print. f32/f64 both promote to double
+             * here, so the one specifier covers both. */
+            total_len += (size_t)snprintf(scratch_bufs[i], PEBBLE_STR_PART_SCRATCH_SIZE, "%f", parts[i].float_value);
             break;
         }
     }
     uint8_t *buf = (uint8_t *)ctx->allocator.alloc(ctx, total_len);
     if (buf == NULL) {
-        if (int_bufs != NULL) {
-            ctx->allocator.free(ctx, int_bufs);
+        if (scratch_bufs != NULL) {
+            ctx->allocator.free(ctx, scratch_bufs);
         }
         return (PebbleStr){ NULL, 0 };
     }
@@ -240,16 +256,17 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
             }
             break;
         case PEBBLE_STR_PART_INT:
-        case PEBBLE_STR_PART_UINT: {
-            size_t len = strlen(int_bufs[i]);
-            memcpy(buf + offset, int_bufs[i], len);
+        case PEBBLE_STR_PART_UINT:
+        case PEBBLE_STR_PART_FLOAT: {
+            size_t len = strlen(scratch_bufs[i]);
+            memcpy(buf + offset, scratch_bufs[i], len);
             offset += len;
             break;
         }
         }
     }
-    if (int_bufs != NULL) {
-        ctx->allocator.free(ctx, int_bufs);
+    if (scratch_bufs != NULL) {
+        ctx->allocator.free(ctx, scratch_bufs);
     }
     PebbleStr result;
     result.data = buf;

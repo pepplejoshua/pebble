@@ -94,13 +94,17 @@
  *      behave differently in SAFE (which panics on checked overflow) and
  *      RELEASE, so it runs unconditionally in main.
  *  21. Interpolated-string materialization (pebble_rt_str_from_parts): text,
- *      bool, signed-integer, and unsigned-integer parts concatenate into a
- *      single PebbleStr, each result verified byte-for-byte against a plain
- *      literal. The integer cases cover the length-math edge cases that
+ *      bool, signed-integer, unsigned-integer, and float parts concatenate
+ *      into a single PebbleStr, each result verified byte-for-byte against a
+ *      plain literal. The integer cases cover the length-math edge cases that
  *      would corrupt the buffer if miscalculated — INT64_MIN (a leading '-'
- *      plus 19 digits) and UINT64_MAX (20 digits, the widest output any part
- *      can produce) — plus narrow-width values whose VALUE (not storage
- *      width) is formatted. Mode-independent, so it runs unconditionally.
+ *      plus 19 digits) and UINT64_MAX (20 digits) — and a float case
+ *      exercises the widest output any part can produce: a full-range
+ *      double's %f rendering (DBL_MAX is 309 integer digits plus 6 fractional
+ *      digits, 317 characters with a leading '-' for -DBL_MAX), proving the
+ *      per-part scratch buffer is sized for the entire double range. Plus
+ *      narrow-width values whose VALUE (not storage width) is formatted.
+ *      Mode-independent, so it runs unconditionally.
  *
  * Any failing check exits non-zero; on success it prints PASS and exits
  * zero.
@@ -108,6 +112,7 @@
 #include "pebble_rt.h"
 
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -614,16 +619,23 @@ static void trigger_str_char_at_invalid_lead_byte(void) {
 }
 
 /* Interpolated-string materialization (pebble_rt_str_from_parts): text,
- * bool, signed-integer, and unsigned-integer parts concatenate into a single
- * PebbleStr, each result verified byte-for-byte against a plain literal via
- * memcmp. The integer cases cover the length-math edge cases that would
- * corrupt the result buffer if miscalculated: a signed value near its
- * minimum (a leading '-' plus 19 digits) and a u64 at its maximum (20
- * decimal digits — the widest output any part can produce). Narrow-width
- * values prove the VALUE is formatted, not the storage width. The allocator
- * returns zeroed memory, so any bytes the writer failed to fill would read
- * back as NULs and fail the memcmp. Mode-independent, so it runs
- * unconditionally in main in both builds.
+ * bool, signed-integer, unsigned-integer, and float parts concatenate into a
+ * single PebbleStr, each result verified byte-for-byte against a plain
+ * literal via memcmp. The integer cases cover the length-math edge cases
+ * that would corrupt the result buffer if miscalculated: a signed value near
+ * its minimum (a leading '-' plus 19 digits) and a u64 at its maximum (20
+ * decimal digits). The float case proves the scratch buffer's size for the
+ * ENTIRE double range: a full-range double's %f rendering is 317 characters
+ * at most (-DBL_MAX: a sign plus the 309 integer digits of DBL_MAX plus '.'
+ * plus the 6 default-precision fractional digits), and the case formats
+ * DBL_MAX itself — the widest output any part can produce — comparing the
+ * result against a reference snprintf, so a one-byte length miscalculation
+ * or an undersized scratch (which would truncate and desync the measured
+ * length from the copied bytes) fails the check. Narrow-width values prove
+ * the VALUE is formatted, not the storage width. The allocator returns
+ * zeroed memory, so any bytes the writer failed to fill would read back as
+ * NULs and fail the memcmp. Mode-independent, so it runs unconditionally in
+ * main in both builds.
  */
 static void test_str_from_parts(void) {
     PebbleContext ctx = pebble_rt_default_context();
@@ -654,9 +666,9 @@ static void test_str_from_parts(void) {
         assert(memcmp(s.data, want, s.len) == 0);
     }
 
-    /* UINT64_MAX: 20 decimal digits, the widest output any part can
-     * produce. A one-byte length miscalculation here would read or write
-     * past the result buffer (or leave a NUL byte that fails the memcmp). */
+    /* UINT64_MAX: 20 decimal digits. A one-byte length miscalculation here
+     * would read or write past the result buffer (or leave a NUL byte that
+     * fails the memcmp). */
     {
         PebbleStrPart parts[] = {
             {PEBBLE_STR_PART_UINT, .uint_value = UINT64_MAX},
@@ -679,6 +691,112 @@ static void test_str_from_parts(void) {
         };
         static const char want[] = "-5255";
         PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 2);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* A positive float, a negative float, and zero, each with the %f
+     * convention's 6 default-precision fractional digits. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = 3.5},
+        };
+        static const char want[] = "3.500000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = -2.25},
+        };
+        static const char want[] = "-2.250000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = 0.0},
+        };
+        static const char want[] = "0.000000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* A very small magnitude double rounds to 0.000000 under the default
+     * 6-fractional-digit precision (DBL_MIN and 1e-10 alike), and an
+     * f32-typed value promotes to double and formats identically to the same
+     * value held in a double — the float_value field is always a double, so
+     * the VALUE is formatted, not the storage width. */
+    {
+        float small32 = 0.5f;
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = small32},
+        };
+        static const char want[] = "0.500000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = 1e-10},
+        };
+        static const char want[] = "0.000000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* A very large magnitude: DBL_MAX's %f rendering is 309 integer digits
+     * plus ".000000" — 316 characters, the widest output any part can
+     * produce, far beyond the 20 digits an integer ever needs. This is the
+     * proof that the per-part scratch buffer is sized for the entire double
+     * range: if it were too small, snprintf would truncate (returning 316
+     * while writing fewer bytes), the write pass would copy fewer bytes than
+     * the measured length, and the zeroed tail would fail the memcmp. The
+     * expected text is computed via a reference snprintf into a stack buffer
+     * rather than hand-written, since 316 characters is not a feasible
+     * literal. */
+    {
+        char want[400];
+        int n = snprintf(want, sizeof(want), "%f", DBL_MAX);
+        assert(n == 316);
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = DBL_MAX},
+        };
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == (size_t)n);
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Float parts mixed with text, bool, and integer parts in one string. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "v="},
+            {PEBBLE_STR_PART_FLOAT, .float_value = -3.5},
+            {PEBBLE_STR_PART_TEXT, .text = ","},
+            {PEBBLE_STR_PART_BOOL, .bool_value = 1},
+            {PEBBLE_STR_PART_TEXT, .text = ","},
+            {PEBBLE_STR_PART_INT, .int_value = 42},
+        };
+        static const char want[] = "v=-3.500000,true,42";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 6);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Multiple float parts in one string. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_FLOAT, .float_value = 1.25},
+            {PEBBLE_STR_PART_TEXT, .text = ":"},
+            {PEBBLE_STR_PART_FLOAT, .float_value = 2.5},
+        };
+        static const char want[] = "1.250000:2.500000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 3);
         assert(s.len == strlen(want));
         assert(memcmp(s.data, want, s.len) == 0);
     }
