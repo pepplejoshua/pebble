@@ -856,6 +856,123 @@ static void test_str_from_parts(void) {
         assert(s.len == strlen(want));
         assert(memcmp(s.data, want, s.len) == 0);
     }
+
+    /* Char value parts: an ASCII char encodes to its single byte. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_CHAR, .char_value = 0x0041},
+        };
+        static const char want[] = "A";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Char value parts: a non-ASCII char encodes to its multi-byte UTF-8
+     * sequence — U+00E9 'é' is the 2 bytes 0xC3 0xA9. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_CHAR, .char_value = 0x00E9},
+        };
+        static const char want[] = "\xC3\xA9";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Char value parts: an astral char encodes to its 4-byte UTF-8 sequence —
+     * U+1F600 '😀' is 0xF0 0x9F 0x98 0x80, the widest any char part produces. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_CHAR, .char_value = 0x1F600},
+        };
+        static const char want[] = "\xF0\x9F\x98\x80";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 1);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Char parts mixed with text, bool, int, and float parts in one string. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "tag="},
+            {PEBBLE_STR_PART_CHAR, .char_value = 0x00E9},
+            {PEBBLE_STR_PART_TEXT, .text=",n="},
+            {PEBBLE_STR_PART_INT, .int_value = -42},
+            {PEBBLE_STR_PART_TEXT, .text=",ok="},
+            {PEBBLE_STR_PART_BOOL, .bool_value = 1},
+            {PEBBLE_STR_PART_TEXT, .text=",v="},
+            {PEBBLE_STR_PART_FLOAT, .float_value = 2.5},
+        };
+        static const char want[] = "tag=\xC3\xA9,n=-42,ok=true,v=2.500000";
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 8);
+        assert(s.len == strlen(want));
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* NUL-char (Unicode scalar value 0): pebble_rt_char_to_utf8(0) encodes
+     * to exactly one byte: 0x00. The write pass must NOT use strlen on the
+     * scratch buffer (strlen would return 0 and silently drop the char).
+     * This is a regression test for the NUL-char interpolation length bug.
+     */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "a"},
+            {PEBBLE_STR_PART_CHAR, .char_value = 0},
+            {PEBBLE_STR_PART_TEXT, .text = "b"},
+        };
+        uint8_t want[3];
+        want[0] = 'a';
+        want[1] = 0x00;
+        want[2] = 'b';
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 3);
+        assert(s.len == 3);
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* Multiple NUL chars interleaved with text: proves each NUL byte is
+     * written independently and offsets advance correctly past them. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "x"},
+            {PEBBLE_STR_PART_CHAR, .char_value = 0},
+            {PEBBLE_STR_PART_TEXT, .text = "y"},
+            {PEBBLE_STR_PART_CHAR, .char_value = 0},
+            {PEBBLE_STR_PART_TEXT, .text = "z"},
+        };
+        uint8_t want[5];
+        want[0] = 'x';
+        want[1] = 0x00;
+        want[2] = 'y';
+        want[3] = 0x00;
+        want[4] = 'z';
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 5);
+        assert(s.len == 5);
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
+
+    /* NUL char surrounded by non-char parts: verifies offset correctness
+     * when the NUL char appears between INT and text parts. */
+    {
+        PebbleStrPart parts[] = {
+            {PEBBLE_STR_PART_TEXT, .text = "n="},
+            {PEBBLE_STR_PART_INT, .int_value = 42},
+            {PEBBLE_STR_PART_CHAR, .char_value = 0},
+            {PEBBLE_STR_PART_TEXT, .text = "end"},
+        };
+        uint8_t want[8];
+        want[0] = 'n';
+        want[1] = '=';
+        want[2] = '4';
+        want[3] = '2';
+        want[4] = 0x00;
+        want[5] = 'e';
+        want[6] = 'n';
+        want[7] = 'd';
+        PebbleStr s = pebble_rt_str_from_parts(&ctx, parts, 4);
+        assert(s.len == 8);
+        assert(memcmp(s.data, want, s.len) == 0);
+    }
 }
 
 static void test_checked_index_normal(void) {

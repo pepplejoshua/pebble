@@ -2908,8 +2908,8 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 						return "", "", fmt.Errorf("%s interpolated-string print operand references invalid value node %d", context, part.Value)
 					}
 					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-					if !ok || (valueKind != types.Bool && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
-						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, an integer type, or a float type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					if !ok || (valueKind != types.Bool && valueKind != types.Char && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, char, an integer type, a float type, or a str type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
 					if valueKind == types.Bool {
 						formatParts = append(formatParts, `"%s"`)
@@ -2918,6 +2918,31 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 							return "", "", err
 						}
 						args = append(args, "("+boolExpr+` ? "true" : "false")`)
+						continue
+					}
+					// A char value part prints exactly like a bare scalar char
+					// operand (the buildScalarPrintOperand char case): the
+					// scalar is encoded to UTF-8 via pebble_rt_char_to_utf8
+					// into a fresh uint8_t[5] buffer and printed as %s — so an
+					// interpolated char renders byte-for-byte identically to
+					// the same char passed straight to print. The buffer and
+					// encode call are emitted as pre-statements before the
+					// combined printf, exactly as buildScalarPrintOperand
+					// threads them for a bare char operand.
+					if valueKind == types.Char {
+						charExpr, err := buildCharOperand(st, unit, snapshot, fileSet, part.Value, scope, width)
+						if err != nil {
+							return "", "", err
+						}
+						format, arg, pres, err := buildScalarPrintParts(types.Char, charExpr, part.Value, "")
+						if err != nil {
+							return "", "", err
+						}
+						for _, pre := range pres {
+							preParts = append(preParts, indent+pre)
+						}
+						formatParts = append(formatParts, format)
+						args = append(args, arg)
 						continue
 					}
 					// A float value part prints with the same %f specifier a
@@ -3347,8 +3372,8 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 						continue
 					}
 					valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-					if !ok || (valueKind != types.Bool && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
-						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, an integer type, a float type, or a str type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
+					if !ok || (valueKind != types.Bool && valueKind != types.Char && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
+						return "", "", fmt.Errorf("%s interpolated-string print operand interpolates a %s of type %s, want bool, char, an integer type, a float type, or a str type", context, valueNode.Kind, describeType(snapshot, valueNode.Type))
 					}
 					if valueKind == types.Bool {
 						boolExpr, err := buildBoolExpr(st, unit, snapshot, fileSet, part.Value, scope, width)
@@ -3356,6 +3381,26 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 							return "", "", err
 						}
 						calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{"(" + boolExpr + ` ? "true" : "false")`}})
+						continue
+					}
+					// A char value part prints exactly like a bare scalar char
+					// operand: encoded to UTF-8 into a fresh uint8_t[5] buffer
+					// (a pre-statement) and fprintf'd as %s, so it renders
+					// byte-for-byte identically to the same char passed
+					// straight to print.
+					if valueKind == types.Char {
+						charExpr, err := buildCharOperand(st, unit, snapshot, fileSet, part.Value, scope, width)
+						if err != nil {
+							return "", "", err
+						}
+						format, arg, pres, err := buildScalarPrintParts(types.Char, charExpr, part.Value, "")
+						if err != nil {
+							return "", "", err
+						}
+						for _, pre := range pres {
+							preParts = append(preParts, indent+pre)
+						}
+						calls = append(calls, printFprintfCall{format: format, args: []string{arg}})
 						continue
 					}
 					if valueKind == types.F32 || valueKind == types.F64 {

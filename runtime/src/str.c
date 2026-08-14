@@ -170,24 +170,26 @@ size_t pebble_rt_char_to_utf8(int32_t scalar, uint8_t out[5]) {
  * measure+format pass computes each part's contribution to the total byte
  * length — text parts contribute strlen, bool parts 4 for "true" or 5 for
  * "false", integer parts the length of their decimal representation, float
- * parts the length of their %f rendering, and str parts the str's own .len —
- * and formats each non-text/non-str part ONCE into its own fixed scratch
- * buffer (20 decimal digits fit the widest uint64_t, a leading '-' fits a
- * negative signed value, plus the NUL; and a full-range double's %f output
- * needs at most 317 characters — a leading '-' plus the 309 integer digits of
- * DBL_MAX plus '.' plus the 6 default-precision fractional digits — plus the
- * NUL, so 320 covers every value any field can hold; the int, float, and str
- * widths share one block, each part's 320-byte slot far exceeding what its own
- * kind writes). The scratch buffers are allocated through the context allocator
- * (a `count`-wide `char[count][320]` block, the ABI's only allocation path — a
- * stack VLA would be C11-optional and undefined at count 0). The second pass
- * allocates exactly total_len bytes via the context allocator and copies each
- * part's bytes in sequence, integer and float parts from their already-formatted
- * scratch buffer, str parts directly from the str's own data — so no value is
- * ever formatted twice, and the length each part contributes in the measure
- * pass and the bytes copied in the write pass come from the same source and
- * cannot disagree (snprintf never truncates into a 320-byte slot, so its
- * return value equals the bytes actually written).
+ * parts the length of their %f rendering, str parts the str's own .len, and
+ * char parts the byte length of their UTF-8 encoding — and formats each
+ * non-text/non-str part ONCE into its own fixed scratch buffer (20 decimal
+ * digits fit the widest uint64_t, a leading '-' fits a negative signed value,
+ * plus the NUL; and a full-range double's %f output needs at most 317
+ * characters — a leading '-' plus the 309 integer digits of DBL_MAX plus '.'
+ * plus the 6 default-precision fractional digits — plus the NUL, so 320 covers
+ * every value any field can hold, a char's 1-4 encoded bytes far inside it;
+ * the int, float, and char widths share one block, each part's 320-byte slot
+ * far exceeding what its own kind writes). The scratch buffers are allocated
+ * through the context allocator (a `count`-wide `char[count][320]` block, the
+ * ABI's only allocation path — a stack VLA would be C11-optional and undefined
+ * at count 0). The second pass allocates exactly total_len bytes via the
+ * context allocator and copies each part's bytes in sequence, integer, float,
+ * and char parts from their already-encoded scratch buffer, str parts directly
+ * from the str's own data — so no value is ever formatted twice, and the length
+ * each part contributes in the measure pass and the bytes copied in the write
+ * pass come from the same source and cannot disagree (snprintf never truncates
+ * into a 320-byte slot, so its return value equals the bytes actually written;
+ * pebble_rt_char_to_utf8 returns the same byte count its write pass relies on).
  */
 #define PEBBLE_STR_PART_SCRATCH_SIZE 320
 
@@ -228,6 +230,14 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
              * no snprintf, just a direct copy of the str's existing data. */
             total_len += parts[i].str_value.len;
             break;
+        case PEBBLE_STR_PART_CHAR:
+            /* A char part encodes its Unicode scalar to UTF-8 ONCE, into its
+             * scratch slot (pebble_rt_char_to_utf8 writes 1-4 bytes plus a
+             * trailing NUL), and the returned byte count is its contribution
+             * to the total length — the same length the write pass copies
+             * back out of the same slot, so the two passes cannot disagree. */
+            total_len += pebble_rt_char_to_utf8(parts[i].char_value, (uint8_t *)scratch_bufs[i]);
+            break;
         }
     }
     uint8_t *buf = (uint8_t *)ctx->allocator.alloc(ctx, total_len);
@@ -260,9 +270,27 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
                 buf[offset++] = 'e';
             }
             break;
+        case PEBBLE_STR_PART_CHAR: {
+            /* A char part encodes to 1-4 bytes of UTF-8 (or a single 0x00
+             * for Unicode scalar value 0). Re-encoding directly into the
+             * destination avoids relying on strlen, which would return 0
+             * when the first encoded byte is 0x00 and silently drop the
+             * character. pebble_rt_char_to_utf8 writes up to 5 bytes total
+             * (4 encoded + trailing NUL), but we only copy the exact number
+             * returned — the NUL terminator stays un-copied since buf is
+             * not a NUL-terminated string. */
+            size_t len = pebble_rt_char_to_utf8(parts[i].char_value, buf + offset);
+            offset += len;
+            break;
+        }
         case PEBBLE_STR_PART_INT:
         case PEBBLE_STR_PART_UINT:
         case PEBBLE_STR_PART_FLOAT: {
+            /* The int/float parts were snprintf'd into their scratch slots
+             * during the measure pass, each NUL-terminated; copy those
+             * bytes verbatim, so the written length always equals the
+             * measured length. Numeric/float output can never contain an
+             * embedded NUL before the terminating NUL, so strlen is safe. */
             size_t len = strlen(scratch_bufs[i]);
             memcpy(buf + offset, scratch_bufs[i], len);
             offset += len;

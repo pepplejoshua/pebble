@@ -633,3 +633,219 @@ func TestEmitInterpolatedStringStrPrint(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitInterpolatedStringWithCharPartsAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with char value parts interleaved with text used
+	// as a str-typed local's declaration initializer. Each char part must be
+	// encoded to its UTF-8 byte sequence (ASCII chars to a single byte, a
+	// non-ASCII char like 'é' to its 2-byte sequence) and concatenated with
+	// surrounding text parts into a single PebbleStr.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"ascii char", "fn main() i32 { let c char = 'x'; let s str = `c={c}`; if s == \"c=x\" { return 0; } return 1; }", 0},
+		{"non-ascii char", "fn main() i32 { let c char = '\u00E9'; let s str = `c={c}`; if s == \"c=\u00E9\" { return 0; } return 1; }", 0},
+		{"char with surrounding text", "fn main() i32 { let c char = 'x'; let s str = `before {c} after`; if s == \"before x after\" { return 0; } return 1; }", 0},
+		{"multiple char parts", "fn main() i32 { let a char = 'a'; let b char = '\u00E9'; let s str = `{a}-{b}`; if s == \"a-\u00E9\" { return 0; } return 1; }", 0},
+		{"char mixed with bool", "fn main() i32 { let c char = 'x'; let b bool = true; let s str = `{c}:{b}`; if s == \"x:true\" { return 0; } return 1; }", 0},
+		{"char mixed with int", "fn main() i32 { let c char = 'x'; let n int = 42; let s str = `{c}={n}`; if s == \"x=42\" { return 0; } return 1; }", 0},
+		{"char mixed with float", "fn main() i32 { let c char = 'x'; let p f64 = 9.99; let s str = `{c}={p}`; if s == \"x=9.990000\" { return 0; } return 1; }", 0},
+		{"char mixed with str", "fn main() i32 { let c char = 'x'; let w str = \"world\"; let s str = `{c}-{w}`; if s == \"x-world\" { return 0; } return 1; }", 0},
+		{"char mixed with all kinds", "fn main() i32 { let c char = '\u00E9'; let w str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let s str = `{c},{w},{ok},{ver},{pi}`; if s == \"\u00E9,pebble,true,3,3.140000\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringCharAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a char value part used as a call argument
+	// for a str parameter — `takes(`ok={c}`)` — must materialize into a
+	// PebbleStr value that flows through the call to the callee.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"ascii char arg", "fn takes(s str) i32 { if s == \"ok=x\" { return 1; } return 0; }\nfn main() i32 { let c char = 'x'; return takes(`ok={c}`); }", 1},
+		{"non-ascii char arg", "fn takes(s str) i32 { if s == \"ok=\u00E9\" { return 1; } return 0; }\nfn main() i32 { let c char = '\u00E9'; return takes(`ok={c}`); }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringCharAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a char value part used as a tail-position
+	// return value from a str-returning helper — `fn make(c char) str { return
+	// \`val={c}\`; }` — must materialize into a PebbleStr that is returned to
+	// the caller.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"ascii char return", "fn make(c char) str { return `val={c}`; }\nfn main() i32 { let s str = make('x'); if s == \"val=x\" { return 0; } return 1; }", 0},
+		{"non-ascii char return", "fn make(c char) str { return `val={c}`; }\nfn main() i32 { let s str = make('\u00E9'); if s == \"val=\u00E9\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringCharInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a char value part used directly in a
+	// comparison expression — `if `prefix={c}` == "prefix=x" { ... }` — must
+	// materialize into a PebbleStr that participates in pebble_rt_str_eq.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal after interpolation", "fn main() i32 { let c char = 'x'; if `prefix={c}` == \"prefix=x\" { return 1; } else { return 0; } }", 1},
+		{"not equal after interpolation", "fn main() i32 { let c char = 'x'; if `prefix={c}` == \"prefix=\u00E9\" { return 0; } else { return 1; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringCharReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-typed local reassigned from an interpolated string with a char
+	// value part — `var s str = "initial"; s = `new={c}`;` — must materialize
+	// the interpolated string into a PebbleStr and store it into the local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"reassign with char", "fn main() i32 { var s str = \"old\"; let c char = 'x'; s = `v={c}`; if s == \"v=x\" { return 0; } return 1; }", 0},
+		{"reassign with non-ascii char", "fn main() i32 { var s str = \"old\"; let c char = '\u00E9'; s = `v={c}`; if s == \"v=\u00E9\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringCharPrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with char value parts used directly as a print
+	// operand must render each char as its UTF-8 encoding. The combined-print
+	// cases print an interpolation and the same char bare in ONE print
+	// statement, so the two paths' text can be compared byte-for-byte in the
+	// captured output — proving an interpolated char and a directly-printed
+	// char render identically.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print ascii char", "fn main() i32 { let c char = 'x'; print `c={c}`; return 0; }", "c=x\n"},
+		{"print non-ascii char", "fn main() i32 { let c char = '\u00E9'; print `c={c}`; return 0; }", "c=\u00E9\n"},
+		{"print multiple chars", "fn main() i32 { let a char = 'a'; let b char = '\u00E9'; print `{a}-{b}`; return 0; }", "a-\u00E9\n"},
+		{"print char with bool", "fn main() i32 { let c char = 'x'; let b bool = true; print `{c}={b}`; return 0; }", "x=true\n"},
+		{"print char with int", "fn main() i32 { let c char = 'x'; let n int = 7; print `{c}={n}`; return 0; }", "x=7\n"},
+		{"print char with float", "fn main() i32 { let c char = 'x'; let f f64 = 2.5; print `{c}={f}`; return 0; }", "x=2.500000\n"},
+		{"print char with str", "fn main() i32 { let c char = 'x'; let s str = \"hi\"; print `{c}-{s}`; return 0; }", "x-hi\n"},
+		{"interpolated matches bare print", "fn main() i32 { let c char = '\u00E9'; print `c={c}`, c; return 0; }", "c=\u00E9\u00E9\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+// NOTE: `print`'s C emission for str values uses fprintf(..., "%s", ...), which
+// stops at the first 0x00 byte — this is a pre-existing, independent limitation
+// affecting ANY str value (even non-interpolated ones containing NUL), not a bug
+// introduced by the char-interpolation work. Fixing it requires switching every
+// print call site to length-bounded writes like fwrite(str.data, 1, str.len, ...)
+// and is explicitly out of scope for this change. All NUL-char tests below assert
+// materialization correctness via .len rather than captured print output.
+func TestEmitInterpolatedStringNulChar(t *testing.T) {
+	t.Parallel()
+	// A NUL char (Unicode scalar value 0) encoded via pebble_rt_char_to_utf8
+	// produces exactly one byte: 0x00. The write pass must NOT rely on strlen
+	// to determine how many bytes to copy, because strlen(0x00...) returns 0.
+	// This is a regression test for the NUL-char interpolation length bug.
+	for _, tc := range []struct {
+		name    string
+		src     string
+		wantLen int // expected byte length of captured output (excluding trailing newline from print)
+		check   func(t *testing.T, out string)
+	}{
+		{
+			name:    "nul char alone",
+			src:     "fn main() i32 { let c char = '\x00'; let s str = `x{c}y`; if s.len == 3 { return 0; } return 1; }",
+			wantLen: 0,
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				// The program returns 0 only if the interpolated string has length 3
+				// (x + NUL + y), proving the runtime correctly counted all 3 bytes.
+			},
+		},
+		{
+			name:    "nul char surrounded by text",
+			src:     "fn main() i32 { let c char = '\x00'; let s str = `a{c}b`; if s.len == 3 { return 0; } return 1; }",
+			wantLen: 0,
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				// The program returns 0 only if the interpolated string has length 3
+				// (a + NUL + b), proving the runtime correctly counted all 3 bytes.
+			},
+		},
+		{
+			name:    "multiple nul chars",
+			src:     "fn main() i32 { let a char = '\x00'; let b char = '\x00'; let s str = `x{a}y{b}z`; if s.len == 5 { return 0; } return 1; }",
+			wantLen: 0,
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				// The program returns 0 only if the interpolated string has length 5
+				// (x + NUL + y + NUL + z), proving the runtime correctly counted all 5 bytes.
+			},
+		},
+		{
+			name:    "nul char mixed with other types",
+			src:     "fn main() i32 { let c char = '\x00'; let n int = 42; let s str = `c={c}n={n}`; if s.len == 7 { return 0; } return 1; }",
+			wantLen: 0,
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				// The program returns 0 only if the interpolated string has length 7
+				// (c + = + NUL + n + = + 4 + 2), proving the runtime correctly counted all 7 bytes.
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wantCode := 0
+			if tc.wantLen != 0 {
+				wantCode = 0
+			}
+			out := emitAndRunCapture(t, tc.src, false, wantCode, false)
+			if tc.check != nil {
+				tc.check(t, out)
+			}
+		})
+	}
+}

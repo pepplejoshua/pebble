@@ -1442,13 +1442,14 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 // iterates over node.Parts: each InterpolationTextPart becomes a
 // { PEBBLE_STR_PART_TEXT, .text = "<escaped>" } entry (using escapeCString,
 // exactly as buildPrint does), each InterpolationValuePart is validated to be
-// bool-, integer-, float-, or str-typed and becomes the matching entry — a
-// bool becomes { PEBBLE_STR_PART_BOOL, .bool_value = (<bool-expr> ? 1 : 0) }
+// bool-, integer-, float-, str-, or char-typed and becomes the matching entry
+// — a bool becomes { PEBBLE_STR_PART_BOOL, .bool_value = (<bool-expr> ? 1 : 0) }
 // (reusing buildBoolExpr, matching buildPrint's same restriction), an unsigned
 // integer becomes { PEBBLE_STR_PART_UINT, .uint_value = <expr> }, a signed
 // integer becomes { PEBBLE_STR_PART_INT, .int_value = <expr> }, a float
-// becomes { PEBBLE_STR_PART_FLOAT, .float_value = <expr> }, and a str becomes
-// { PEBBLE_STR_PART_STR, .str_value = <expr> } — the integer, float, and str
+// becomes { PEBBLE_STR_PART_FLOAT, .float_value = <expr> }, a str becomes
+// { PEBBLE_STR_PART_STR, .str_value = <expr> }, and a char becomes
+// { PEBBLE_STR_PART_CHAR, .char_value = <expr> } — the integer, float, and str
 // expressions built at the value's own resolved kind so any builtin width
 // (not just the entry's) interpolates at full width: the runtime formats the
 // promoted value, so narrow widths print their value, not their storage width.
@@ -1459,9 +1460,14 @@ func buildStrLiteralValue(node tir.Node) (string, error) {
 // PebbleStr already carries its own .data/.len the runtime appends those bytes
 // directly without any snprintf formatting — the measure pass adds str_value.len
 // and the write pass memcpy's str_value.data, sharing the same byte-append logic
-// PEBBLE_STR_PART_TEXT uses for literal text. Returns the full runtime-call
-// expression text, ready to be used as a GNU statement expression body or a
-// local-declaration initializer.
+// PEBBLE_STR_PART_TEXT uses for literal text. Char value parts reuse
+// buildCharOperand (the same builder buildScalarPrintOperand's char case and a
+// char switch subject use), carrying the raw int32_t Unicode scalar into the
+// runtime, which encodes it to UTF-8 with pebble_rt_char_to_utf8 exactly as a
+// bare char print operand is encoded — so an interpolated char renders
+// byte-for-byte identically to the same char passed straight to print. Returns
+// the full runtime-call expression text, ready to be used as a GNU statement
+// expression body or a local-declaration initializer.
 func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, error) {
 	if node.Kind != tir.InterpolatedString {
 		return "", fmt.Errorf("interpolated-string builder contains a %s, want an InterpolatedString", node.Kind)
@@ -1485,8 +1491,8 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 				continue
 			}
 			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
-			if !ok || (valueKind != types.Bool && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
-				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))
+			if !ok || (valueKind != types.Bool && valueKind != types.Char && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
+				return "", fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want bool, char, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))
 			}
 			switch {
 			case valueKind == types.Bool:
@@ -1495,6 +1501,12 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 					return "", err
 				}
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", boolExpr))
+			case valueKind == types.Char:
+				charExpr, err := buildCharOperand(st, unit, snapshot, fileSet, part.Value, locals, width)
+				if err != nil {
+					return "", err
+				}
+				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_CHAR, .char_value = %s }", charExpr))
 			case valueKind == types.F32 || valueKind == types.F64:
 				floatExpr, err := buildFloatExpr(st, unit, snapshot, fileSet, part.Value, locals, valueKind, width)
 				if err != nil {

@@ -434,12 +434,14 @@ typedef struct PebbleStr {
  * formatted with %f (the default precision, 6 decimal digits — the same
  * convention buildPrint's own scalar float print path uses, so an
  * interpolated float and a directly-printed float render identically; both
- * f32 and f64 promote to double), and str values whose existing .data/.len
+ * f32 and f64 promote to double), str values whose existing .data/.len
  * bytes are appended directly into the result without formatting (the same
  * byte-append logic PEBBLE_STR_PART_TEXT uses, just sourcing from a PebbleStr
- * instead of a raw C string). Used by the compiler to materialize an
- * interpolated string expression as an ordinary str value (not just in print
- * statements).
+ * instead of a raw C string), and char values whose Unicode scalar is encoded
+ * to its UTF-8 byte sequence via pebble_rt_char_to_utf8 (a char is a Unicode
+ * scalar value, int32_t, not a byte — ASCII encodes to 1 byte, é to 2, an
+ * astral char to 4). Used by the compiler to materialize an interpolated
+ * string expression as an ordinary str value (not just in print statements).
  */
 typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_TEXT,
@@ -448,6 +450,7 @@ typedef enum PebbleStrPartKind {
     PEBBLE_STR_PART_UINT,  /* unsigned integer, uint_value */
     PEBBLE_STR_PART_FLOAT, /* float, float_value */
     PEBBLE_STR_PART_STR,   /* str, str_value */
+    PEBBLE_STR_PART_CHAR,  /* char, char_value */
 } PebbleStrPartKind;
 
 typedef struct PebbleStrPart {
@@ -458,6 +461,7 @@ typedef struct PebbleStrPart {
     uint64_t uint_value;    /* for PEBBLE_STR_PART_UINT */
     double float_value;     /* for PEBBLE_STR_PART_FLOAT */
     PebbleStr str_value;    /* for PEBBLE_STR_PART_STR */
+    int32_t char_value;     /* for PEBBLE_STR_PART_CHAR: Unicode scalar */
 } PebbleStrPart;
 
 PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *parts, size_t count);
