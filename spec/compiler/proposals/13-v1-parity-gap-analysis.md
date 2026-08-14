@@ -44,32 +44,40 @@ being reproduced, worked, and closed.
 
 ## Active defect
 
-*(empty — Phase 3 item 50 ("Interpolated string with a float value
-part", tracker 14 line ~347, second slice of the deferred non-bool
-interpolation gap) closed in `8dfcf51`. Reused #49's runtime mechanism
-exactly: widened the per-part scratch buffer from 24 to 320 bytes
-(the empirically-verified worst case for a full-range double's `%f`
-rendering — 309 integer digits near DBL_MAX, not guessed), added a
-`PEBBLE_STR_PART_FLOAT` case using the same `%f` default-precision
-convention `print`'s own bare float path already uses, confirmed
-byte-for-byte identical via a direct cross-check test. Str, char,
-enum, struct, and tuple value parts remain their own follow-up slices
-of the same deliberately-deferred formatting-matrix scope. STANDING
-NOTE, still open: `examples/arena_alloc.peb` fails to compile on
-pointer arithmetic in `std/mem/arena.peb` (T0505, `ptr + int`) — not
-yet a tracker 14 row, awaiting the user's decision on when to queue
-it.
+**Item: Untagged union support (Phase 3 #51), tracker 14 "Untagged
+union" row (~line 151).**
 
-**This closes item 10 of the user's "complete 10 items" directive**
-(Phase 3 #42 through #50, 9 tracker-14 rows closed plus this int/float
-interpolation pair counted as the directive's 10th — see conversation
-history for the exact count agreed with the user). No further item
-picked here; per the user's own instruction ("continue to decision
-items after"), the next step is the pending Decision-needed items
-(Untagged union line ~151, escape analysis line ~152, C variadic
-extern call line ~324, freestanding compilation line ~722), taken up
-one at a time with the user choosing before each dispatch — not
-unilaterally picked by the working session.)*
+Decision made by the user 2026-08-13: support untagged unions
+(`type Data = union { a int; b bool; };`, distinct from the
+already-working tagged union `union enum { ... }`) as explicitly
+UNSAFE — no runtime tag, no discriminant tracking, direct C `union`
+semantics matching V1 exactly (reading a field other than the one last
+written reinterprets the same bytes; no cross-field safety check at
+all). A user wanting safety should use a tagged union instead.
+
+Root cause confirmed by reading source: construction is rejected by
+`aggregate_validation.go`'s `aggregateStruct` case, hard-gated to
+`declaration.Nominal == infer.NominalStruct`; member read/write is
+rejected by `member_validation.go`'s field-lookup loop, which never
+matches a `NominalUnion` declaration. The backend has no untagged-union
+C typedef path at all (only the tagged-union tag+payload shape exists).
+
+Dispatched first slice: checker construction rule (exactly one field,
+unlike a struct's all-fields-required), member read/write for any
+declared field unconditionally, and backend codegen for a plain C
+`union` typedef — scoped to SCALAR payload fields only (int/uint
+widths, bool, char); struct/array/tuple/optional/str/enum union
+payloads deferred to a follow-up slice. In progress, not yet verified
+or committed.
+
+<!-- Note: the previous Active-defect entry for Phase 3 #50 (closed in
+`8dfcf51`, closing item 10 of the user's "complete 10 items"
+directive) has been archived below as usual; this new entry replaces
+it as the current in-progress work rather than following the
+usual "empty, picking up next item" template, since #51 is a
+multi-slice feature being actively worked, not yet closed.
+
+-->
 
 <!-- Previous item, resolved 2026-08-13:
 
