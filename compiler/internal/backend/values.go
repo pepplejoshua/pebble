@@ -1668,6 +1668,135 @@ func (st *emitState) buildInterpolatedStringParts(unit *tir.Unit, snapshot *type
 				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \" }\" }"))
 				continue
 			}
+			if isTuple(snapshot, valueNode.Type) {
+				var err error
+				key, ok := snapshot.Key(valueNode.Type)
+				if !ok {
+					return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of tuple type %s, which is not in the type snapshot", valueNode.Kind, describeType(snapshot, valueNode.Type))
+				}
+				elements, ok := key.Elements()
+				if !ok {
+					return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of tuple type %s, which has no element list", valueNode.Kind, describeType(snapshot, valueNode.Type))
+				}
+				srcNode, ok := unit.Node(part.Value)
+				if !ok {
+					return "", nil, fmt.Errorf("interpolated-string builder references invalid tuple value node %d", part.Value)
+				}
+				for i, element := range elements {
+					var elementLabel string
+					if i == 0 {
+						elementLabel = "("
+					} else {
+						elementLabel = ", "
+					}
+					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \"%s\" }", escapeCString(elementLabel)))
+					if isStruct(snapshot, element) || isTuple(snapshot, element) || isArray(snapshot, element) {
+						return "", nil, fmt.Errorf("interpolated-string builder has a tuple element of type %s; only scalar, str, char, and plain-enum element types are supported in interpolated strings", describeType(snapshot, element))
+					}
+					if isUntaggedUnionType(unit, snapshot, element) {
+						return "", nil, fmt.Errorf("interpolated-string builder has a tuple element of untagged-union type %s; only scalar, str, char, and plain-enum element types are supported in interpolated strings", describeType(snapshot, element))
+					}
+					if isEnumType(unit, snapshot, element) {
+						if isTaggedUnionType(unit, snapshot, element) {
+							return "", nil, fmt.Errorf("interpolated-string builder has a tuple element of tagged-union type %s, want a plain enum", describeType(snapshot, element))
+						}
+						var elementExpr string
+						var elementValueNode tir.NodeID
+						switch srcNode.Kind {
+						case tir.SymbolValue:
+							elementExpr = fmt.Sprintf("pebble_local_%d._%d", srcNode.Symbol, i)
+						case tir.TupleValue:
+							if i < len(srcNode.Children) {
+								elementValueNode = srcNode.Children[i]
+							} else {
+								return "", nil, fmt.Errorf("tuple %s has no element at ordinal %d", describeType(snapshot, valueNode.Type), i)
+							}
+						default:
+							return "", nil, fmt.Errorf("interpolated-string builder tuple source is a %s, want a SymbolValue or TupleValue", srcNode.Kind)
+						}
+						if elementExpr == "" {
+							elementExpr, err = buildEnumValue(st, unit, snapshot, fileSet, elementValueNode, locals, width)
+							if err != nil {
+								return "", nil, err
+							}
+						}
+						st.interpolatedStringCounter++
+						enumTemp := fmt.Sprintf("pebble_tmp_%d", st.interpolatedStringCounter)
+						pre, err := buildEnumInterpolationSwitch(st, unit, snapshot, fileSet, element, elementExpr, enumTemp)
+						if err != nil {
+							return "", nil, err
+						}
+						pres = append(pres, pre)
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", enumTemp))
+						continue
+					}
+					var elementExpr string
+					var elementValueNode tir.NodeID
+					switch srcNode.Kind {
+					case tir.SymbolValue:
+						elementExpr = fmt.Sprintf("pebble_local_%d._%d", srcNode.Symbol, i)
+					case tir.TupleValue:
+						if i < len(srcNode.Children) {
+							elementValueNode = srcNode.Children[i]
+						} else {
+							return "", nil, fmt.Errorf("tuple %s has no element at ordinal %d", describeType(snapshot, valueNode.Type), i)
+						}
+					default:
+						return "", nil, fmt.Errorf("interpolated-string builder tuple source is a %s, want a SymbolValue or TupleValue", srcNode.Kind)
+					}
+					if isStr(snapshot, element) {
+						if elementExpr == "" {
+							elementExpr, err = buildStrOperand(st, unit, snapshot, fileSet, elementValueNode, locals, width)
+							if err != nil {
+								return "", nil, err
+							}
+						}
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_STR, .str_value = %s }", elementExpr))
+						continue
+					}
+					fk, ok := resolvedBuiltin(snapshot, element)
+					if !ok || (fk != types.Bool && fk != types.Char && cType(fk) == "" && fk != types.F32 && fk != types.F64) {
+						return "", nil, fmt.Errorf("interpolated-string builder interpolates a tuple element of unsupported type %s, want a plain enum, bool, char, an integer type, a float type, or a str type", describeType(snapshot, element))
+					}
+					var expr string
+					if elementExpr != "" {
+						expr = elementExpr
+					} else {
+						switch {
+						case fk == types.Bool:
+							expr, err = buildBoolExpr(st, unit, snapshot, fileSet, elementValueNode, locals, width)
+						case fk == types.Char:
+							expr, err = buildCharOperand(st, unit, snapshot, fileSet, elementValueNode, locals, width)
+						case fk == types.F32 || fk == types.F64:
+							expr, err = buildFloatExpr(st, unit, snapshot, fileSet, elementValueNode, locals, fk, width)
+						default:
+							expr, err = buildExpr(st, unit, snapshot, fileSet, elementValueNode, locals, fk, width)
+						}
+						if err != nil {
+							return "", nil, err
+						}
+					}
+					switch {
+					case fk == types.Bool:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_BOOL, .bool_value = (%s ? 1 : 0) }", expr))
+					case fk == types.Char:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_CHAR, .char_value = %s }", expr))
+					case fk == types.F32 || fk == types.F64:
+						parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_FLOAT, .float_value = %s }", expr))
+					default:
+						if isUnsignedWidth(fk) {
+							parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_UINT, .uint_value = %s }", expr))
+						} else {
+							parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_INT, .int_value = %s }", expr))
+						}
+					}
+				}
+				if len(elements) == 1 {
+					parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \",\" }"))
+				}
+				parts = append(parts, fmt.Sprintf("{ PEBBLE_STR_PART_TEXT, .text = \")\" }"))
+				continue
+			}
 			valueKind, ok := resolvedBuiltin(snapshot, valueNode.Type)
 			if !ok || (valueKind != types.Bool && valueKind != types.Char && cType(valueKind) == "" && valueKind != types.F32 && valueKind != types.F64) {
 				return "", nil, fmt.Errorf("interpolated-string builder interpolates a %s of type %s, want a plain enum, bool, char, an integer type, a float type, or a str type", valueNode.Kind, describeType(snapshot, valueNode.Type))

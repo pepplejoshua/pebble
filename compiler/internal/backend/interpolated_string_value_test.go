@@ -1191,6 +1191,171 @@ func TestEmitInterpolatedStringStructReassignmentCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitInterpolatedStringTupleAsLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a tuple value part used as a str-typed
+	// local's declaration initializer. Each tuple element must be formatted
+	// and the whole concatenated with surrounding text into a single
+	// PebbleStr. This also exercises the F5-08 truncation regression path: a
+	// 2+ element tuple expands into MANY parts[] entries (one text label +
+	// one per element + closing text), so using len(node.Parts) instead of
+	// len(parts) would undercount and truncate the output.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two int elements", "fn main() i32 { let t (int, int) = (1, 2); let s str = `tuple={t}`; if s == \"tuple=(1, 2)\" { return 0; } return 1; }", 0},
+		{"mixed element types", "fn main() i32 { let t (int, str, bool, f64) = (1, \"two\", true, 3.5); let s str = `t={t}`; if s == \"t=(1, two, true, 3.500000)\" { return 0; } return 1; }", 0},
+		{"char element", "fn main() i32 { let t (char, int, str) = ('x', 7, \"hi\"); let s str = `t={t}`; if s == \"t=(x, 7, hi)\" { return 0; } return 1; }", 0},
+		{"unsigned and signed widths", "fn main() i32 { let t (uint, i64, f32) = (42, -7, 2.5); let s str = `t={t}`; if s == \"t=(42, -7, 2.500000)\" { return 0; } return 1; }", 0},
+		{"tuple with surrounding text", "fn main() i32 { let t (int, int) = (10, 20); let s str = `before {t} after`; if s == \"before (10, 20) after\" { return 0; } return 1; }", 0},
+		{"tuple mixed with other parts", "fn main() i32 { let t (int, int) = (1, 2); let b bool = true; let n int = 99; let s str = `start_{b}_mid={t}_end_{n}`; if s == \"start_true_mid=(1, 2)_end_99\" { return 0; } return 1; }", 0},
+		{"inline tuple construction", "fn main() i32 { let s str = `tup={(1, \"x\", false)}`; if s == \"tup=(1, x, false)\" { return 0; } return 1; }", 0},
+		{"four elements all kinds", "fn main() i32 { let t (int, bool, f32, str) = (1, false, 2.5, \"hi\"); let s str = `t={t}`; if s == \"t=(1, false, 2.500000, hi)\" { return 0; } return 1; }", 0},
+		{"one-element tuple trailing comma", "fn main() i32 { let t (int,) = (5,); let s str = `t={t}`; if s == \"t=(5,)\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTuplePrint(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a tuple value part used directly as a
+	// print operand must render the tuple identically to passing the same
+	// tuple straight to bare print. The combined-print cases print an
+	// interpolation and the same tuple bare in ONE print statement, so the
+	// two paths' text can be compared byte-for-byte in the captured output.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"print two-element tuple", "fn main() i32 { let t (int, int) = (1, 2); print `t={t}`; return 0; }", "t=(1, 2)\n"},
+		{"print mixed tuple", "fn main() i32 { let t (int, str, bool, f64) = (1, \"hello\", false, 2.5); print `t={t}`; return 0; }", "t=(1, hello, false, 2.500000)\n"},
+		{"print inline tuple construction", "fn main() i32 { print `t={(7, \"a\")}`; return 0; }", "t=(7, a)\n"},
+		{"interpolated matches bare print", "fn main() i32 { let t (int, int) = (5, 10); print `t={t}`, t; return 0; }", "t=(5, 10)(5, 10)\n"},
+		{"one-element tuple matches bare print", "fn main() i32 { let t (int,) = (5,); print `t={t}`, t; return 0; }", "t=(5,)(5,)\n"},
+		{"print tuple mixed with other kinds", "fn main() i32 { let t (int, int) = (1, 2); let b bool = true; let n int = 42; print `mix={t},{b},{n}`; return 0; }", "mix=(1, 2),true,42\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			if out != tc.want {
+				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTupleAsCallArgumentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a tuple value part used as a call
+	// argument for a str parameter — `takes(`ok={t}`)` — must materialize
+	// into a PebbleStr value that flows through the call to the callee.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two-element tuple arg", "fn takes(s str) i32 { if s == \"t=(1, 2)\" { return 0; } return 1; }\nfn main() i32 { let t (int, int) = (1, 2); return takes(`t={t}`); }", 0},
+		{"mixed tuple arg", "fn takes(s str) i32 { if s == \"t=(1, hi, true)\" { return 0; } return 1; }\nfn main() i32 { let t (int, str, bool) = (1, \"hi\", true); return takes(`t={t}`); }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTupleAsReturnValueCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a tuple value part used as a tail-
+	// position return value from a str-returning helper — `fn make() str {
+	// return \`val={t}\`; }` — must materialize into a PebbleStr that is
+	// returned to the caller.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"two-element tuple return", "fn make() str { let t (int, int) = (1, 2); return `t={t}`; }\nfn main() i32 { let s str = make(); if s == \"t=(1, 2)\" { return 0; } return 1; }", 0},
+		{"mixed tuple return", "fn make() str { let t (int, str) = (5, \"abc\"); return `t={t}`; }\nfn main() i32 { let s str = make(); if s == \"t=(5, abc)\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTupleInComparisonCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// An interpolated string with a tuple value part used directly in a
+	// comparison expression — `if `prefix={t}` == "prefix=(...)" { ... }`
+	// — must materialize into a PebbleStr that participates in
+	// pebble_rt_str_eq.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"equal after interpolation", "fn main() i32 { let t (int, int) = (1, 2); if `t={t}` == \"t=(1, 2)\" { return 1; } else { return 0; } }", 1},
+		{"not equal after interpolation", "fn main() i32 { let t (int, int) = (1, 2); if `t={t}` == \"t=(9, 9)\" { return 0; } else { return 1; } }", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTupleReassignmentCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A str-typed local reassigned from an interpolated string with a tuple
+	// value part — `var s str = "initial"; s = `new={t}`;` — must
+	// materialize the interpolated string into a PebbleStr and store it into
+	// the local.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"reassign with tuple", "fn main() i32 { var s str = \"old\"; let t (int, int) = (3, 4); s = `t={t}`; if s == \"t=(3, 4)\" { return 0; } return 1; }", 0},
+		{"reassign with inline tuple", "fn main() i32 { var s str = \"old\"; s = `t={(10, 20)}`; if s == \"t=(10, 20)\" { return 0; } return 1; }", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitInterpolatedStringTupleNestedRejected(t *testing.T) {
+	t.Parallel()
+	// A tuple whose element is itself a tuple, array, or struct must be
+	// cleanly REJECTED with a clear error message — only scalar, str, char,
+	// and plain-enum element types are supported in interpolated strings.
+	// This confirms the intentional scope boundary (non-nested aggregates
+	// only) is enforced, not silently mishandled.
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"nested tuple element", "fn main() i32 { let t ((int, int), int) = ((1, 2), 3); let s str = `t={t}`; return 0; }"},
+		{"array element", "fn main() i32 { let t ([3]int, int) = ([1, 2, 3], 4); let s str = `t={t}`; return 0; }"},
+		{"nested struct element", "type Inner = struct { v int; };\nfn main() i32 { let t (Inner, int) = (Inner.{ v = 1 }, 2); let s str = `t={t}`; return 0; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRunRejects(t, tc.src, "only scalar, str, char, and plain-enum element types are supported in interpolated strings")
+		})
+	}
+}
+
 func TestEmitInterpolatedStringStructNestedRejected(t *testing.T) {
 	t.Parallel()
 	// A struct whose field is itself a struct, tuple, array, or untagged
