@@ -155,24 +155,35 @@ helper call can be the repeated value directly, proven by a dedicated
 evaluate-once test (a global counter, confirmed called exactly once).
 Landed clean on the first dispatch, no follow-ups needed.
 
-Picking up F5-11 next (the return-position counterpart — returning
-`[Point.{ ... }; N]` from a function whose result type is `[N]Point`,
-confirmed live: `fn makeAll() [3]Point { return [Point.{ x = 1, y = 2
-}; 3]; } fn main() int { var pts [3]Point = makeAll(); return
-pts[0].x; }` fails with "entry function body expression contains a
-RecordConstruct of type nominal(symbol N), want int" — the checker
-accepts it, but `calls.go`'s `buildArrayReturnValue`'s `ArrayRepeat`
-branch has an `else` fallback that calls the generic int-kind
-`buildExpr` for anything not bool/char/float/int, and a struct
-`RecordConstruct` obviously isn't an int expression. IMPORTANT scope
-finding from investigation: the SIBLING `ArrayValue` case (a full
-struct-literal array return, `return [Point.{...}, Point.{...}];`,
-NOT a repeat) was checked and ALREADY WORKS today (confirmed:
-compiles, runs, returns the correct field value) — so this item is
-narrower than F5-10 was: fix ONLY the `ArrayRepeat` branch's `else`
-fallback, adding an `isStruct` case using `buildNestedAggregateValue`
-before the generic `buildExpr` fallback, mirroring F5-10's exact
-fix location and pattern (the temp-then-repeat evaluate-once
-machinery in this function is analogous to `buildArrayArgument`'s —
-read both side by side). Do not touch the working `ArrayValue`
-return case at all.)*
+*(empty — F5-11 (aggregate `ArrayRepeat` return) closed in `298dc80`.
+`buildArrayReturnValue`'s `ArrayRepeat` branch gained an `isStruct`
+case using `buildNestedAggregateValue` before its generic `buildExpr`
+fallback, mirroring F5-10's call-argument fix exactly and preserving
+the evaluate-once/copy-N-times pattern (`pebble_repeat_ret_<nodeID>`
+temp). The sibling `ArrayValue` case (a full struct-literal array
+return, not a repeat) was already working and untouched. Landed
+clean on the first dispatch.
+
+Picking up F5-12 next (whole tuple reassignment from a call —
+`pair = make_pair();`, confirmed live:
+`fn makePair() (int, int) { return (1, 2); } fn main() int { var pair
+(int, int) = (0, 0); pair = makePair(); return pair.0; }` fails with
+a precise, deliberate rejection: "reassigns a tuple-typed place of
+type ... from a call to a tuple-returning helper; reassigning a whole
+tuple from a call is not supported yet". `stores.go`'s
+`buildTupleStoreValue` (search for it) already has a full doc comment
+explaining this is a DELIBERATE prior deferral, explicitly modeled on
+`buildStructStoreValue`'s already-resolved `DirectCall` case (the
+same file, immediately above `buildTupleStoreValue` — read both side
+by side). The fix is a direct mirror: add a `DirectCall` case to
+`buildTupleStoreValue` that (1) checks `valueNode.Type == wantType`,
+(2) resolves the callee's declaration via `findCallDeclaration` and
+double-checks `calleeDecl.ResultType == wantType` (defense against
+hand-built IR, exactly as the struct case does), (3) builds the call
+expression via `buildDirectCallNested` (the pure-expression-position
+call builder, not a leading-statement builder — this store-value
+position needs an inline expression), and (4) returns that call
+expression directly as the new value — `lvalue = f(ctx, ...);` is
+already valid C since the callee's C return type is the place's own
+`pebble_tuple_<typeID>_t`. This is a narrow, low-risk, single-function
+change with an exact precedent to copy.)*
