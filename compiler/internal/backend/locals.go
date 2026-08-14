@@ -1646,6 +1646,26 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		scope[statement.Symbol] = localInfo{isStr: true}
 		return withLeadingPre(callPre, indent, fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol)), nil
 	}
+	if initValue.Kind == tir.IndirectCall {
+		// An indirect call to a function-typed local whose result type is str
+		// used as the direct initializer of a matching str-typed local — `var s
+		// str = f();` where f is fn() str — the F5-21 shape. The call expression
+		// is built by buildFunctionIndirectCall, which emits <callee>(ctx, <args>)
+		// regardless of result type; here we consume that expression as the
+		// whole-value initializer of a str local, producing `PebbleStr
+		// pebble_local_<symbol> = <indirect call expr>;`. Like every local, the
+		// declaration is followed by a (void) cast against -Wunused-variable.
+		calleeNode, ok := unit.Node(initValue.Children[0])
+		if !ok {
+			return "", fmt.Errorf("%s declares a str-typed local of type %s from an IndirectCall referencing invalid callee node %d", context, describeType(snapshot, initValue.Type), initValue.Children[0])
+		}
+		callExpr, err := buildFunctionIndirectCall(st, unit, snapshot, fileSet, initValue, calleeNode, scope, width)
+		if err != nil {
+			return "", err
+		}
+		scope[statement.Symbol] = localInfo{isStr: true}
+		return fmt.Sprintf("%sPebbleStr pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, statement.Symbol, callExpr, indent, statement.Symbol), nil
+	}
 	if initValue.Kind == tir.SymbolValue {
 		// A reference to an in-scope str-typed local used as the direct
 		// initializer — `let second str = first;`, a whole-str local copy, the

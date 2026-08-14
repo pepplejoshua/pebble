@@ -2117,8 +2117,14 @@ func functionTypeResultCType(st *emitState, unit *tir.Unit, snapshot *types.Snap
 			return structTypeName(result), nil
 		}
 		return "", fmt.Errorf("function type result type %s is a struct but not a plain struct (fields must all be self-contained scalar-ish types)", describeType(snapshot, result))
+	case isStr(snapshot, result):
+		// A str result: PebbleStr is the runtime's fixed C struct (declared in
+		// pebble_rt.h), never a program-defined typedef — no aggregate-typedef-
+		// ordering hazard at all, identical to how str is already admitted as a
+		// function type parameter with zero typedef-ordering complexity.
+		return "PebbleStr", nil
 	}
-	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, f32, f64, void, a pointer type, or a plain struct type", describeType(snapshot, result), wantName(width))
+	return "", fmt.Errorf("function type result type %s is not supported, want %s, bool, char, str, f32, f64, void, a pointer type, or a plain struct type", describeType(snapshot, result), wantName(width))
 }
 
 // resolvedBuiltin resolves a TypeID to the builtin kind it names, if it names

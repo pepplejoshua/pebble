@@ -745,3 +745,23 @@ fn main() int {
     return q.x + q.y;
 }`, false, 10, false)
 }
+
+// TestEmitFunctionTypeStrResultCompileAndRun is the exact F5-21 repro: a str
+// result from a first-class function value. The function is called indirectly
+// through a function-typed local, and the str result is bound to a str-typed
+// local. The exit code 1 confirms the string comparison succeeded.
+func TestEmitFunctionTypeStrResultCompileAndRun(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, `fn make_greeting() str {
+    return "hello";
+}
+
+fn main() int {
+    var f fn() str = make_greeting;
+    var s str = f();
+    if s == "hello" {
+        return 1;
+    }
+    return 0;
+}`, false, 1, false)
+}

@@ -348,8 +348,8 @@ func validateFunctionTypeSignature(unit *tir.Unit, snapshot *types.Snapshot, wid
 		}
 	}
 	plainStructResult := isStruct(snapshot, result) && runtimeType(unit, snapshot, result) == 0 && isPlainStructField(unit, snapshot, result)
-	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isFloat(snapshot, result) && !isVoid(snapshot, result) && !isPointer(snapshot, result) && !plainStructResult {
-		return fmt.Errorf("function type %s has result type %s, want %s, u64, bool, char, f32, f64, void, a pointer type, or a plain struct type (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
+	if !isWidth(snapshot, width, result) && !isU64(snapshot, result) && !isBool(snapshot, result) && !isChar(snapshot, result) && !isStr(snapshot, result) && !isFloat(snapshot, result) && !isVoid(snapshot, result) && !isPointer(snapshot, result) && !plainStructResult {
+		return fmt.Errorf("function type %s has result type %s, want %s, u64, bool, char, str, f32, f64, void, a pointer type, or a plain struct type (a function-typed value's signature may only mention result shapes this backend can lower as an indirect call's result)", describeType(snapshot, id), describeType(snapshot, result), wantName(width))
 	}
 	return nil
 }
