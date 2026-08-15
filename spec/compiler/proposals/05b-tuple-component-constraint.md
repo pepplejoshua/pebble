@@ -1,7 +1,10 @@
 # Amendment: delayed `HasComponent` constraint for tuple member access
 
-**Status:** Proposed. Owner slice `05b.5`, with a dependent one-line change in
-`06a` and a note in `06b`.
+**Status:** Accepted and implemented. Tuple member access (`pair.0`) is fully
+working and verified (see `14-v2-v1-checker-backend-parity-audit.md`'s "Tuple
+member `.0`, `.1`, and so on" row). Kept here as the design record and
+rationale for the `HasComponent` constraint; the normative text lives in
+`06a`/`06b` per the notes below.
 
 **Problem:** tuple member access (`pair.0`) cannot be expressed with the accepted
 `05b` constraint set. Phase 6 has no fact to emit, so the member result term is
