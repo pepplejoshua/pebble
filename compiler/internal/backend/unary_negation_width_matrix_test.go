@@ -42,7 +42,7 @@ func TestUnaryNegationMinimumValueAbortsInSafeMode(t *testing.T) {
 		{"i16", "-32768"},
 		{"i32", "-2147483648"},
 		{"i64", "-9223372036854775808"},
-		{"int", "-2147483648"},
+		{"int", "-9223372036854775808"},
 	} {
 		t.Run(tc.width, func(t *testing.T) {
 			t.Parallel()
