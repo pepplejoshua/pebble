@@ -124,8 +124,25 @@ of this task's scope, reverted/removed before verification. The actual
 requested deliverables (the harness and the two bug fixes) were correct
 and used as-is.
 
-Slice 2 (`mem::delete_slice` stale `.len` after clearing `.data`) is
-next.)*
+Slice 2 (`mem::delete_slice` stale `.len` after clearing `.data`) closed in
+`102d866`. `delete_slice` cleared `.data` but never reset `.len`; added
+`s.len = 0;` alongside the existing `s.data = nil;`. New
+`tests/stdlib/mem_test.peb` covers: delete of a populated slice (the actual
+regression — asserts `.len` specifically, since the original bug already
+correctly cleared `.data`), delete of an allocated-but-empty slice, delete
+of an already-nil-backed slice (no crash), and confirms normal
+allocation/copy/cleanup elsewhere in `mem.peb` are unaffected.
+Causation-checked via an isolated `git worktree` — the pre-fix code fails
+exactly at `delete_populated_post_len`. This dispatch respected scope
+correctly (only the three files asked for were touched; the previous
+slice's Makefile/`pjson` stray-scope note does not apply here), though it
+did leave a stray `git worktree` from its own causation check that the
+supervisor removed during verification — flagged only because the "remove
+the temporary worktree when done" instruction was in the brief; not a
+correctness issue.
+
+Slice 3 (`str_byte_at` — new checked builtin, language decision already
+approved 2026-08-15, see "Planned slice order" above) is next.)*
 
 ### Planned slice order
 
