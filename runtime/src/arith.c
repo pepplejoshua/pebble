@@ -1026,6 +1026,46 @@ int32_t pebble_rt_checked_mod_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     return a % b;
 }
 
+int8_t pebble_rt_checked_div_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i8 division by zero", loc);
+    }
+    if (a == INT8_MIN && b == -1) {
+        return (int8_t)pebble_rt_min_div_minus_one((int64_t)INT8_MIN, "i8 division overflow", loc);
+    }
+    return a / b;
+}
+
+int8_t pebble_rt_checked_mod_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i8 division by zero", loc);
+    }
+    if (a == INT8_MIN && b == -1) {
+        return 0;
+    }
+    return a % b;
+}
+
+int16_t pebble_rt_checked_div_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i16 division by zero", loc);
+    }
+    if (a == INT16_MIN && b == -1) {
+        return (int16_t)pebble_rt_min_div_minus_one((int64_t)INT16_MIN, "i16 division overflow", loc);
+    }
+    return a / b;
+}
+
+int16_t pebble_rt_checked_mod_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("i16 division by zero", loc);
+    }
+    if (a == INT16_MIN && b == -1) {
+        return 0;
+    }
+    return a % b;
+}
+
 int64_t pebble_rt_checked_div_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     if (b == 0) {
         pebble_rt_div_by_zero_panic("i64 division by zero", loc);
@@ -1042,6 +1082,62 @@ int64_t pebble_rt_checked_mod_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     }
     if (a == INT64_MIN && b == -1) {
         return 0;
+    }
+    return a % b;
+}
+
+uint8_t pebble_rt_checked_div_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u8 division by zero", loc);
+    }
+    return a / b;
+}
+
+uint8_t pebble_rt_checked_mod_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u8 division by zero", loc);
+    }
+    return a % b;
+}
+
+uint16_t pebble_rt_checked_div_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u16 division by zero", loc);
+    }
+    return a / b;
+}
+
+uint16_t pebble_rt_checked_mod_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u16 division by zero", loc);
+    }
+    return a % b;
+}
+
+uint32_t pebble_rt_checked_div_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u32 division by zero", loc);
+    }
+    return a / b;
+}
+
+uint32_t pebble_rt_checked_mod_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u32 division by zero", loc);
+    }
+    return a % b;
+}
+
+uint64_t pebble_rt_checked_div_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u64 division by zero", loc);
+    }
+    return a / b;
+}
+
+uint64_t pebble_rt_checked_mod_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    if (b == 0) {
+        pebble_rt_div_by_zero_panic("u64 division by zero", loc);
     }
     return a % b;
 }

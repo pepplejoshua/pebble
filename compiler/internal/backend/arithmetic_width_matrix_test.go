@@ -13,10 +13,9 @@ import (
 // real, correct checked-arithmetic lowering or reject CLEANLY at Emit — never
 // emit a call to a nonexistent helper that only fails later at cc. The plain
 // binary-expression matrix covers checked helpers for all supported widths and
-// operators, plus clean rejection for unsupported narrow division/modulo and
-// u64 division/modulo. The compound-assignment form has the same coverage,
-// including the %= on uint shape that previously rejected even though the
-// plain `a % b` form lowered fine.
+// operators. The compound-assignment form has the same coverage, including the
+// %= on uint shape that previously rejected even though the plain `a % b` form
+// lowered fine.
 
 func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
 	t.Parallel()
@@ -49,6 +48,8 @@ func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
 		{"add u64", "u64", "+", 7},
 		{"sub u64", "u64", "-", 3},
 		{"mul u64", "u64", "*", 10},
+		{"div u64", "u64", "/", 2},
+		{"mod u64", "u64", "%", 1},
 		{"add uint", "uint", "+", 7},
 		{"sub uint", "uint", "-", 3},
 		{"mul uint", "uint", "*", 10},
@@ -57,59 +58,33 @@ func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
 		{"add i8", "i8", "+", 7},
 		{"sub i8", "i8", "-", 3},
 		{"mul i8", "i8", "*", 10},
+		{"div i8", "i8", "/", 2},
+		{"mod i8", "i8", "%", 1},
 		{"add i16", "i16", "+", 7},
 		{"sub i16", "i16", "-", 3},
 		{"mul i16", "i16", "*", 10},
+		{"div i16", "i16", "/", 2},
+		{"mod i16", "i16", "%", 1},
 		{"add u8", "u8", "+", 7},
 		{"sub u8", "u8", "-", 3},
 		{"mul u8", "u8", "*", 10},
+		{"div u8", "u8", "/", 2},
+		{"mod u8", "u8", "%", 1},
 		{"add u16", "u16", "+", 7},
 		{"sub u16", "u16", "-", 3},
 		{"mul u16", "u16", "*", 10},
+		{"div u16", "u16", "/", 2},
+		{"mod u16", "u16", "%", 1},
 		{"add u32", "u32", "+", 7},
 		{"sub u32", "u32", "-", 3},
 		{"mul u32", "u32", "*", 10},
+		{"div u32", "u32", "/", 2},
+		{"mod u32", "u32", "%", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			src := fmt.Sprintf("fn main() int { var a %s = 5; var b %s = 2; var r %s = a %s b; return r as int; }", tc.width, tc.width, tc.width, tc.op)
 			emitAndRun(t, src, false, tc.want, false)
-		})
-	}
-}
-
-func TestArithmeticWidthMatrixRejectsCleanly(t *testing.T) {
-	t.Parallel()
-	// (operator, width) pairs that have no checked-arithmetic runtime helper and
-	// must be rejected CLEANLY at Emit with a message naming the operator and
-	// the offending width — never emitted as a call to a nonexistent helper
-	// (the pre-73bfbb1 empty-suffix pebble_rt_checked_*_ shape) that would only
-	// fail at cc. The narrow fixed-width integers (u8/u16/i8/i16/u32) have no
-	// runtime arithmetic helper at all; u64 has one for + - * only, so / and %
-	// reject the same way.
-	for _, tc := range []struct {
-		name  string
-		width string
-		op    string
-	}{
-		{"div u8", "u8", "/"},
-		{"mod u8", "u8", "%"},
-		{"div u16", "u16", "/"},
-		{"mod u16", "u16", "%"},
-		{"div u32", "u32", "/"},
-		{"mod u32", "u32", "%"},
-		{"div i8", "i8", "/"},
-		{"mod i8", "i8", "%"},
-		{"div i16", "i16", "/"},
-		{"mod i16", "i16", "%"},
-		{"div u64", "u64", "/"},
-		{"mod u64", "u64", "%"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			src := fmt.Sprintf("fn main() int { var a %s = 5; var b %s = 2; var r %s = a %s b; return r as int; }", tc.width, tc.width, tc.width, tc.op)
-			want := fmt.Sprintf("CheckedArithmetic with operator %s at %s, want an operator with a checked runtime helper", tc.op, tc.width)
-			emitAndRunRejects(t, src, want)
 		})
 	}
 }

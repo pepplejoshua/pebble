@@ -128,6 +128,25 @@ func TestEmitCheckedDivideByZeroAborts(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { return 1 / 0; }", false, 0, true)
 }
 
+func TestEmitCheckedDivideByZeroU64AndNarrowAborts(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, "fn main() int { var a u64 = 1; var b u64 = 0; return (a / b) as int; }", false, 0, true)
+	emitAndRun(t, "fn main() int { var a i8 = 1; var b i8 = 0; return (a / b) as int; }", false, 0, true)
+}
+
+func TestEmitCheckedNarrowSignedDivisionBoundaryModes(t *testing.T) {
+	t.Parallel()
+	src := "fn main() int { var a i8 = -128; var b i8 = -1; return (a / b) as int; }"
+	emitAndRun(t, src, false, 0, true)
+	unit, snapshot, entryID, sources := buildFixture(t, src, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	binary := compileEmittedCRelease(t, buf.Bytes())
+	runCompiledBinary(t, binary, 128, false, false)
+}
+
 func TestEmitCheckedShiftsCompileAndRun(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, "fn main() i32 { return (3 << 4) >> 2; }", false, 12, false)

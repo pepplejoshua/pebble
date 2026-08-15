@@ -694,48 +694,38 @@ func TestEmitRejectsNonScalarUnionPayload(t *testing.T) {
 	emitAndRunRejects(t, "type C = union enum { empty void; value (i32, i32); }; fn main() i32 {\nvar c C = C.value((1, 2));\nreturn 0;\n}", "carries a payload of type (i32, i32), which is not supported as a tagged-union payload")
 }
 
-func TestEmitRejectsU64CheckedDivision(t *testing.T) {
+func TestEmitU64CheckedDivisionCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// A u64 / or % has no checked runtime helper (div/mod is out of this
-	// slice's scope — only +, -, * got u64 twins), so the backend must reject
-	// it CLEANLY at Emit time, not emit a call to a nonexistent
-	// pebble_rt_checked_div_u64/mod_u64 that would only fail at cc compile.
-	// Both the plain expression form and the compound-assignment form are
-	// asserted.
-	emitAndRunRejects(t, "fn f() u64 { var a u64 = 10; var b u64 = 2; return a / b; } fn main() int { return f() as int; }", "only +, -, and * have a checked runtime helper")
-	emitAndRunRejects(t, "fn f() u64 { var a u64 = 10; var b u64 = 2; return a % b; } fn main() int { return f() as int; }", "only +, -, and * have a checked runtime helper")
-	emitAndRunRejects(t, "fn f() u64 { var x u64 = 10; x /= 2; return x; } fn main() int { return f() as int; }", "no checked division/modulo runtime helper")
-	emitAndRunRejects(t, "fn f() u64 { var x u64 = 10; x %= 2; return x; } fn main() int { return f() as int; }", "no checked division/modulo runtime helper")
+	// This supersedes the former negative test: u64 now has dedicated checked
+	// division and modulo helpers, including compound assignment lowering.
+	emitAndRun(t, "fn main() int { var a u64 = 100; var b u64 = 3; var c u64 = a / b; return c as int; }", false, 33, false)
+	emitAndRun(t, "fn f() u64 { var a u64 = 100; var b u64 = 3; return a % b; } fn main() int { return f() as int; }", false, 1, false)
+	emitAndRun(t, "fn f() u64 { var x u64 = 100; x /= 3; return x; } fn main() int { return f() as int; }", false, 33, false)
+	emitAndRun(t, "fn f() u64 { var x u64 = 100; x %= 3; return x; } fn main() int { return f() as int; }", false, 1, false)
 }
 
 func TestEmitRejectsNarrowCheckedArithmetic(t *testing.T) {
 	t.Parallel()
-	// A checked / or % at a narrow fixed-width integer (u8, u16, i8, i16, or
-	// u32) has no runtime helper, so the PLAIN BINARY EXPRESSION form must be
-	// rejected CLEANLY at Emit time rather than emitted as a call to a
-	// nonexistent helper. The error must name the operator and offending width.
-	// uint is deliberately NOT asserted here: uint-typed
-	// CheckedArithmetic is lowered by buildUintExpr to plain C arithmetic and
-	// never reaches this helper, so it is unaffected by the guard.
+	// Narrow fixed-width division and modulo now use dedicated checked helpers.
 	for _, tc := range []struct {
 		name string
 		src  string
-		want string
+		want int
 	}{
-		{"div u8", "fn f() u8 { var a u8 = 200; var b u8 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u8"},
-		{"mod u8", "fn f() u8 { var a u8 = 200; var b u8 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u8"},
-		{"div u16", "fn f() u16 { var a u16 = 200; var b u16 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u16"},
-		{"mod u16", "fn f() u16 { var a u16 = 200; var b u16 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u16"},
-		{"div i8", "fn f() i8 { var a i8 = 100; var b i8 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at i8"},
-		{"mod i8", "fn f() i8 { var a i8 = 100; var b i8 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at i8"},
-		{"div i16", "fn f() i16 { var a i16 = 100; var b i16 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at i16"},
-		{"mod i16", "fn f() i16 { var a i16 = 100; var b i16 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at i16"},
-		{"div u32", "fn f() u32 { var a u32 = 200; var b u32 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u32"},
-		{"mod u32", "fn f() u32 { var a u32 = 200; var b u32 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u32"},
+		{"div u8", "fn main() int { var a u8 = 200; var b u8 = 2; return (a / b) as int; }", 100},
+		{"mod u8", "fn main() int { var a u8 = 200; var b u8 = 3; return (a % b) as int; }", 2},
+		{"div u16", "fn main() int { var a u16 = 200; var b u16 = 2; return (a / b) as int; }", 100},
+		{"mod u16", "fn main() int { var a u16 = 200; var b u16 = 3; return (a % b) as int; }", 2},
+		{"div i8", "fn main() int { var a i8 = 100; var b i8 = 2; return (a / b) as int; }", 50},
+		{"mod i8", "fn main() int { var a i8 = 100; var b i8 = 3; return (a % b) as int; }", 1},
+		{"div i16", "fn main() int { var a i16 = 100; var b i16 = 2; return (a / b) as int; }", 50},
+		{"mod i16", "fn main() int { var a i16 = 100; var b i16 = 3; return (a % b) as int; }", 1},
+		{"div u32", "fn main() int { var a u32 = 200; var b u32 = 2; return (a / b) as int; }", 100},
+		{"mod u32", "fn main() int { var a u32 = 200; var b u32 = 3; return (a % b) as int; }", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			emitAndRunRejects(t, tc.src, tc.want)
+			emitAndRun(t, tc.src, false, tc.want, false)
 		})
 	}
 }

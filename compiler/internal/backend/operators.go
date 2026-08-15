@@ -111,8 +111,9 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 	}
 	if op == syntax.Slash || op == syntax.Percent {
 		switch width {
-		case types.Int, types.I32, types.I64:
-			// These are the only widths with checked division/modulo helpers.
+		case types.Int, types.I32, types.I64, types.U64,
+			types.I8, types.I16, types.U8, types.U16, types.U32:
+			// These widths have checked division/modulo helpers.
 		default:
 			return "", false
 		}

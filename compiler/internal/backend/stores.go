@@ -1078,9 +1078,6 @@ func buildCompoundIntegerCore(st *emitState, unit *tir.Unit, snapshot *types.Sna
 	if checkedSuffix(placeWidth) == "" {
 		return "", fmt.Errorf("%s compound assignment combines at %s, which has no checked-arithmetic runtime helper; compound assignment is supported only at int, i32, or i64", context, wantName(placeWidth))
 	}
-	if placeWidth == types.U64 && (statement.Operator == syntax.Slash || statement.Operator == syntax.Percent) {
-		return "", fmt.Errorf("%s compound assignment %ss at u64, which has no checked division/modulo runtime helper; u64 compound assignment is supported only for +, -, or *", context, statement.Operator)
-	}
 	helper, _ := checkedArithmeticHelper(statement.Operator, placeWidth)
 	value, err := buildExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, placeWidth, width)
 	if err != nil {
