@@ -1940,8 +1940,10 @@ func buildPointerLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 	case tir.PointerCast:
 		// An explicit pointer-to-pointer cast: `let q *void = p as *void;`.
 		// The PointerCast node has one child (the source pointer value) and
-		// its Type is the destination pointer type. The emitted C is a
-		// simple assignment since C pointer types are already named.
+		// its Type is the destination pointer type. The child needs an
+		// explicit C cast because its natural pointer type does not always
+		// match the destination, such as a pointer-returning call whose
+		// declared return type differs from the cast destination.
 		if len(initValue.Children) != 1 {
 			return "", fmt.Errorf("%s pointer cast initializer has %d children, want exactly one", context, len(initValue.Children))
 		}
@@ -1950,7 +1952,7 @@ func buildPointerLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types
 			return "", fmt.Errorf("%s pointer cast child: %v", context, err)
 		}
 		scope[statement.Symbol] = localInfo{pointerType: pointerTypeID}
-		return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, childText, indent, statement.Symbol), nil
+		return fmt.Sprintf("%s%s pebble_local_%d = (%s)(%s);\n%s(void)pebble_local_%d;", indent, ctypeName, statement.Symbol, ctypeName, childText, indent, statement.Symbol), nil
 	default:
 		return "", fmt.Errorf("%s declares a pointer-typed local initialized from a %s, want an AddressOf expression, another pointer local, a pointer-returning call, a pointer-to-pointer cast, a pointer-payload optional force-unwrap, or nil", context, initValue.Kind)
 	}

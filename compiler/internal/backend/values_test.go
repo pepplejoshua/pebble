@@ -2154,6 +2154,15 @@ func TestEmitExplicitPointerCastRoundTripCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() i32 { var y i32 = 42; let p *i32 = &y; let q *void = p as *void; let r *i32 = q as *i32; return *r; }", false, 42, false)
 }
 
+func TestEmitPointerCastLocalFromPointerCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The call returns *u8, but the local declaration casts its result to
+	// *int. The local initializer must preserve that explicit pointer cast in
+	// the emitted C, rather than assigning the call result with its natural
+	// pointer type.
+	emitAndRun(t, "type Holder = struct { v u8; }; fn get_ptr(h *Holder) *u8 { return &h.v; } fn main() int { var h Holder = Holder.{ v = 5 }; let p *int = get_ptr(&h) as *int; return 0; }", false, 0, false)
+}
+
 func TestEmitIntegerCastRoundTripCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The intermediate i64 cast has a different width from the i32 entry, but
