@@ -502,39 +502,54 @@ master ledger's own repro (`let x int = 2147483648;` — pre-fix: fails
 `cc` with `-Wconstant-conversion`; post-fix: compiles and runs
 correctly, exit 0).
 
-Per the user's explicit direction, picking up F5-01b next (duplicate C
-enumerators across two live instantiations of one generic tagged
-union — found during F5-01's investigation this session, root cause
-not yet chased: a program with TWO DIFFERENT concrete instantiations of
-the same generic tagged union live at once, e.g. `Result[int, str]`
-AND `Result[bool, str]` both constructed in one program, emits
-duplicate C enumerator names for the shared variant names
-(`pebble_variant_29` twice) — confirmed independent of the F5-01 fix,
-reproduces identically before and after it). Investigate/reproduce
-directly first with a minimal `.peb` snippet (two concrete
-instantiations of one generic tagged union, both constructed, in one
-program) to confirm the exact current failure mode (a `cc` duplicate-
-enumerator compile error, most likely) before writing a dispatch
-brief — likely root cause per the master ledger's own note: "the
-per-instantiation enum-typedef collection doesn't dedupe or uniquely-
-suffix variant names across separate specializations of the same
-generic union declaration," so look at whatever function collects/
-names a generic tagged union's per-specialization variant enumerators
-in `internal/backend` (search for how F5-01/F5-02's specialization
-machinery names things, and how the existing non-generic tagged-union
-enumerator naming works, as the two precedents to reconcile). Next
-dispatch should use `vercel/alibaba/qwen3.7-flash` (the last real
-dispatch, F5-25's round 4, used the same model too — actually round 3
-used deepseek and round 4 used qwen, so continue to deepseek).
+*(empty — F5-01b (duplicate C enumerators across two live
+instantiations of one generic tagged union) closed in `4df19bc`. Root
+cause confirmed exactly as suspected: `enumVariantName`
+(`internal/backend/types.go`) named a variant's C enum constant using
+ONLY the variant's own `symbol.SymbolID`
+(`pebble_variant_<memberID>`) — correct for a non-generic enum/union,
+but every concrete specialization of a generic tagged union shares the
+SAME underlying template's variant symbols (only payload types get
+substituted, never the member symbols), so two live specializations
+both tried to declare the same C enum constant name in their own
+correctly-distinct enum typedefs — a hard `cc` redefinition error.
+Widened to `pebble_variant_<ownerTypeID>_<memberID>`, mirroring the
+existing `pebble_enum_<typeID>_t`/`pebble_union_<typeID>_t` convention
+of embedding a stable type ID, threaded through all 13 call sites
+across 8 files. Landed clean on the first real dispatch's core logic
+(build succeeded, repro compiled and ran, on the FIRST round — a rare
+one-shot clean landing for a 13-call-site refactor), but needed one
+follow-up round: the dispatch's own required test coverage (a
+compile-and-run test for the two-specialization repro, plus a
+structural test proving the two typedefs now carry genuinely distinct
+constant names) was never added, and the full-suite checkpoint caught
+9 pre-existing structural `*WritesC` tests still asserting the old
+single-number constant format — both fixed in the follow-up round. A
+false-alarm 10-minute test-BINARY timeout on one run (unrelated tests
+were still executing when the default `go test` timeout hit — a
+system-load artifact, not a real hang) was cleared by retrying with an
+explicit longer timeout, confirming a genuine clean pass. Full
+`internal/backend` suite clean at `-parallel 12` (the standing
+full-suite flag — this window's actual checkpoint runs had NOT been
+consistently passing `-parallel 12` before this item; corrected going
+forward per direct user question), causation-checked against `HEAD`.
 
-Then F5-06b (print truncates a `str` value at an embedded NUL byte —
-`fprintf(..., "%s", ...)` is a C-string operation and stops at the
-first `0x00`; confirmed independent of interpolation,
-`var s str = "x\0y"; print s;` already truncates on plain `HEAD`).
-Per the master ledger's own note: "every `print`/`fprintf` call site
-for a `str` value would need to switch to a length-bounded write
+Picking up F5-06b next (print truncates a `str` value at an embedded
+NUL byte — `fprintf(..., "%s", ...)` is a C-string operation and stops
+at the first `0x00`; confirmed independent of interpolation,
+`var s str = "x\0y"; print s;` already truncates on plain `HEAD`). Per
+the master ledger's own note: "every `print`/`fprintf` call site for a
+`str` value would need to switch to a length-bounded write
 (`fwrite(s.data, 1, s.len, stdout)`)" — materialization (`.len`/
 `.data`) is already correct, only the print path is affected, so this
 should be a comparatively small, well-contained fix (find every
 `fprintf(..., "%s", ...)`-style str-print call site in
-`internal/backend` and replace with a length-bounded write).)*
+`internal/backend` and replace with a length-bounded write).
+Investigate/reproduce directly first with a minimal `.peb` snippet
+(`var s str = "x\0y"; print s;`) to confirm the exact current
+truncation and enumerate every genuine call site (not just the one the
+note already names) before writing a dispatch brief; next dispatch
+should use `opencode-go/deepseek-v4-flash` (the last real dispatch,
+F5-01b's follow-up, used `vercel/alibaba/qwen3.7-flash`). Remember to
+include `-parallel 12` in any full-suite checkpoint command given to a
+dispatched worker, per the standing rule, going forward.)*
