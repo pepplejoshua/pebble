@@ -102,16 +102,48 @@ type String = struct {
 
         // Copy the new string, one byte at a time -- str has no legal
         // conversion to a raw pointer, so a bulk memcpy isn't available here.
-        // new_str[i] decodes a character, whose low byte equals the raw byte
-        // for ASCII content; for non-ASCII str content this byte-indexed
-        // decode is the same pre-existing limitation str always had (str
-        // exposes no raw-byte access), not a regression of this redesign.
         loop 0..len : i {
-            self.data[self.len + i] = new_str[i] as u8;
+            self.data[self.len + i] = str_byte_at(new_str, i);
         }
 
         // Update length and null-terminate
         self.len += len;
+        self.data[self.len] = 0 as u8;
+    }
+
+    // Appends exactly one raw byte, with no UTF-8 interpretation. For callers
+    // that already hold a raw byte (e.g. one read via str_byte_at) and want an
+    // O(1) byte-level append instead of push_char's encode path.
+    fn push_byte(self *String, b u8) void {
+        // Room for one byte plus the trailing null terminator.
+        if self.len + 1 >= self.capacity {
+            var new_cap = self.capacity;
+            if new_cap == 0 {
+                new_cap = 16;
+            } else {
+                new_cap = new_cap * 2;
+            }
+            self.grow(new_cap);
+        }
+
+        self.data[self.len] = b;
+        self.len++;
+        self.data[self.len] = 0 as u8;
+    }
+
+    // Appends a whole []u8 slice of raw bytes in one call. Unlike str, a []u8
+    // has a legal raw .data pointer, so this is a single bulk copy.
+    fn push_bytes(self *String, bytes []u8) void {
+        var n = bytes.len;
+        if (n == 0) {
+            return; // Nothing to append
+        }
+
+        self.reserve(n);
+
+        mem::copy(&self.data[self.len] as *void, bytes.data as *void, n);
+
+        self.len += n;
         self.data[self.len] = 0 as u8;
     }
 
@@ -245,16 +277,14 @@ type String = struct {
         return memcmp(self.data.data as *void, b.data.data as *void, self.len) == 0;
     }
 
-    // Byte-level prefix comparison. prefix[i] decodes a character; its low
-    // byte equals the raw byte for ASCII prefixes, which is what these
-    // byte-oriented methods compare against.
+    // Byte-level prefix comparison.
     fn starts_with(self String, prefix str) bool {
         var prefix_len = prefix.len;
         if (prefix_len > self.len) {
             return false;
         }
         loop 0..prefix_len : i {
-            if self.data[i] != prefix[i] as u8 {
+            if self.data[i] != str_byte_at(prefix, i) {
                 return false;
             }
         }
@@ -268,7 +298,7 @@ type String = struct {
         }
         var start_pos = self.len - suffix_len;
         loop 0..suffix_len : i {
-            if self.data[start_pos + i] != suffix[i] as u8 {
+            if self.data[start_pos + i] != str_byte_at(suffix, i) {
                 return false;
             }
         }
@@ -288,7 +318,7 @@ type String = struct {
         while (i <= self.len - needle_len) {
             var matched = true;
             loop 0..needle_len : j {
-                if self.data[i + j] != needle[j] as u8 {
+                if self.data[i + j] != str_byte_at(needle, j) {
                     matched = false;
                 }
             }
@@ -341,7 +371,7 @@ type String = struct {
         // Insert new data, one byte at a time -- new_str has no legal
         // conversion to a raw pointer.
         loop 0..insert_len : i {
-            self.data[pos + i] = new_str[i] as u8;
+            self.data[pos + i] = str_byte_at(new_str, i);
         }
         self.len += insert_len;
         self.data[self.len] = 0 as u8;

@@ -1,0 +1,365 @@
+// Test harness for String/hash_str byte-vs-scalar correctness (Slice 4).
+//
+// The String type is byte-oriented (data []u8, raw UTF-8 bytes). Before this
+// slice, several methods indexed a str parameter with [i], which decodes a
+// Unicode scalar (walking UTF-8, O(n) per call) and truncates the result to
+// its low byte via `as u8`. For ASCII content that happens to produce the
+// right byte by coincidence; for any multi-byte UTF-8 character it silently
+// produced garbage bytes instead of the actual UTF-8 encoding. These methods
+// now use str_byte_at, a checked raw-byte read. hash::hash_str also used
+// libc::strlen (a NUL-terminated scan) instead of s.len and the same
+// decode-and-truncate read; both are fixed.
+//
+// Verifies:
+//   - push_str preserves the exact UTF-8 bytes of a multi-byte argument
+//   - starts_with / ends_with match multi-byte prefixes and suffixes
+//   - find locates a multi-byte needle at its byte offset
+//   - insert preserves the exact UTF-8 bytes of a multi-byte argument
+//   - hash_str hashes the full byte length including bytes after an
+//     embedded NUL (hash_bytes of the same raw bytes must agree)
+//   - hash_str is deterministic and distinguishes strings that differ only
+//     in a multi-byte character
+//   - push_byte / push_bytes append raw bytes, including embedded NULs,
+//     without any C-string truncation
+
+import "std:string";
+import "std:hash";
+import "std:mem";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === push_str with multi-byte UTF-8 preserves exact bytes ===
+
+    // "café": c(0x63) a(0x61) f(0x66) é(0xC3 0xA9)
+    var s1 = string::new();
+    s1.push_str("café");
+    if s1.len != 5 {
+        print("FAIL: push_str_utf8_len");
+        failures++;
+    }
+    if s1.data[0] as i32 != 0x63 {
+        print("FAIL: push_str_utf8_byte_c");
+        failures++;
+    }
+    if s1.data[1] as i32 != 0x61 {
+        print("FAIL: push_str_utf8_byte_a");
+        failures++;
+    }
+    if s1.data[2] as i32 != 0x66 {
+        print("FAIL: push_str_utf8_byte_f");
+        failures++;
+    }
+    if s1.data[3] as i32 != 0xC3 {
+        print("FAIL: push_str_utf8_byte_eacute_lead");
+        failures++;
+    }
+    if s1.data[4] as i32 != 0xA9 {
+        print("FAIL: push_str_utf8_byte_eacute_cont");
+        failures++;
+    }
+    string::delete(&s1);
+
+    // Three-byte UTF-8: "1€2" is 1(0x31) €(0xE2 0x82 0xAC) 2(0x32)
+    var s1b = string::new();
+    s1b.push_str("1€2");
+    if s1b.len != 5 {
+        print("FAIL: push_str_three_byte_len");
+        failures++;
+    }
+    if s1b.data[0] as i32 != 0x31 {
+        print("FAIL: push_str_three_byte_1");
+        failures++;
+    }
+    if s1b.data[1] as i32 != 0xE2 {
+        print("FAIL: push_str_three_byte_euro_lead");
+        failures++;
+    }
+    if s1b.data[2] as i32 != 0x82 {
+        print("FAIL: push_str_three_byte_euro_mid");
+        failures++;
+    }
+    if s1b.data[3] as i32 != 0xAC {
+        print("FAIL: push_str_three_byte_euro_tail");
+        failures++;
+    }
+    if s1b.data[4] as i32 != 0x32 {
+        print("FAIL: push_str_three_byte_2");
+        failures++;
+    }
+    string::delete(&s1b);
+
+    // === starts_with / ends_with with multi-byte arguments ===
+
+    var s2 = string::new();
+    s2.push_str("café");
+    if !s2.starts_with("café") {
+        print("FAIL: starts_with_full_utf8");
+        failures++;
+    }
+    if !s2.starts_with("caf") {
+        print("FAIL: starts_with_ascii_prefix");
+        failures++;
+    }
+    if !s2.ends_with("é") {
+        print("FAIL: ends_with_multibyte_suffix");
+        failures++;
+    }
+    if s2.ends_with("x") {
+        print("FAIL: ends_with_wrong_suffix");
+        failures++;
+    }
+    if s2.starts_with("x") {
+        print("FAIL: starts_with_wrong_prefix");
+        failures++;
+    }
+    string::delete(&s2);
+
+    // === find locates a multi-byte needle ===
+
+    var s3 = string::new();
+    s3.push_str("aé€z");
+    // bytes: a(0x61) é(0xC3 0xA9) €(0xE2 0x82 0xAC) z(0x7A) — len 7
+    if s3.len != 7 {
+        print("FAIL: find_utf8_len");
+        failures++;
+    }
+    let f1 = s3.find("é")!;
+    if f1 != 1 {
+        print("FAIL: find_eacute_offset");
+        failures++;
+    }
+    let f2 = s3.find("é€")!;
+    if f2 != 1 {
+        print("FAIL: find_eacute_euro_offset");
+        failures++;
+    }
+    let f3 = s3.find("€z")!;
+    if f3 != 3 {
+        print("FAIL: find_euro_z_offset");
+        failures++;
+    }
+    let f4 = s3.find("aé")!;
+    if f4 != 0 {
+        print("FAIL: find_a_eacute_offset");
+        failures++;
+    }
+    let f5 = s3.find("zz");
+    if f5.has_value {
+        print("FAIL: find_absent_needle");
+        failures++;
+    }
+    string::delete(&s3);
+
+    // === insert with multi-byte UTF-8 preserves exact bytes ===
+
+    // insert "€" into "ab" at pos 1 → "a€b": a(0x61) €(0xE2 0x82 0xAC) b(0x62)
+    var s4 = string::new();
+    s4.push_str("ab");
+    s4.insert(1, "€");
+    if s4.len != 5 {
+        print("FAIL: insert_utf8_len");
+        failures++;
+    }
+    if s4.data[0] as i32 != 0x61 {
+        print("FAIL: insert_utf8_byte_a");
+        failures++;
+    }
+    if s4.data[1] as i32 != 0xE2 {
+        print("FAIL: insert_utf8_byte_euro_lead");
+        failures++;
+    }
+    if s4.data[2] as i32 != 0x82 {
+        print("FAIL: insert_utf8_byte_euro_mid");
+        failures++;
+    }
+    if s4.data[3] as i32 != 0xAC {
+        print("FAIL: insert_utf8_byte_euro_tail");
+        failures++;
+    }
+    if s4.data[4] as i32 != 0x62 {
+        print("FAIL: insert_utf8_byte_b");
+        failures++;
+    }
+    string::delete(&s4);
+
+    // Insert at a byte offset inside a multi-byte sequence: this is a
+    // byte-oriented buffer, so inserting "z" at byte 1 of "éé" (bytes
+    // C3 A9 C3 A9) splits the first é: C3 [z] A9 C3 A9. Assert the exact
+    // resulting bytes, proving insert writes raw bytes at the byte offset.
+    var s4b = string::new();
+    s4b.push_str("éé");
+    s4b.insert(1, "z");
+    if s4b.len != 5 {
+        print("FAIL: insert_mid_utf8_len");
+        failures++;
+    }
+    if s4b.data[0] as i32 != 0xC3 {
+        print("FAIL: insert_mid_utf8_first_lead");
+        failures++;
+    }
+    if s4b.data[1] as i32 != 0x7A {
+        print("FAIL: insert_mid_utf8_z");
+        failures++;
+    }
+    if s4b.data[2] as i32 != 0xA9 {
+        print("FAIL: insert_mid_utf8_first_cont_after_z");
+        failures++;
+    }
+    if s4b.data[3] as i32 != 0xC3 {
+        print("FAIL: insert_mid_utf8_second_lead");
+        failures++;
+    }
+    if s4b.data[4] as i32 != 0xA9 {
+        print("FAIL: insert_mid_utf8_second_cont");
+        failures++;
+    }
+    string::delete(&s4b);
+
+    // === hash_str hashes the full byte length, including after a NUL ===
+
+    // "a\x00b" bytes: 0x61 0x00 0x62. libc::strlen would stop at the NUL and
+    // hash only "a"; the fix hashes all three bytes. hash_bytes over the same
+    // raw bytes must agree, proving no truncation.
+    var nul_bytes = mem::new_slice[u8](3);
+    nul_bytes[0] = 0x61;
+    nul_bytes[1] = 0x00;
+    nul_bytes[2] = 0x62;
+    let hash_nul_bytes = hash::hash_bytes(nul_bytes);
+    let hash_nul_str = hash::hash_str("a\x00b");
+    if hash_nul_str != hash_nul_bytes {
+        print("FAIL: hash_str_embedded_nul_full_length");
+        failures++;
+    }
+    // The NUL-bearing string must differ from its NUL-free prefix: if the
+    // strlen bug were live, hash_str("a\x00b") would equal hash_str("a").
+    let hash_a = hash::hash_str("a");
+    if hash_nul_str == hash_a {
+        print("FAIL: hash_str_embedded_nul_differs");
+        failures++;
+    }
+    mem::delete_slice(&nul_bytes);
+
+    // === hash_str determinism and multi-byte sensitivity ===
+
+    let h1 = hash::hash_str("café");
+    let h2 = hash::hash_str("café");
+    if h1 != h2 {
+        print("FAIL: hash_str_deterministic");
+        failures++;
+    }
+    // Differing only in a multi-byte character must produce different hashes:
+    // if the old decode-and-truncate path were live, the truncated low bytes
+    // would still differ here, but this pins the dependency on real bytes.
+    let h_ascii = hash::hash_str("cafe");
+    if h1 == h_ascii {
+        print("FAIL: hash_str_multibyte_sensitive");
+        failures++;
+    }
+    let h_other = hash::hash_str("cafX");
+    if h1 == h_other {
+        print("FAIL: hash_str_ascii_change_sensitive");
+        failures++;
+    }
+
+    // === push_byte / push_bytes append raw bytes, NULs included ===
+
+    // Individual raw bytes, including an embedded NUL: "A" 0x00 "B"
+    var s5 = string::new();
+    s5.push_byte(0x41); // 'A'
+    s5.push_byte(0x00); // NUL — must not truncate the buffer
+    s5.push_byte(0x42); // 'B'
+    if s5.len != 3 {
+        print("FAIL: push_byte_nul_len");
+        failures++;
+    }
+    if s5.data[0] as i32 != 0x41 {
+        print("FAIL: push_byte_A");
+        failures++;
+    }
+    if s5.data[1] as i32 != 0x00 {
+        print("FAIL: push_byte_nul");
+        failures++;
+    }
+    if s5.data[2] as i32 != 0x42 {
+        print("FAIL: push_byte_B");
+        failures++;
+    }
+    string::delete(&s5);
+
+    // Bulk push_bytes, NULs included: "ab" then [0x00 0x63] → "ab" NUL "c"
+    var s6 = string::new();
+    s6.push_str("ab");
+    var tail = mem::new_slice[u8](2);
+    tail[0] = 0x00;
+    tail[1] = 0x63; // 'c'
+    s6.push_bytes(tail);
+    if s6.len != 4 {
+        print("FAIL: push_bytes_nul_len");
+        failures++;
+    }
+    if s6.data[0] as i32 != 0x61 {
+        print("FAIL: push_bytes_byte_a");
+        failures++;
+    }
+    if s6.data[1] as i32 != 0x62 {
+        print("FAIL: push_bytes_byte_b");
+        failures++;
+    }
+    if s6.data[2] as i32 != 0x00 {
+        print("FAIL: push_bytes_nul");
+        failures++;
+    }
+    if s6.data[3] as i32 != 0x63 {
+        print("FAIL: push_bytes_byte_c_after_nul");
+        failures++;
+    }
+    mem::delete_slice(&tail);
+    string::delete(&s6);
+
+    // push_bytes of a multi-byte UTF-8 sequence (bytes already in hand, e.g.
+    // from str_byte_at reads) appends them verbatim: € bytes 0xE2 0x82 0xAC
+    var s7 = string::new();
+    s7.push_byte(0x31); // '1'
+    var euro = mem::new_slice[u8](3);
+    euro[0] = 0xE2;
+    euro[1] = 0x82;
+    euro[2] = 0xAC;
+    s7.push_bytes(euro);
+    if s7.len != 4 {
+        print("FAIL: push_bytes_utf8_len");
+        failures++;
+    }
+    if s7.data[0] as i32 != 0x31 {
+        print("FAIL: push_bytes_utf8_1");
+        failures++;
+    }
+    if s7.data[1] as i32 != 0xE2 {
+        print("FAIL: push_bytes_utf8_euro_lead");
+        failures++;
+    }
+    if s7.data[2] as i32 != 0x82 {
+        print("FAIL: push_bytes_utf8_euro_mid");
+        failures++;
+    }
+    if s7.data[3] as i32 != 0xAC {
+        print("FAIL: push_bytes_utf8_euro_tail");
+        failures++;
+    }
+    mem::delete_slice(&euro);
+    string::delete(&s7);
+
+    // Empty push_bytes is a no-op that leaves len unchanged.
+    var s8 = string::new();
+    s8.push_str("x");
+    var empty_tail = mem::new_slice[u8](0);
+    s8.push_bytes(empty_tail);
+    if s8.len != 1 {
+        print("FAIL: push_bytes_empty_len");
+        failures++;
+    }
+    mem::delete_slice(&empty_tail);
+    string::delete(&s8);
+
+    return failures as i32;
+}

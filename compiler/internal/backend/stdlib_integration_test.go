@@ -204,3 +204,22 @@ func TestStdlibStrIndexRegression(t *testing.T) {
 		t.Fatalf("str_index_regression_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
 	}
 }
+
+// TestStdlibStringByteCorrectness exercises String/hash_str byte-vs-scalar
+// correctness: the byte-oriented String methods (push_str, starts_with,
+// ends_with, find, insert) and hash::hash_str must operate on raw UTF-8 bytes
+// via str_byte_at, not decoded-and-truncated Unicode scalars. It verifies
+// multi-byte UTF-8 push_str/insert byte fidelity, multi-byte
+// starts_with/ends_with/find, hash_str hashing the full byte length past an
+// embedded NUL (hash_bytes agreement), hash_str determinism and multi-byte
+// sensitivity, and the new push_byte/push_bytes raw-byte appends including
+// embedded NULs with no C-string truncation.
+func TestStdlibStringByteCorrectness(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "string_byte_correctness_test.peb")
+	t.Logf("string_byte_correctness_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("string_byte_correctness_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
