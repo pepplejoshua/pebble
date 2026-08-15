@@ -141,8 +141,78 @@ supervisor removed during verification — flagged only because the "remove
 the temporary worktree when done" instruction was in the brief; not a
 correctness issue.
 
-Slice 3 (`str_byte_at` — new checked builtin, language decision already
-approved 2026-08-15, see "Planned slice order" above) is next.)*
+Slice 3 (`str_byte_at` — new checked builtin) closed in `ce3eda9`. Added
+`str_byte_at(value str, byte_index uint64) u8` via the existing
+`symbol.BuiltinFunction` mechanism (previously used only for
+`wrapping_mul_u64`/`wrapping_add_u64`): new `symbol.BuiltinStrByteAt`
+const, registration in `resolve.go`, signature in `infer/builtin.go`,
+backend lowering in `calls.go` to a new `pebble_rt_str_byte_at` runtime
+helper (`runtime/src/str.c`/`pebble_rt.h`) that checks `byte_index >=
+s.len` in SAFE mode (reusing the existing `pebble_rt_str_index_panic`)
+and reads unchecked in RELEASE mode. Ordinary call syntax parses cleanly
+with no parser/lexer changes, as predicted.
+
+This was the riskiest slice so far and surfaced four real bugs, all
+caught by independent verification rather than trusting any dispatch's
+self-report, and all fixed before landing:
+
+1. **Discarded argument.** The initial backend lowering in `calls.go`
+   built the byte-index expression via `buildExpr` but discarded it
+   with `_, err = ...`, then called the runtime helper with `.data`/
+   `.len` split apart instead of the whole `PebbleStr` and no index
+   argument at all. Two dispatch attempts on the primary-tier model
+   failed to apply the fix (one produced the bug, one stalled in a
+   verbatim-repeating loop without changing any code); fixed by
+   escalating to the tier-2 model with an exact, literal replacement.
+2. **Dispatch-order bug.** `builtinFunctionCName` (in `emit.go`) was
+   correctly widened to recognize `BuiltinStrByteAt` for an unrelated
+   use (skipping builtin symbols during typedef collection), but
+   `calls.go`'s generic two-arg-u64 wrapping-builtin block also gated
+   on that same helper, so it silently intercepted every `str_byte_at`
+   call before the correct handler ever ran. Narrowed that block's
+   condition to the two wrapping builtins specifically.
+3. **Nil-pointer regression from the ordering fix.** The narrowed
+   condition dereferenced `st.symbols.Symbols` directly, without the
+   nil guard `builtinFunctionCName` always had — a real `SIGSEGV`
+   against hand-built IR test fixtures with no populated symbol table
+   (caught by the full, unfiltered test suite, not the feature's own
+   targeted tests). Restored the nil check.
+4. **RELEASE-mode build failure.** `pebble_rt_str_byte_at` left its
+   `loc` parameter unused once the SAFE-mode check compiles out under
+   `PEBBLE_RT_MODE_RELEASE`, a hard `-Werror -Wunused-parameter` build
+   failure — only surfaced by running the real (non-`-short`) backend
+   suite, which actually compiles generated C in both modes. Added
+   `(void)loc;`, matching the exact convention `arith.c`'s RELEASE-mode
+   bodies already use.
+
+A fifth issue was structural rather than a bug: registering the new
+builtin symbol consumes one more slot in the single global monotonic
+symbol-ID counter, so every symbol ID allocated afterward during a
+compile (locals, anonymous-fn params, loop vars, temps) shifted by
+exactly +1. This broke 73 backend tests that hardcode literal generated
+identifiers (`pebble_local_31`, etc.) in their expected C output —
+confirmed via an isolated `git worktree` diff against pre-feature HEAD
+(0 backend failures there, 73 on the working tree) that this was pure
+ID churn, not real codegen regressions. Per-test verified (no blind
+uniform-offset assumption — each fix was checked against that test's
+actual emitted C) and bulk-renumbered, plus both `tests/check/ir/*
+.tir.golden` fixtures regenerated. **Known fragility, not yet fixed**:
+these tests assert exact numeric IDs instead of structural shape, so
+any future change to global symbol-allocation order (not just new
+builtins) will break them again the same way. A test-helper fix that
+normalizes generated IDs to placeholders before comparison was proposed
+and deferred to close out this session's usage budget — see project
+memory `project_golden_test_id_fragility.md`, pick this up before or
+alongside Slice 4.
+
+Two new test files: `tests/stdlib/str_byte_at_test.peb` (ASCII, 2/3/4-
+byte UTF-8 sequences read byte-by-byte, out-of-range/last-valid-index
+behavior) and `tests/stdlib/str_index_regression_test.peb` (proves the
+pre-existing `str[i]` Unicode-scalar decode is unaffected). Full backend
+suite (real C compile-and-run, SAFE and RELEASE) verified green at
+685s — the initial 900s-timeout run hit the known false-alarm pattern
+(finishing at 903s with an unrelated test mid-run in the trace) and a
+clean rerun at 1500s confirmed it wasn't a real hang.
 
 ### Planned slice order
 
