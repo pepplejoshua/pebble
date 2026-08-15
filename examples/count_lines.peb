@@ -69,16 +69,18 @@ fn main() int {
     var index = 0;
     while index < paths {
         var filename str = "";
-        if index == 0 { filename = "compiler/std/func.peb"; }
-        if index == 1 { filename = "compiler/std/hash.peb"; }
-        if index == 2 { filename = "compiler/std/hmap.peb"; }
-        if index == 3 { filename = "compiler/std/io.peb"; }
-        if index == 4 { filename = "compiler/std/libc.peb"; }
-        if index == 5 { filename = "compiler/std/mem.peb"; }
-        if index == 6 { filename = "compiler/std/set.peb"; }
-        if index == 7 { filename = "compiler/std/string.peb"; }
-        if index == 8 { filename = "compiler/std/vec.peb"; }
-        if index == 9 { filename = "compiler/std/mem/arena.peb"; }
+        switch index {
+        case 0: filename = "compiler/std/func.peb";
+        case 1: filename = "compiler/std/hash.peb";
+        case 2: filename = "compiler/std/hmap.peb";
+        case 3: filename = "compiler/std/io.peb";
+        case 4: filename = "compiler/std/libc.peb";
+        case 5: filename = "compiler/std/mem.peb";
+        case 6: filename = "compiler/std/set.peb";
+        case 7: filename = "compiler/std/string.peb";
+        case 8: filename = "compiler/std/vec.peb";
+        case 9: filename = "compiler/std/mem/arena.peb";
+        }
 
         var stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
         if count_file(filename, &stats) {
