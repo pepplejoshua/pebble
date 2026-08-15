@@ -62,6 +62,42 @@ func TestEmitIfElseEntryWritesC(t *testing.T) {
 	}
 }
 
+func TestEmitBareElseIfArmsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{
+			"helper return chain",
+			"fn g(a int, b int) int { if a > 0 { return 1; } else if b > 0 { return 2; } return 0; } fn main() int { return g(0, 2); }",
+			2,
+		},
+		{
+			"plain reassignment chain",
+			"fn main() int { var a int = 0; var b int = 2; var r int = 0; if a > 0 { r = 1; } else if b > 0 { r = 2; } return r; }",
+			2,
+		},
+		{
+			"terminal chain with else",
+			"fn g(a int, b int) int { if a > 0 { return 1; } else if b > 0 { return 2; } else { return 3; } } fn main() int { return g(0, 0); }",
+			3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, tc.want, false)
+		})
+	}
+}
+
+func TestEmitBareIfAndLoopArmsCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, "fn main() int { if 1 > 0 return 1; return 0; }", false, 1, false)
+	emitAndRunBounded(t, "fn main() int { var i int = 0; while i < 1 if i == 0 return 7; i = i + 1; return 0; }", false, 7, false)
+}
+
 func TestEmitIfElseComparisonOperators(t *testing.T) {
 	t.Parallel()
 	// All six comparison operators, each taking the branch matching its value;

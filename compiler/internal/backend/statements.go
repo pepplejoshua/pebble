@@ -1241,16 +1241,39 @@ func buildIf(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *s
 	if err != nil {
 		return "", err
 	}
-	thenText, err := buildBlock(st, unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
+	thenText, err := buildIfArm(st, unit, snapshot, fileSet, ifNode.Children[1], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
-	elseText, err := buildBlock(st, unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
+	elseText, err := buildIfArm(st, unit, snapshot, fileSet, ifNode.Children[2], locals, depth+1, width, result, unions)
 	if err != nil {
 		return "", err
 	}
 	indent := strings.Repeat("    ", depth+1)
 	return fmt.Sprintf("%sif (%s) {\n%s\n%s} else {\n%s\n%s}", indent, condition, thenText, indent, elseText, indent), nil
+}
+
+// buildIfArm builds one arm of the terminal, return-producing if form. The
+// grammar permits an arm to be either a block or one statement, so a chained
+// else-if must recurse through buildIf rather than being forced into a fake
+// Block node.
+func buildIfArm(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, bodyID tir.NodeID, locals map[symbol.SymbolID]localInfo, depth int, width types.BuiltinKind, result resultInfo, unions map[types.TypeID]unionInfo) (string, error) {
+	body, ok := unit.Node(bodyID)
+	if !ok {
+		return "", fmt.Errorf("entry function body if arm references invalid node %d", bodyID)
+	}
+	if body.Kind == tir.Block {
+		return buildBlock(st, unit, snapshot, fileSet, bodyID, locals, depth, width, result, unions)
+	}
+	indent := strings.Repeat("    ", depth+1)
+	switch body.Kind {
+	case tir.Return:
+		return buildReturnStatement(st, unit, snapshot, fileSet, body, cloneLocals(locals), indent, "entry function body if arm", width, result, unions)
+	case tir.If:
+		return buildIf(st, unit, snapshot, fileSet, body, cloneLocals(locals), depth, width, result, unions)
+	default:
+		return "", fmt.Errorf("entry function body if arm is a %s, want a Block, Return, or If", body.Kind)
+	}
 }
 
 // buildWhile validates and builds the C text for a while loop statement: a
@@ -1934,14 +1957,14 @@ func buildFallthroughBody(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	if !ok {
 		return "", fmt.Errorf("%s references invalid node %d", context, bodyID)
 	}
+	scope := cloneLocals(locals)
+	indent := strings.Repeat("    ", depth+1)
 	if body.Kind != tir.Block {
-		return "", fmt.Errorf("%s is a %s, want a Block", context, body.Kind)
+		return buildFallthroughStatement(st, unit, snapshot, fileSet, bodyID, scope, indent, depth, width, result, unions, context)
 	}
 	if len(body.Children) == 0 {
 		return "", nil
 	}
-	scope := cloneLocals(locals)
-	indent := strings.Repeat("    ", depth+1)
 	var statements []string
 	for _, childID := range body.Children {
 		text, err := buildFallthroughStatement(st, unit, snapshot, fileSet, childID, scope, indent, depth, width, result, unions, context)
