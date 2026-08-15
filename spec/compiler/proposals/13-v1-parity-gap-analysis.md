@@ -465,33 +465,76 @@ field), causation-checked against `HEAD`; full `internal/backend` and
 `internal/check` suites clean on the final round. This closes the
 entire proposal-17 F5-22–F5-24 print sub-arc.
 
-Picking up F5-25 next (platform-sized `int`/`uint` not implemented end
-to end — a confirmed, CROSS-LAYER implementation defect, not a print
-gap: the checker has `LiteralTarget.WordBits` but `pebc` hardcodes it
-to 64; the backend then maps `int` to `int32_t` and `uint` to
-`uint64_t` regardless, so on the current 64-bit host `uint` matches by
-accident while `int` is flatly wrong — `let x int = 2147483648;`
-currently passes checking and fails at `cc`). This is a DIFFERENT shape
-of item than the whole F5-05–F5-24 run: a real target-configuration
-plumbing problem touching checker, backend type resolution, AND
-runtime-helper selection together, not a single localized gap. Per the
-master ledger's own scoping note: "First add one authoritative target-
-word configuration and thread it through checking and Emit without
-changing behavior. Then change C spelling and runtime-helper selection
-together, with 32-bit and 64-bit emitted-C tests." Given the size and
-cross-cutting nature, investigate thoroughly first — trace exactly
-where `pebc` hardcodes 64 (`LiteralTarget.WordBits` or equivalent
-call site), where the backend independently hardcodes `int32_t`/
-`uint64_t` for `int`/`uint` (search `internal/backend` for these
-mappings), and confirm the two are genuinely disconnected (not already
-threading a shared config) before scoping a dispatch — this may need to
-be split into multiple sequential dispatch briefs (first the plumbing/
-no-behavior-change step, then the actual width-correctness fix) rather
-than one large one, mirroring how this window split F5-19/F5-20 (
-parameter then result) and F5-05–F5-09 (interpolation, one part-kind
-per item) into separate slices rather than attempting a single big
-change. Investigate/reproduce directly first with the master ledger's
-own repro (`let x int = 2147483648;`) before writing any dispatch
-brief; next dispatch should use `vercel/alibaba/qwen3.7-flash` (the
-last real dispatch, F5-24's round 2, used
-`opencode-go/deepseek-v4-flash`).)*
+*(empty — F5-25 (platform-sized `int`/`uint`) closed in `3bae4e7`. This
+closes the ENTIRE F5-05–F5-25 sweep, the last item in the active F5
+queue. `cType` now maps `types.Int` to `int64_t` (the only target this
+compiler builds for, per `WordBits: 64` hardcoded in `cmd/pebc`/
+`cmd/tirdump`, matching spec `05-types-and-inference.md`'s target-
+native-word definition — `uint`'s `int64_t`/`uint64_t` mapping was
+already correct by coincidence). Threaded through `printfSpecifier`,
+`integerKindRange`, and all five checked-arithmetic/shift/negation/
+unwrap/float-cast runtime-helper-suffix functions that previously
+routed `int` through the `i32` family purely because they happened to
+share a C representation, plus a matching checker-side fix
+(`isPointerWidthInteger`, `cTypeWidth`) so pointer-width and
+structural-width-comparison logic stayed consistent. Deliberately kept
+the width as a hardcoded constant rather than genuinely threading
+`WordBits` as a real parameter (asked the user directly; they agreed
+this was right-sized, since nothing else in the compiler treats
+`WordBits` as configurable and no 32-bit target path exists anywhere —
+revisit only if a real 32-bit target is ever added). Also fixed a
+related, previously-latent gap found during verification: 64-bit signed
+literals need an explicit `LL` C suffix (mirroring the existing
+unsigned `u` suffix), applying to both `int` and `i64`.
+
+Took FOUR dispatch rounds given real volume: the core width fix landed
+clean on round 1, but surfaced 91 pre-existing test failures (a mix of
+stale `int32_t`/width-compatibility assertions needing updates, plus
+one genuine backend validation gap that silently relied on int==i32
+rather than admitting `types.Int` explicitly) — round 2 fixed 5 checker
+failures (2 more than anticipated, correctly diagnosed and fixed),
+round 3 fixed 69 of 88 backend failures (down to 19, all one shared
+pattern — missing `LL` literal suffix — discovered as a byproduct of
+round 3's own correctness fix), round 4 closed out the remaining 19.
+Full `internal/backend` (593s) and `internal/check` suites both 100%
+clean on the final round; causation-checked against `HEAD` using the
+master ledger's own repro (`let x int = 2147483648;` — pre-fix: fails
+`cc` with `-Wconstant-conversion`; post-fix: compiles and runs
+correctly, exit 0).
+
+Per the user's explicit direction, picking up F5-01b next (duplicate C
+enumerators across two live instantiations of one generic tagged
+union — found during F5-01's investigation this session, root cause
+not yet chased: a program with TWO DIFFERENT concrete instantiations of
+the same generic tagged union live at once, e.g. `Result[int, str]`
+AND `Result[bool, str]` both constructed in one program, emits
+duplicate C enumerator names for the shared variant names
+(`pebble_variant_29` twice) — confirmed independent of the F5-01 fix,
+reproduces identically before and after it). Investigate/reproduce
+directly first with a minimal `.peb` snippet (two concrete
+instantiations of one generic tagged union, both constructed, in one
+program) to confirm the exact current failure mode (a `cc` duplicate-
+enumerator compile error, most likely) before writing a dispatch
+brief — likely root cause per the master ledger's own note: "the
+per-instantiation enum-typedef collection doesn't dedupe or uniquely-
+suffix variant names across separate specializations of the same
+generic union declaration," so look at whatever function collects/
+names a generic tagged union's per-specialization variant enumerators
+in `internal/backend` (search for how F5-01/F5-02's specialization
+machinery names things, and how the existing non-generic tagged-union
+enumerator naming works, as the two precedents to reconcile). Next
+dispatch should use `vercel/alibaba/qwen3.7-flash` (the last real
+dispatch, F5-25's round 4, used the same model too — actually round 3
+used deepseek and round 4 used qwen, so continue to deepseek).
+
+Then F5-06b (print truncates a `str` value at an embedded NUL byte —
+`fprintf(..., "%s", ...)` is a C-string operation and stops at the
+first `0x00`; confirmed independent of interpolation,
+`var s str = "x\0y"; print s;` already truncates on plain `HEAD`).
+Per the master ledger's own note: "every `print`/`fprintf` call site
+for a `str` value would need to switch to a length-bounded write
+(`fwrite(s.data, 1, s.len, stdout)`)" — materialization (`.len`/
+`.data`) is already correct, only the print path is affected, so this
+should be a comparatively small, well-contained fix (find every
+`fprintf(..., "%s", ...)`-style str-print call site in
+`internal/backend` and replace with a length-bounded write).)*
