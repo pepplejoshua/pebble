@@ -134,16 +134,16 @@ func TestSomePayloadIntoOptionalField(t *testing.T) {
 		source string
 		want   int
 	}{
-		{"named-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"named-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = some 5 }; if b.opt.has_value { return b.opt! as int; } return 0; }", 5},
 		{"named-width-converting-payload", "type Box = struct { opt ?u32; }; fn main() int { var x u8 = 5; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
 		{"named-u16-300-into-u32", "type Box = struct { opt ?u32; }; fn main() int { var x u16 = 300; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 300 { return 42; } } return 0; }", 42},
 		{"named-u8-into-int", "type Box = struct { opt ?int; }; fn main() int { var x u8 = 5; var b Box = Box.{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
 		{"named-char-into-i32", "type Box = struct { opt ?i32; }; fn main() int { var c char = 'a'; var b Box = Box.{ opt = some c }; if b.opt.has_value { if b.opt! == 97 { return 42; } } return 0; }", 42},
 		{"named-field-read-payload", "type P = struct { x u16; }; type Box = struct { opt ?i64; }; fn main() int { var s P = P.{ x = 7 }; var b Box = Box.{ opt = some s.x }; if b.opt.has_value { if b.opt! == 7 { return 42; } } return 0; }", 42},
-		{"anonymous-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = .{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"anonymous-matching-literal", "type Box = struct { opt ?i32; }; fn main() int { var b Box = .{ opt = some 5 }; if b.opt.has_value { return b.opt! as int; } return 0; }", 5},
 		{"anonymous-width-converting-payload", "type Box = struct { opt ?u32; }; fn main() int { var x u8 = 5; var b Box = .{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
 		{"none-value", "type Box = struct { opt ?i32; }; fn main() int { var b Box = Box.{ opt = none }; if !b.opt.has_value { return 42; } return 0; }", 42},
-		{"generic-optional-field-matching", "type Box[T] = struct { opt ?T; }; fn main() int { var b Box[i32] = Box[i32].{ opt = some 5 }; if b.opt.has_value { return b.opt!; } return 0; }", 5},
+		{"generic-optional-field-matching", "type Box[T] = struct { opt ?T; }; fn main() int { var b Box[i32] = Box[i32].{ opt = some 5 }; if b.opt.has_value { return b.opt! as int; } return 0; }", 5},
 		{"generic-optional-field-width-converting", "type Box[T] = struct { opt ?T; }; fn main() int { var x u8 = 5; var b Box[u32] = Box[u32].{ opt = some x }; if b.opt.has_value { if b.opt! == 5 { return 42; } } return 0; }", 42},
 		{"generic-optional-field-300", "type Box[T] = struct { opt ?T; }; fn main() int { var x u16 = 300; var b Box[u32] = Box[u32].{ opt = some x }; if b.opt.has_value { if b.opt! == 300 { return 42; } } return 0; }", 42},
 	}
@@ -184,7 +184,7 @@ func TestSomeLiteralPayloadFits(t *testing.T) {
 		source string
 		want   int
 	}{
-		{"int-literal-i32", "fn main() int { var o ?i32 = some 5; if o.has_value { return o!; } return 0; }", 5},
+		{"int-literal-i32", "fn main() int { var o ?i32 = some 5; if o.has_value { return o! as int; } return 0; }", 5},
 		{"int-literal-i64", "fn main() int { var o ?i64 = some 5; if o.has_value { if o! == 5 { return 42; } } return 0; }", 42},
 		{"int-literal-u8", "fn main() int { var o ?u8 = some 5; if o.has_value { if o! == 5 { return 42; } } return 0; }", 42},
 		{"int-literal-u16", "fn main() int { var o ?u16 = some 5; if o.has_value { if o! == 5 { return 42; } } return 0; }", 42},

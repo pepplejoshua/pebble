@@ -26,14 +26,14 @@ func TestModuleConstantValueShapes(t *testing.T) {
 		{"int literal local init", "let X = 5; fn main() int { var y int = X; return y; }", 5},
 		{"int literal arg", "let X = 5; fn twice(n int) int { return n * 2; } fn main() int { return twice(X); }", 10},
 		{"int literal comparison", "let X = 5; fn main() int { if X < 6 { return 7; } return 0; }", 7},
-		{"int literal i32 typed return", "let X i32 = 5; fn main() int { return X; }", 5},
+		{"int literal i32 typed return", "let X i32 = 5; fn main() int { return X as int; }", 5},
 
 		{"ref other const", "let A = 5; let B = A; fn main() int { return B; }", 5},
-		{"ref other const typed", "let A i32 = 5; let B i32 = A; fn main() int { return B; }", 5},
+		{"ref other const typed", "let A i32 = 5; let B i32 = A; fn main() int { return B as int; }", 5},
 		{"transitive ref", "let A = 2; let B = A + 3; fn main() int { return B; }", 5},
 
 		{"unary minus", "let X = -5; fn main() int { return X; }", 251},
-		{"unary minus typed", "let X i32 = -5; fn main() int { return X; }", 251},
+		{"unary minus typed", "let X i32 = -5; fn main() int { return X as int; }", 251},
 		{"unary minus i16", "let X i16 = -5; fn main() int { return X as int; }", 251},
 		{"unary bang", "let X = !true; fn main() int { if X { return 1; } return 9; }", 9},
 		{"unary tilde", "let X = ~0; fn main() int { return X; }", 255},
