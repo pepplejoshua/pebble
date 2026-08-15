@@ -534,22 +534,39 @@ full-suite flag — this window's actual checkpoint runs had NOT been
 consistently passing `-parallel 12` before this item; corrected going
 forward per direct user question), causation-checked against `HEAD`.
 
-Picking up F5-06b next (print truncates a `str` value at an embedded
-NUL byte — `fprintf(..., "%s", ...)` is a C-string operation and stops
-at the first `0x00`; confirmed independent of interpolation,
-`var s str = "x\0y"; print s;` already truncates on plain `HEAD`). Per
-the master ledger's own note: "every `print`/`fprintf` call site for a
-`str` value would need to switch to a length-bounded write
-(`fwrite(s.data, 1, s.len, stdout)`)" — materialization (`.len`/
-`.data`) is already correct, only the print path is affected, so this
-should be a comparatively small, well-contained fix (find every
-`fprintf(..., "%s", ...)`-style str-print call site in
-`internal/backend` and replace with a length-bounded write).
-Investigate/reproduce directly first with a minimal `.peb` snippet
-(`var s str = "x\0y"; print s;`) to confirm the exact current
-truncation and enumerate every genuine call site (not just the one the
-note already names) before writing a dispatch brief; next dispatch
-should use `opencode-go/deepseek-v4-flash` (the last real dispatch,
-F5-01b's follow-up, used `vercel/alibaba/qwen3.7-flash`). Remember to
-include `-parallel 12` in any full-suite checkpoint command given to a
-dispatched worker, per the standing rule, going forward.)*
+*(empty — F5-06b (print truncates a `str` value at an embedded NUL
+byte) closed in `3d5c93a`. Root cause confirmed exactly as suspected:
+`buildScalarPrintParts`'s `case kind == types.Str` (the single
+scalar-formatting site every print path routes through) formatted a
+str operand as `fprintf(..., "%s", (const char *)expr.data)` — a
+C-string operation that stops at the first `0x00`, even though
+PebbleStr carries its own `.len` and its bytes are not
+NUL-terminated by contract. Fixed by making str force the
+sequential-print path (mirroring how a composite/enum/optional/
+pointer/function operand already does, via `unwrapPrintOperands`'s
+`hasComposite` flag) and emitting a length-bounded
+`fwrite((const void *)(expr.data), 1, expr.len, stdout)` raw
+statement instead of a printf specifier — new `buildStrPrintOperand`/
+`buildStrPrintValueCalls`, mirroring the existing
+`buildPointerPrintOperand`/`buildPointerPrintValueCalls` shape
+exactly, plus the same fix applied to the materialized-interpolation
+print branch in `buildSequentialPrint`. The old `case kind ==
+types.Str` in `buildScalarPrintParts` now hard-errors instead of
+silently reinstating `%s`, since every real str print path is
+intercepted before reaching it. Covers a bare str operand AND a
+str-typed struct field/tuple element/array element/slice element (the
+deeper fix — nested str print slots route through the same
+`buildPrintValueCalls` dispatch). One dispatch stalled twice
+(`provider_stalled: no output timeout`) but each resume picked up
+correctly via `orc run --session`, per the standing "resume, don't
+redispatch" rule — the second resume completed the full implementation
+and required test coverage in one pass. Verified independently:
+`go build`/`gofmt`/`vet` clean, the exact repro
+(`var s str = "x\0y"; print s;`) confirmed byte-exact via `od -c`
+(`x\0y\n`, not the old truncated `x\n`), a struct-field embedded-NUL
+case confirmed byte-exact too, full `internal/backend` Emit suite and
+`internal/check` suite both 100% clean at `-parallel 12`,
+causation-checked against `HEAD` (pre-fix: `x\n`, 2 bytes; post-fix:
+`x\0y\n`, 4 bytes). This closes the F5 backlog's last remaining item —
+both the F5-05–F5-25 active queue and the F5-01b/F5-06b deferred
+items are now fully resolved.)*
