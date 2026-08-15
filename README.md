@@ -14,17 +14,20 @@ make install  # Build and install the peb compiler and std lib to your bin/ path
 
 ### Usage
 ```sh
-# Compile a Pebble source file
+# Build a Pebble source file into an executable (./program)
 ./pebc program.peb
 
-# Compile with options
-./pebc program.peb -o myapp --warnings
+# Build to a specific executable path
+./pebc program.peb -o myapp
 
-# Generate C without compiling
-./pebc program.peb --generate-only --keep-c-file
+# Build and run immediately
+./pebc program.peb -run
 
-# Compile in freestanding mode (no stdlib)
-./pebc program.peb --freestanding
+# Generate C without building an executable
+./pebc program.peb -emit-c out.c
+
+# Just check for errors
+./pebc program.peb -check
 
 # Link with libraries
 ./pebc program.peb -l pthread -L /usr/local/lib -I /usr/local/include
@@ -711,20 +714,20 @@ v.remove(0);  // Remove element
 # Compile with pthread
 ./pebc server.peb -l pthread -o server
 
-# Generate shared library
-./pebc mylib.peb --shared -o libmylib
+# Inspect the generated C without building
+./pebc mylib.peb -emit-c libmylib.c
 
-# Freestanding for embedded
-./pebc kernel.peb --freestanding --entry-point kernel_main
+# Build a release binary (no runtime safety checks)
+./pebc kernel.peb -release
 
-# Custom C compiler with includes
-./pebc app.peb --compiler clang -I ./include -L ./lib -l mylib
+# Add include/library search paths and link a library
+./pebc app.peb -I ./include -L ./lib -l mylib
 
-# Keep C file for debugging
-./pebc program.peb --keep-c --generate-only
+# Inspect the generated C for debugging
+./pebc program.peb -emit-c program.c
 
-# Object file without entry point
-./pebc module.peb --no-main -o module.o
+# Check a module for errors without building anything
+./pebc module.peb -check
 ```
 
 ### Code Generation

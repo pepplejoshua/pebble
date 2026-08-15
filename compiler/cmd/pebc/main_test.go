@@ -15,7 +15,7 @@ func TestRunSingleFileEmitsRunnableC(t *testing.T) {
 	sourcePath := filepath.Join(dir, "main.peb")
 	writeFile(t, sourcePath, "fn main() int { return 42; }\n")
 	outPath := filepath.Join(dir, "out.c")
-	if code := run([]string{"-o", outPath, sourcePath}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := run([]string{"-emit-c", outPath, sourcePath}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("run returned %d", code)
 	}
 	emitted, err := os.ReadFile(outPath)
@@ -60,14 +60,14 @@ func TestRunMultiModuleImportEmitsRunnableC(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "helper.peb"), "fn answer() int { return 7; }\n")
 	outPath := filepath.Join(dir, "out.c")
 	var stderr bytes.Buffer
-	if code := run([]string{"-o", outPath, mainPath}, &bytes.Buffer{}, &stderr); code != 0 {
+	if code := run([]string{"-emit-c", outPath, mainPath}, &bytes.Buffer{}, &stderr); code != 0 {
 		t.Fatalf("multi-module run returned %d: %s", code, stderr.String())
 	}
 	emitted, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"static int32_t pebble_fn_", "return 7;", "pebble_fn_"} {
+	for _, want := range []string{"static int64_t pebble_fn_", "return 7LL;", "pebble_fn_"} {
 		if !strings.Contains(string(emitted), want) {
 			t.Fatalf("emitted C missing %q:\n%s", want, emitted)
 		}
@@ -83,7 +83,7 @@ func TestRunStdImportEmitsRunnableC(t *testing.T) {
 	writeFile(t, sourcePath, "import \"std:mem\";\n\nfn main() int { var values []int = mem::new_slice[int](3); values[0] = 42; return values[0]; }\n")
 	outPath := filepath.Join(dir, "out.c")
 	var stderr bytes.Buffer
-	if code := run([]string{"-o", outPath, sourcePath}, &bytes.Buffer{}, &stderr); code != 0 {
+	if code := run([]string{"-emit-c", outPath, sourcePath}, &bytes.Buffer{}, &stderr); code != 0 {
 		t.Fatalf("std-import run returned %d: %s", code, stderr.String())
 	}
 	emitted, err := os.ReadFile(outPath)
@@ -113,10 +113,10 @@ func TestRunPreludeFlagEmitsRunnableC(t *testing.T) {
 	preludePath := filepath.Join(dir, "prelude.peb")
 	writeFile(t, preludePath, string(runtimePrelude)+"\ntype Frobnicator = struct { quux i32; };\n")
 	mainPath := filepath.Join(dir, "main.peb")
-	writeFile(t, mainPath, "fn main() int { let f Frobnicator = Frobnicator.{ quux = 42 }; return f.quux; }\n")
+	writeFile(t, mainPath, "fn main() int { let f Frobnicator = Frobnicator.{ quux = 42 }; return f.quux as int; }\n")
 	outPath := filepath.Join(dir, "out.c")
 	var stderr bytes.Buffer
-	if code := run([]string{"-prelude", preludePath, "-o", outPath, mainPath}, &bytes.Buffer{}, &stderr); code != 0 {
+	if code := run([]string{"-prelude", preludePath, "-emit-c", outPath, mainPath}, &bytes.Buffer{}, &stderr); code != 0 {
 		t.Fatalf("prelude run returned %d: %s", code, stderr.String())
 	}
 	emitted, err := os.ReadFile(outPath)
@@ -150,23 +150,23 @@ func TestRunFlagWithOutputPath(t *testing.T) {
 	if _, err := exec.LookPath("cc"); err != nil {
 		t.Skipf("skipping: cc not on PATH (%v)", err)
 	}
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "main.peb")
 	writeFile(t, sourcePath, "fn main() int { print 1; return 0; }\n")
-	outPath := filepath.Join(dir, "out.c")
+	outPath := filepath.Join(dir, "app")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"-run", "-o", outPath, sourcePath}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), "-run", "-o", outPath, sourcePath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("run returned %d; stderr=%q", code, stderr.String())
 	}
 	if got := stdout.String(); got != "1\n" {
 		t.Fatalf("stdout = %q, want %q", got, "1\n")
 	}
-	emitted, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("output file %q was not written: %v", outPath, err)
-	}
-	if !strings.Contains(string(emitted), "pebble_rt.h") {
-		t.Fatalf("emitted C at %q looks wrong:\n%s", outPath, emitted)
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("executable %q was not written: %v", outPath, err)
 	}
 }
 
@@ -213,6 +213,184 @@ func TestRunFlagReportsCompileError(t *testing.T) {
 	}
 	if stderr.Len() == 0 {
 		t.Fatal("run produced no diagnostic")
+	}
+}
+
+func TestDefaultBuildModeProducesExecutable(t *testing.T) {
+	requireCIntegration(t)
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { print 7; return 0; }\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), sourcePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("default build returned %d; stderr=%q", code, stderr.String())
+	}
+	binaryPath := filepath.Join(dir, "main")
+	if info, err := os.Stat(binaryPath); err != nil || info.IsDir() {
+		t.Fatalf("executable %q was not created (err=%v)", binaryPath, err)
+	}
+	cmd := exec.Command(binaryPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("executable failed: %v\n%s", err, output)
+	}
+	if got := string(output); got != "7\n" {
+		t.Fatalf("executable stdout = %q, want %q", got, "7\n")
+	}
+}
+
+func TestOutputFlagControlsExecutablePath(t *testing.T) {
+	requireCIntegration(t)
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("skipping: cc not on PATH (%v)", err)
+	}
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { print 8; return 0; }\n")
+	binaryPath := filepath.Join(dir, "myapp")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), "-o", binaryPath, sourcePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("build returned %d; stderr=%q", code, stderr.String())
+	}
+	if info, err := os.Stat(binaryPath); err != nil || info.IsDir() {
+		t.Fatalf("executable %q was not created (err=%v)", binaryPath, err)
+	}
+	cmd := exec.Command(binaryPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("executable failed: %v\n%s", err, output)
+	}
+	if got := string(output); got != "8\n" {
+		t.Fatalf("executable stdout = %q, want %q", got, "8\n")
+	}
+}
+
+func TestCheckFlagSucceedsWithoutCC(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { return 42; }\n")
+	t.Setenv("PATH", "")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-check", sourcePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("check returned %d; stderr=%q", code, stderr.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("check created unexpected output files in %q: %v", dir, entries)
+	}
+}
+
+func TestCheckFlagReportsTypeErrorWithoutCC(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { return missing(); }\n")
+	t.Setenv("PATH", "")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-check", sourcePath}, &stdout, &stderr); code != 1 {
+		t.Fatalf("check returned %d, want 1", code)
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("check produced no diagnostic")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("check created unexpected output files in %q: %v", dir, entries)
+	}
+}
+
+func TestFlagModesAreMutuallyExclusive(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { return 0; }\n")
+	cases := [][]string{
+		{"-emit-c", filepath.Join(dir, "out.c"), "-o", filepath.Join(dir, "app"), sourcePath},
+		{"-emit-c", filepath.Join(dir, "out.c"), "-run", sourcePath},
+		{"-check", "-o", filepath.Join(dir, "app"), sourcePath},
+		{"-check", "-run", sourcePath},
+		{"-check", "-emit-c", filepath.Join(dir, "out.c"), sourcePath},
+	}
+	for _, args := range cases {
+		var stderr bytes.Buffer
+		if code := run(args, &bytes.Buffer{}, &stderr); code != 2 {
+			t.Errorf("run(%v) = %d, want 2; stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestLinkFlagsAcceptedAndRepeatable(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.peb")
+	writeFile(t, sourcePath, "fn main() int { return 0; }\n")
+	outPath := filepath.Join(dir, "out.c")
+	var stderr bytes.Buffer
+	if code := run([]string{"-emit-c", outPath, "-l", "pthread", "-l", "m", "-L", "/a", "-L", "/b", "-I", "/x", "-I", "/y", sourcePath}, &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("emit-c with link flags returned %d: %s", code, stderr.String())
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("emitted C not written: %v", err)
+	}
+}
+
+func TestBuildCCArgsIncludesLinkFlags(t *testing.T) {
+	args := buildCCArgs("/rt", "-DPEBBLE_RT_MODE_SAFE", "prog.c", "out", []string{"a.c", "b.c"}, []string{"pthread", "m"}, []string{"/usr/local/lib"}, []string{"/usr/local/include"})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-I/rt/include", "prog.c", "a.c", "b.c", "-I/usr/local/include", "-L/usr/local/lib", "-lpthread", "-lm", "-o", "out"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cc args %q missing %q", joined, want)
+		}
+	}
+}
+
+func TestNoArgsPrintsHelp(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run(nil, &bytes.Buffer{}, &stderr); code == 0 {
+		t.Fatal("no-args run unexpectedly succeeded")
+	}
+	for _, want := range []string{"Usage: pebc", "Flags:", "Examples:", "-emit-c"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("help output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestHelpFlagPrintsUsage(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"-h"}, &bytes.Buffer{}, &stderr); code == 0 {
+		t.Fatal("-h unexpectedly exited 0")
+	}
+	for _, want := range []string{"Usage: pebc", "Flags:", "Examples:"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("help output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestUnknownFlagPrintsUsage(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"-bogus"}, &bytes.Buffer{}, &stderr); code == 0 {
+		t.Fatal("unknown flag unexpectedly exited 0")
+	}
+	if !strings.Contains(stderr.String(), "Usage: pebc") {
+		t.Errorf("help output missing usage:\n%s", stderr.String())
 	}
 }
 

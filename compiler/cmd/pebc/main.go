@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/backend"
 	"github.com/pepplejoshua/pebble/compiler/internal/check"
@@ -24,19 +25,39 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// run parses the pebc command line and returns the process exit code.
 func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("pebc", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	outputPath := flags.String("o", "", "write emitted C to path instead of stdout")
-	runFlag := flags.Bool("run", false, "compile the emitted C with cc and execute it, forwarding its exit code")
-	releaseFlag := flags.Bool("release", false, "compile in release mode (no runtime safety checks) when -run is set")
-	preludeFlag := flags.String("prelude", "", "path to a prelude module parsed before the entry module; its top-level declarations are visible to every module without an import")
-	runtimeRootFlag := flags.String("runtime-root", "", "path to the runtime/ directory (auto-detected from the working directory when empty)")
+	flags.Usage = func() { printUsage(stderr) }
+
+	outputPath := flags.String("o", "", "output executable path")
+	runFlag := flags.Bool("run", false, "execute the built program and forward its exit code")
+	releaseFlag := flags.Bool("release", false, "build without runtime safety checks")
+	checkFlag := flags.Bool("check", false, "check the program only; build nothing")
+	emitCFlag := flags.String("emit-c", "", "write the generated C source to a path and stop")
+	preludeFlag := flags.String("prelude", "", "path to a prelude module parsed before the entry module")
+	runtimeRootFlag := flags.String("runtime-root", "", "path to the runtime/ directory")
+	var linkLibs, linkPaths, includePaths stringList
+	flags.Var(&linkLibs, "l", "link against a library (repeatable)")
+	flags.Var(&linkPaths, "L", "add a library search path (repeatable)")
+	flags.Var(&includePaths, "I", "add a C include search path (repeatable)")
+
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pebc [-o path] [-run] [-release] [-prelude path] [-runtime-root dir] <entry.peb>")
+		flags.Usage()
+		return 2
+	}
+	if *checkFlag && (*outputPath != "" || *runFlag || *emitCFlag != "") {
+		fmt.Fprintln(stderr, "pebc: -check cannot be combined with -o, -run, or -emit-c")
+		flags.Usage()
+		return 2
+	}
+	if *emitCFlag != "" && (*outputPath != "" || *runFlag) {
+		fmt.Fprintln(stderr, "pebc: -emit-c cannot be combined with -o or -run")
+		flags.Usage()
 		return 2
 	}
 
@@ -84,16 +105,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
+	if *checkFlag {
+		return 0
+	}
 	unit := result.IR()
 	if unit == nil {
 		fmt.Fprintln(stderr, "pebc: internal error: checker returned no typed IR")
 		return 1
 	}
 
-	var out io.Writer = stdout
-	var file *os.File
-	emitPath := *outputPath
-	if emitPath == "" && *runFlag {
+	emitPath := *emitCFlag
+	if emitPath == "" {
 		dir, err := os.MkdirTemp("", "pebc-emit-")
 		if err != nil {
 			fmt.Fprintf(stderr, "pebc: cannot create temp dir: %v\n", err)
@@ -102,34 +124,68 @@ func run(args []string, stdout, stderr io.Writer) int {
 		defer os.RemoveAll(dir)
 		emitPath = filepath.Join(dir, "program.c")
 	}
-	if emitPath != "" {
-		file, err = os.Create(emitPath)
-		if err != nil {
-			fmt.Fprintf(stderr, "pebc: cannot create output %q: %v\n", emitPath, err)
-			return 1
-		}
-		defer file.Close()
-		out = file
+	file, err := os.Create(emitPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "pebc: cannot create output %q: %v\n", emitPath, err)
+		return 1
 	}
-	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, out); err != nil {
+	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, file); err != nil {
+		file.Close()
 		fmt.Fprintf(stderr, "pebc: emission failed: %v\n", err)
 		return 1
 	}
-	if file != nil {
-		if err := file.Close(); err != nil {
-			fmt.Fprintf(stderr, "pebc: cannot close output %q: %v\n", emitPath, err)
-			return 1
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(stderr, "pebc: cannot close output %q: %v\n", emitPath, err)
+		return 1
+	}
+	if *emitCFlag != "" {
+		return 0
+	}
+
+	binaryPath := *outputPath
+	if binaryPath == "" {
+		if *runFlag {
+			dir, err := os.MkdirTemp("", "pebc-run-")
+			if err != nil {
+				fmt.Fprintf(stderr, "pebc: cannot create temp dir: %v\n", err)
+				return 1
+			}
+			defer os.RemoveAll(dir)
+			binaryPath = filepath.Join(dir, "program")
+		} else {
+			binaryPath = defaultBinaryPath(string(entryPath))
 		}
 	}
+	if code := buildExecutable(*runtimeRootFlag, *releaseFlag, emitPath, binaryPath, []string(linkLibs), []string(linkPaths), []string(includePaths), stderr); code != 0 {
+		return code
+	}
 	if *runFlag {
-		return compileAndRun(*runtimeRootFlag, *releaseFlag, emitPath, stdout, stderr)
+		return runBinary(binaryPath, stdout, stderr)
 	}
 	return 0
 }
 
-// compileAndRun compiles the emitted C with cc against the runtime, executes
-// the resulting binary, and returns the binary's own exit code.
-func compileAndRun(runtimeRootFlag string, release bool, emittedPath string, stdout, stderr io.Writer) int {
+// stringList collects repeated string flags into a slice, so flags like -l,
+// -L, and -I can be passed more than once.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
+// defaultBinaryPath returns the default output executable path for an entry
+// file: its basename with the .peb extension stripped, relative to the
+// working directory (matching go build's default-output convention).
+func defaultBinaryPath(entryPath string) string {
+	return strings.TrimSuffix(filepath.Base(entryPath), filepath.Ext(entryPath))
+}
+
+// buildExecutable compiles the emitted C at emittedPath with cc against the
+// runtime into an executable at binaryPath, and returns 0 on success.
+func buildExecutable(runtimeRootFlag string, release bool, emittedPath, binaryPath string, linkLibs, linkPaths, includePaths []string, stderr io.Writer) int {
 	runtimeRoot, err := locateRuntimeRoot(runtimeRootFlag)
 	if err != nil {
 		fmt.Fprintf(stderr, "pebc: %v\n", err)
@@ -137,17 +193,9 @@ func compileAndRun(runtimeRootFlag string, release bool, emittedPath string, std
 	}
 	cc, err := exec.LookPath("cc")
 	if err != nil {
-		fmt.Fprintf(stderr, "pebc: -run requires cc on PATH: %v\n", err)
+		fmt.Fprintf(stderr, "pebc: cc not on PATH: %v\n", err)
 		return 1
 	}
-	dir, err := os.MkdirTemp("", "pebc-run-")
-	if err != nil {
-		fmt.Fprintf(stderr, "pebc: cannot create temp dir: %v\n", err)
-		return 1
-	}
-	defer os.RemoveAll(dir)
-	binaryPath := filepath.Join(dir, "program")
-
 	define := "-DPEBBLE_RT_MODE_SAFE"
 	if release {
 		define = "-DPEBBLE_RT_MODE_RELEASE"
@@ -161,15 +209,34 @@ func compileAndRun(runtimeRootFlag string, release bool, emittedPath string, std
 		fmt.Fprintf(stderr, "pebc: no runtime sources found under %q\n", filepath.Join(runtimeRoot, "src"))
 		return 1
 	}
-
-	args := []string{"-std=c11", "-Wall", "-Wextra", "-Werror", define, "-I" + filepath.Join(runtimeRoot, "include"), emittedPath}
-	args = append(args, srcFiles...)
-	args = append(args, "-o", binaryPath)
+	args := buildCCArgs(runtimeRoot, define, emittedPath, binaryPath, srcFiles, linkLibs, linkPaths, includePaths)
 	if output, err := exec.Command(cc, args...).CombinedOutput(); err != nil {
 		fmt.Fprintf(stderr, "pebc: cc compilation failed: %v\n%s", err, output)
 		return 1
 	}
+	return 0
+}
 
+// buildCCArgs assembles the cc command line that compiles the emitted C at
+// emittedPath into the executable at binaryPath, linking the runtime sources
+// under runtimeRoot/src and any user-supplied -l/-L/-I flags.
+func buildCCArgs(runtimeRoot, define, emittedPath, binaryPath string, srcFiles []string, linkLibs, linkPaths, includePaths []string) []string {
+	args := []string{"-std=c11", "-Wall", "-Wextra", "-Werror", define, "-I" + filepath.Join(runtimeRoot, "include"), emittedPath}
+	args = append(args, srcFiles...)
+	for _, p := range includePaths {
+		args = append(args, "-I"+p)
+	}
+	for _, p := range linkPaths {
+		args = append(args, "-L"+p)
+	}
+	for _, lib := range linkLibs {
+		args = append(args, "-l"+lib)
+	}
+	return append(args, "-o", binaryPath)
+}
+
+// runBinary executes the binary at binaryPath, forwarding its exit code.
+func runBinary(binaryPath string, stdout, stderr io.Writer) int {
 	run := exec.Command(binaryPath)
 	run.Stdout = stdout
 	run.Stderr = stderr
@@ -183,6 +250,48 @@ func compileAndRun(runtimeRootFlag string, release bool, emittedPath string, std
 	}
 	return 0
 }
+
+// printUsage writes the full pebc help text to w.
+func printUsage(w io.Writer) {
+	fmt.Fprint(w, usageText)
+}
+
+const usageText = `Pebble Compiler
+
+Usage: pebc [flags] <entry.peb>
+
+By default, pebc checks, compiles, and links <entry.peb> into a
+runnable executable and stops. Use -run to also execute it immediately.
+
+Flags:
+  -o <path>            output executable path (default: entry file's
+                       basename, written to the working directory)
+  -run                 also execute the built program, forwarding its
+                       exit code
+  -release             build without runtime safety checks (default:
+                       checks enabled)
+  -check               check the program only; report errors, build
+                       nothing
+  -emit-c <path>       write the generated C source to <path> instead
+                       of building an executable
+  -l <library>         link against <library> (repeatable)
+  -L <path>            add <path> to the linker search path (repeatable)
+  -I <path>            add <path> to the C include search path (repeatable)
+  -prelude <path>      parse <path> before the entry module; its
+                       top-level declarations are visible everywhere
+                       without an import
+  -runtime-root <dir>  path to the runtime/ directory (auto-detected
+                       from the working directory when omitted)
+
+Examples:
+  pebc main.peb                    build ./main
+  pebc main.peb -run               build and run it immediately
+  pebc main.peb -o build/app -run  build to a specific path, then run it
+  pebc main.peb -release -run      run without safety checks
+  pebc main.peb -check             just check for errors
+  pebc main.peb -emit-c out.c      inspect the generated C
+  pebc server.peb -l pthread -run  link against libpthread
+`
 
 // locateRuntimeRoot returns the runtime/ directory. An explicit override is
 // used as-is; otherwise the working directory is walked upward (up to 6
