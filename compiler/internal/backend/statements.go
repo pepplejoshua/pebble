@@ -3068,6 +3068,16 @@ func unwrapPrintOperands(unit *tir.Unit, snapshot *types.Snapshot, statement tir
 		if isFunctionType(snapshot, child.Type) {
 			hasComposite = true
 		}
+		// A str operand (a bare str value, or an interpolated-string operand,
+		// which is str-typed) cannot fold into the combined printf the way the
+		// other scalars do: its bytes must be written with a length-bounded
+		// fwrite (fprintf %s is a C-string operation that stops at the first
+		// embedded NUL byte), so it forces the whole print statement onto the
+		// sequential path exactly like a composite/enum/optional/pointer/
+		// function operand already does.
+		if isStr(snapshot, child.Type) {
+			hasComposite = true
+		}
 	}
 	return operands, hasComposite, nil
 }
@@ -3261,11 +3271,18 @@ func buildScalarPrintParts(kind types.BuiltinKind, expr string, operandID tir.No
 			fmt.Sprintf("pebble_rt_char_to_utf8(%s, %s);", expr, bufferName),
 		}, nil
 	case kind == types.Str:
-		// A str value prints its bytes: the %s argument is the value's .data
-		// field cast to const char * (the reachable str values this backend
-		// builds all originate from NUL-terminated C string literals, so %s
-		// reads exactly the intended bytes).
-		return `"%s"`, "(const char *)" + expr + ".data", nil, nil
+		// A str value can NEVER format as a printf %s specifier: %s is a
+		// C-string operation that stops at the first embedded NUL byte, while
+		// a PebbleStr carries its own .len and its bytes are not
+		// NUL-terminated by contract — so the old `%s`/`.data` projection here
+		// silently truncated any str containing a NUL byte. Every str print
+		// path is intercepted BEFORE this scalar-formatting site (a bare
+		// str operand in buildSequentialPrint, a str-typed field/element in
+		// buildPrintValueCalls) and emitted as a length-bounded fwrite via
+		// buildStrPrintValueCalls; reaching this case means a call site was
+		// missed, and the fix is to route it through that fwrite path, never
+		// to restore %s.
+		return "", "", nil, fmt.Errorf("print value of type str cannot format as a printf scalar specifier (its bytes must be written by a length-bounded fwrite, see buildStrPrintValueCalls)")
 	case kind == types.F32 || kind == types.F64:
 		// A float value prints with %f; f32/f64 promote to double in a
 		// variadic call either way, so the one specifier covers both, matching
@@ -3374,7 +3391,19 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 					preParts = append(preParts, indent+pre)
 				}
 				preParts = append(preParts, indent+fmt.Sprintf("PebbleStr %s = %s;", tempName, materialized))
-				calls = append(calls, printFprintfCall{format: `"%s"`, args: []string{tempName + ".data"}})
+				// The materialized temp is a str VALUE, so its bytes are
+				// written with a length-bounded fwrite (the same
+				// buildStrPrintValueCalls emission a bare str operand uses),
+				// never a printf %s — %s would truncate at an embedded NUL
+				// byte, and a materialized interpolation can legitimately
+				// contain one (an interpolated NUL char, a str part holding a
+				// NUL). The trailing empty-string label call carries the
+				// one-newline-per-print rule exactly as buildStrPrintValueCalls
+				// does.
+				calls = append(calls,
+					printFprintfCall{raw: indent + fmt.Sprintf("fwrite((const void *)(%s.data), 1, %s.len, stdout);", tempName, tempName)},
+					printFprintfCall{format: `""`},
+				)
 				continue
 			}
 			for _, part := range child.Parts {
@@ -3446,6 +3475,19 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 					return "", "", fmt.Errorf("%s interpolated-string print operand has an unknown part kind %d", context, part.Kind)
 				}
 			}
+			continue
+		}
+		if isStr(snapshot, child.Type) {
+			// A str operand's bytes are written with a length-bounded fwrite
+			// (a raw statement, not a printf format specifier — fprintf %s
+			// would stop at an embedded NUL byte), so it is handled by its own
+			// operand builder just like the optional/pointer cases below.
+			strCalls, strPres, err := buildStrPrintOperand(st, unit, snapshot, fileSet, operandID, child, scope, indent, context, width)
+			if err != nil {
+				return "", "", err
+			}
+			preParts = append(preParts, strPres...)
+			calls = append(calls, strCalls...)
 			continue
 		}
 		if _, ok := resolvedBuiltin(snapshot, child.Type); ok {
@@ -3756,6 +3798,31 @@ func buildPointerPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Sna
 	return calls, append(pres, valuePres...), nil
 }
 
+// buildStrPrintOperand emits one str-typed operand of a print statement as its
+// sequence of fprintf calls: the materialized-value temp declaration (a
+// pre-statement at the same indent), then the operand's ONE raw length-bounded
+// fwrite of the temp's bytes. A str value CANNOT be a printf %s argument: %s
+// is a C-string operation that stops at the first embedded NUL byte, while a
+// PebbleStr carries its own .len and its bytes are not NUL-terminated by
+// contract — so the whole output is one raw `fwrite((const void *)(<temp>.data),
+// 1, <temp>.len, stdout);` statement (see buildStrPrintValueCalls). The operand
+// is materialized once into a per-operand temp (pebble_print_str_<nodeID>,
+// declared with the runtime PebbleStr type) so a str-returning call operand is
+// evaluated exactly once, and the fwrite reads the temp's .data/.len fields.
+func buildStrPrintOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, operandID tir.NodeID, child tir.Node, scope map[symbol.SymbolID]localInfo, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	valueExpr, err := buildStrOperand(st, unit, snapshot, fileSet, operandID, scope, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	tempName := fmt.Sprintf("pebble_print_str_%d", operandID)
+	pres := []string{indent + fmt.Sprintf("PebbleStr %s = %s;", tempName, valueExpr)}
+	calls, valuePres, err := buildPrintValueCalls(st, unit, snapshot, fileSet, child.Type, tempName, operandID, "", indent, context, width)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, append(pres, valuePres...), nil
+}
+
 // buildPointerPrintValueExpr builds the C expression naming one pointer-typed
 // print operand's value, of the shapes real source produces (all built by the
 // same machinery a pointer value uses anywhere in this backend — buildExpr's
@@ -3877,6 +3944,37 @@ func buildPointerPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.
 	}, nil, nil
 }
 
+// buildStrPrintValueCalls emits one str VALUE (a whole operand temp, or a
+// nested str field/element off an enclosing temp) as its ONE raw pre-rendered
+// length-bounded C write of the value's bytes:
+//
+//	fwrite((const void *)(<expr>.data), 1, <expr>.len, stdout);
+//
+// A str value can never be a printf %s argument: %s is a C-string operation
+// that stops at the first 0x00 byte, while a PebbleStr carries its own .len
+// and its bytes are not NUL-terminated by contract (a Pebble string literal
+// may legitimately embed a NUL byte via \0), so %s would silently truncate the
+// printed output. fwrite writes exactly .len bytes. <expr> is the PebbleStr-
+// typed C expression naming the value (a materialized temp, or a
+// field/element projection like <temp>.pebble_field_<member> /
+// <temp>.data[<i>] whose .data/.len fields read the true byte count). A
+// trailing empty-string label call follows the raw fwrite: it is a no-op
+// (fprintf(stdout, "");) in the middle of a multi-operand statement, and
+// buildSequentialPrint's trailing-newline append turns it into fprintf(stdout,
+// "\n"); when the str is the statement's last operand — the raw fwrite
+// statement itself cannot receive that append, so the no-op carrier is how the
+// one-newline-per-print rule stays uniform. No pres are returned — a str print
+// has no pre-statements.
+func buildStrPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	if !isStr(snapshot, valueType) {
+		return nil, nil, fmt.Errorf("%s print value of type %s is not a str type", context, describeType(snapshot, valueType))
+	}
+	return []printFprintfCall{
+		{raw: indent + fmt.Sprintf("fwrite((const void *)(%s.data), 1, %s.len, stdout);", expr, expr)},
+		{format: `""`},
+	}, nil, nil
+}
+
 // the fprintf-call sequence that prints ONE value of resolved type valueType
 // whose C expression is expr, reading the value directly from expr — a
 // materialized operand temp (the common case, from the build*PrintOperand
@@ -3903,6 +4001,14 @@ func buildPointerPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.
 // not indented; each caller prefixes indent (mirroring how the slice-1/2
 // scalar field builders returned unindented pre-statements).
 func buildPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, valueType types.TypeID, expr string, operandID tir.NodeID, bufferPath string, indent, context string, width types.BuiltinKind) ([]printFprintfCall, []string, error) {
+	// A str VALUE is checked before the resolved-builtin branch below: str is
+	// a resolved builtin kind, but its bytes cannot format as a printf %s
+	// specifier (a C-string operation that stops at the first embedded NUL
+	// byte), so it is emitted as a length-bounded fwrite raw statement instead
+	// — see buildStrPrintValueCalls.
+	if isStr(snapshot, valueType) {
+		return buildStrPrintValueCalls(st, unit, snapshot, fileSet, valueType, expr, operandID, bufferPath, indent, context, width)
+	}
 	if kind, ok := resolvedBuiltin(snapshot, valueType); ok {
 		format, arg, parts, err := buildScalarPrintParts(kind, expr, operandID, bufferPath)
 		if err != nil {

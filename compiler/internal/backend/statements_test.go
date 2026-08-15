@@ -677,10 +677,12 @@ func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
 
 func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	// A str operand prints its bytes (specifier %s on the PebbleStr's .data
-	// field), covering a string literal, a str-typed local, and the
-	// parenthesized literal form `print ("hi")`, whose operand arrives wrapped
-	// in a tir.SourceAlias that buildPrint unwraps before dispatching.
+	// A str operand prints its bytes via a length-bounded fwrite of the
+	// value's .data/.len fields (never a printf %s, which would stop at an
+	// embedded NUL byte), covering a string literal, a str-typed local, and
+	// the parenthesized literal form `print ("hi")`, whose operand arrives
+	// wrapped in a tir.SourceAlias that unwrapPrintOperands peels before
+	// dispatching.
 	for _, tc := range []struct {
 		name string
 		src  string
@@ -697,6 +699,119 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 				t.Fatalf("compiled program output = %q, want %q", out, tc.want)
 			}
 		})
+	}
+}
+
+func TestEmitPrintStrEmbeddedNulPrintsFullBytes(t *testing.T) {
+	t.Parallel()
+	// A str value whose bytes contain an embedded NUL (`"x\0y"`) must print
+	// its FULL byte sequence — the whole `.len`-bounded run, NUL and all —
+	// followed by the statement's one trailing newline. The old `%s`/
+	// fprintf emission was a C-string operation that stopped at the first
+	// 0x00 byte, silently truncating the output to `x`; the length-bounded
+	// fwrite emission fixes it. The captured output is compared BYTE-EXACTLY
+	// against the expected byte sequence (a Go string can carry NUL bytes,
+	// so out == "x\x00y\n" works), AND its length is asserted separately —
+	// a truncated `x\n` (length 2) is thereby distinguishable from the
+	// correct `x\x00y\n` (length 4), not just compared as an opaque string.
+	// A str LOCAL and a parenthesized operand are included because the
+	// embedded-NUL case must hold for every bare-str shape, not just the
+	// literal's compound-literal text.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []byte
+	}{
+		{"literal", "fn main() i32 { print \"x\\0y\"; return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"local", "fn main() i32 { let s str = \"x\\0y\"; print s; return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"parenthesized literal", "fn main() i32 { print (\"x\\0y\"); return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"leading nul", "fn main() i32 { print \"\\0ab\"; return 0; }", []byte{0, 'a', 'b', '\n'}},
+		{"trailing nul", "fn main() i32 { print \"ab\\0\"; return 0; }", []byte{'a', 'b', 0, '\n'}},
+		{"nul then another operand", "fn main() i32 { print \"x\\0y\", \"z\"; return 0; }", []byte{'x', 0, 'y', 'z', '\n'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			got := []byte(out)
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("compiled program output bytes = % x, want % x (embedded NUL must not truncate the str)", got, tc.want)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("compiled program output length = %d, want %d (truncated str output is distinguishable by length)", len(got), len(tc.want))
+			}
+		})
+	}
+}
+
+func TestEmitPrintStrStructFieldEmbeddedNulPrintsFullBytes(t *testing.T) {
+	t.Parallel()
+	// A str-typed STRUCT FIELD containing an embedded NUL must print its full
+	// bytes as part of the struct's whole-value print. The struct-field print
+	// path routes every scalar field through buildScalarPrintParts — which a
+	// str field can no longer satisfy with a %s specifier — so this test
+	// proves the deeper fix: a str-typed field/element also emits a
+	// length-bounded fwrite in its slot of the sequential emission, not just
+	// a bare top-level str operand. A tuple element, a fixed-array element,
+	// and a slice element are included so every nested str slot is covered,
+	// and the trailing-nul struct field proves the byte count is exact.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []byte
+	}{
+		{"struct field", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"a\\0b\" }; print h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 0, 'b', ' ', '}', '\n'}},
+		{"struct field trailing nul", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"ab\\0\" }; print h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 'b', 0, ' ', '}', '\n'}},
+		{"tuple element", "fn main() i32 { print (\"a\\0b\",); return 0; }", []byte{'(', 'a', 0, 'b', ',', ')', '\n'}},
+		{"array element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; print a; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
+		{"slice element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; var s []A = a[:]; print s; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := emitAndRunCapture(t, tc.src, false, 0, false)
+			got := []byte(out)
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("compiled program output bytes = % x, want % x (nested str field/element must not truncate at the embedded NUL)", got, tc.want)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("compiled program output length = %d, want %d", len(got), len(tc.want))
+			}
+		})
+	}
+}
+
+func TestEmitPrintStrWritesLengthBoundedFwrite(t *testing.T) {
+	t.Parallel()
+	// A str operand's print must be emitted as a length-bounded fwrite of the
+	// value's .data/.len — never a printf %s on the .data field (the
+	// truncating path). Asserting the literal C text proves the fix is the
+	// fwrite shape: a materialized per-operand PebbleStr temp declared as a
+	// pre-statement, one `fwrite((const void *)(<temp>.data), 1,
+	// <temp>.len, stdout);` raw statement, the empty-string newline carrier
+	// (`fprintf(stdout, """\n");`), and no `%s` whose argument is a `.data`
+	// field anywhere in the emitted C.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"x\\0y\"; print s; return 0; }", "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	tempRE := regexp.MustCompile(`PebbleStr (pebble_print_str_\d+) = pebble_local_\d+;`)
+	match := tempRE.FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("emitted C missing the str operand's materialized temp:\n%s", out)
+	}
+	temp := match[1]
+	for _, want := range []string{
+		fmt.Sprintf("fwrite((const void *)(%s.data), 1, %s.len, stdout);", temp, temp),
+		`fprintf(stdout, """\n");`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("emitted C missing %q:\n%s", want, out)
+		}
+	}
+	truncatingRE := regexp.MustCompile(`fprintf\(stdout, "%s", \(const char \*\)[^)]*\.data\)`)
+	if truncatingRE.MatchString(out) {
+		t.Errorf("emitted C still contains a truncating %%s print of a str's .data field:\n%s", out)
 	}
 }
 
@@ -856,23 +971,25 @@ func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
 
 func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	t.Parallel()
-	// The emitted C for a mixed-type print must be exactly ONE printf call per
-	// print statement whose format string concatenates one specifier per
-	// operand in order (integer via the out-of-quotes "%"PRId64 macro
-	// spelling, bool/char/str/float as %s literals — a char operand's %s is
-	// backed by its own UTF-8 buffer, see below) and ends in the literal \n,
-	// with the same number of comma-separated arguments in operand order.
-	// Asserting the literal C text is what proves the one-call combined
-	// shape, not a per-operand call. The operand texts are confirmed against
-	// the fixture dump: the char literal 'x' emits (int32_t)120, encoded to
-	// UTF-8 by pebble_rt_char_to_utf8 into a per-operand uint8_t[5] buffer
-	// named from the operand's node ID, the string literal "hi" emits its
-	// PebbleStr compound literal's .data field cast to const char *, and the
-	// bool emits the "true"/"false" ternary. The buffer name is captured
-	// from the declaration so the assertion is robust to the fixture's normal
-	// symbol/numbering, and the absence of any %c proves the old char path is
-	// gone.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', \"hi\", 3.5; return 0; }", "main", false)
+	// The emitted C for a mixed-type print of non-str scalars must be exactly
+	// ONE printf call per print statement whose format string concatenates one
+	// specifier per operand in order (integer via the out-of-quotes "%"PRId64
+	// macro spelling, bool/char/float as %s/%s/%f literals — a char operand's
+	// %s is backed by its own UTF-8 buffer, see below) and ends in the literal
+	// \n, with the same number of comma-separated arguments in operand order.
+	// Asserting the literal C text is what proves the one-call combined shape,
+	// not a per-operand call. The operand texts are confirmed against the
+	// fixture dump: the char literal 'x' emits (int32_t)120, encoded to UTF-8
+	// by pebble_rt_char_to_utf8 into a per-operand uint8_t[5] buffer named
+	// from the operand's node ID, and the bool emits the "true"/"false"
+	// ternary. A str operand is deliberately ABSENT from this fixture: a str
+	// value cannot fold into a printf format specifier (its bytes are written
+	// by a length-bounded fwrite, see TestEmitPrintStrWritesLengthBoundedFwrite),
+	// so any str-containing print routes to the sequential-fprintf path instead.
+	// The buffer name is captured from the declaration so the assertion is
+	// robust to the fixture's normal symbol/numbering, and the absence of any
+	// %c proves the old char path is gone.
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', 3.5; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -890,7 +1007,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("uint8_t %s[5];", bufferName),
 		fmt.Sprintf("pebble_rt_char_to_utf8((int32_t)120, %s);", bufferName),
-		fmt.Sprintf("printf(\"%%\"PRId64\"%%s\"\"%%s\"\"%%s\"\"%%f\"\"\\n\", 1LL, (true ? \"true\" : \"false\"), (const char *)%s, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);", bufferName),
+		fmt.Sprintf("printf(\"%%\"PRId64\"%%s\"\"%%s\"\"%%f\"\"\\n\", 1LL, (true ? \"true\" : \"false\"), (const char *)%s, 3.5);", bufferName),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
