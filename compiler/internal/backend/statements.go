@@ -853,7 +853,7 @@ func buildSwitchStatement(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 		// Emit stacked case labels for each SwitchCase in the group.
 		for _, caseID := range g.caseIDs {
 			caseNode, _ := unit.Node(caseID)
-			label, err := buildCaseLabel(snapshot, caseNode, subjectIntWidth)
+			label, err := buildCaseLabel(snapshot, caseNode, enumSubject, subjectIntWidth)
 			if err != nil {
 				return "", err
 			}
@@ -1075,9 +1075,11 @@ func buildStrCaseLiteral(snapshot *types.Snapshot, caseNode tir.Node) (string, e
 // buildCaseLabel emits one C `case <value>:` label from a SwitchCase node.
 // An enum-variant case (CaseValue set — a CaseValue-based case, produced by
 // the checker for an enum subject) is emitted as
-// `case pebble_variant_<caseValue>:`, the variant's C enum constant, whose
-// value (the variant's ordinal in the enum's declared order) matches the
-// subject's own typedef by construction. An integer literal is emitted as its
+// `case pebble_variant_<enumSubject>_<caseValue>:`, the variant's C enum
+// constant, whose value (the variant's ordinal in the enum's declared order)
+// matches the subject's own typedef by construction; enumSubject is the
+// subject's enum/union type ID, the owning type whose typedef declares that
+// constant (see enumVariantName). An integer literal is emitted as its
 // decimal text at the SUBJECT's own resolved integer width — the width
 // parameter is the subject's fixed-width integer builtin (the entry's width
 // for an entry-width subject, or the subject's own u8/i16/... width for a
@@ -1096,12 +1098,12 @@ func buildStrCaseLiteral(snapshot *types.Snapshot, caseNode tir.Node) (string, e
 // spelling buildCharOperand gives a char value everywhere, so the label
 // matches a char-typed subject's integral C representation. Any other case
 // shape is a clean rejection.
-func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, width types.BuiltinKind) (string, error) {
+func buildCaseLabel(snapshot *types.Snapshot, caseNode tir.Node, enumSubject types.TypeID, width types.BuiltinKind) (string, error) {
 	if caseNode.CaseValue != 0 {
 		// An enum-variant case label, emitted as the variant's C enum constant
 		// name. buildSwitch has already verified the subject is a plain enum
 		// and the variant belongs to it; this function only spells the label.
-		return "case " + enumVariantName(caseNode.CaseValue) + ":", nil
+		return "case " + enumVariantName(enumSubject, caseNode.CaseValue) + ":", nil
 	}
 	switch caseNode.Literal.Kind {
 	case tir.LiteralChar:
@@ -4232,7 +4234,7 @@ func buildEnumPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		if err != nil {
 			return nil, nil, err
 		}
-		block.WriteString(caseIndent + "case " + enumVariantName(variant) + ":\n")
+		block.WriteString(caseIndent + "case " + enumVariantName(valueType, variant) + ":\n")
 		block.WriteString(bodyIndent + "fprintf(stdout, " + strconv.Quote(typeName+"."+variantName) + ");\n")
 		block.WriteString(bodyIndent + "break;\n")
 	}
@@ -4321,7 +4323,7 @@ func buildUnionPrintValueCalls(st *emitState, unit *tir.Unit, snapshot *types.Sn
 		if err != nil {
 			return nil, nil, err
 		}
-		block.WriteString(caseIndent + "case " + enumVariantName(variant) + ":\n")
+		block.WriteString(caseIndent + "case " + enumVariantName(valueType, variant) + ":\n")
 		if unionVariantPayloadMember(unit, snapshot, valueType, variant) {
 			payloadType, ok := unionMemberType(info.members, variant)
 			if !ok {

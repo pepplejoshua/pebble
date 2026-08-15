@@ -330,12 +330,12 @@ func buildConstantInitializer(unit *tir.Unit, snapshot *types.Snapshot, node tir
 		if len(node.Children) >= 1 {
 			return "", fmt.Errorf("constructs enum variant symbol %d with a payload; a tagged-union construction is not a C static initializer", node.Member)
 		}
-		return enumVariantName(node.Member), nil
+		return enumVariantName(node.Type, node.Member), nil
 	case tir.VariantConstruct:
 		if len(node.Children) >= 1 {
 			return "", fmt.Errorf("constructs enum variant symbol %d with a payload; a tagged-union construction is not a C static initializer", node.Member)
 		}
-		return enumVariantName(node.Member), nil
+		return enumVariantName(node.Type, node.Member), nil
 	case tir.SourceAlias:
 		if len(node.Children) != 1 {
 			return "", fmt.Errorf("contains a SourceAlias with %d child(ren), want exactly one", len(node.Children))

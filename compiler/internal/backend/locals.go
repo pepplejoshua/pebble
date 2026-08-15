@@ -1411,7 +1411,7 @@ func buildEnumLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sn
 	if !containsVariant(info.variants, initValue.Member) {
 		return "", fmt.Errorf("%s declares an enum-typed local of type %s initialized from variant symbol %d, which is not one of its declared variants", context, enumTypeName(initValue.Type), initValue.Member)
 	}
-	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, enumVariantName(initValue.Member), indent, statement.Symbol), nil
+	return fmt.Sprintf("%s%s pebble_local_%d = %s;\n%s(void)pebble_local_%d;", indent, enumTypeName(initValue.Type), statement.Symbol, enumVariantName(initValue.Type, initValue.Member), indent, statement.Symbol), nil
 }
 
 // buildOptionalIntegerToEnumDeclaration builds the two-part C fragment a local

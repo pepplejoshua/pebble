@@ -1048,7 +1048,7 @@ func buildEnumTypedef(snapshot *types.Snapshot, info enumInfo, tagged map[types.
 	}
 	constants := make([]string, len(info.variants))
 	for i, variant := range info.variants {
-		constants[i] = "    " + enumVariantName(variant) + ","
+		constants[i] = "    " + enumVariantName(info.typ, variant) + ","
 	}
 	head := "typedef enum"
 	if tagged[info.typ] {

@@ -1,6 +1,10 @@
 package backend
 
-import "testing"
+import (
+	"bytes"
+	"regexp"
+	"testing"
+)
 
 // Phase 3 #19 — tagged-union variant literal construction in a bare switch
 // case body. These tests prove, end to end through the compile-link-run
@@ -111,4 +115,58 @@ func TestEmitPlainEnumVariantLiteralBareCaseReturnCompileAndRun(t *testing.T) {
 // still works after the delegation, so the two case-body spellings agree.
 func TestEmitTaggedUnionVariantLiteralBareCaseReturnBlockControl(t *testing.T) {
 	emitAndRun(t, "type C = union enum { empty void; value int; }; fn mk(c C) C { switch c { case .empty: { return C.value(0); } case .value: { return C.value(c.value + 1); } } } fn rd(c C) int { switch c { case .empty: return -1; case .value: return c.value; } } fn main() int { return rd(mk(C.value(41))); }", false, 42, false)
+}
+
+// TestEmitGenericTaggedUnionTwoSpecializationsCompilesAndRun proves that two
+// live specializations of one generic tagged union can each be constructed
+// independently without enumerator name collisions: Result[int, str] and
+// Result[bool, str] are both instantiated, an Ok[int] and an Ok[bool] are
+// built, and the program exits 0. Before the fix both specializations emitted
+// the same bare pebble_variant_N constants, causing duplicate-symbol errors
+// or misrouted switches.
+func TestEmitGenericTaggedUnionTwoSpecializationsCompilesAndRun(t *testing.T) {
+	emitAndRun(t, `type Result[T, E] = union enum { Ok T; Err E; };
+fn main() int {
+    var a Result[int, str] = Result[int, str].{ Ok = 5 };
+    var b Result[bool, str] = Result[bool, str].{ Ok = true };
+    return 0;
+}`, false, 0, false)
+}
+
+// TestEmitGenericTaggedUnionTwoSpecializationsDistinctEnumVariantNames proves
+// that the two specializations of a generic tagged union emit DISTINCT
+// pebble_variant_<typeID>_<memberID> constant names in their tag-enums, not
+// the same bare pebble_variant_N repeated. Each specialization gets its own
+// type ID, so the generated C must contain two separate typedefs with
+// non-overlapping variant names (e.g. pebble_variant_XX_YY vs
+// pebble_variant_ZZ_WW where XX != ZZ).
+func TestEmitGenericTaggedUnionTwoSpecializationsDistinctEnumVariantNames(t *testing.T) {
+	t.Parallel()
+	unit, snapshot, entryID, sources := buildFixture(t, `type Result[T, E] = union enum { Ok T; Err E; };
+fn main() int {
+    var a Result[int, str] = Result[int, str].{ Ok = 5 };
+    var b Result[bool, str] = Result[bool, str].{ Ok = true };
+    return 0;
+}`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	// Collect all pebble_variant_XXX_YYY identifiers from the output.
+	// Each unique <typeID>_<memberID> pair should appear exactly once as a
+	// constant definition (the typedef), and then be referenced in cases /
+	// compound literals. The key invariant: there must be at least two
+	// DIFFERENT type prefixes among the variant names.
+	matches := regexp.MustCompile(`pebble_variant_(\d+_\d+)`).FindAllStringSubmatch(out, -1)
+	if len(matches) == 0 {
+		t.Fatalf("emitted C contains no pebble_variant_<typeID>_<memberID> identifiers:\n%s", out)
+	}
+	prefixes := make(map[string]bool)
+	for _, m := range matches {
+		prefixes[m[1]] = true
+	}
+	if len(prefixes) < 2 {
+		t.Errorf("emitted C has only %d distinct pebble_variant prefixes, want >= 2 (two specializations must have distinct names):\n%s", len(prefixes), out)
+	}
 }

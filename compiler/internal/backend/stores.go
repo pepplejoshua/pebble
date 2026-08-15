@@ -221,16 +221,17 @@ func buildStoreCore(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 			return "", err
 		}
 		tagLvalue := ""
-		if payloadLvalue, unionTagLvalue, ok, err := unionVariantPayloadStoreTarget(st, unit, snapshot, fileSet, place, scope, width); err != nil {
+		var unionType types.TypeID
+		if payloadLvalue, unionTagLvalue, ownerType, ok, err := unionVariantPayloadStoreTarget(st, unit, snapshot, fileSet, place, scope, width); err != nil {
 			return "", err
 		} else if ok {
-			lvalue, tagLvalue = payloadLvalue, unionTagLvalue
+			lvalue, tagLvalue, unionType = payloadLvalue, unionTagLvalue, ownerType
 		}
 		store := func(value string) string {
 			if tagLvalue == "" {
 				return fmt.Sprintf("%s = %s", lvalue, value)
 			}
-			return fmt.Sprintf("%s = (%s = %s, %s)", lvalue, tagLvalue, enumVariantName(place.Member), value)
+			return fmt.Sprintf("%s = (%s = %s, %s)", lvalue, tagLvalue, enumVariantName(unionType, place.Member), value)
 		}
 		if isBool(snapshot, elementType) {
 			storeValue, err := buildBoolExpr(st, unit, snapshot, fileSet, statement.Children[1], scope, width)

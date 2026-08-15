@@ -3968,20 +3968,20 @@ func TestEmitEnumWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	typedef := "typedef enum {\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[2])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[2])) + ",\n" +
 		"} " + enumTypeName(enumType) + ";"
 	if !strings.Contains(out, typedef) {
 		t.Errorf("emitted C is missing the enum typedef %q:\n%s", typedef, out)
 	}
 	for _, want := range []string{
 		enumTypeName(enumType) + " pebble_local_",
-		"= pebble_variant_" + strconv.Itoa(int(variants[1])) + ";",
+		"= pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ";",
 		"switch (pebble_local_",
-		"case pebble_variant_" + strconv.Itoa(int(variants[0])) + ":",
-		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
-		"case pebble_variant_" + strconv.Itoa(int(variants[2])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[0])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[2])) + ":",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -4054,7 +4054,7 @@ func TestEmitEnumToIntegerWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	cast := "(int32_t)(pebble_variant_" + strconv.Itoa(int(variants[1])) + ")"
+	cast := "(int32_t)(pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ")"
 	if !strings.Contains(out, cast) {
 		t.Errorf("emitted C missing the enum-to-integer cast %q:\n%s", cast, out)
 	}
@@ -4659,8 +4659,8 @@ func TestEmitUnionWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	tagEnum := "typedef enum {\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[1])) + ",\n" +
 		"} " + enumTypeName(unionType) + ";"
 	if !strings.Contains(out, tagEnum) {
 		t.Errorf("emitted C is missing the tag enum typedef %q:\n%s", tagEnum, out)
@@ -4676,11 +4676,11 @@ func TestEmitUnionWritesC(t *testing.T) {
 	}
 	for _, want := range []string{
 		unionTypeName(unionType) + " pebble_local_",
-		"(pebble_union_" + strconv.Itoa(int(unionType)) + "_t){ .tag = pebble_variant_" + strconv.Itoa(int(variants[1])) + ", .payload = { .pebble_field_" + strconv.Itoa(int(variants[1])) + " = 5 } }",
+		"(pebble_union_" + strconv.Itoa(int(unionType)) + "_t){ .tag = pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[1])) + ", .payload = { .pebble_field_" + strconv.Itoa(int(variants[1])) + " = 5 } }",
 		"switch (pebble_local_",
 		".tag) {",
-		"case pebble_variant_" + strconv.Itoa(int(variants[0])) + ":",
-		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[0])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[1])) + ":",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -5088,8 +5088,8 @@ fn main() int {
 		t.Errorf("emitted C sizes the bare tag enum typedef %q, want the union's own typedef:\n%s", enumTypeName(unionType), out)
 	}
 	tagEnum := "typedef enum {\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[0])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(variants[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[1])) + ",\n" +
 		"} " + enumTypeName(unionType) + ";"
 	if !strings.Contains(out, tagEnum) {
 		t.Errorf("emitted C is missing the tag enum typedef %q (sizeof is the only reference, so the union typedef pair must still be collected):\n%s", tagEnum, out)
@@ -5553,9 +5553,9 @@ fn main() int {
 		t.Errorf("emitted C does not sizeof the enum's own typedef %q:\n%s", enumTypeName(enumType), out)
 	}
 	enumTypedef := "typedef enum {\n" +
-		"    pebble_variant_" + strconv.Itoa(int(members[0])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(members[1])) + ",\n" +
-		"    pebble_variant_" + strconv.Itoa(int(members[2])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(members[0])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(members[1])) + ",\n" +
+		"    pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(members[2])) + ",\n" +
 		"} " + enumTypeName(enumType) + ";"
 	if !strings.Contains(out, enumTypedef) {
 		t.Errorf("emitted C is missing the enum typedef %q (sizeof is the only reference, so the enum's typedef must still be collected):\n%s", enumTypedef, out)

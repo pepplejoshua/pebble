@@ -1176,27 +1176,27 @@ func buildPlaceLValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 // a direct write to a tagged-union variant payload. The ordinary place builder
 // must remain tag-free because it is also used for reads; Store emission uses
 // this companion result to update the discriminant in the same C expression.
-func unionVariantPayloadStoreTarget(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, bool, error) {
+func unionVariantPayloadStoreTarget(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, place tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind) (string, string, types.TypeID, bool, error) {
 	if place.Kind != tir.FieldPlace || len(place.Children) != 1 {
-		return "", "", false, nil
+		return "", "", 0, false, nil
 	}
 	base, typ, err := buildPlaceLValue(st, unit, snapshot, fileSet, place.Children[0], locals, width)
 	if err != nil {
-		return "", "", false, err
+		return "", "", 0, false, err
 	}
 	access := "."
 	if key, found := snapshot.Key(typ); found && key.Kind() == types.Pointer {
 		pointee, ok := key.Child()
 		if !ok {
-			return "", "", false, fmt.Errorf("union variant payload store pointer has no pointee")
+			return "", "", 0, false, fmt.Errorf("union variant payload store pointer has no pointee")
 		}
 		typ = pointee
 		access = "->"
 	}
 	if !unionVariantPayloadMember(unit, snapshot, typ, place.Member) {
-		return "", "", false, nil
+		return "", "", 0, false, nil
 	}
 	payload := fmt.Sprintf("%s%spayload.pebble_field_%d", base, access, place.Member)
 	tag := fmt.Sprintf("%s%stag", base, access)
-	return payload, tag, true, nil
+	return payload, tag, typ, true, nil
 }

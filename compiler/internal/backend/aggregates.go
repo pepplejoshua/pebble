@@ -1616,7 +1616,7 @@ func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 	if !containsVariant(info.variants, node.Member) {
 		return "", fmt.Errorf("%s constructs variant symbol %d, which is not one of the union %s's declared variants", context, node.Member, unionTypeName(node.Type))
 	}
-	tag := enumVariantName(node.Member)
+	tag := enumVariantName(node.Type, node.Member)
 	switch node.Kind {
 	case tir.EnumVariantValue:
 		if len(node.Children) != 0 {

@@ -2470,7 +2470,7 @@ fn main() int {
 	out := buf.String()
 	for _, want := range []string{
 		"switch (pebble_fn_",
-		"case pebble_variant_" + strconv.Itoa(int(variants[1])) + ":",
+		"case pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ":",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

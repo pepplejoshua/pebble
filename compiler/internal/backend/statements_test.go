@@ -1173,7 +1173,7 @@ func TestEmitPrintEnumWritesRuntimeSwitch(t *testing.T) {
 	if !switchRE.MatchString(out) {
 		t.Errorf("emitted C missing the runtime switch over the enum's discriminant:\n%s", out)
 	}
-	if count := len(regexp.MustCompile(`case pebble_variant_\d+:`).FindAllString(out, -1)); count != 3 {
+	if count := len(regexp.MustCompile(`case pebble_variant_\d+_\d+:`).FindAllString(out, -1)); count != 3 {
 		t.Errorf("emitted C has %d enum variant case labels, want 3 (red, green, blue):\n%s", count, out)
 	}
 	for _, want := range []string{
@@ -2651,7 +2651,7 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := buildCaseLabel(snapshot, caseNode, tc.width)
+			got, err := buildCaseLabel(snapshot, caseNode, 0, tc.width)
 			if err != nil {
 				t.Fatalf("buildCaseLabel rejected a negative label on signed %s: %v", tc.name, err)
 			}
@@ -2672,7 +2672,7 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := buildCaseLabel(snapshot, caseNode, tc.width)
+			_, err := buildCaseLabel(snapshot, caseNode, 0, tc.width)
 			if err == nil {
 				t.Fatalf("buildCaseLabel accepted a negative label on unsigned %s, want rejection", tc.name)
 			}
@@ -2686,13 +2686,13 @@ func TestBuildCaseLabelNegativeIntegerLiteral(t *testing.T) {
 	for _, text := range []string{"", "-", "--5", "-5x", "1-"} {
 		bad := caseNode
 		bad.Literal.IntegerNum = text
-		if _, err := buildCaseLabel(snapshot, bad, types.I16); err == nil {
+		if _, err := buildCaseLabel(snapshot, bad, 0, types.I16); err == nil {
 			t.Errorf("buildCaseLabel accepted malformed literal text %q on a signed subject", text)
 		}
 	}
 	good := caseNode
 	good.Literal.IntegerNum = "5"
-	got, err := buildCaseLabel(snapshot, good, types.I16)
+	got, err := buildCaseLabel(snapshot, good, 0, types.I16)
 	if err != nil {
 		t.Fatalf("buildCaseLabel rejected a non-negative label: %v", err)
 	}

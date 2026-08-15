@@ -1920,7 +1920,7 @@ fn main() int {
 	out := buf.String()
 	for _, want := range []string{
 		"static " + enumTypeName(enumType) + " pebble_fn_",
-		"return pebble_variant_" + strconv.Itoa(int(variants[1])) + ";",
+		"return pebble_variant_" + strconv.Itoa(int(enumType)) + "_" + strconv.Itoa(int(variants[1])) + ";",
 		enumTypeName(enumType) + " pebble_local_",
 		"= pebble_fn_",
 	} {
@@ -1990,7 +1990,7 @@ fn main() int {
 		"static " + unionTypeName(unionType) + " pebble_fn_",
 		unionTypeName(unionType) + " pebble_local_",
 		"= pebble_fn_",
-		".tag = pebble_variant_" + strconv.Itoa(int(variants[1])),
+		".tag = pebble_variant_" + strconv.Itoa(int(unionType)) + "_" + strconv.Itoa(int(variants[1])),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

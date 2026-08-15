@@ -1076,12 +1076,12 @@ func buildEnumValue(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fil
 		if len(node.Children) == 1 {
 			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with a payload; a tagged-union (union enum) construction routes through buildUnionConstruction, never a plain enum value", node.Member)
 		}
-		return enumVariantName(node.Member), nil
+		return enumVariantName(node.Type, node.Member), nil
 	case tir.VariantConstruct:
 		if len(node.Children) >= 1 {
 			return "", fmt.Errorf("entry function body expression constructs enum variant symbol %d with %d payload(s); a tagged-union (union enum) construction routes through buildUnionConstruction, never a plain enum value", node.Member, len(node.Children))
 		}
-		return enumVariantName(node.Member), nil
+		return enumVariantName(node.Type, node.Member), nil
 	case tir.SymbolValue:
 		info, declared := locals[node.Symbol]
 		if !declared || info.enumType == 0 {
@@ -2001,7 +2001,7 @@ func buildEnumInterpolationSwitch(st *emitState, unit *tir.Unit, snapshot *types
 			return "", err
 		}
 		text := typeName + "." + variantName
-		block.WriteString("    case " + enumVariantName(variant) + ":\n")
+		block.WriteString("    case " + enumVariantName(typ, variant) + ":\n")
 		block.WriteString("        " + tempName + " = (PebbleStr){ .data = (const uint8_t *)\"" + escapeCString(text) + "\", .len = " + fmt.Sprintf("%d", len(text)) + " };\n")
 		block.WriteString("        break;\n")
 	}

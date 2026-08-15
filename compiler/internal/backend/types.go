@@ -1423,14 +1423,22 @@ func unionTypeName(id types.TypeID) string {
 }
 
 // enumVariantName is the deterministic C name of one plain enum variant's
-// enum constant: pebble_variant_<memberSymbolID>, derived from the variant's
-// own stable symbol.SymbolID (mirroring the pebble_field_<memberSymbolID>
-// naming discipline struct fields use, and the pebble_local_<symbolID> /
-// pebble_fn_<symbolID> discipline everywhere else), so a C constant name can
-// never collide with another identifier even if a source variant name were a C
-// keyword.
-func enumVariantName(member symbol.SymbolID) string {
-	return fmt.Sprintf("pebble_variant_%d", member)
+// enum constant: pebble_variant_<typeID>_<memberSymbolID>, derived from the
+// OWNING enum/union type's stable types.TypeID and the variant's own stable
+// symbol.SymbolID — the same pebble_enum_<typeID>_t / pebble_union_<typeID>_t
+// discipline of reusing a stable IR identity rather than a counter. The type
+// ID is required (not optional) because C enum constants share one flat global
+// namespace regardless of which enum type declares them: every concrete
+// specialization of a generic tagged union shares the SAME underlying
+// template's variant symbols (only the payload types get substituted), so two
+// different specializations would both try to declare the same
+// pebble_variant_<memberSymbolID> constant in their own (correctly distinct)
+// enum typedefs — a hard redefinition error. Embedding the owning type's ID
+// disambiguates every variant constant by its concrete owning type, generic
+// or not, and still guarantees a C constant name can never collide with
+// another identifier even if a source variant name were a C keyword.
+func enumVariantName(ownerType types.TypeID, member symbol.SymbolID) string {
+	return fmt.Sprintf("pebble_variant_%d_%d", ownerType, member)
 }
 
 // tupleElementCType is the C field type a tuple element of the given type is
