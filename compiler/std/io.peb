@@ -44,9 +44,9 @@ extern {
     fn strlen(s str) uint;
 }
 
-let SeekStart = 0;
+let SeekStart i32 = 0;
 let SeekCurrent = 1;
-let SeekEnd = 2;
+let SeekEnd i32 = 2;
 
 let MODE_READ = "r";             // Text read (default)
 let MODE_WRITE = "w";            // Text write (create/truncate)
