@@ -192,19 +192,20 @@ func TestClassifyCompositeMatrix(t *testing.T) {
 		{"identical pointer", ids["ptrA"], ids["ptrA"], compatibleIdentity},
 		{"different pointer payload", ids["ptrA"], ids["ptrB"], compatibleExplicit},
 		// Pointer to integer is accepted only for pointer-width-or-wider
-		// destinations (u64, uint, i64); every narrower integer destination is
+		// destinations (u64, uint, i64, and int — int compiles to int64_t,
+		// exactly pointer-width); every narrower integer destination is
 		// compatibleForbidden (see isPointerWidthInteger and the classifyComposite
 		// rule it gates). "pointer to integer" below uses f.integer, an i32.
 		{"pointer to integer", ids["ptrA"], f.integer, compatibleForbidden},
 		{"pointer to i32", ids["ptrA"], s.Types().Builtins().I32, compatibleForbidden},
 		{"pointer to i8", ids["ptrA"], s.Types().Builtins().I8, compatibleForbidden},
 		{"pointer to i16", ids["ptrA"], s.Types().Builtins().I16, compatibleForbidden},
-		{"pointer to int", ids["ptrA"], s.Types().Builtins().Int, compatibleForbidden},
 		{"pointer to u8", ids["ptrA"], s.Types().Builtins().U8, compatibleForbidden},
 		{"pointer to u16", ids["ptrA"], s.Types().Builtins().U16, compatibleForbidden},
 		{"pointer to u32", ids["ptrA"], s.Types().Builtins().U32, compatibleForbidden},
 		{"pointer to u64", ids["ptrA"], s.Types().Builtins().U64, compatibleExplicit},
 		{"pointer to uint", ids["ptrA"], s.Types().Builtins().Uint, compatibleExplicit},
+		{"pointer to int", ids["ptrA"], s.Types().Builtins().Int, compatibleExplicit},
 		{"pointer to i64", ids["ptrA"], s.Types().Builtins().I64, compatibleExplicit},
 		{"integer to pointer", f.integer, ids["ptrA"], compatibleForbidden},
 		{"u32 to pointer", s.Types().Builtins().U32, ids["ptrA"], compatibleForbidden},
@@ -292,18 +293,18 @@ func TestCoercionFor(t *testing.T) {
 		{"integer to char", f.integer, f.b, coercionNone},
 		{"u32 to char", s.Types().Builtins().U32, f.b, coercionNone},
 		// 9. pointer conversions — only pointer-width-or-wider integer
-		// destinations (u64, uint, i64) yield coercionPointerToInteger; narrower
-		// destinations classify compatibleForbidden, which coercionFor maps to
-		// coercionNone.
+		// destinations (u64, uint, i64, and int — int64_t, exactly
+		// pointer-width) yield coercionPointerToInteger; narrower destinations
+		// classify compatibleForbidden, which coercionFor maps to coercionNone.
 		{"pointer to integer i32", ids["ptrA"], f.integer, coercionNone},
 		{"pointer to i8", ids["ptrA"], builtins.I8, coercionNone},
 		{"pointer to i16", ids["ptrA"], builtins.I16, coercionNone},
-		{"pointer to int", ids["ptrA"], builtins.Int, coercionNone},
 		{"pointer to u8", ids["ptrA"], builtins.U8, coercionNone},
 		{"pointer to u16", ids["ptrA"], builtins.U16, coercionNone},
 		{"pointer to u32", ids["ptrA"], builtins.U32, coercionNone},
 		{"pointer to u64", ids["ptrA"], s.Types().Builtins().U64, coercionPointerToInteger},
 		{"pointer to uint", ids["ptrA"], builtins.Uint, coercionPointerToInteger},
+		{"pointer to int", ids["ptrA"], builtins.Int, coercionPointerToInteger},
 		{"pointer to i64", ids["ptrA"], builtins.I64, coercionPointerToInteger},
 		{"integer to pointer", f.integer, ids["ptrA"], coercionNone},
 		{"u64 to pointer", builtins.U64, ids["ptrA"], coercionNone},

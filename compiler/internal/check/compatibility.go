@@ -43,16 +43,16 @@ func isFloatBuiltin(k types.BuiltinKind) bool {
 
 // isPointerWidthInteger reports whether the integer builtin is at least as wide
 // as a pointer on this compiler's ABI. It mirrors the backend's cType width
-// convention (internal/backend/types.go): Uint and U64 map to uint64_t and I64
-// to int64_t, each exactly pointer-width, while every other integer builtin
-// (Int/I32 -> int32_t, I8, I16, U8, U16, U32) maps to a 32-bit-or-narrower C
+// convention (internal/backend/types.go): Uint and U64 map to uint64_t, Int
+// and I64 map to int64_t, each exactly pointer-width, while every other
+// integer builtin (I32, I8, I16, U8, U16, U32) maps to a 32-bit-or-narrower C
 // type. A pointer-to-integer cast is accepted only for these pointer-width
 // destinations: a narrower destination would force a truncating C cast that the
 // mandated -Wall -Wextra -Werror build rejects with -Wpointer-to-int-cast, so
 // such a cast is a clean checker rejection instead of a backend-only failure.
 func isPointerWidthInteger(k types.BuiltinKind) bool {
 	switch k {
-	case types.Uint, types.U64, types.I64:
+	case types.Uint, types.U64, types.Int, types.I64:
 		return true
 	}
 	return false

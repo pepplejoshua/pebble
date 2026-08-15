@@ -160,14 +160,26 @@ func TestValidateCastRecordsAcceptsPointerToI64(t *testing.T) {
 	}
 }
 
+func TestValidateCastRecordsAcceptsPointerToInt(t *testing.T) {
+	// int compiles to int64_t — exactly pointer-width — so the forward
+	// pointer -> int direction is accepted alongside u64, uint, and i64.
+	source := `fn f(ptr *i32) int { return ptr as int; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal pointer->int cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateCastRecordsRejectsNarrowPointerToInteger(t *testing.T) {
 	// A pointer cast to any integer destination narrower than the pointer
-	// (u8/u16/u32/i8/i16/i32/int, each a 32-bit-or-narrower C type) must be a
+	// (u8/u16/u32/i8/i16/i32, each a 32-bit-or-narrower C type) must be a
 	// clean C0601 checker rejection BEFORE IR construction — the backend's plain
 	// (destType)(ptr) C cast for such a pair fails the mandated
 	// -Wall -Wextra -Werror build with -Wpointer-to-int-cast, so the checker
-	// refuses it up front. Regression guards for the exact repro shapes: no
-	// silent acceptance, no C0619 internal-error leak.
+	// refuses it up front. int is deliberately absent: it compiles to int64_t,
+	// exactly pointer-width, so pointer→int is a legal cast guarded by
+	// TestValidateCastRecordsAcceptsPointerToInt. Regression guards for the
+	// exact repro shapes: no silent acceptance, no C0619 internal-error leak.
 	for _, tc := range []struct {
 		name string
 		src  string
@@ -178,7 +190,6 @@ func TestValidateCastRecordsRejectsNarrowPointerToInteger(t *testing.T) {
 		{"i8", "fn f(ptr *i32) i8 { return ptr as i8; }"},
 		{"i16", "fn f(ptr *i32) i16 { return ptr as i16; }"},
 		{"i32", "fn f(ptr *i32) i32 { return ptr as i32; }"},
-		{"int", "fn f(ptr *i32) int { return ptr as int; }"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			diagnostics, result := run06bFixture(t, tc.src)

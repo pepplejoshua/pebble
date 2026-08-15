@@ -11,17 +11,17 @@ import (
 const CodeConversion diagnostic.Code = "C0601"
 
 // cTypeWidth returns a string representing the concrete C width/category of a
-// builtin kind. Integer builtins that share a C representation (Int and I32
-// both map to int32_t, Uint and U64 both map to uint64_t) return the same
+// builtin kind. Integer builtins that share a C representation (Int and I64
+// both map to int64_t, Uint and U64 both map to uint64_t) return the same
 // value, enabling structural width comparisons across nominal boundaries.
 func cTypeWidth(k types.BuiltinKind) string {
 	switch k {
-	case types.Int, types.I32:
-		return "i32"
+	case types.Int, types.I64:
+		return "i64"
 	case types.Uint, types.U64:
 		return "u64"
-	case types.I64:
-		return "i64"
+	case types.I32:
+		return "i32"
 	case types.I8:
 		return "i8"
 	case types.I16:

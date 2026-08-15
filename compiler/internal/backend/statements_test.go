@@ -858,7 +858,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	t.Parallel()
 	// The emitted C for a mixed-type print must be exactly ONE printf call per
 	// print statement whose format string concatenates one specifier per
-	// operand in order (integer via the out-of-quotes "%"PRId32 macro
+	// operand in order (integer via the out-of-quotes "%"PRId64 macro
 	// spelling, bool/char/str/float as %s literals — a char operand's %s is
 	// backed by its own UTF-8 buffer, see below) and ends in the literal \n,
 	// with the same number of comma-separated arguments in operand order.
@@ -890,7 +890,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("uint8_t %s[5];", bufferName),
 		fmt.Sprintf("pebble_rt_char_to_utf8((int32_t)120, %s);", bufferName),
-		fmt.Sprintf("printf(\"%%\"PRId32\"%%s\"\"%%s\"\"%%s\"\"%%f\"\"\\n\", 1, (true ? \"true\" : \"false\"), (const char *)%s, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);", bufferName),
+		fmt.Sprintf("printf(\"%%\"PRId64\"%%s\"\"%%s\"\"%%s\"\"%%f\"\"\\n\", 1LL, (true ? \"true\" : \"false\"), (const char *)%s, (const char *)(PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }.data, 3.5);", bufferName),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -964,7 +964,7 @@ func TestEmitPrintStructWritesSequentialFprintfs(t *testing.T) {
 	if combinedRE.MatchString(out) {
 		t.Errorf("emitted C still contains a combined printf call for the struct print:\n%s", out)
 	}
-	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId32, ` + regexp.QuoteMeta(temp) + `\.pebble_field_\d+\);`)
+	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId64, ` + regexp.QuoteMeta(temp) + `\.pebble_field_\d+\);`)
 	if values := valueRE.FindAllString(out, -1); len(values) != 2 {
 		t.Errorf("emitted C has %d struct field value fprintf calls, want 2:\n%s", len(values), out)
 	}
@@ -1087,7 +1087,7 @@ func TestEmitPrintSliceWritesRuntimeLoop(t *testing.T) {
 	if !guard.MatchString(out) {
 		t.Errorf("emitted C missing the loop's element-separator guard:\n%s", out)
 	}
-	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId32, ` + regexp.QuoteMeta(temp) + `\.data\[` + i + `\]\);`)
+	valueRE := regexp.MustCompile(`fprintf\(stdout, "%"PRId64, ` + regexp.QuoteMeta(temp) + `\.data\[` + i + `\]\);`)
 	if count := len(valueRE.FindAllString(out, -1)); count != 1 {
 		t.Errorf("emitted C has %d slice element value fprintf calls inside the loop, want exactly 1:\n%s", count, out)
 	}
@@ -1958,8 +1958,8 @@ func TestEmitForLoopAssignmentInitializerWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (pebble_local_27 = 0; pebble_local_27 < 3; pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 85})) {\n",
-		"        pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 104});",
+		"    for (pebble_local_27 = 0LL; pebble_local_27 < 3; pebble_local_27 = pebble_rt_checked_add_i64(pebble_local_27, 1LL, (PebbleSourceLoc){\"main.peb\", 1, 85})) {\n",
+		"        pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 104});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1981,7 +1981,7 @@ func TestEmitI64ReturnEntryWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"pebble_rt.h", "pebble_rt_default_context", "return 42;", "static int64_t pebble_user_main(PebbleContext *ctx)"} {
+	for _, want := range []string{"pebble_rt.h", "pebble_rt_default_context", "return 42LL;", "static int64_t pebble_user_main(PebbleContext *ctx)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
@@ -2019,9 +2019,9 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int64_t pebble_local_27 = 0;",
-		"int64_t pebble_local_28 = 0;",
-		"    while (pebble_local_27 < 5) {\n",
+		"int64_t pebble_local_27 = 0LL;",
+		"int64_t pebble_local_28 = 0LL;",
+		"    while (pebble_local_27 < 5LL) {\n",
 		"        pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 69});",
 	} {
 		if !strings.Contains(out, want) {
@@ -2178,8 +2178,8 @@ func TestEmitSwitchBoolSubjectWritesC(t *testing.T) {
 		"switch ((int32_t)pebble_local_25)",
 		"case 1:",
 		"default:",
-		"return 1;",
-		"return 0;",
+		"return 1LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2316,8 +2316,8 @@ func TestEmitSwitchUintSubjectWritesC(t *testing.T) {
 		"switch (pebble_local_27)",
 		"case 5u:",
 		"default:",
-		"return 1;",
-		"return 0;",
+		"return 1LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2368,8 +2368,8 @@ func TestEmitSwitchU8SubjectWritesC(t *testing.T) {
 		"switch (pebble_local_27)",
 		"case 5u:",
 		"default:",
-		"return 1;",
-		"return 0;",
+		"return 1LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2395,9 +2395,9 @@ func TestEmitSwitchCharSubjectWritesC(t *testing.T) {
 		"case (int32_t)97:",
 		"case (int32_t)98:",
 		"default:",
-		"return 1;",
-		"return 2;",
-		"return 0;",
+		"return 1LL;",
+		"return 2LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2503,8 +2503,8 @@ func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 		"switch (pebble_local_27)",
 		"case -5:",
 		"default:",
-		"return 1;",
-		"return 0;",
+		"return 1LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2555,8 +2555,9 @@ func TestEmitCheckedNegateLiteralMinimumWidthCompilesAndRuns(t *testing.T) {
 func TestEmitCheckedNegateLiteralMinimumWritesC(t *testing.T) {
 	t.Parallel()
 	// The emitted C for a literal negation at the width's exact signed minimum
-	// must be the minimum's own C constant — `-2147483648` at i32/int,
-	// `INT64_MIN` at i64 — never a pebble_rt_checked_neg_*(2147483648) call
+	// must be the minimum's own C constant — `-2147483648` at i32, `INT64_MIN`
+	// at i64 and int (int is the 64-bit target-native word, C int64_t, so it
+	// shares i64's minimum) — never a pebble_rt_checked_neg_*(2147483648) call
 	// whose positive magnitude is unspellable at that width. The no-regression
 	// rows assert a NON-minimum negative literal at the same widths still
 	// routes through the runtime helper exactly as before (only the minimum
@@ -2582,10 +2583,10 @@ func TestEmitCheckedNegateLiteralMinimumWritesC(t *testing.T) {
 			mustNot: "pebble_rt_checked_neg_i64",
 		},
 		{
-			name:    "int minimum folds to its decimal constant",
-			src:     "fn main() int { let x int = -2147483648; return 0; }",
-			want:    "= -2147483648;",
-			mustNot: "pebble_rt_checked_neg_i32",
+			name:    "int minimum folds to INT64_MIN",
+			src:     "fn main() int { let x int = -9223372036854775808; return 0; }",
+			want:    "= INT64_MIN;",
+			mustNot: "pebble_rt_checked_neg_i64",
 		},
 		{
 			name:    "i32 non-minimum literal stays on the runtime helper",
@@ -2901,9 +2902,9 @@ func TestEmitSwitchU64SubjectWritesC(t *testing.T) {
 		"case 9000000000u:",
 		"case 3000000000u:",
 		"default:",
-		"return 200;",
-		"return 100;",
-		"return 0;",
+		"return 200LL;",
+		"return 100LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2970,9 +2971,9 @@ func TestEmitSwitchI8SubjectWritesC(t *testing.T) {
 		"case 7:",
 		"case 2:",
 		"default:",
-		"return 1;",
-		"return 2;",
-		"return 0;",
+		"return 1LL;",
+		"return 2LL;",
+		"return 0LL;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3292,7 +3293,7 @@ func TestEmitRangeLoopNonLiteralEndBoundEvaluatedOnceWritesC(t *testing.T) {
 				foundStartTemp = true
 			}
 		}
-		if strings.Contains(line, "for (int32_t pebble_local_") {
+		if strings.Contains(line, "for (int64_t pebble_local_") {
 			forLine = line
 			foundFor = true
 		}
@@ -3349,7 +3350,7 @@ func TestEmitRangeLoopRuntimeDirectionWritesC(t *testing.T) {
 			boundTempLines = append(boundTempLines, line)
 		case strings.Contains(line, " ? 1 : -1;"):
 			stepIdx = strings.Index(out, line)
-		case strings.Contains(line, "for (int32_t pebble_local_") && strings.Contains(line, "pebble_step_"):
+		case strings.Contains(line, "for (int64_t pebble_local_") && strings.Contains(line, "pebble_step_"):
 			forIdx = strings.Index(out, line)
 			forLine = line
 		}
@@ -3436,10 +3437,10 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    int32_t pebble_temp_22 = 5;\n",
-		"    int32_t pebble_temp_23 = 0;\n",
+		"    int64_t pebble_temp_22 = 5;\n",
+		"    int64_t pebble_temp_23 = 0;\n",
 		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+		"    for (int64_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3459,7 +3460,7 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	for _, want := range []string{
 		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
 		"    int32_t pebble_done_28 = 0;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
+		"    for (int64_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

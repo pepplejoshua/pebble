@@ -91,7 +91,7 @@ func TestEmitExternDataReadWritesCDeclaration(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"extern int32_t errno;",
+		"extern int64_t errno;",
 		"return errno;",
 	} {
 		if !strings.Contains(out, want) {

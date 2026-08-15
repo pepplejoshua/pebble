@@ -89,7 +89,7 @@ func buildTuplePlaceRead(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 	if wantBool && !isBool(snapshot, elem) {
 		return "", fmt.Errorf("tuple element %d is not bool", place.Ordinal)
 	}
-	if !wantBool && !isWidth(snapshot, width, elem) {
+	if !wantBool && !isWidth(snapshot, width, elem) && !isCompatibleIntegerWidth(snapshot, width, elem) {
 		return "", fmt.Errorf("tuple element %d is not %s", place.Ordinal, wantName(width))
 	}
 	return fmt.Sprintf("%s._%d", expr, place.Ordinal), nil

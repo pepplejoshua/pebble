@@ -204,8 +204,13 @@ func validateHelperSignature(unit *tir.Unit, decl tir.Node, snapshot *types.Snap
 		// on), seeds it into the callee's scope at its own width, and
 		// buildCallArgument builds its call-site argument at that same width,
 		// so the body reads and the call passes the parameter at its own width
-		// with no cast ever needed.
-		if !isWidth(snapshot, width, param.Type) && !isCompatibleIntegerWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isFixedWidthInteger(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
+		// with no cast ever needed. An `int`-typed parameter (isAbstractInt)
+		// is admitted too: int is the 64-bit target-native word type (C
+		// int64_t, now sharing i64's representation rather than i32's), so it
+		// is treated exactly like an i64 parameter — declared at its own
+		// int64_t C type, seeded at the abstract int width, and read/passed
+		// at that width.
+		if !isWidth(snapshot, width, param.Type) && !isCompatibleIntegerWidth(snapshot, width, param.Type) && !isUint(snapshot, param.Type) && !isU64(snapshot, param.Type) && !isFixedWidthInteger(snapshot, param.Type) && !isAbstractInt(snapshot, param.Type) && !isBool(snapshot, param.Type) && !isChar(snapshot, param.Type) && !isStr(snapshot, param.Type) && !isFloat(snapshot, param.Type) && !isTuple(snapshot, param.Type) && !isStruct(snapshot, param.Type) && !isArray(snapshot, param.Type) && !isSlice(snapshot, param.Type) && !isPointer(snapshot, param.Type) && !isOptional(snapshot, param.Type) && !isFunctionType(snapshot, param.Type) && !isEnumType(unit, snapshot, param.Type) {
 			return fmt.Errorf("called function symbol %d parameter %d (symbol %d) has type %s, want a fixed-width integer (%s, uint, or u64), bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type (a parameter may be any fixed-width integer, uint, u64, bool, char, str, f32, f64, a tuple/struct type, a slice type, a pointer type, an optional type, a function type, or an enum/union type)", decl.Symbol, i, param.Symbol, describeType(snapshot, param.Type), wantName(width))
 		}
 		if isSlice(snapshot, param.Type) {

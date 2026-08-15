@@ -36,7 +36,7 @@ func TestEmitGlobalReadInitialValueWritesCStorage(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		fmt.Sprintf("static int32_t pebble_global_%d = 5;", globalID),
+		fmt.Sprintf("static int64_t pebble_global_%d = 5LL;", globalID),
 		fmt.Sprintf("return pebble_global_%d;", globalID),
 	} {
 		if !strings.Contains(out, want) {
@@ -225,7 +225,7 @@ func TestEmitGlobalConstantArithmeticFoldsOperatorsCompilesAndRuns(t *testing.T)
 
 // TestEmitGlobalConstantArithmeticFoldsToLiteralText pins the emitted C shape:
 // the folded value must land in the storage declaration as a plain literal
-// (`static int32_t pebble_global_<id> = 42;`), not a runtime call.
+// (`static int64_t pebble_global_<id> = 42LL;`), not a runtime call.
 func TestEmitGlobalConstantArithmeticFoldsToLiteralText(t *testing.T) {
 	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, "var x int = 6 * 7;\n\nfn main() int {\n    return x;\n}", "main", false)
@@ -242,7 +242,7 @@ func TestEmitGlobalConstantArithmeticFoldsToLiteralText(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		fmt.Sprintf("static int32_t pebble_global_%d = 42;", globalID),
+		fmt.Sprintf("static int64_t pebble_global_%d = 42LL;", globalID),
 		fmt.Sprintf("return pebble_global_%d;", globalID),
 	} {
 		if !strings.Contains(out, want) {

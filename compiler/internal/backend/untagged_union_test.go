@@ -109,8 +109,8 @@ func TestEmitUntaggedUnionWriteThenReadDifferentFieldCompileAndRun(t *testing.T)
 		name   string
 		source string
 	}{
-		{"write-i32-read-u32", "type D = union { a i32; b u32; }; fn main() i32 { var d D = D.{ a = 5 }; d.a = -1; if d.b == 4294967295 { return 42; } return 0; }"},
-		{"write-u32-read-i32", "type D = union { a i32; b u32; }; fn main() i32 { var d D = D.{ a = 5 }; d.b = 4294967295; if d.a == -1 { return 42; } return 0; }"},
+		{"write-i32-read-u32", "type D = union { a i32; b u32; }; fn main() i32 { var d D = D.{ a = 5 }; d.a = -1 as i32; if d.b == 4294967295 { return 42; } return 0; }"},
+		{"write-u32-read-i32", "type D = union { a i32; b u32; }; fn main() i32 { var d D = D.{ a = 5 }; d.b = 4294967295 as u32; if d.a == -1 { return 42; } return 0; }"},
 		{"write-i64-read-u64", "type D = union { a i64; b u64; }; fn main() i32 { var d D = D.{ a = 5 }; var v i64 = -1; d.a = v; if d.b == 18446744073709551615 { return 42; } return 0; }"},
 	}
 	for _, tc := range cases {

@@ -1478,13 +1478,14 @@ type unionInfo struct {
 // C types this backend emits: the standard technically requires a variadic
 // format specifier to match the promoted argument type, and a hand-picked
 // %hhd/%hd would only happen to match int8_t/int16_t on common platforms.
-// Int and Uint follow their cType mapping (int32_t and uint64_t
-// respectively). Any non-integer kind returns "", matching cType's own
+// Int and Uint follow their cType mapping (int64_t and uint64_t
+// respectively, the 64-bit target-native word types this compiler targets).
+// Any non-integer kind returns "", matching cType's own
 // ""-means-not-an-integer contract.
 func printfSpecifier(width types.BuiltinKind) string {
 	switch width {
 	case types.Int:
-		return "PRId32"
+		return "PRId64"
 	case types.I8:
 		return "PRId8"
 	case types.I16:
@@ -1803,19 +1804,33 @@ func externCType(st *emitState, snapshot *types.Snapshot, id types.TypeID) (stri
 // integerLiteralText returns the C spelling of a decimal integer literal
 // destined for a value position of the given builtin width: the plain decimal
 // text, plus a "u" suffix when that width is an unsigned integer builtin
-// (Uint, U8, U16, U32, or U64), so a large literal — e.g. the decimal form of
+// (Uint, U8, U16, U32, or U64) so a large literal — e.g. the decimal form of
 // UINT64_MAX — is parsed by the C compiler as an unsigned constant instead of
 // triggering -Wimplicitly-unsigned-literal under the mandated -Wall -Wextra
-// -Werror build. A plain "u" is sufficient for every unsigned width this
-// backend emits: a suffixed decimal constant is promoted through unsigned int,
-// unsigned long, and unsigned long long until one can represent it, so any
-// value that fits in unsigned long long — every value Pebble can express at
-// those widths, including UINT64_MAX for Uint/U64's uint64_t — is typed
-// exactly. A literal destined for a signed width is returned unchanged.
+// -Werror build, and an "LL" suffix when that width is the 64-bit signed
+// builtin (Int, I64) so the constant is a long long — the exact C type the
+// PRId64 printf specifier demands at a print site, and the natural spelling of
+// an int/i64 value — instead of a bare `int` constant (which a %"PRId64 format
+// would reject with -Wformat). A plain "u" is sufficient for every unsigned
+// width this backend emits: a suffixed decimal constant is promoted through
+// unsigned int, unsigned long, and unsigned long long until one can represent
+// it, so any value that fits in unsigned long long — every value Pebble can
+// express at those widths, including UINT64_MAX for Uint/U64's uint64_t — is
+// typed exactly. A negative literal text (the value forms checkedNegateLiteral
+// and the switch-case label path hand it) is returned unchanged — a negative
+// constant is converted to its destination type by the surrounding context
+// with no -Wformat concern, and the one unspellable negative magnitude (a
+// width's exact signed minimum) is folded to its stdint.h macro before
+// emission (see checkedNegateMinimumText). A literal destined for a 32-bit-or-
+// narrower signed width is returned unchanged.
 func integerLiteralText(text string, width types.BuiltinKind) string {
 	switch width {
 	case types.Uint, types.U8, types.U16, types.U32, types.U64:
 		return text + "u"
+	case types.Int, types.I64:
+		if len(text) > 0 && text[0] != '-' {
+			return text + "LL"
+		}
 	}
 	return text
 }

@@ -84,7 +84,7 @@ func TestEmitIndirectCallStructFieldOfCallResultWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, ".pebble_field_") || !strings.Contains(out, "pebble_field_25(ctx, 1, 2)") {
+	if !strings.Contains(out, ".pebble_field_") || !strings.Contains(out, "pebble_field_25(ctx, 1LL, 2LL)") {
 		t.Errorf("emitted C missing the call-result field callee shape:\n%s", out)
 	}
 }

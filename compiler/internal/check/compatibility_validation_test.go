@@ -386,7 +386,8 @@ func TestFloatLiteralRangePerWidth(t *testing.T) {
 // function is cleanly rejected at the checker level with C0601 — not silently
 // passed through to the backend where it would produce a confusing internal-
 // sounding Emit error. Every fixed-width integer builtin whose C type differs
-// from int's (int32_t) is covered.
+// from int's (int64_t) is covered. i64 shares int's C representation and so
+// belongs in TestSameConcreteWidthIntegerPairIsAccepted, not here.
 func TestNarrowWidthReturnCoercionRejectsDifferentConcreteWidths(t *testing.T) {
 	tests := []struct {
 		name string
@@ -395,7 +396,7 @@ func TestNarrowWidthReturnCoercionRejectsDifferentConcreteWidths(t *testing.T) {
 		{"u8_to_int", "fn main() int { var x u8 = 200; return x; }"},
 		{"i16_to_int", "fn main() int { var x i16 = -100; return x; }"},
 		{"u16_to_int", "fn main() int { var x u16 = 100; return x; }"},
-		{"i64_to_int", "fn main() int { var x i64 = 9007199254740992; return x; }"},
+		{"i32_to_int", "fn main() int { var x i32 = 5; return x; }"},
 		{"u32_to_int", "fn main() int { var x u32 = 4294967295; return x; }"},
 		{"u64_to_int", "fn main() int { var x u64 = 18446744073709551615; return x; }"},
 		{"uint_to_int", "fn main() int { var x uint = 18446744073709551615; return x; }"},
@@ -425,13 +426,13 @@ func TestNarrowWidthReturnCoercionRejectsDifferentConcreteWidths(t *testing.T) {
 }
 
 // TestSameConcreteWidthIntegerPairIsAccepted proves that integer pairs sharing
-// the same concrete C width (e.g. i32 ↔ int, both int32_t) pass validation
+// the same concrete C width (e.g. i64 ↔ int, both int64_t) pass validation
 // without requiring an explicit cast. This covers the coincidentally-working
 // case that was previously masked by the backend's own width-equivalence gate.
 func TestSameConcreteWidthIntegerPairIsAccepted(t *testing.T) {
-	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var x i32 = 5; return x; }")
+	diagnostics, ok := validateCompatibilityFixture(t, "fn main() int { var x i64 = 9007199254740992; return x; }")
 	if !ok || hasConversionDiagnostic(diagnostics) {
-		t.Fatalf("i32→int (same concrete width) was rejected: %+v", diagnostics.Items())
+		t.Fatalf("i64→int (same concrete width) was rejected: %+v", diagnostics.Items())
 	}
 }
 

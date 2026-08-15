@@ -90,7 +90,7 @@ func TestEmitContextAsArgumentCompilesAndRuns(t *testing.T) {
 	// received context's default_allocator is the real runtime allocator, not a
 	// zeroed or freshly-constructed value.
 	emitAndRun(t, `fn use_context(c Context) int {
-    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (c.default_allocator.alloc)(c.default_allocator.ptr, 8) as *i64;
     *p = 42;
     let value = *p;
     (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
@@ -156,7 +156,7 @@ func TestEmitContextAsLocalInitializerCompilesAndRuns(t *testing.T) {
 	// and doing a real alloc/write/read/free roundtrip returns 42.
 	emitAndRun(t, `fn make_local() int {
     let c = context;
-    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (c.default_allocator.alloc)(c.default_allocator.ptr, 8) as *i64;
     *p = 42;
     let value = *p;
     (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
@@ -205,7 +205,7 @@ func TestEmitContextAsReturnValueCompilesAndRuns(t *testing.T) {
     return context;
 }
 fn use_context(c Context) int {
-    var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (c.default_allocator.alloc)(c.default_allocator.ptr, 8) as *i64;
     *p = 42;
     let value = *p;
     (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
@@ -278,7 +278,7 @@ func TestEmitStructWithAllocatorFieldWritesC(t *testing.T) {
 	for _, want := range []string{
 		"PebbleAllocator pebble_field_",
 		"(*ctx).allocator",
-		"int32_t pebble_field_",
+		"int64_t pebble_field_",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -624,7 +624,7 @@ func TestEmitFixedArrayStructFieldAlongsideOtherFieldsCompileAndRun(t *testing.T
 	// locals plus sizeof of the SAME array type as a field do not regress. The
 	// field-referenced [3]int type is emitted before the aggregate block (the
 	// struct typedef references it), so the sizeof still names the same
-	// pebble_array_<typeID>_t typedef, and sizeof [3]int is 3 * 4 = 12.
+	// pebble_array_<typeID>_t typedef, and sizeof [3]int is 3 * 8 = 24.
 	emitAndRun(t, `type EntryState = enum { Empty, Occupied };
 type Inner = struct { x int; };
 type Mixed = struct {
@@ -648,7 +648,7 @@ fn main() int {
     if m.values[0] != 42 { return 106; }
     if arr[0] != 1 { return 107; }
     let s = sizeof [3]int;
-    if s != 12 { return 108; }
+    if s != 24 { return 108; }
     var standalone [3]int = [7, 8, 9];
     if standalone[2] != 9 { return 109; }
     return 0;
@@ -691,7 +691,7 @@ fn main() int {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	arrayTypedef := "typedef struct {\n    int32_t data[3];\n} " + arrayTypeName(arrayType) + ";"
+	arrayTypedef := "typedef struct {\n    int64_t data[3];\n} " + arrayTypeName(arrayType) + ";"
 	if !strings.Contains(out, arrayTypedef) {
 		t.Errorf("emitted C is missing the array typedef %q (the struct field's array type must be collected):\n%s", arrayTypedef, out)
 	}
@@ -909,10 +909,10 @@ fn newo[K](v K) Outer[K] {
 	if strings.Contains(out, "type-parameter") {
 		t.Errorf("emitted C still carries an unsubstituted type-parameter field:\n%s", out)
 	}
-	// The Inner[int] typedef's val field must be the concrete int32_t (the
+	// The Inner[int] typedef's val field must be the concrete int64_t (the
 	// shape that failed before the fix).
-	if !strings.Contains(out, "    int32_t pebble_field_") {
-		t.Errorf("emitted C missing Inner[int]'s concrete int32_t val field:\n%s", out)
+	if !strings.Contains(out, "    int64_t pebble_field_") {
+		t.Errorf("emitted C missing Inner[int]'s concrete int64_t val field:\n%s", out)
 	}
 	// The end-to-end proof: reading o.inner.val through both struct layers
 	// must compile under -Wall -Wextra -Werror and exit 5.
@@ -1220,7 +1220,7 @@ func TestEmitI64TupleWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int64_t _0;\n    int64_t _1;\n} pebble_tuple_23_t;",
-		"pebble_tuple_23_t pebble_local_27 = { 20, 22 };",
+		"pebble_tuple_23_t pebble_local_27 = { 20LL, 22LL };",
 		"return pebble_local_27._1;",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
@@ -1317,14 +1317,14 @@ func TestEmitTupleCoerceLocalInitializationCompilesAndRuns(t *testing.T) {
 	// The tuple literal's source elements are i32, while the declared local's
 	// destination elements are i64 and f64. TupleCoerce.Children[0] is the
 	// preserved source tuple; the declaration must emit Children[1:] only.
-	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b); return value.0 as i32; }", false, 1, false)
+	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let value (i64, f64) = (a, b); return value.0; }", false, 1, false)
 }
 
 func TestEmitPartialTupleCoerceLocalInitializationCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Only element 1 needs coercion: elements 0 and 2 remain their raw i32
 	// nodes while the middle child is wrapped as an i64 expression.
-	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let c i32 = 3; let value (i32, i64, i32) = (a, b, c); return value.1 as i32; }", false, 2, false)
+	emitAndRun(t, "fn main() int { let a i32 = 1; let b i32 = 2; let c i32 = 3; let value (i32, i64, i32) = (a, b, c); return value.1; }", false, 2, false)
 }
 
 func TestEmitThreeElementTupleLocalCopyInitializationCompilesAndRuns(t *testing.T) {
@@ -1493,7 +1493,7 @@ func TestEmitArrayLocalCopyInitializationWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	declRE := regexp.MustCompile(`int32_t pebble_local_\d+\[3\];\n    memcpy\(pebble_local_\d+, &pebble_local_\d+, sizeof\(pebble_local_\d+\)\);\n    \(void\)pebble_local_\d+;`)
+	declRE := regexp.MustCompile(`int64_t pebble_local_\d+\[3\];\n    memcpy\(pebble_local_\d+, &pebble_local_\d+, sizeof\(pebble_local_\d+\)\);\n    \(void\)pebble_local_\d+;`)
 	if !declRE.MatchString(out) {
 		t.Errorf("emitted C contains no bare-declaration-plus-memcpy local copy %q:\n%s", declRE, out)
 	}
@@ -1536,7 +1536,7 @@ func TestEmitArrayLiteralReassignmentEmitsTypedefBeforeUse(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	typedefRE := regexp.MustCompile(`typedef struct \{\n    int32_t data\[3\];\n\} (pebble_array_\d+_t);`)
+	typedefRE := regexp.MustCompile(`typedef struct \{\n    int64_t data\[3\];\n\} (pebble_array_\d+_t);`)
 	m := typedefRE.FindStringSubmatch(out)
 	if m == nil {
 		t.Fatalf("emitted C contains no array typedef:\n%s", out)
@@ -2573,7 +2573,7 @@ func TestEmitStructPointerDerefLocalInitializerWritesC(t *testing.T) {
 	if !derefRE.MatchString(out) {
 		t.Errorf("emitted C contains no whole-struct deref local initializer %q:\n%s", derefRE, out)
 	}
-	if !strings.Contains(out, "typedef struct {\n    int32_t pebble_field_") {
+	if !strings.Contains(out, "typedef struct {\n    int64_t pebble_field_") {
 		t.Errorf("emitted C missing the Point struct typedef:\n%s", out)
 	}
 }
@@ -2618,7 +2618,7 @@ func TestEmitStructWholeReassignmentWritesC(t *testing.T) {
 	if !copyRE.MatchString(out) {
 		t.Errorf("emitted C contains no whole-struct local copy %q:\n%s", copyRE, out)
 	}
-	if !strings.Contains(out, "typedef struct {\n    int32_t pebble_field_") {
+	if !strings.Contains(out, "typedef struct {\n    int64_t pebble_field_") {
 		t.Errorf("emitted C missing the Point struct typedef:\n%s", out)
 	}
 }
@@ -2810,7 +2810,7 @@ func TestEmitI64StructWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef struct {\n    int64_t pebble_field_25;\n    int64_t pebble_field_26;\n} pebble_struct_19_t;",
-		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = 20, .pebble_field_26 = 22 };",
+		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = 20LL, .pebble_field_26 = 22LL };",
 		"return pebble_local_30.pebble_field_26;",
 		"static int64_t pebble_user_main(PebbleContext *ctx)",
 	} {
@@ -4167,7 +4167,7 @@ func TestEmitCheckedIntegerToEnumWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	want := "(" + enumTypeName(enumType) + ")pebble_rt_checked_int_to_enum((int64_t)(1), 3, (PebbleSourceLoc)"
+	want := "(" + enumTypeName(enumType) + ")pebble_rt_checked_int_to_enum((int64_t)(1LL), 3, (PebbleSourceLoc)"
 	if !strings.Contains(out, want) {
 		t.Errorf("emitted C missing the integer-to-enum cast call %q:\n%s", want, out)
 	}
@@ -5113,7 +5113,7 @@ func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
 	// returned size must be the element size times the array length. The
 	// tracker's exact repro shape (sizeof [4]int is the ONLY reference to the
 	// array type in the whole program): the C typedef is `typedef struct {
-	// int32_t data[4]; } pebble_array_N_t;`, i.e. 4 * 4 = 16 bytes. Before the
+	// int64_t data[4]; } pebble_array_N_t;`, i.e. 4 * 8 = 32 bytes. Before the
 	// fix sizeofCTypeName had no isArray branch, so emission failed outright
 	// with "sizeof of type [4]int is not supported, want ... slice, enum,
 	// struct, or pointer".
@@ -5122,8 +5122,8 @@ func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
     print s;
     return 0;
 }`, false, 0, false)
-	if out != "16\n" {
-		t.Errorf("program printed %q, want the array's element-size-times-length size %q", out, "16\n")
+	if out != "32\n" {
+		t.Errorf("program printed %q, want the array's element-size-times-length size %q", out, "32\n")
 	}
 }
 
@@ -5158,7 +5158,7 @@ func TestEmitSizeofFixedArrayOnlyReferenceEmitsArrayTypedef(t *testing.T) {
 	if !strings.Contains(out, "sizeof("+arrayTypeName(arrayType)+")") {
 		t.Errorf("emitted C does not sizeof the array's own typedef %q:\n%s", arrayTypeName(arrayType), out)
 	}
-	arrayTypedef := "typedef struct {\n    int32_t data[4];\n} " + arrayTypeName(arrayType) + ";"
+	arrayTypedef := "typedef struct {\n    int64_t data[4];\n} " + arrayTypeName(arrayType) + ";"
 	if !strings.Contains(out, arrayTypedef) {
 		t.Errorf("emitted C is missing the array typedef %q (sizeof is the only reference, so the array's typedef must still be collected):\n%s", arrayTypedef, out)
 	}
@@ -5169,8 +5169,8 @@ func TestEmitSizeofPlainStructOnlyReferenceCompilesAndRuns(t *testing.T) {
 	// The tracker's exact repro shape: sizeof Pair is the ONLY reference to
 	// the plain struct in the whole program — no construction, no field
 	// access, no optional payload, no helper signature — yet the program must
-	// compile and run, printing the struct's real size. int is int32_t in this
-	// backend, so Pair (x int; y int;) is 4 + 4 = 8 bytes. Before the fix the
+	// compile and run, printing the struct's real size. int is int64_t in this
+	// backend, so Pair (x int; y int;) is 8 + 8 = 16 bytes. Before the fix the
 	// sizeof's lowered pebble_struct_<typeID>_t named a typedef that was never
 	// collected (sizeof is not among the struct shapes collectStructTypesWalk
 	// collected), so cc rejected the program with "use of undeclared
@@ -5184,8 +5184,8 @@ fn main() int {
     print s;
     return 0;
 }`, false, 0, false)
-	if out != "8\n" {
-		t.Errorf("program printed %q, want the struct's field-sum size %q", out, "8\n")
+	if out != "16\n" {
+		t.Errorf("program printed %q, want the struct's field-sum size %q", out, "16\n")
 	}
 }
 
@@ -5233,8 +5233,8 @@ fn main() int {
 		t.Errorf("emitted C does not sizeof the struct's own typedef %q:\n%s", structTypeName(structType), out)
 	}
 	structTypedef := "typedef struct {\n" +
-		"    int32_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
-		"    int32_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
+		"    int64_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
+		"    int64_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
 		"} " + structTypeName(structType) + ";"
 	if !strings.Contains(out, structTypedef) {
 		t.Errorf("emitted C is missing the struct typedef %q (sizeof is the only reference, so the struct's typedef must still be collected):\n%s", structTypedef, out)
@@ -5251,8 +5251,8 @@ func TestEmitSizeofArrayOfStructCompilesAndRuns(t *testing.T) {
 	// ELEMENT type — its SizeofType case only matched a TypeArg that was
 	// directly a struct, and for sizeof [2]Point the TypeArg is the array
 	// type — so the array typedef's `pebble_struct_<typeID>_t data[2]` field
-	// named an undeclared C type and cc rejected the program. int is int32_t
-	// here, so Point (x int; y int;) is 8 bytes and [2]Point is 16 (confirmed
+	// named an undeclared C type and cc rejected the program. int is int64_t
+	// here, so Point (x int; y int;) is 16 bytes and [2]Point is 32 (confirmed
 	// against the emitted C's actual struct layout).
 	emitAndRun(t, `type Point = struct {
     x int;
@@ -5260,7 +5260,7 @@ func TestEmitSizeofArrayOfStructCompilesAndRuns(t *testing.T) {
 };
 fn main() int {
     return (sizeof [2]Point) as int;
-}`, false, 16, false)
+}`, false, 32, false)
 }
 
 func TestEmitSizeofArrayOfStructOnlyReferenceEmitsStructTypedef(t *testing.T) {
@@ -5308,8 +5308,8 @@ fn main() int {
 	}
 	out := buf.String()
 	structTypedef := "typedef struct {\n" +
-		"    int32_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
-		"    int32_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
+		"    int64_t pebble_field_" + strconv.Itoa(int(members[0])) + ";\n" +
+		"    int64_t pebble_field_" + strconv.Itoa(int(members[1])) + ";\n" +
 		"} " + structTypeName(structType) + ";"
 	arrayTypedef := "typedef struct {\n    " + structTypeName(structType) + " data[2];\n} " + arrayTypeName(arrayType) + ";"
 	if !strings.Contains(out, structTypedef) {
@@ -5330,10 +5330,10 @@ func TestEmitSizeofArrayOfTupleCompilesAndRuns(t *testing.T) {
 	// tuple, so only collectArrayTypesWalk sees the array and the element
 	// tuple's pebble_tuple_<typeID>_t typedef would never be collected — the
 	// same shape of missing-collection bug, fixed alongside the struct case.
-	// int is int32_t, so (int, int) is 8 bytes and [2](int, int) is 16.
+	// int is int64_t, so (int, int) is 16 bytes and [2](int, int) is 32.
 	emitAndRun(t, `fn main() int {
     return (sizeof [2](int, int)) as int;
-}`, false, 16, false)
+}`, false, 32, false)
 }
 
 func TestEmitSizeofArrayOfOptionalCompilesAndRuns(t *testing.T) {
@@ -5343,10 +5343,10 @@ func TestEmitSizeofArrayOfOptionalCompilesAndRuns(t *testing.T) {
 	// optional, so the element optional's pebble_optional_<typeID>_t typedef
 	// would never be collected — the same shape of missing-collection bug,
 	// fixed alongside the struct case. ?int lowers to { bool has_value;
-	// int32_t value; } = 8 bytes, so [2]?int is 16.
+	// int64_t value; } = 16 bytes, so [2]?int is 32.
 	emitAndRun(t, `fn main() int {
     return (sizeof [2]?int) as int;
-}`, false, 16, false)
+}`, false, 32, false)
 }
 
 func TestEmitSizeofBareTupleCompilesAndRuns(t *testing.T) {
@@ -5357,10 +5357,10 @@ func TestEmitSizeofBareTupleCompilesAndRuns(t *testing.T) {
 	// collectTupleTypesWalk (which only had the array-element case) never
 	// collected its pebble_tuple_<typeID>_t typedef and cc rejected the
 	// lowered sizeof(pebble_tuple_<typeID>_t) with "use of undeclared
-	// identifier". int is int32_t, so (int, int) is 8 bytes.
+	// identifier". int is int64_t, so (int, int) is 16 bytes.
 	emitAndRun(t, `fn main() int {
     return (sizeof (int,int)) as int;
-}`, false, 8, false)
+}`, false, 16, false)
 }
 
 func TestEmitSizeofBareOptionalCompilesAndRuns(t *testing.T) {
@@ -5371,11 +5371,11 @@ func TestEmitSizeofBareOptionalCompilesAndRuns(t *testing.T) {
 	// collectOptionalTypesWalk (which only had the array-element case) never
 	// collected its pebble_optional_<typeID>_t typedef and cc rejected the
 	// lowered sizeof(pebble_optional_<typeID>_t) with "use of undeclared
-	// identifier". ?int lowers to { bool has_value; int32_t value; } = 8
+	// identifier". ?int lowers to { bool has_value; int64_t value; } = 16
 	// bytes.
 	emitAndRun(t, `fn main() int {
     return (sizeof ?int) as int;
-}`, false, 8, false)
+}`, false, 16, false)
 }
 
 func TestEmitSizeofBareTupleOnlyReferenceEmitsTupleTypedef(t *testing.T) {
@@ -5407,7 +5407,7 @@ func TestEmitSizeofBareTupleOnlyReferenceEmitsTupleTypedef(t *testing.T) {
 	if !strings.Contains(out, "sizeof("+tupleTypeName(tupleType)+")") {
 		t.Errorf("emitted C does not sizeof the tuple's own typedef %q:\n%s", tupleTypeName(tupleType), out)
 	}
-	tupleTypedef := "typedef struct {\n    int32_t _0;\n    int32_t _1;\n} " + tupleTypeName(tupleType) + ";"
+	tupleTypedef := "typedef struct {\n    int64_t _0;\n    int64_t _1;\n} " + tupleTypeName(tupleType) + ";"
 	if !strings.Contains(out, tupleTypedef) {
 		t.Errorf("emitted C is missing the tuple typedef %q (sizeof is the only reference, so the tuple's typedef must still be collected):\n%s", tupleTypedef, out)
 	}
@@ -5443,7 +5443,7 @@ func TestEmitSizeofBareOptionalOnlyReferenceEmitsOptionalTypedef(t *testing.T) {
 	if !strings.Contains(out, "sizeof("+optionalTypeName(optionalType)+")") {
 		t.Errorf("emitted C does not sizeof the optional's own typedef %q:\n%s", optionalTypeName(optionalType), out)
 	}
-	optionalTypedef := "typedef struct {\n    bool has_value;\n    int32_t value;\n} " + optionalTypeName(optionalType) + ";"
+	optionalTypedef := "typedef struct {\n    bool has_value;\n    int64_t value;\n} " + optionalTypeName(optionalType) + ";"
 	if !strings.Contains(out, optionalTypedef) {
 		t.Errorf("emitted C is missing the optional typedef %q (sizeof is the only reference, so the optional's typedef must still be collected):\n%s", optionalTypedef, out)
 	}
@@ -5455,10 +5455,10 @@ func TestEmitSizeofCastToIntegerCompilesAndRuns(t *testing.T) {
 	// int`). buildExpr's IntegerCast child builder had no SizeofType case,
 	// so this exact shape fell through to the default rejection; it now
 	// delegates to buildUintExpr exactly like a plain, uncast sizeof. int
-	// is int32_t in this backend, so sizeof(int) is 4.
+	// is int64_t in this backend, so sizeof(int) is 8.
 	emitAndRun(t, `fn main() int {
     return (sizeof int) as int;
-}`, false, 4, false)
+}`, false, 8, false)
 }
 
 func TestEmitSizeofWiderTypeCastToIntegerCompilesAndRuns(t *testing.T) {
@@ -5479,16 +5479,16 @@ func TestEmitSizeofStructCastToIntegerCompilesAndRuns(t *testing.T) {
 	// A sizeof of a STRUCT type directly cast to an integer (`(sizeof
 	// Pair) as int`), mirroring the plain, uncast struct sizeof that
 	// buildUintExpr's SizeofType case already supports: the cast lowers to
-	// (int32_t)(sizeof(pebble_struct_<typeID>_t)), and the struct's own
+	// (int64_t)(sizeof(pebble_struct_<typeID>_t)), and the struct's own
 	// typedef must be collected even though it is only ever referenced by
-	// the sizeof. Pair (x int; y int;) is 4 + 4 = 8 bytes.
+	// the sizeof. Pair (x int; y int;) is 8 + 8 = 16 bytes.
 	emitAndRun(t, `type Pair = struct {
     x int;
     y int;
 };
 fn main() int {
     return (sizeof Pair) as int;
-}`, false, 8, false)
+}`, false, 16, false)
 }
 
 func TestEmitSizeofPlainEnumOnlyReferenceCompilesAndRuns(t *testing.T) {
@@ -5849,7 +5849,7 @@ func TestEmitSliceFloatElementEmittedCShape(t *testing.T) {
 		"typedef struct {\n    double *data;\n    size_t len;\n} pebble_slice_24_t;",
 		"double pebble_local_27[3] = { 1.5, 2.5, 3.5 };",
 		"pebble_slice_24_t pebble_local_28 = (pebble_slice_24_t){ .data = pebble_local_27 + pebble_slice_start_28, .len = (size_t)(3 - pebble_slice_start_28) };",
-		"pebble_local_28.data[pebble_rt_checked_index_i32(0, (int32_t)pebble_local_28.len,",
+		"pebble_local_28.data[pebble_rt_checked_index_i64(0, (int64_t)pebble_local_28.len,",
 		"== 6.0)",
 	} {
 		if !strings.Contains(out, want) {
@@ -5902,7 +5902,7 @@ func TestEmitArrayLiteralDirectlyInitializesSliceWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_backing_27[3] = { 1, 2, 3 };",
+		"int64_t pebble_slice_backing_27[3] = { 1LL, 2LL, 3LL };",
 		"pebble_slice_23_t pebble_local_27 = (pebble_slice_23_t){ .data = pebble_slice_backing_27 + pebble_slice_start_27, .len = (size_t)(3 - pebble_slice_start_27) };",
 	} {
 		if !strings.Contains(out, want) {
@@ -6650,7 +6650,7 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_ret_39 = pebble_rt_checked_slice_start_i32(0, pebble_local_28.pebble_field_26, pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+		"int64_t pebble_slice_ret_39 = pebble_rt_checked_slice_start_i64(0, pebble_local_28.pebble_field_26, pebble_local_28.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
 		"return (pebble_slice_24_t){ .data = pebble_local_28.pebble_field_25.data + pebble_slice_ret_39, .len = (size_t)(pebble_local_28.pebble_field_26 - pebble_slice_ret_39) };",
 	} {
 		if !strings.Contains(out, want) {
@@ -6746,7 +6746,7 @@ func TestEmitIndexesSliceTypedFieldDirectlyCompilesAndRuns(t *testing.T) {
 fn main() int {
     var a [3]i32 = [10, 20, 30];
     var b Bag = Bag.{ data = a[:] };
-    return b.peek();
+    return b.peek() as int;
 }`, false, 20, false)
 }
 
@@ -6793,11 +6793,11 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t *data;\n    size_t len;\n} pebble_slice_24_t;",
+		"typedef struct {\n    int64_t *data;\n    size_t len;\n} pebble_slice_24_t;",
 		"pebble_slice_24_t pebble_field_25;",
-		"int32_t pebble_field_slice_32 = pebble_rt_checked_slice_start_i32(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
+		"int64_t pebble_field_slice_32 = pebble_rt_checked_slice_start_i64(0, 3, 3, (PebbleSourceLoc){\"main.peb\"",
 		"pebble_struct_19_t pebble_local_30 = { .pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_29 + pebble_field_slice_32, .len = (size_t)(3 - pebble_field_slice_32) } };",
-		"return pebble_local_30.pebble_field_25.data[pebble_rt_checked_index_i32(1, (int32_t)pebble_local_30.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
+		"return pebble_local_30.pebble_field_25.data[pebble_rt_checked_index_i64(1, (int64_t)pebble_local_30.pebble_field_25.len, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -6832,7 +6832,7 @@ fn main() i32 {
 	if strings.Contains(out, "pebble_field_slice_") {
 		t.Errorf("emitted C unexpectedly contains a field temp statement:\n%s", out)
 	}
-	if !strings.Contains(out, ".pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_30, .len = (size_t)(1) }") {
+	if !strings.Contains(out, ".pebble_field_25 = (pebble_slice_24_t){ .data = pebble_local_30, .len = (size_t)(1LL) }") {
 		t.Errorf("emitted C missing the inline SliceFromRaw field construction:\n%s", out)
 	}
 	compileAndRun(t, buf.Bytes(), 42, false)
@@ -7014,9 +7014,9 @@ func TestEmitOptionalResultWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    bool has_value;\n    int32_t value;\n} pebble_optional_23_t;",
+		"typedef struct {\n    bool has_value;\n    int64_t value;\n} pebble_optional_23_t;",
 		"static pebble_optional_23_t pebble_fn_24(PebbleContext *ctx) {",
-		"    return (pebble_optional_23_t){ .has_value = true, .value = 5 };",
+		"    return (pebble_optional_23_t){ .has_value = true, .value = 5LL };",
 		"pebble_optional_23_t pebble_local_28 = pebble_fn_24(ctx);",
 		"    (void)pebble_local_28;",
 		"if (pebble_local_28.has_value) {",
@@ -7050,14 +7050,14 @@ func TestEmitOptionalResultStructPayloadWritesC(t *testing.T) {
 	for _, want := range []string{
 		"typedef struct {\n    bool has_value;\n    pebble_struct_19_t value;\n} pebble_optional_24_t;",
 		"static pebble_optional_24_t pebble_fn_27(PebbleContext *ctx) {",
-		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_19_t){ .pebble_field_25 = 1, .pebble_field_26 = 2 } };",
+		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_struct_19_t){ .pebble_field_25 = 1LL, .pebble_field_26 = 2LL } };",
 		"pebble_optional_24_t pebble_local_31 = pebble_fn_27(ctx);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
 		}
 	}
-	structIndex := strings.Index(out, "typedef struct {\n    int32_t pebble_field_25")
+	structIndex := strings.Index(out, "typedef struct {\n    int64_t pebble_field_25")
 	optionalIndex := strings.Index(out, "} pebble_optional_24_t;")
 	if structIndex < 0 || optionalIndex < 0 || structIndex > optionalIndex {
 		t.Errorf("struct typedef does not precede the optional typedef that names it (definition before use):\n%s", out)
@@ -7079,10 +7079,10 @@ func TestEmitOptionalResultTuplePayloadWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t _0;\n    int32_t _1;\n} pebble_tuple_23_t;",
+		"typedef struct {\n    int64_t _0;\n    int64_t _1;\n} pebble_tuple_23_t;",
 		"typedef struct {\n    bool has_value;\n    pebble_tuple_23_t value;\n} pebble_optional_24_t;",
 		"static pebble_optional_24_t pebble_fn_24(PebbleContext *ctx) {",
-		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_tuple_23_t){ 1, 2 } };",
+		"    return (pebble_optional_24_t){ .has_value = true, .value = (pebble_tuple_23_t){ 1LL, 2LL } };",
 		"pebble_optional_24_t pebble_local_28 = pebble_fn_24(ctx);",
 	} {
 		if !strings.Contains(out, want) {
@@ -7276,8 +7276,8 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_slice_arg_",
-		"pebble_rt_checked_slice_start_i32(2, 4, 5, (PebbleSourceLoc){\"main.peb\"",
+		"int64_t pebble_slice_arg_",
+		"pebble_rt_checked_slice_start_i64(2, 4, 5, (PebbleSourceLoc){\"main.peb\"",
 		"pebble_local_",
 		".len = (size_t)(4 - pebble_slice_arg_",
 	} {
@@ -7666,7 +7666,7 @@ func TestEmitFunctionTypedStructFieldWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	fnptrIndex := strings.Index(out, "typedef int32_t (*pebble_fnptr_")
+	fnptrIndex := strings.Index(out, "typedef int64_t (*pebble_fnptr_")
 	structIndex := strings.Index(out, "typedef struct {\n    pebble_fnptr_")
 	if fnptrIndex < 0 || structIndex < 0 || fnptrIndex > structIndex {
 		t.Errorf("function typedef does not precede the struct typedef that names it as a field (definition before use):\n%s", out)

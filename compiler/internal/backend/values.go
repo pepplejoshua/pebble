@@ -72,8 +72,9 @@ func buildRuntimeValueNode(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 
 // tupleSameCShape reports whether two tuple type IDs have the same structural
 // shape at the C-representation level: the same arity and, pairwise, elements
-// whose C types match (an integer element by its fixed-width C type — so the
-// abstract int and the anchored i32, both int32_t, are the same shape; a tuple
+// whose C types match (an integer element by its fixed-width C type — so an
+// abstract int element, which floats at whatever integer width the position
+// requests, is the same shape as any fixed-width integer element; a tuple
 // or optional element by recursive shape; every other element kind — bool,
 // char, str, f32/f64, and the nominal struct/enum types — by exact type ID).
 // The type store interns each occurrence of a structural tuple type
@@ -120,6 +121,25 @@ func tupleSameCShape(snapshot *types.Snapshot, a, b types.TypeID) bool {
 func tupleElementSameCShape(snapshot *types.Snapshot, a, b types.TypeID) bool {
 	if a == b {
 		return true
+	}
+	// An abstract `int` element (types.Int) is the unanchored default-integer
+	// type: the checker leaves a tuple literal's untyped literal elements at
+	// int even when the target tuple's declared elements are a concrete width
+	// (a field declared (i32, i32) with a literal (20, 22), whose elements are
+	// (int, int)), and the backend emits such an element at whatever integer
+	// width the surrounding position requests (buildTupleBraceElements'
+	// isAbstractInt case builds it at the entry's width). int used to share
+	// i32's C representation (int32_t), so an (int, ...) literal matched an
+	// (i32, ...) target through the cType equality below; now that int is the
+	// 64-bit target-native word (int64_t, i64's C type), that cType equality
+	// alone would reject an (int, int) literal at an (i32, i32) field — a
+	// shape the compiler still accepts. Since the element floats at the
+	// requested width, an abstract int element is shape-compatible with any
+	// fixed-width integer target element.
+	if isAbstractInt(snapshot, a) || isAbstractInt(snapshot, b) {
+		widthA, integerA := resolvedBuiltin(snapshot, a)
+		widthB, integerB := resolvedBuiltin(snapshot, b)
+		return integerA && cType(widthA) != "" && integerB && cType(widthB) != ""
 	}
 	if widthA, integerA := resolvedBuiltin(snapshot, a); integerA && cType(widthA) != "" {
 		widthB, integerB := resolvedBuiltin(snapshot, b)
@@ -3559,17 +3579,19 @@ func checkedNegateLiteral(unit *tir.Unit, operandID tir.NodeID, width types.Buil
 // checkedNegateMinimumText returns the C constant spelling of a signed width's
 // exact minimum that compiles cleanly under -Wall -Wextra -Werror — the value
 // buildExpr's CheckedNegate case emits when a literal negation folds to the
-// width's minimum. The i32/int minimum is spellable as its plain decimal text
+// width's minimum. The i32 minimum is spellable as its plain decimal text
 // (`-2147483648`, whose positive magnitude 2147483648 fits in a C long, so the
-// negated constant never overflows a signed C type); the i64 minimum is NOT
-// spellable as a decimal literal — C parses `-9223372036854775808` as the
-// negation of `9223372036854775808`, which exceeds every signed C integer type
-// including long long, so the constant is interpreted as unsigned and cc
-// rejects it with -Wimplicitly-unsigned-literal — and the spellable spelling
-// is the stdint.h INT64_MIN macro (the emitted C always includes <inttypes.h>,
-// which pulls in <stdint.h>; the runtime uses INT64_MIN the same way).
+// negated constant never overflows a signed C type); the 64-bit signed
+// minimums (i64 and int — int is the 64-bit target-native word, C int64_t, so
+// it shares i64's minimum) are NOT spellable as a decimal literal — C parses
+// `-9223372036854775808` as the negation of `9223372036854775808`, which
+// exceeds every signed C integer type including long long, so the constant is
+// interpreted as unsigned and cc rejects it with
+// -Wimplicitly-unsigned-literal — and the spellable spelling is the stdint.h
+// INT64_MIN macro (the emitted C always includes <inttypes.h>, which pulls in
+// <stdint.h>; the runtime uses INT64_MIN the same way).
 func checkedNegateMinimumText(width types.BuiltinKind) string {
-	if width == types.I64 {
+	if width == types.I64 || width == types.Int {
 		return "INT64_MIN"
 	}
 	min, _, _ := integerKindRange(width)

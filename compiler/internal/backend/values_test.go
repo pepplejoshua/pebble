@@ -567,11 +567,11 @@ func TestEmitFloatArrayIndexReadBoundsCheckPanics(t *testing.T) {
 	t.Parallel()
 	// The bounds-checked index helper on a float array element read fires at
 	// RUNTIME for a symbolic out-of-range index (the checker rejects only
-	// constant out-of-range indices, so a[5] with `let i i32 = 5` is
+	// constant out-of-range indices, so a[5] with `let i int = 5` is
 	// reachable): a[5] on a [2]f64 array aborts via pebble_rt_checked_index,
 	// proving the read is still bounds-checked through the new Load path and
 	// not an unchecked raw C subscript.
-	emitAndRun(t, "fn main() int { let a [2]f64 = [1.5, 2.5]; let i i32 = 5; if a[i] == 2.5 { return 42; } return 1; }", false, 0, true)
+	emitAndRun(t, "fn main() int { let a [2]f64 = [1.5, 2.5]; let i int = 5; if a[i] == 2.5 { return 42; } return 1; }", false, 0, true)
 }
 
 func TestEmitIndexedStrElementAssignmentCompilesAndRuns(t *testing.T) {
@@ -2023,18 +2023,22 @@ func TestEmitGlobalLetConstantAsFixedWidthArgumentCompilesAndRuns(t *testing.T) 
 	// stays at the abstract `int` builtin (not i32) until a use site pins it
 	// to a concrete width — the std/io.peb `let SeekEnd = 2;` shape, passed
 	// directly as an argument to a fixed-width `i32` parameter (mirroring
-	// `fseek`'s `whence i32`). Before the fix, buildExpr's width gate
-	// rejected the abstract-int-typed SymbolValue outright ("of type int,
-	// want i32"); the checker side also needed a way to lower a reference to
-	// a `let` global at all (globals aren't in locals scope), which the
-	// buildDeclarations/buildValueRecord change provides by inlining a fresh
-	// copy of the constant's initializer at each reference site. echo(Seed)
-	// returning 7 proves the constant's value round-trips correctly through
-	// a real i32-typed call argument, not just that it emits.
+	// `fseek`'s `whence i32`). Since int is now the 64-bit target-native word
+	// (int64_t), an int constant no longer converts implicitly to i32, so the
+	// call site widens it with an explicit `as i32` cast — the checker's
+	// concrete-width gate rejects a bare int->i32 argument. Before the fix,
+	// buildExpr's width gate rejected the abstract-int-typed SymbolValue
+	// outright ("of type int, want i32"); the checker side also needed a way
+	// to lower a reference to a `let` global at all (globals aren't in locals
+	// scope), which the buildDeclarations/buildValueRecord change provides by
+	// inlining a fresh copy of the constant's initializer at each reference
+	// site. echo(Seed) returning 7 proves the constant's value round-trips
+	// correctly through a real i32-typed call argument, not just that it
+	// emits.
 	unit, snapshot, entryID, sources := buildStdFixture(t, `let Seed = 7;
 fn echo(x i32) i32 { return x; }
 fn main() i32 {
-    return echo(Seed);
+    return echo(Seed as i32);
 }`, "main")
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -2350,11 +2354,11 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef int32_t (*pebble_fnptr_23_t)(PebbleContext *ctx, int32_t, int32_t);",
-		"static int32_t pebble_fn_31(PebbleContext *ctx, int32_t pebble_local_32, int32_t pebble_local_33);",
-		"static int32_t pebble_fn_31(PebbleContext *ctx, int32_t pebble_local_32, int32_t pebble_local_33) {",
-		"return pebble_rt_checked_add_i32(pebble_local_32, pebble_local_33,",
-		"return pebble_fn_24(ctx, pebble_fn_31, 20, 22);",
+		"typedef int64_t (*pebble_fnptr_23_t)(PebbleContext *ctx, int64_t, int64_t);",
+		"static int64_t pebble_fn_31(PebbleContext *ctx, int64_t pebble_local_32, int64_t pebble_local_33);",
+		"static int64_t pebble_fn_31(PebbleContext *ctx, int64_t pebble_local_32, int64_t pebble_local_33) {",
+		"return pebble_rt_checked_add_i64(pebble_local_32, pebble_local_33,",
+		"return pebble_fn_24(ctx, pebble_fn_31, 20LL, 22LL);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

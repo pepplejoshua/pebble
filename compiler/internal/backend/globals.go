@@ -460,15 +460,15 @@ func foldConstantIntegerTree(unit *tir.Unit, node tir.Node) (*big.Int, bool, err
 
 // integerKindRange returns the inclusive [min, max] value range a value of the
 // given integer builtin kind can hold, using the kind's true bit width and
-// signedness (int is 32-bit signed, uint is 64-bit unsigned, exactly as their
-// C representations int32_t and uint64_t declare). ok is false for any
-// non-integer kind.
+// signedness (int is the 64-bit target-native signed word type, uint is the
+// 64-bit target-native unsigned word type, exactly as their C representations
+// int64_t and uint64_t declare). ok is false for any non-integer kind.
 func integerKindRange(kind types.BuiltinKind) (min, max *big.Int, ok bool) {
 	var bits uint
 	signed := false
 	switch kind {
 	case types.Int:
-		bits, signed = 32, true
+		bits, signed = 64, true
 	case types.I8:
 		bits, signed = 8, true
 	case types.I16:

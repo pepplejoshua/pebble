@@ -700,7 +700,7 @@ func TestEmitFunctionTypedLocalWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"(*pebble_fnptr_",
-		")(PebbleContext *ctx, int32_t, int32_t);",
+		")(PebbleContext *ctx, int64_t, int64_t);",
 		"pebble_fnptr_",
 		"= pebble_fn_",
 	} {

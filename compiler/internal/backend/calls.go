@@ -135,6 +135,22 @@ func helperSignature(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, he
 			paramWidth, _ := resolvedBuiltin(snapshot, param.Type)
 			params = append(params, cType(paramWidth)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: paramWidth}
+		case isAbstractInt(snapshot, param.Type):
+			// An `int`-typed parameter (an entry declared i32 or i64 whose
+			// helper declares its own parameter `int`). Since the int→i64
+			// width change, int is the 64-bit target-native word type (C
+			// int64_t, the same representation i64 carries), so an int
+			// parameter is treated exactly like an i64 one: declared at its
+			// own int64_t C type (cType(types.Int)), seeded into the callee's
+			// locals scope at the abstract int width (localInfo{kind:
+			// types.Int}, exactly as buildScalarInitializeCore seeds an
+			// int-declared local), and read at that width through buildExpr's
+			// width gate, which admits an int-typed node at its own abstract
+			// width (isAbstractInt) — so a reference to the parameter inside
+			// the body emits its int64_t C name with no cast ever needed.
+			paramWidth, _ := resolvedBuiltin(snapshot, param.Type)
+			params = append(params, cType(paramWidth)+fmt.Sprintf(" pebble_local_%d", param.Symbol))
+			scope[param.Symbol] = localInfo{kind: paramWidth}
 		case isUint(snapshot, param.Type):
 			params = append(params, "uint64_t"+fmt.Sprintf(" pebble_local_%d", param.Symbol))
 			scope[param.Symbol] = localInfo{kind: types.Uint}

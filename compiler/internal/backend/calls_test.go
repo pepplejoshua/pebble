@@ -92,8 +92,8 @@ func TestEmitExternCallWithArgumentsAndReturnCompilesAndRuns(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	emitted := buf.String()
-	if !strings.Contains(emitted, "malloc(sizeof(int32_t))") {
-		t.Errorf("emitted C does not call the real C name malloc with sizeof(int32_t):\n%s", emitted)
+	if !strings.Contains(emitted, "malloc(sizeof(int64_t))") {
+		t.Errorf("emitted C does not call the real C name malloc with sizeof(int64_t):\n%s", emitted)
 	}
 	if strings.Contains(emitted, "pebble_fn_") {
 		t.Errorf("emitted C contains a pebble_fn_ helper for an extern, want none:\n%s", emitted)
@@ -154,14 +154,17 @@ fn main() int {
 // shape for the widened case, not just that Emit succeeds: the generic
 // specialization identity[i32] must be declared AND defined as
 // `int32_t pebble_fn_24_3(PebbleContext *ctx, int32_t pebble_local_26)` — the
-// parameter declared at the entry's C representation (int32_t, since int and
-// i32 share it) and the body returning it — and the int-declared entry must
-// keep its plain-int pebble_user_main. Symbols 24 (identity[i32]) and 26 (its
+// parameter and result declared at i32's OWN concrete width (int32_t, the C
+// type the specialization's i32 type argument carries, independent of the
+// int-declared entry — int and i32 share no C representation anymore) and the
+// body returning it — and the int-declared entry must keep its plain-int
+// pebble_user_main. The i32 result is widened back to the int return with an
+// explicit cast. Symbols 24 (identity[i32]) and 26 (its
 // parameter) come from the fixture's typed-IR construction, deterministic for
 // this exact source.
 func TestEmitGenericHelperConcreteWidthWritesInt32TParams(t *testing.T) {
 	t.Parallel()
-	unit, snapshot, entryID, sources := buildFixture(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r as int; }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -345,7 +348,7 @@ func TestEmitGenericStructMethodTypeParameterTwoSpecializationsCompileAndRun(t *
 func TestEmitGenericStructMethodTypeParameterResultEmitsConcreteSignature(t *testing.T) {
 	t.Parallel()
 	// The emitted C must carry the CONCRETE substituted signature: the
-	// helper returns int32_t (never a type parameter), its self parameter is
+	// helper returns int64_t (never a type parameter), its self parameter is
 	// the Box[int] struct typedef, and its body returns the concrete field
 	// read — the shape that failed with an unsubstituted
 	// "type-parameter(symbol ...)" result type before the fix.
@@ -355,8 +358,8 @@ func TestEmitGenericStructMethodTypeParameterResultEmitsConcreteSignature(t *tes
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "static int32_t pebble_fn_") {
-		t.Fatalf("emitted C has no int32_t-returning helper:\n%s", out)
+	if !strings.Contains(out, "static int64_t pebble_fn_") {
+		t.Fatalf("emitted C has no int64_t-returning helper:\n%s", out)
 	}
 	if strings.Contains(out, "type-parameter") {
 		t.Errorf("emitted C still carries an unsubstituted type parameter:\n%s", out)
@@ -1091,10 +1094,10 @@ func TestEmitU8ParameterWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"static int32_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25);",
-		"static int32_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25) {",
+		"static int64_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25);",
+		"static int64_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
-		"    return (int32_t)(pebble_local_25);",
+		"    return (int64_t)(pebble_local_25);",
 		"uint8_t pebble_local_29 = 5u;",
 		"return pebble_fn_24(ctx, pebble_local_29);",
 	} {
@@ -1708,7 +1711,7 @@ func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
 	t.Parallel()
 	// Confirm the emitted C directly: the fnptr typedef declares the trailing
 	// PebbleContext *ctx parameter first and the pointer parameter's C type
-	// `int32_t *` right after it — the exact pointer spelling helperSignature
+	// `int64_t *` right after it — the exact pointer spelling helperSignature
 	// gives an ordinary helper's pointer parameter, not a rejection. The
 	// function value is also assigned bare (no cast) at the declaration site.
 	unit, snapshot, entryID, sources := buildFixture(t, "fn readPtr(p *int) int { return *p; } fn main() int { var x int = 3; var f fn(*int) int = readPtr; return f(&x); }", "main", false)
@@ -1718,7 +1721,7 @@ func TestEmitPointerFunctionTypeWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		")(PebbleContext *ctx, int32_t *);", // fn(*int) int: ctx then the pointer C type
+		")(PebbleContext *ctx, int64_t *);", // fn(*int) int: ctx then the pointer C type
 		"(*pebble_fnptr_",
 		"= pebble_fn_",
 	} {
@@ -1777,7 +1780,7 @@ func TestEmitNarrowU8FunctionTypeParamWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef int32_t (*pebble_fnptr_",     // fn(u8) int result slot
+		"typedef int64_t (*pebble_fnptr_",     // fn(u8) int result slot
 		", uint8_t);",                         // the u8 parameter slot in the typedef
 		"(PebbleContext *ctx, uint8_t pebble", // the hoisted helper's own u8 parameter
 	} {
@@ -2052,10 +2055,10 @@ fn main() int {
 	if tempCount < 4 {
 		t.Fatalf("expected one temp declaration plus three brace-list references (>= 4 occurrences of pebble_repeat_ret_), got %d:\n%s", tempCount, out)
 	}
-	if !strings.Contains(out, "= 7;") {
+	if !strings.Contains(out, "= 7LL;") {
 		t.Fatalf("expected exactly one assignment of the repeated value 7 into the temp:\n%s", out)
 	}
-	if strings.Count(out, "= 7;") != 1 {
+	if strings.Count(out, "= 7LL;") != 1 {
 		t.Fatalf("expected the value 7 to be assigned exactly once (single evaluation), got %d occurrences of \"= 7;\":\n%s", strings.Count(out, "= 7;"), out)
 	}
 }
@@ -2142,14 +2145,14 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"static int32_t pebble_fn_27(PebbleContext *ctx, int32_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int32_t * pebble_local_32);",
-		"static int32_t pebble_fn_27(PebbleContext *ctx, int32_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int32_t * pebble_local_32) {",
+		"static int64_t pebble_fn_27(PebbleContext *ctx, int64_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int64_t * pebble_local_32);",
+		"static int64_t pebble_fn_27(PebbleContext *ctx, int64_t pebble_local_28, bool pebble_local_29, PebbleStr pebble_local_30, pebble_struct_19_t pebble_local_31, int64_t * pebble_local_32) {",
 		"    (void)pebble_local_28;",
 		"    (void)pebble_local_29;",
 		"    (void)pebble_local_30;",
 		"    (void)pebble_local_31;",
 		"    (void)pebble_local_32;",
-		"return pebble_fn_27(ctx, 3, true, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }, pebble_local_38, (int32_t *)(&pebble_local_37));",
+		"return pebble_fn_27(ctx, 3LL, true, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }, pebble_local_38, (int64_t *)(&pebble_local_37));",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2164,8 +2167,10 @@ fn main() int {
 // It calls REAL libc functions so the whole pipeline compiles AND RUNS across
 // four extern signature shapes not covered together before (existing extern
 // tests separately covered uint/*void/void, str/*FILE, and i32): int param +
-// int result (abs), one f64 param + f64 result (fabs), two f64 params + f64
-// result (pow), and a str param + uint result (strlen). Each call must lower to
+// int result (llabs — int is the 64-bit target-native word, so the matching
+// libc absolute-value function is llabs, which takes and returns long long),
+// one f64 param + f64 result (fabs), two f64 params + f64 result (pow), and a
+// str param + uint result (strlen). Each call must lower to
 // its real C name with no hidden context and no pebble_fn_ helper, and every
 // typed result is consumed at its own width. The exit code is 3 + 5 + 7 + 2 =
 // 17; a mis-lowered parameter or result width fails the process code. (The
@@ -2175,13 +2180,13 @@ fn main() int {
 func TestEmitDirectCallExternSignatureMatrixCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `
-extern fn abs(x int) int;
+extern fn llabs(x int) int;
 extern fn fabs(x f64) f64;
 extern fn pow(x f64, y f64) f64;
 extern fn strlen(s str) uint;
 fn main() int {
     var total int = 0;
-    total = total + abs(-3);
+    total = total + llabs(-3);
     let r f64 = pow(2.0, 3.0);
     if r == 8.0 { total = total + 5; }
     let fl f64 = fabs(-2.5);
@@ -2194,7 +2199,7 @@ fn main() int {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"abs(", "fabs(", "pow(", "strlen("} {
+	for _, want := range []string{"llabs(", "fabs(", "pow(", "strlen("} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C does not call the real C name %s:\n%s", want, out)
 		}
@@ -2429,7 +2434,7 @@ fn main() int {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"ctx, 1, pebble_local_",      // literal + local reference, both after ctx
+		"ctx, 1LL, pebble_local_",    // literal + local reference, both after ctx
 		"pebble_fn_27(ctx), pebble_", // nested call (mk) threaded with ctx
 		".pebble_field_",             // struct-field reads
 		"(pebble_struct_19_t){",      // inline struct-literal argument
@@ -2459,7 +2464,7 @@ func TestEmitContextForwardingNestedCallChainCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, `fn helperC() int {
     let ctx = context;
-    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 8) as *i64;
     *p = 42;
     let value = *p;
     (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
@@ -2484,7 +2489,7 @@ func TestEmitContextForwardingNestedCallChainWritesC(t *testing.T) {
 	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, `fn helperC() int {
     let ctx = context;
-    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 8) as *i64;
     *p = 42;
     let value = *p;
     (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
@@ -2499,9 +2504,9 @@ fn main() int { return helperA(); }`, "main", false)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
-		"static int32_t pebble_fn_25(PebbleContext *ctx) {",
-		"static int32_t pebble_fn_26(PebbleContext *ctx) {",
+		"static int64_t pebble_fn_24(PebbleContext *ctx) {",
+		"static int64_t pebble_fn_25(PebbleContext *ctx) {",
+		"static int64_t pebble_fn_26(PebbleContext *ctx) {",
 		"return pebble_fn_26(ctx);", // main -> helperA
 		"return pebble_fn_25(ctx);", // helperA -> helperB
 		"return pebble_fn_24(ctx);", // helperB -> helperC
@@ -2528,7 +2533,7 @@ func TestEmitContextForwardingIndirectCallCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, `fn leaf(x int) int {
     let ctx = context;
-    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 8) as *i64;
     *p = x;
     let value = *p;
     (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
@@ -2731,7 +2736,7 @@ func TestEmitContextForwardingIndirectCallWritesC(t *testing.T) {
 	t.Parallel()
 	unit, snapshot, entryID, sources := buildFixture(t, `fn leaf(x int) int {
     let ctx = context;
-    var p *i32 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 4) as *i32;
+    var p *i64 = (ctx.default_allocator.alloc)(ctx.default_allocator.ptr, 8) as *i64;
     *p = x;
     let value = *p;
     (ctx.default_allocator.free)(ctx.default_allocator.ptr, p as *void);
@@ -2746,7 +2751,7 @@ fn main() int { return apply(helper, 41); }`, "main", false)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"return pebble_fn_28(ctx, pebble_fn_26, 41);",   // main -> apply, helper passed as a bare value
+		"return pebble_fn_28(ctx, pebble_fn_26, 41LL);", // main -> apply, helper passed as a bare value
 		"return pebble_local_29(ctx, pebble_local_30);", // apply's INDIRECT call threads ctx through the fn-typed param
 		"return pebble_fn_24(ctx,",                      // helper -> leaf, ctx threaded
 		"= (*ctx);",                                     // leaf's `context` use is the threaded ctx

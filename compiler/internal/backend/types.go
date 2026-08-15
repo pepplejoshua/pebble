@@ -2150,12 +2150,14 @@ func resolvedBuiltin(snapshot *types.Snapshot, id types.TypeID) (types.BuiltinKi
 }
 
 // cType returns the fixed-width C integer type corresponding to a Pebble
-// integer builtin. Int and uint use Pebble's platform-independent 32-bit and
-// 64-bit representations respectively.
+// integer builtin. Int is the target's native signed word type: 64 bits on a
+// 64-bit target, so it maps to int64_t; uint is the corresponding
+// target-native unsigned word type, uint64_t. The exact-width kinds map to
+// their own C fixed-width types.
 func cType(width types.BuiltinKind) string {
 	switch width {
 	case types.Int:
-		return "int32_t"
+		return "int64_t"
 	case types.Uint:
 		return "uint64_t"
 	case types.I8:

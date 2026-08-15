@@ -144,24 +144,25 @@ func checkedShiftHelper(op syntax.TokenKind, width types.BuiltinKind) (string, b
 }
 
 // checkedShiftSuffix returns the pebble_rt_checked_shl/shr_* function-name
-// suffix for the given width: "i32" for an int or i32 entry, "i64" for an
-// i64 entry, "u64" for a u64 or uint entry (both carry the C type uint64_t,
-// so one runtime helper serves both, the same dual-width mapping
-// optionalUnwrapSuffix uses), and the width's own name for every narrower
-// fixed-width integer (u8, u16, i8, i16, u32 — each of which has its own
-// runtime shift-helper pair). It is the shift-specific twin of checkedSuffix,
-// which deliberately stays narrow: the OTHER checked helper families
-// (arithmetic, index, slice start, float-to-integer) admit only the
+// suffix for the given width: "i64" for an int or i64 entry (int is the
+// 64-bit target-native word type, C int64_t, so it shares the i64 helper
+// family), "i32" for an i32 entry, "u64" for a u64 or uint entry (both carry
+// the C type uint64_t, so one runtime helper serves both, the same dual-width
+// mapping optionalUnwrapSuffix uses), and the width's own name for every
+// narrower fixed-width integer (u8, u16, i8, i16, u32 — each of which has its
+// own runtime shift-helper pair). It is the shift-specific twin of
+// checkedSuffix, which deliberately stays narrow: the OTHER checked helper
+// families (arithmetic, index, slice start, float-to-integer) admit only the
 // i32/i64/u64 widths, so widening checkedSuffix globally would emit calls to
 // nonexistent helpers for them (e.g. pebble_rt_checked_add_u8 does not
 // exist). Any width without a runtime shift helper yields "", a clean
 // rejection for the caller.
 func checkedShiftSuffix(width types.BuiltinKind) string {
 	switch width {
-	case types.Int, types.I32:
-		return "i32"
-	case types.I64:
+	case types.Int, types.I64:
 		return "i64"
+	case types.I32:
+		return "i32"
 	case types.U8:
 		return "u8"
 	case types.U16:
@@ -179,22 +180,23 @@ func checkedShiftSuffix(width types.BuiltinKind) string {
 }
 
 // checkedNegSuffix returns the pebble_rt_checked_neg_* function-name suffix
-// for the given width: "i32" for an int or i32 entry, "i64" for an i64 entry,
-// and the width's own name for the narrow fixed-width SIGNED integers i8 and
-// i16 — the only other widths the checker admits for unary minus, each of
-// which now has its own runtime checked-negation helper. It is the
-// negation-specific twin of checkedShiftSuffix: checkedSuffix itself
-// deliberately stays narrow, because the OTHER checked helper families
+// for the given width: "i64" for an int or i64 entry (int is the 64-bit
+// target-native word type, C int64_t, so it shares the i64 helper family),
+// "i32" for an i32 entry, and the width's own name for the narrow fixed-width
+// SIGNED integers i8 and i16 — the only other widths the checker admits for
+// unary minus, each of which now has its own runtime checked-negation helper.
+// It is the negation-specific twin of checkedShiftSuffix: checkedSuffix
+// itself deliberately stays narrow, because the OTHER checked helper families
 // (arithmetic, index, slice start, float-to-integer) admit only the
 // i32/i64/u64 widths, so widening it globally would emit calls to nonexistent
 // helpers for them. Unsigned widths yield "" — the checker rejects unary
 // minus on an unsigned operand, so the caller never needs a helper for them.
 func checkedNegSuffix(width types.BuiltinKind) string {
 	switch width {
-	case types.Int, types.I32:
-		return "i32"
-	case types.I64:
+	case types.Int, types.I64:
 		return "i64"
+	case types.I32:
+		return "i32"
 	case types.I8:
 		return "i8"
 	case types.I16:
@@ -227,10 +229,11 @@ func isCompatibleIntegerWidth(snapshot *types.Snapshot, width types.BuiltinKind,
 
 // optionalUnwrapSuffix returns the pebble_rt_checked_unwrap_* helper suffix
 // for an optional payload of the given type: "u8"/"u16"/"i8"/"i16"/"u32"
-// for the narrow fixed-width payloads, "i32" for an int/i32 payload, "i64"
-// for an i64 payload, "u64" for a uint or u64 payload (both carry the C
-// type uint64_t, so one runtime helper reads both back at their true
-// width), "bool" for a bool payload, and "f32"/"f64" for a float payload
+// for the narrow fixed-width payloads, "i64" for an int or i64 payload (int
+// is the 64-bit target-native word type, C int64_t, so it shares the i64
+// helper), "i32" for an i32 payload, "u64" for a uint or u64 payload (both
+// carry the C type uint64_t, so one runtime helper reads both back at their
+// true width), "bool" for a bool payload, and "f32"/"f64" for a float payload
 // (since the float payload slices, the runtime has a
 // pebble_rt_checked_unwrap_f32/f64 pair mirroring the integer widths). Any
 // other payload type (a char, str, tuple, or struct) yields "", a clean
@@ -272,10 +275,10 @@ func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 		return "i16"
 	case types.U32:
 		return "u32"
-	case types.Int, types.I32:
-		return "i32"
-	case types.I64:
+	case types.Int, types.I64:
 		return "i64"
+	case types.I32:
+		return "i32"
 	case types.Uint, types.U64:
 		return "u64"
 	}
@@ -283,17 +286,17 @@ func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 }
 
 // checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
-// given width: "i32" for an int or i32 entry, "i64" for an i64 entry, "u64"
-// for a u64 entry. It is exactly the type's name for the fixed-width entries,
-// but named for what it selects — the width-specific runtime helper family.
+// given width: "i64" for an int or i64 entry (int is the 64-bit target-native
+// word type, C int64_t, so it shares the i64 helper family), "i32" for an i32
+// entry, "u64" for a u64 entry. It is exactly the type's name for the
+// fixed-width entries, but named for what it selects — the width-specific
+// runtime helper family.
 func checkedSuffix(width types.BuiltinKind) string {
 	switch width {
-	case types.Int:
-		return "i32"
+	case types.Int, types.I64:
+		return "i64"
 	case types.I32:
 		return "i32"
-	case types.I64:
-		return "i64"
 	case types.U64:
 		return "u64"
 	}
@@ -301,23 +304,24 @@ func checkedSuffix(width types.BuiltinKind) string {
 }
 
 // floatToIntSuffix returns the pebble_rt_checked_<f32|f64>_to_* function-name
-// suffix for a float-to-integer cast DESTINATION: "i32" for an int or i32
-// destination, "i64" for i64, "u64" for a uint or u64 destination (both carry
-// the C type uint64_t, so one runtime helper serves both), and the width's own
-// name for every narrow fixed-width integer (i8, i16, u8, u16, u32) — the full
-// integer destination matrix the runtime's checked float-conversion family
-// covers. It is the float-conversion-specific twin of checkedShiftSuffix:
-// checkedSuffix itself deliberately stays narrow (the arithmetic/index/
-// slice-start/char-at families admit only the i32/i64/u64 widths, so widening
-// it globally would emit calls to nonexistent helpers for them, e.g.
-// pebble_rt_checked_add_u8 does not exist). Any non-integer destination yields
-// "", a clean rejection for the caller.
+// suffix for a float-to-integer cast DESTINATION: "i64" for an int or i64
+// destination (int is the 64-bit target-native word type, C int64_t, so it
+// shares the i64 helper), "i32" for i32, "u64" for a uint or u64 destination
+// (both carry the C type uint64_t, so one runtime helper serves both), and the
+// width's own name for every narrow fixed-width integer (i8, i16, u8, u16,
+// u32) — the full integer destination matrix the runtime's checked
+// float-conversion family covers. It is the float-conversion-specific twin of
+// checkedShiftSuffix: checkedSuffix itself deliberately stays narrow (the
+// arithmetic/index/slice-start/char-at families admit only the i32/i64/u64
+// widths, so widening it globally would emit calls to nonexistent helpers for
+// them, e.g. pebble_rt_checked_add_u8 does not exist). Any non-integer
+// destination yields "", a clean rejection for the caller.
 func floatToIntSuffix(width types.BuiltinKind) string {
 	switch width {
-	case types.Int, types.I32:
-		return "i32"
-	case types.I64:
+	case types.Int, types.I64:
 		return "i64"
+	case types.I32:
+		return "i32"
 	case types.U8:
 		return "u8"
 	case types.U16:

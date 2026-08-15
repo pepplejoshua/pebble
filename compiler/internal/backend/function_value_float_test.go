@@ -124,7 +124,7 @@ func TestEmitFloatFunctionTypeWritesC(t *testing.T) {
 	}{
 		{"f64 param result", "fn double_it(x f64) f64 { return x * 2.0; } fn main() int { var f fn(f64) f64 = double_it; var y f64 = f(21.0); if y == 42.0 { return 42; } return 0; }", []string{"typedef double (*pebble_fnptr_", ")(PebbleContext *ctx, double);", "double pebble_fn_"}},
 		{"f32 param result", "fn triple_it(x f32) f32 { return x * 3.0; } fn main() int { var f fn(f32) f32 = triple_it; var y f32 = f(14.0); if y == 42.0 { return 42; } return 0; }", []string{"typedef float (*pebble_fnptr_", ")(PebbleContext *ctx, float);", "float pebble_fn_"}},
-		{"f64 param int result", "fn to_whole(x f64) int { var n int = x as int; return n; } fn main() int { var f fn(f64) int = to_whole; return f(42.0); }", []string{"typedef int32_t (*pebble_fnptr_", ")(PebbleContext *ctx, double);", "int32_t pebble_fn_"}},
+		{"f64 param int result", "fn to_whole(x f64) int { var n int = x as int; return n; } fn main() int { var f fn(f64) int = to_whole; return f(42.0); }", []string{"typedef int64_t (*pebble_fnptr_", ")(PebbleContext *ctx, double);", "int64_t pebble_fn_"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

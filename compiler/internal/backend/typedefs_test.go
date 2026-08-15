@@ -15,7 +15,7 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 	// typedefs are distinct pebble_struct_<typeID>_t definitions (25 for
 	// Pair[int, int], 26 for Pair[int, bool], 27/28 the key/value field
 	// symbols) from a real fixture dump. The entry's resolved width here is
-	// types.Int, which cType maps to int32_t.
+	// types.Int, which cType maps to int64_t.
 	unit, snapshot, entryID, sources := buildFixture(t, `type Pair[K, V] = struct { key K; value V; }; fn main() int { let p Pair[int, int] = Pair[int, int].{ key = 5, value = 10 }; let q Pair[int, bool] = Pair[int, bool].{ key = 6, value = true }; if q.value { return p.key + p.value; } else { return 0; } }`, "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
@@ -23,8 +23,8 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_27;\n    int32_t pebble_field_28;\n} pebble_struct_25_t;",
-		"typedef struct {\n    int32_t pebble_field_27;\n    bool pebble_field_28;\n} pebble_struct_26_t;",
+		"typedef struct {\n    int64_t pebble_field_27;\n    int64_t pebble_field_28;\n} pebble_struct_25_t;",
+		"typedef struct {\n    int64_t pebble_field_27;\n    bool pebble_field_28;\n} pebble_struct_26_t;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -45,7 +45,7 @@ func TestEmitGenericStructDataFieldsWritesConcreteCTypedefs(t *testing.T) {
 func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *testing.T) {
 	t.Parallel()
 	// The emitted-C shape check for the pointer two-specialization case: each
-	// specialization's typedef must declare the CORRECT pointee C type — int32_t
+	// specialization's typedef must declare the CORRECT pointee C type — int64_t
 	// for Ref[int], bool for Ref[bool] — with no shared/wrong pointee and no
 	// rejection. The two typedefs are distinct pebble_struct_<typeID>_t
 	// definitions (24 for Ref[int], 25 for Ref[bool], 26 the ptr field symbol)
@@ -58,7 +58,7 @@ func TestEmitGenericStructPointerTwoSpecializationsWriteConcreteCTypedefs(t *tes
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t * pebble_field_26;\n} pebble_struct_24_t;",
+		"typedef struct {\n    int64_t * pebble_field_26;\n} pebble_struct_24_t;",
 		"typedef struct {\n    bool * pebble_field_26;\n} pebble_struct_25_t;",
 	} {
 		if !strings.Contains(out, want) {
@@ -122,7 +122,7 @@ func TestEmitGenericStructNestedFieldWritesInnerTypedefFirst(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_26;\n} pebble_struct_26_t;",
+		"typedef struct {\n    int64_t pebble_field_26;\n} pebble_struct_26_t;",
 		"typedef struct {\n    pebble_struct_26_t pebble_field_29;\n} pebble_struct_25_t;",
 	} {
 		if !strings.Contains(out, want) {
@@ -170,7 +170,7 @@ func TestEmitGenericStructNestedFieldTwoSpecializationsWriteConcreteCTypedefs(t 
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"typedef struct {\n    int32_t pebble_field_26;\n} pebble_struct_26_t;",
+		"typedef struct {\n    int64_t pebble_field_26;\n} pebble_struct_26_t;",
 		"typedef struct {\n    pebble_struct_26_t pebble_field_29;\n} pebble_struct_25_t;",
 		"typedef struct {\n    bool pebble_field_26;\n} pebble_struct_28_t;",
 		"typedef struct {\n    pebble_struct_28_t pebble_field_29;\n} pebble_struct_27_t;",
@@ -262,7 +262,7 @@ func TestEmitOptionalUintTypedefWritesUint64T(t *testing.T) {
 func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
 	t.Parallel()
 	// The emitted-C shape check for the pointer payload: the optional typedef
-	// declares the .value field as the pointee's pointer C type (int32_t * for
+	// declares the .value field as the pointee's pointer C type (int64_t * for
 	// ?*int, via pointerTypeName), never a rejection or a scalar, and the some
 	// construction assigns the AddressOf expression into it; the force-unwrap
 	// routes to the new pebble_rt_checked_unwrap_ptr helper.
@@ -272,13 +272,13 @@ func TestEmitOptionalPointerTypedefWritesPointeePointerCType(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "typedef struct {\n    bool has_value;\n    int32_t * value;\n} pebble_optional_") {
-		t.Errorf("emitted C does not declare the pointer payload's .value field as int32_t *:\n%s", out)
+	if !strings.Contains(out, "typedef struct {\n    bool has_value;\n    int64_t * value;\n} pebble_optional_") {
+		t.Errorf("emitted C does not declare the pointer payload's .value field as int64_t *:\n%s", out)
 	}
 	if strings.Contains(out, "int32_t value;") {
 		t.Errorf("emitted C declared a scalar .value field for a pointer payload:\n%s", out)
 	}
-	if !strings.Contains(out, ".has_value = true, .value = (int32_t *)(&pebble_local_") {
+	if !strings.Contains(out, ".has_value = true, .value = (int64_t *)(&pebble_local_") {
 		t.Errorf("emitted C is missing the pointer-payload some construction (.value = AddressOf):\n%s", out)
 	}
 	if !strings.Contains(out, "pebble_rt_checked_unwrap_ptr(") {

@@ -452,10 +452,13 @@ func TestEmitRejectsTupleLiteralIndex(t *testing.T) {
 	// checker lowers it to a TupleElementValue whose child is the TupleValue
 	// being indexed (not a tuple-typed local) and whose element type comes out
 	// as the unanchored `int` builtin (confirmed against a real fixture). The
-	// tuple's int element is not the entry's width, so the tuple typedef pass
-	// rejects it cleanly; this keeps the only supported element read exactly
-	// the tuple-local Load(TuplePlace) shape.
-	unit, snapshot, entryID, _ := buildFixture(t, "fn main() i32 { let x i32 = (1, 2).1; return x; }", "main", false)
+	// tuple's int element is not a tuple-typed local, so the TupleElementValue
+	// builder rejects it cleanly; this keeps the only supported element read
+	// exactly the tuple-local Load(TuplePlace) shape. An `int` entry is used
+	// so the checker's own width-conversion gate (int is now the 64-bit word
+	// type) accepts the source and the backend's tuple-literal-index rejection
+	// is what is exercised.
+	unit, snapshot, entryID, _ := buildFixture(t, "fn main() int { let x int = (1, 2).1; return x; }", "main", false)
 	assertEmitRejects(t, unit, snapshot, entryID)
 }
 

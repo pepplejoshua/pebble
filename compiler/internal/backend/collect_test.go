@@ -29,15 +29,16 @@ func TestEmitGenericReachabilityEmitsThreeSpecializations(t *testing.T) {
 // TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns is the exact
 // motivating repro for the compatible-integer-width parameter gate: a generic
 // helper identity[T] called with an i32 local from an fn main() int entry
-// (whose own resolved width is the abstract int builtin, NOT i32 — the two are
-// distinct builtins sharing the int32_t C representation). The specialization
+// (whose own resolved width is the 64-bit target-native int builtin, distinct
+// from i32 — the two share no C representation anymore). The specialization
 // identity[i32] has an i32-typed parameter, which the pre-fix
 // validateHelperSignature rejected with "called function symbol ... has type
 // i32, want int". The program must compile under -Wall -Wextra -Werror and run,
-// returning the value identity passed through.
+// returning the value identity passed through (widened back to the int return
+// with an explicit cast, since i32 no longer converts implicitly to int).
 func TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	emitAndRun(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r; }`, false, 5, false)
+	emitAndRun(t, `fn identity[T](x T) T { return x; } fn main() int { var a i32 = 5; var r = identity(a); return r as int; }`, false, 5, false)
 }
 
 // TestEmitGenericClampShapeSpecializedAtConcreteWidthCompilesAndRuns mirrors
@@ -47,10 +48,11 @@ func TestEmitGenericHelperSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T
 // concrete i32 width, called from an fn main() int entry with i32 locals and
 // the result stored into an i32 local before returning (the shape that reaches
 // emission — a direct `return clamp(...)` from an int entry hits a checker-level
-// int-vs-i32 unification conflict instead). The clamp of (5, 10, 20) is 10.
+// int-vs-i32 unification conflict instead). The clamp of (5, 10, 20) is 10,
+// widened back to the int return with an explicit cast.
 func TestEmitGenericClampShapeSpecializedAtConcreteWidthCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	emitAndRun(t, `fn min[T](a T, b T) T { if a < b { return a; } return b; } fn max[T](a T, b T) T { if a > b { return a; } return b; } fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); } fn main() int { var x i32 = 5; var lo i32 = 10; var hi i32 = 20; var r i32 = clamp(x, lo, hi); return r; }`, false, 10, false)
+	emitAndRun(t, `fn min[T](a T, b T) T { if a < b { return a; } return b; } fn max[T](a T, b T) T { if a > b { return a; } return b; } fn clamp[T](x T, lo T, hi T) T { return max(lo, min(x, hi)); } fn main() int { var x i32 = 5; var lo i32 = 10; var hi i32 = 20; var r i32 = clamp(x, lo, hi); return r as int; }`, false, 10, false)
 }
 
 func TestEmitRecursionWritesPrototypesBeforeDefinitions(t *testing.T) {
