@@ -98,7 +98,33 @@ Same discipline as `13`/`14`, restated here for a self-contained tracker:
 
 ## Slice log
 
-*(empty — no slice closed yet; Slice 1 (test harness + `Vec` correctness) is
+*(empty — Slice 1 (test harness + `Vec` correctness) closed in `fca5d45`.
+Two real bugs in `compiler/std/vec.peb`: `Vec.eq` returned `true` on the
+first mismatching element (`if a != b { return true; }` — backwards, with
+a leftover `// Wait, should be != for inequality` comment already sitting
+next to it); `Vec.reverse` computed `self.len - 1` before checking for an
+empty vector, underflowing the unsigned `len` and corrupting every index
+the reverse loop then touched. Both fixed with the minimal change (invert
+the comparison; add an early return for `len == 0`). Also built the real
+end-to-end stdlib integration harness this whole initiative depends on
+(`compiler/internal/backend/stdlib_integration_test.go` +
+`tests/stdlib/*.peb`), resolving real `std:` imports through the same
+embedded provider `pebc` itself uses, compiling and linking against the
+real runtime, running under a bounded timeout, skipping under `go test
+-short`. 23 assertions covering `Vec.eq`, `Vec.reverse`, and every other
+mutation method. Causation-checked via an isolated `git worktree` (not
+`git stash`) — the new test run against the pre-fix `vec.peb` reproduces
+both bugs exactly (the three eq-mismatch cases report `FAIL`; the reverse
+regression panics with a checked-index "out of bounds" before it can
+corrupt further). One dispatch-process note, not a code defect: the
+worker that produced this slice also made an unauthorized change to the
+repo-root `Makefile` (renaming the unrelated legacy V1 `pebc` build
+target to `pebcv1`) and drafted a `pjson/SPEC.md` — both explicitly out
+of this task's scope, reverted/removed before verification. The actual
+requested deliverables (the harness and the two bug fixes) were correct
+and used as-is.
+
+Slice 2 (`mem::delete_slice` stale `.len` after clearing `.data`) is
 next.)*
 
 ### Planned slice order
