@@ -6,7 +6,13 @@ type Point = struct {
 };
 
 fn main() int {
-    var a arena::Arena;
+    var a arena::Arena = arena::Arena.{
+        backing = context.default_allocator,
+        current = nil,
+        slab_size = 0,
+        free_head = nil,
+        free_current = nil,
+    };
     arena::init(&a, 256, context.default_allocator);
     let backing = arena::allocator(&a);
 

@@ -1,0 +1,78 @@
+import "std:mem/arena";
+
+type Pair = struct {
+    first int;
+    second int;
+};
+
+fn make_arena() arena::Arena {
+    return arena::Arena.{
+        backing = context.default_allocator,
+        current = nil,
+        slab_size = 0,
+        free_head = nil,
+        free_current = nil,
+    };
+}
+
+fn main() int {
+    var a arena::Arena = make_arena();
+    arena::init(&a, 64, context.default_allocator);
+    let backing = arena::allocator(&a);
+
+    var first *Pair = backing.alloc(backing.ptr, sizeof Pair) as *Pair;
+    first.first = 11;
+    first.second = 22;
+
+    var second *Pair = backing.alloc(backing.ptr, sizeof Pair) as *Pair;
+    second.first = 33;
+    second.second = 44;
+
+    // This allocation overflows the initial slab and forces slab growth.
+    var third *Pair = backing.alloc(backing.ptr, sizeof Pair) as *Pair;
+    third.first = 55;
+    third.second = 66;
+
+    // The last allocation grows and shrinks in place.
+    var end *Pair = backing.realloc(backing.ptr, third as *void, sizeof Pair + sizeof int) as *Pair;
+    if end.first != 55 || end.second != 66 {
+        return 1;
+    }
+    end = backing.realloc(backing.ptr, end as *void, sizeof Pair) as *Pair;
+    if end.first != 55 || end.second != 66 {
+        return 2;
+    }
+
+    // free is intentionally a no-op in this allocator; realloc manages slots.
+    backing.free(backing.ptr, second as *void);
+    second = backing.realloc(backing.ptr, second as *void, sizeof Pair) as *Pair;
+    if second.first != 33 || second.second != 44 {
+        return 3;
+    }
+    second = backing.realloc(backing.ptr, second as *void, sizeof int) as *Pair;
+    if second.first != 33 {
+        return 4;
+    }
+
+    // A non-end realloc creates a free slot; the next allocation can reuse it.
+    let old_first = first as *void;
+    first = backing.realloc(backing.ptr, old_first, sizeof int) as *Pair;
+    if first.first != 11 {
+        return 5;
+    }
+
+    var reused *Pair = backing.alloc(backing.ptr, sizeof Pair) as *Pair;
+    reused.first = 77;
+    reused.second = 88;
+
+    if second.first != 33 || second.second != 44 {
+        return 6;
+    }
+    if reused.first != 77 || reused.second != 88 {
+        return 7;
+    }
+
+    arena::destroy(&a);
+    print("arena stress ok\n");
+    return 0;
+}
