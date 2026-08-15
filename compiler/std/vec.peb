@@ -210,7 +210,7 @@ type Vec[T] = struct {
         }
         loop 0..self.len : i {
             if self.data[i] != b.data[i] {
-                return true;  // Wait, should be != for inequality
+                return false;
             }
         }
         return true;
@@ -218,6 +218,9 @@ type Vec[T] = struct {
 
     // In-place reverse.
     fn reverse[T](self *Vec[T]) void {
+        if self.len == 0 {
+            return;
+        }
         var start = 0;
         var end = self.len - 1;
         while start < end {

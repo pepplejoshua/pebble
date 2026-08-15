@@ -1,0 +1,364 @@
+import "std:vec";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === Vec.eq tests ===
+
+    // Test 1: Two empty vectors are equal
+    var a1 = vec::new[i32]();
+    var b1 = vec::new[i32]();
+    if !a1.eq(b1) {
+        print("FAIL: eq_two_empty");
+        failures++;
+    }
+    vec::delete(&a1);
+    vec::delete(&b1);
+
+    // Test 2: Equal one-element vectors
+    var a2 = vec::new[i32]();
+    var b2 = vec::new[i32]();
+    a2.push(42);
+    b2.push(42);
+    if !a2.eq(b2) {
+        print("FAIL: eq_one_element");
+        failures++;
+    }
+    vec::delete(&a2);
+    vec::delete(&b2);
+
+    // Test 3: Equal multi-element vectors
+    var a3 = vec::new[i32]();
+    var b3 = vec::new[i32]();
+    a3.push(1);
+    a3.push(2);
+    a3.push(3);
+    b3.push(1);
+    b3.push(2);
+    b3.push(3);
+    if !a3.eq(b3) {
+        print("FAIL: eq_multi_element");
+        failures++;
+    }
+    vec::delete(&a3);
+    vec::delete(&b3);
+
+    // Test 4: Mismatch at first element
+    var a4 = vec::new[i32]();
+    var b4 = vec::new[i32]();
+    a4.push(1);
+    a4.push(2);
+    b4.push(99);
+    b4.push(2);
+    if a4.eq(b4) {
+        print("FAIL: eq_mismatch_first");
+        failures++;
+    }
+    vec::delete(&a4);
+    vec::delete(&b4);
+
+    // Test 5: Mismatch at middle element
+    var a5 = vec::new[i32]();
+    var b5 = vec::new[i32]();
+    a5.push(1);
+    a5.push(99);
+    a5.push(3);
+    b5.push(1);
+    b5.push(2);
+    b5.push(3);
+    if a5.eq(b5) {
+        print("FAIL: eq_mismatch_middle");
+        failures++;
+    }
+    vec::delete(&a5);
+    vec::delete(&b5);
+
+    // Test 6: Mismatch at last element
+    var a6 = vec::new[i32]();
+    var b6 = vec::new[i32]();
+    a6.push(1);
+    a6.push(2);
+    a6.push(99);
+    b6.push(1);
+    b6.push(2);
+    b6.push(3);
+    if a6.eq(b6) {
+        print("FAIL: eq_mismatch_last");
+        failures++;
+    }
+    vec::delete(&a6);
+    vec::delete(&b6);
+
+    // Test 7: Different lengths return false
+    var a7 = vec::new[i32]();
+    var b7 = vec::new[i32]();
+    a7.push(1);
+    a7.push(2);
+    b7.push(1);
+    if a7.eq(b7) {
+        print("FAIL: eq_different_lengths");
+        failures++;
+    }
+    vec::delete(&a7);
+    vec::delete(&b7);
+
+    // === Vec.reverse tests ===
+
+    // Test 8: Reverse empty vector (safe no-op — bounded harness guards against pre-fix underflow)
+    var v8 = vec::new[i32]();
+    v8.reverse();
+    if v8.len != 0 {
+        print("FAIL: reverse_empty_len");
+        failures++;
+    }
+    vec::delete(&v8);
+
+    // Test 9: Reverse one-element vector changes nothing
+    var v9 = vec::new[i32]();
+    v9.push(42);
+    v9.reverse();
+    var exp9 = vec::new[i32]();
+    exp9.push(42);
+    if !v9.eq(exp9) {
+        print("FAIL: reverse_one_element");
+        failures++;
+    }
+    vec::delete(&v9);
+    vec::delete(&exp9);
+
+    // Test 10: Reverse odd-length vector [1,2,3] -> [3,2,1]
+    var v10 = vec::new[i32]();
+    v10.push(1);
+    v10.push(2);
+    v10.push(3);
+    v10.reverse();
+    var exp10 = vec::new[i32]();
+    exp10.push(3);
+    exp10.push(2);
+    exp10.push(1);
+    if !v10.eq(exp10) {
+        print("FAIL: reverse_odd_length");
+        failures++;
+    }
+    vec::delete(&v10);
+    vec::delete(&exp10);
+
+    // Test 11: Reverse even-length vector [1,2,3,4] -> [4,3,2,1]
+    var v11 = vec::new[i32]();
+    v11.push(1);
+    v11.push(2);
+    v11.push(3);
+    v11.push(4);
+    v11.reverse();
+    var exp11 = vec::new[i32]();
+    exp11.push(4);
+    exp11.push(3);
+    exp11.push(2);
+    exp11.push(1);
+    if !v11.eq(exp11) {
+        print("FAIL: reverse_even_length");
+        failures++;
+    }
+    vec::delete(&v11);
+    vec::delete(&exp11);
+
+    // Test 12: Reverse twice restores original order
+    var v12 = vec::new[i32]();
+    v12.push(10);
+    v12.push(20);
+    v12.push(30);
+    v12.push(40);
+    v12.reverse();
+    v12.reverse();
+    var exp12 = vec::new[i32]();
+    exp12.push(10);
+    exp12.push(20);
+    exp12.push(30);
+    exp12.push(40);
+    if !v12.eq(exp12) {
+        print("FAIL: reverse_twice");
+        failures++;
+    }
+    vec::delete(&v12);
+    vec::delete(&exp12);
+
+    // === Vec mutation tests ===
+
+    // Test 13: push
+    var v13 = vec::new[i32]();
+    v13.push(1);
+    v13.push(2);
+    v13.push(3);
+    if v13.len != 3 {
+        print("FAIL: push_len");
+        failures++;
+    }
+    vec::delete(&v13);
+
+    // Test 14: pop returns last element and shrinks length
+    var v14 = vec::new[i32]();
+    v14.push(1);
+    v14.push(2);
+    v14.push(3);
+    let val14 = v14.pop()!;
+    if val14 != 3 {
+        print("FAIL: pop_value");
+        failures++;
+    }
+    if v14.len != 2 {
+        print("FAIL: pop_len");
+        failures++;
+    }
+    vec::delete(&v14);
+
+    // Test 15: pop on empty does not change length
+    var v15 = vec::new[i32]();
+    v15.pop();
+    if v15.len != 0 {
+        print("FAIL: pop_empty_len");
+        failures++;
+    }
+    vec::delete(&v15);
+
+    // Test 16: insert shifts elements right
+    var v16 = vec::new[i32]();
+    v16.push(1);
+    v16.push(3);
+    v16.insert(1, 2);
+    if v16.len != 3 {
+        print("FAIL: insert_len");
+        failures++;
+    }
+    var exp16 = vec::new[i32]();
+    exp16.push(1);
+    exp16.push(2);
+    exp16.push(3);
+    if !v16.eq(exp16) {
+        print("FAIL: insert_order");
+        failures++;
+    }
+    vec::delete(&v16);
+    vec::delete(&exp16);
+
+    // Test 17: remove shifts elements left
+    var v17 = vec::new[i32]();
+    v17.push(1);
+    v17.push(2);
+    v17.push(3);
+    let val17 = v17.remove(1)!;
+    if val17 != 2 {
+        print("FAIL: remove_value");
+        failures++;
+    }
+    if v17.len != 2 {
+        print("FAIL: remove_len");
+        failures++;
+    }
+    var exp17 = vec::new[i32]();
+    exp17.push(1);
+    exp17.push(3);
+    if !v17.eq(exp17) {
+        print("FAIL: remove_order");
+        failures++;
+    }
+    vec::delete(&v17);
+    vec::delete(&exp17);
+
+    // Test 18: swap_remove swaps with last element
+    var v18 = vec::new[i32]();
+    v18.push(1);
+    v18.push(2);
+    v18.push(3);
+    let val18 = v18.swap_remove(0)!;
+    if val18 != 1 {
+        print("FAIL: swap_remove_value");
+        failures++;
+    }
+    if v18.len != 2 {
+        print("FAIL: swap_remove_len");
+        failures++;
+    }
+    var exp18 = vec::new[i32]();
+    exp18.push(3);
+    exp18.push(2);
+    if !v18.eq(exp18) {
+        print("FAIL: swap_remove_order");
+        failures++;
+    }
+    vec::delete(&v18);
+    vec::delete(&exp18);
+
+    // Test 19: clear sets length to zero
+    var v19 = vec::new[i32]();
+    v19.push(1);
+    v19.push(2);
+    v19.clear();
+    if v19.len != 0 {
+        print("FAIL: clear_len");
+        failures++;
+    }
+    vec::delete(&v19);
+
+    // Test 20: resize grows with fill value
+    var v20 = vec::new[i32]();
+    v20.push(1);
+    v20.resize(5, 0);
+    if v20.len != 5 {
+        print("FAIL: resize_len");
+        failures++;
+    }
+    var exp20 = vec::new[i32]();
+    exp20.push(1);
+    exp20.push(0);
+    exp20.push(0);
+    exp20.push(0);
+    exp20.push(0);
+    if !v20.eq(exp20) {
+        print("FAIL: resize_fill");
+        failures++;
+    }
+    vec::delete(&v20);
+    vec::delete(&exp20);
+
+    // Test 21: truncate shortens without freeing memory
+    var v21 = vec::new[i32]();
+    v21.push(1);
+    v21.push(2);
+    v21.push(3);
+    v21.truncate(1);
+    if v21.len != 1 {
+        print("FAIL: truncate_len");
+        failures++;
+    }
+    var exp21 = vec::new[i32]();
+    exp21.push(1);
+    if !v21.eq(exp21) {
+        print("FAIL: truncate_content");
+        failures++;
+    }
+    vec::delete(&v21);
+    vec::delete(&exp21);
+
+    // Test 22: as_slice returns a slice matching vector length
+    var v22 = vec::new[i32]();
+    v22.push(1);
+    v22.push(2);
+    let s22 = v22.as_slice();
+    if s22.len != 2 {
+        print("FAIL: as_slice_len");
+        failures++;
+    }
+    vec::delete(&v22);
+
+    // Test 23: delete frees backing memory and zeroes len/cap
+    var v23 = vec::new[i32]();
+    v23.push(1);
+    v23.push(2);
+    vec::delete(&v23);
+    if v23.len != 0 || v23.cap != 0 {
+        print("FAIL: delete_cleanup");
+        failures++;
+    }
+
+    return failures as i32;
+}
