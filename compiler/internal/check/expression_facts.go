@@ -4,7 +4,6 @@ import (
 	"bytes"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
-	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
@@ -347,12 +346,6 @@ func (w *walker) finishExpression(ref symbol.SyntaxRef, node syntax.Node, ctx wa
 		pointer := w.valuesBySyntax[plan.slicePointer]
 		count := w.valuesBySyntax[plan.sliceCount]
 		if pointer.ID == 0 || count.ID == 0 || !w.successfulExpressions[plan.slicePointer] || !w.successfulExpressions[plan.sliceCount] {
-			w.failExpression(ref, origin)
-			return
-		}
-		item, ok := w.generation.inputs.Graph.Module(ref.Module)
-		if !ok || item.Key.Package != module.StandardPackage {
-			w.generation.report("slice is restricted to the standard library package", node.Span())
 			w.failExpression(ref, origin)
 			return
 		}

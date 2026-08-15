@@ -1290,8 +1290,7 @@ func buildStructBraceList(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 			// constructions), which needs the same two-statement
 			// temp-then-construction shape a slice local's declaration uses,
 			// so its temp declaration is returned as a pre-statement; or a
-			// bare SliceFromRaw (`slice ptr, n` — restricted to std-package
-			// source, where the raw-pointer slice builtin is available),
+			// bare SliceFromRaw (`slice ptr, n`),
 			// whose construction is a single expression (buildRawSliceConstruction
 			// needs no temp) and needs no pre-statement. Anything else is a
 			// clean rejection naming what was found.

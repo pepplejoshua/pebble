@@ -31,10 +31,22 @@ func TestSliceFromRawStdPackage(t *testing.T) {
 	}
 }
 
-func TestSliceFromRawRejectsNonStandardPackage(t *testing.T) {
+func TestSliceFromRawAllowsNonStandardPackage(t *testing.T) {
 	result, diagnostics := checkSliceFixture(t, "app", "fn main() i32 { var value i32 = 7; var ptr *i32 = &value; let values []i32 = slice ptr, 1; return values[0]; }")
-	if result.Successful() || len(diagnostics.Items()) == 0 {
-		t.Fatal("slice outside std package was accepted")
+	if !result.Successful() {
+		t.Fatalf("check failed: %v", diagnostics.Items())
+	}
+	found := false
+	for _, node := range result.IR().Nodes() {
+		if node.Kind == tir.SliceFromRaw {
+			found = true
+			if len(node.Children) != 2 {
+				t.Fatalf("SliceFromRaw children = %d, want 2", len(node.Children))
+			}
+		}
+	}
+	if !found {
+		t.Fatal("SliceFromRaw node not found")
 	}
 }
 

@@ -2517,7 +2517,7 @@ func buildArrayReturnValue(st *emitState, unit *tir.Unit, snapshot *types.Snapsh
 //     deferred statements already demonstrate, just for construction complexity
 //     rather than deferred cleanup;
 //   - a fresh SliceFromRaw construction (`return slice ptr, n;`, the raw-slice
-//     builtin restricted to std-package source), whose construction is a single
+//     builtin), whose construction is a single
 //     expression (buildRawSliceConstruction needs no temp), so preReturn is
 //     empty;
 //   - a by-value read of a slice-typed struct field used directly as the

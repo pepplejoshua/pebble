@@ -5801,10 +5801,8 @@ func TestEmitSliceFloatElementFromRawStdCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The SliceFromRaw shape (`slice &arr[0], n`) with a float element — how
 	// std/hmap.peb's rehash/with_capacity construct slices over pointers.
-	// SliceFromRaw is checker-restricted to the standard library package (a
-	// C0619 "slice is restricted to the standard library package" rejection
-	// for user modules), so this fixture builds in the std package like the
-	// existing TestEmitSliceFromRawCompilesAndRuns and the struct/enum twins.
+	// This fixture builds in the std package like the existing
+	// TestEmitSliceFromRawCompilesAndRuns and the struct/enum twins.
 	// The slice's data field points at a contiguous [3]f64/[3]f32 array (via
 	// &arr[0], whose *f64/*f32 pointee pointerTypeNameForUnit now declares at
 	// the plain C double/float pointer) and indexes over it, so the exit code
@@ -6184,10 +6182,8 @@ func TestEmitSliceOfStructElementsFromRawStdCompilesAndRuns(t *testing.T) {
 	// The SliceFromRaw shape (`slice ptr, n`) with a struct element — how
 	// std/hmap.peb's rehash/with_capacity actually construct
 	// `let entries []Entry[K, V] = slice ptr, cap;` over an allocator-returned
-	// pointer. SliceFromRaw is checker-restricted to the standard library
-	// package (a C0619 "slice is restricted to the standard library package"
-	// rejection for user modules), so this fixture builds in the std package
-	// like the existing TestEmitSliceFromRawCompilesAndRuns. The slice's data
+	// pointer. This fixture builds in the std package like the existing
+	// TestEmitSliceFromRawCompilesAndRuns. The slice's data
 	// field points at a contiguous [3]P array (via &arr[0]) and indexes over
 	// it, so the exit code proves the whole SliceFromRaw construction plus a
 	// struct-element index read work.
@@ -6286,11 +6282,9 @@ func TestEmitSliceOfEnumElementsFromRawStdCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The SliceFromRaw shape (`slice ptr, n`) with an enum element — how
 	// std/hmap.peb's rehash/with_capacity construct slices over allocator-
-	// returned pointers. SliceFromRaw is checker-restricted to the standard
-	// library package (a C0619 "slice is restricted to the standard library
-	// package" rejection for user modules), so this fixture builds in the std
-	// package like the existing TestEmitSliceFromRawCompilesAndRuns and the
-	// struct-element twin. The slice's data field points at the backing enum
+	// returned pointers. This fixture builds in the std package like the
+	// existing TestEmitSliceFromRawCompilesAndRuns and the struct-element twin.
+	// The slice's data field points at the backing enum
 	// array behind an existing enum slice (via &colors[0]) and indexes over
 	// it, so the exit code proves the whole SliceFromRaw construction plus an
 	// enum-element index read work.
@@ -6809,7 +6803,7 @@ fn main() int {
 func TestEmitSliceStructFieldSliceFromRawCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The same gap via SliceFromRaw: a raw-pointer-derived slice (`slice ptr,
-	// n` — the raw-slice builtin, restricted to std-package source) used
+	// n` — the raw-slice builtin) used
 	// directly as a slice-typed field's construction value. The RecordConstruct
 	// field value is a bare SliceFromRaw node (confirmed against a real fixture
 	// dump), whose construction is a single expression with no temp
