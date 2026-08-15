@@ -570,3 +570,49 @@ causation-checked against `HEAD` (pre-fix: `x\n`, 2 bytes; post-fix:
 `x\0y\n`, 4 bytes). This closes the F5 backlog's last remaining item —
 both the F5-05–F5-25 active queue and the F5-01b/F5-06b deferred
 items are now fully resolved.)*
+
+*(empty — two direct-instruction items closed after the F5 sweep, off
+the numbered backlog:
+
+1. Brace-less `else if` (and other bare/unbraced single-statement
+   if/loop arms) crashing `Emit` with "... is a If, want a Block" —
+   closed in `bc7f506`. Found while verifying the arena rewrite below
+   (its `realloc` used `else if`), but independent of it — reproduces
+   with a bare `if a > 0 { return 1; } else if b > 0 { return 2; }`
+   with no arena involved. Root cause: the grammar documents an
+   if-statement's arms as "a statement" (`spec/compiler/
+   03b-surface-tree.md`), not "a block", but `buildIf`'s terminal-arm
+   path and `buildFallthroughBody`'s ordinary/loop-body path both
+   required `tir.Block` unconditionally. Fixed with a new `buildIfArm`
+   (terminal if, accepting Block/Return/If) and a non-Block fallback in
+   `buildFallthroughBody` delegating to the existing per-statement
+   dispatcher (covers the general single-statement case: fallthrough
+   if, loop bodies, loop-if arms). Verified via real compile-and-run of
+   an else-if chain, an else-if-else chain, a bare-return arm, and a
+   bare-if loop body; targeted `TestEmitIf`/`TestEmitWhile` suites
+   clean; causation-checked against `HEAD`.
+
+2. `std/mem/arena.peb` rebuilt to remove raw pointer arithmetic,
+   replaced with slab-relative `uint` offsets and `slice`-derived ABI
+   pointers — closed in `448e386`. See the commit message for detail;
+   verified via `examples/arena_alloc.peb` and a new
+   `examples/arena_alloc_stress.peb` (slab growth, free-list
+   exact-fit/split reuse, in-place end-of-slab realloc growth/shrink,
+   byte-level field checks). Surfaced one genuine, NOT-yet-fixed
+   backend defect during verification, worked around rather than
+   fixed (out of scope for this item): an explicit `as <T>` cast on a
+   direct function-call result's initializer is silently dropped by
+   the backend, so `let x *MemHeader = some_call(...) as *MemHeader;`
+   emits C with the callee's own return type, not the cast's
+   destination type, when the callee returns a different (but
+   related, e.g. `*u8` vs `*MemHeader`) pointer type — worked around by
+   giving the callee itself a correctly-typed return type instead of
+   relying on a call-site cast. Logged in proposal 14's backlog as a
+   new row for a future item; not reproduced or root-caused beyond the
+   worker's own report — needs independent reproduction before
+   dispatch.
+
+Both items requested directly by the user mid-session, alongside
+removing the `slice` keyword's std-only restriction (queued next) and
+resuming the F6 backend-gap sweep (narrow-width checked arithmetic
+etc., queued after).)*
