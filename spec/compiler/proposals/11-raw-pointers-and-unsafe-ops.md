@@ -97,7 +97,24 @@ Everything else in `new_slice` — the allocator call, the `sizeof`
 computation, the pointer cast — is already-ordinary code needing no new
 language surface.
 
-### 4.2 `slice` — a new keyword, restricted to the std lib package
+### 4.2 `slice` — a new keyword
+
+**2026-08-14 update, direct instruction:** the std-only restriction below
+is reversed. `slice <expr>, <expr>` is now valid from any package, not
+only `module.StandardPackage`. The `slice`-inside-`std`-only design was a
+deliberate unsafe-boundary choice (see below for the original reasoning),
+but the project owner decided ordinary user code should be able to build
+a slice view over a raw pointer directly too, the same way it can already
+use `*T`/`as`/other unsafe primitives without being confined to `std`.
+The package-identity check at the `SliceFromExpr` case in
+`internal/check/expression_facts.go` (`item.Key.Package !=
+module.StandardPackage`) is removed; `slice` behaves exactly like
+`sizeof` in every other respect described below — same grammar, same
+lowering, same backend reuse of the array-slicing typedef machinery.
+
+The rest of this subsection is kept for its design rationale (grammar,
+inference, lowering) even though the restriction paragraph itself no
+longer reflects the current rule.
 
 Modeled directly on `sizeof`'s own treatment (`KwSizeof` in the lexer, a
 dedicated `SizeofExpr` syntax node with no call-parens): `slice` becomes a
