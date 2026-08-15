@@ -162,3 +162,18 @@ func TestStdlibVec(t *testing.T) {
 		t.Fatalf("vec_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
 	}
 }
+
+// TestStdlibMem exercises mem::delete_slice correctness: a deleted slice must
+// report both data == nil AND len == 0 (the pre-fix code cleared .data but
+// left the stale .len behind). Also confirms deleting zero-length and
+// nil-backed empty slices does not crash, and that normal mem allocation,
+// copy, and cleanup are unaffected.
+func TestStdlibMem(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "mem_test.peb")
+	t.Logf("mem_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("mem_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}

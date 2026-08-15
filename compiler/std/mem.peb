@@ -21,6 +21,7 @@ fn new_slice[T](count uint) []T {
 fn delete_slice[T](s *[]T) void {
   delete(s.data as *void);
   s.data = nil;
+  s.len = 0;
 }
 
 fn stack_new(size uint) *void {

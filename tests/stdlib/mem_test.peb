@@ -1,0 +1,84 @@
+import "std:mem";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === mem::delete_slice tests ===
+
+    // Test 1: Delete a populated slice zeroes both data and len
+    var s1 = mem::new_slice[i32](3);
+    s1[0] = 10;
+    s1[1] = 20;
+    s1[2] = 30;
+    if s1.data == nil {
+        print("FAIL: delete_populated_pre_data");
+        failures++;
+    }
+    if s1.len != 3 {
+        print("FAIL: delete_populated_pre_len");
+        failures++;
+    }
+    mem::delete_slice(&s1);
+    if s1.data != nil {
+        print("FAIL: delete_populated_post_data");
+        failures++;
+    }
+    if s1.len != 0 {
+        print("FAIL: delete_populated_post_len");
+        failures++;
+    }
+
+    // Test 2: Delete a zero-length allocated slice (allocated, never written)
+    var s2 = mem::new_slice[i32](0);
+    if s2.len != 0 {
+        print("FAIL: delete_empty_pre_len");
+        failures++;
+    }
+    mem::delete_slice(&s2);
+    if s2.data != nil {
+        print("FAIL: delete_empty_post_data");
+        failures++;
+    }
+    if s2.len != 0 {
+        print("FAIL: delete_empty_post_len");
+        failures++;
+    }
+
+    // Test 3: Delete an already-empty nil-backed slice does not crash
+    let empty *i32 = nil;
+    var s3 = slice empty, 0;
+    mem::delete_slice(&s3);
+    if s3.data != nil {
+        print("FAIL: delete_nilbacked_post_data");
+        failures++;
+    }
+    if s3.len != 0 {
+        print("FAIL: delete_nilbacked_post_len");
+        failures++;
+    }
+
+    // === normal mem behavior unaffected ===
+
+    // Test 4: Normal allocation and cleanup via new_typed/delete
+    let p4 = mem::new_typed[i32]();
+    *p4 = 42;
+    if *p4 != 42 {
+        print("FAIL: new_typed_value");
+        failures++;
+    }
+    mem::delete(p4 as *void);
+
+    // Test 5: Normal raw allocation, copy, and cleanup via new/copy/delete
+    let src *i32 = mem::new(sizeof i32) as *i32;
+    let dst *i32 = mem::new(sizeof i32) as *i32;
+    *src = 7;
+    mem::copy(dst as *void, src as *void, sizeof i32);
+    if *dst != 7 {
+        print("FAIL: copy_value");
+        failures++;
+    }
+    mem::delete(src as *void);
+    mem::delete(dst as *void);
+
+    return failures as i32;
+}
