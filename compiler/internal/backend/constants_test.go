@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bytes"
 	"testing"
 )
 
@@ -14,10 +13,9 @@ import (
 // count, switch case label, range-loop bound, struct field value).
 //
 // Narrow-width (i8/i16/u8/u32/u64-div) checked-arithmetic constant
-// expressions are intentionally not covered here: TestPlainNarrowWidthArithmeticLimitation
-// proves the backend rejects the identical arithmetic shapes with plain,
-// non-constant operands too, so the gap is a pre-existing general
-// checked-arithmetic limitation, not specific to module-level constants.
+// expressions are intentionally not covered here: their runtime support is
+// exercised by TestPlainNarrowWidthArithmeticCompilesAndRuns, while this test
+// focuses on module-level constant value shapes and use positions.
 func TestModuleConstantValueShapes(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -86,30 +84,26 @@ func TestModuleConstantValueShapes(t *testing.T) {
 	}
 }
 
-// TestPlainNarrowWidthArithmeticLimitation proves that i8/i16/u8/u32 checked
-// arithmetic and u64 division are rejected by the backend for plain,
-// non-constant operands too — the same shapes rejected when used as a
-// module-level constant's initializer. This confirms the gap belongs to
-// general checked-arithmetic width support, not to constant handling, and
-// is therefore out of scope for the module-level-constant tracker row.
-func TestPlainNarrowWidthArithmeticLimitation(t *testing.T) {
+// TestPlainNarrowWidthArithmeticCompilesAndRuns proves that i8/i16/u8/u32
+// checked arithmetic and u64 division compile and produce the expected result
+// for plain, non-constant operands. This positive coverage supersedes the
+// former rejection test now that dedicated checked-arithmetic runtime helpers
+// for these widths have landed in afb8c77 and ab67de5.
+func TestPlainNarrowWidthArithmeticCompilesAndRuns(t *testing.T) {
 	cases := []struct {
 		name   string
 		source string
+		want   int
 	}{
-		{"plain local i16 add", "fn main() int { var y i16 = 2 + 3; return y as int; }"},
-		{"plain local u8 add", "fn main() int { var y u8 = 2 + 3; return y as int; }"},
-		{"plain local i8 mul", "fn main() int { var y i8 = 2 * 3; return y as int; }"},
-		{"plain local u32 add", "fn main() int { var y u32 = 2 + 3; return y as int; }"},
-		{"plain local u64 div", "fn main() int { var y u64 = 10 / 3; return y as int; }"},
+		{"plain local i16 add", "fn main() int { var y i16 = 2 + 3; return y as int; }", 5},
+		{"plain local u8 add", "fn main() int { var y u8 = 2 + 3; return y as int; }", 5},
+		{"plain local i8 mul", "fn main() int { var y i8 = 2 * 3; return y as int; }", 6},
+		{"plain local u32 add", "fn main() int { var y u32 = 2 + 3; return y as int; }", 5},
+		{"plain local u64 div", "fn main() int { var y u64 = 10 / 3; return y as int; }", 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			unit, snapshot, entryID, sources := buildFixture(t, c.source, "main", false)
-			var buf bytes.Buffer
-			if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err == nil {
-				t.Fatalf("expected backend rejection for %q, but Emit succeeded", c.source)
-			}
+			emitAndRun(t, c.source, false, c.want, false)
 		})
 	}
 }
