@@ -81,8 +81,8 @@ fn main() int {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "extern int32_t shim_seed;") {
+	if !strings.Contains(out, "extern int64_t shim_seed;") {
 		t.Fatalf("emitted C missing extern declaration:\n%s", out)
 	}
-	compileAndRunWithShim(t, buf.Bytes(), "#include <stdint.h>\nint32_t shim_seed = 5;\n", 5)
+	compileAndRunWithShim(t, buf.Bytes(), "#include <stdint.h>\nint64_t shim_seed = 5;\n", 5)
 }

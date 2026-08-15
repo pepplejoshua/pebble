@@ -208,7 +208,7 @@ func TestEnumCallResultAndFieldAndCastArgumentsWritesC(t *testing.T) {
 	for _, want := range []string{
 		"pebble_fn_",
 		"pebble_field_",
-		"(" + enumTypeName(enumType) + ")pebble_rt_checked_int_to_enum((int64_t)(1), 3, (PebbleSourceLoc)",
+		"(" + enumTypeName(enumType) + ")pebble_rt_checked_int_to_enum((int64_t)(1LL), 3, (PebbleSourceLoc)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
