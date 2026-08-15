@@ -11,6 +11,11 @@ func TestEmitIntEntryCheckedAddCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "fn main() int { let x int = 40; let y int = 2; return x + y; }", true, 42, false)
 }
 
+func TestEmitU8CheckedAddReproCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	emitAndRun(t, "fn main() int { var a u8 = 200; var b u8 = 50; var c u8 = a + b; return c as int; }", false, 250, false)
+}
+
 func TestEmitCheckedAddReturnCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// `return 1 + 2;` was rejected by 10.3; the checked arithmetic expression

@@ -156,7 +156,9 @@ typedef struct PebbleSourceLoc {
  * arithmetic, so this is defined behavior, never a signed-overflow UB trap) —
  * release mode trades the panic for speed, not for undefined behavior.
  *
- * i32, i64, and u64 for now; other integer widths arrive with the lowering
+ * i8, i16, u8, u16, u32, i32, i64, and u64. Narrow variants support checked
+ * addition, subtraction, and multiplication; division and modulo remain
+ * available only at widths with dedicated helpers. Other integer widths arrive with the lowering
  * slices that need them. The i64 and u64 variants are the exact same contract
  * at the wider width — same overflow-panic-in-SAFE / wrap-in-RELEASE split,
  * same two's-complement wraparound (for u64 the wrap is simply the C-defined
@@ -168,6 +170,14 @@ int32_t pebble_rt_checked_add_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_sub_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b, PebbleSourceLoc loc);
 int32_t pebble_rt_checked_neg_i32(int32_t a, PebbleSourceLoc loc);
+
+int8_t pebble_rt_checked_add_i8(int8_t a, int8_t b, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_sub_i8(int8_t a, int8_t b, PebbleSourceLoc loc);
+int8_t pebble_rt_checked_mul_i8(int8_t a, int8_t b, PebbleSourceLoc loc);
+
+int16_t pebble_rt_checked_add_i16(int16_t a, int16_t b, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_sub_i16(int16_t a, int16_t b, PebbleSourceLoc loc);
+int16_t pebble_rt_checked_mul_i16(int16_t a, int16_t b, PebbleSourceLoc loc);
 
 int64_t pebble_rt_checked_add_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
 int64_t pebble_rt_checked_sub_i64(int64_t a, int64_t b, PebbleSourceLoc loc);
@@ -188,6 +198,18 @@ int16_t pebble_rt_checked_neg_i16(int16_t a, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_add_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
 uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc);
+
+uint8_t pebble_rt_checked_add_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc);
+uint8_t pebble_rt_checked_sub_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc);
+uint8_t pebble_rt_checked_mul_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc);
+
+uint16_t pebble_rt_checked_add_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_sub_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc);
+uint16_t pebble_rt_checked_mul_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc);
+
+uint32_t pebble_rt_checked_add_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_sub_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc);
+uint32_t pebble_rt_checked_mul_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc);
 
 /* ---- wrapping u64 arithmetic ------------------------------------------------
  * The explicit wrapping builtins wrapping_mul_u64 / wrapping_add_u64 lower to

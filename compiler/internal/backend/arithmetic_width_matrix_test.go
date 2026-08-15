@@ -12,12 +12,11 @@ import (
 // coverage matrix": every checker-accepted integer width must either emit a
 // real, correct checked-arithmetic lowering or reject CLEANLY at Emit — never
 // emit a call to a nonexistent helper that only fails later at cc. The plain
-// binary-expression matrix is fully covered (int/i32/i64 x all five ops via the
-// checked helpers, u64 x + - * via the u64 helpers, uint x all five ops as
-// plain C arithmetic, and a clean rejection for every narrow fixed-width
-// integer x every op and for u64 / and %); the compound-assignment form has the
-// same coverage, including the %= on uint shape that previously rejected even
-// though the plain `a % b` form lowered fine.
+// binary-expression matrix covers checked helpers for all supported widths and
+// operators, plus clean rejection for unsupported narrow division/modulo and
+// u64 division/modulo. The compound-assignment form has the same coverage,
+// including the %= on uint shape that previously rejected even though the
+// plain `a % b` form lowered fine.
 
 func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
 	t.Parallel()
@@ -55,6 +54,21 @@ func TestArithmeticWidthMatrixCompileAndRun(t *testing.T) {
 		{"mul uint", "uint", "*", 10},
 		{"div uint", "uint", "/", 2},
 		{"mod uint", "uint", "%", 1},
+		{"add i8", "i8", "+", 7},
+		{"sub i8", "i8", "-", 3},
+		{"mul i8", "i8", "*", 10},
+		{"add i16", "i16", "+", 7},
+		{"sub i16", "i16", "-", 3},
+		{"mul i16", "i16", "*", 10},
+		{"add u8", "u8", "+", 7},
+		{"sub u8", "u8", "-", 3},
+		{"mul u8", "u8", "*", 10},
+		{"add u16", "u16", "+", 7},
+		{"sub u16", "u16", "-", 3},
+		{"mul u16", "u16", "*", 10},
+		{"add u32", "u32", "+", 7},
+		{"sub u32", "u32", "-", 3},
+		{"mul u32", "u32", "*", 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -78,29 +92,14 @@ func TestArithmeticWidthMatrixRejectsCleanly(t *testing.T) {
 		width string
 		op    string
 	}{
-		{"add u8", "u8", "+"},
-		{"sub u8", "u8", "-"},
-		{"mul u8", "u8", "*"},
 		{"div u8", "u8", "/"},
 		{"mod u8", "u8", "%"},
-		{"add u16", "u16", "+"},
-		{"sub u16", "u16", "-"},
-		{"mul u16", "u16", "*"},
 		{"div u16", "u16", "/"},
 		{"mod u16", "u16", "%"},
-		{"add u32", "u32", "+"},
-		{"sub u32", "u32", "-"},
-		{"mul u32", "u32", "*"},
 		{"div u32", "u32", "/"},
 		{"mod u32", "u32", "%"},
-		{"add i8", "i8", "+"},
-		{"sub i8", "i8", "-"},
-		{"mul i8", "i8", "*"},
 		{"div i8", "i8", "/"},
 		{"mod i8", "i8", "%"},
-		{"add i16", "i16", "+"},
-		{"sub i16", "i16", "-"},
-		{"mul i16", "i16", "*"},
 		{"div i16", "i16", "/"},
 		{"mod i16", "i16", "%"},
 		{"div u64", "u64", "/"},
@@ -111,6 +110,35 @@ func TestArithmeticWidthMatrixRejectsCleanly(t *testing.T) {
 			src := fmt.Sprintf("fn main() int { var a %s = 5; var b %s = 2; var r %s = a %s b; return r as int; }", tc.width, tc.width, tc.width, tc.op)
 			want := fmt.Sprintf("CheckedArithmetic with operator %s at %s, want an operator with a checked runtime helper", tc.op, tc.width)
 			emitAndRunRejects(t, src, want)
+		})
+	}
+}
+
+func TestArithmeticWidthMatrixOverflowAborts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"i8 add", "fn main() int { var a i8 = 127; var b i8 = 1; var r i8 = a + b; return r as int; }"},
+		{"i8 sub", "fn main() int { var a i8 = -128; var b i8 = 1; var r i8 = a - b; return r as int; }"},
+		{"i8 mul", "fn main() int { var a i8 = 64; var b i8 = 2; var r i8 = a * b; return r as int; }"},
+		{"i16 add", "fn main() int { var a i16 = 32767; var b i16 = 1; var r i16 = a + b; return r as int; }"},
+		{"i16 sub", "fn main() int { var a i16 = -32768; var b i16 = 1; var r i16 = a - b; return r as int; }"},
+		{"i16 mul", "fn main() int { var a i16 = 256; var b i16 = 128; var r i16 = a * b; return r as int; }"},
+		{"u8 add", "fn main() int { var a u8 = 255; var b u8 = 1; var r u8 = a + b; return r as int; }"},
+		{"u8 sub", "fn main() int { var a u8 = 0; var b u8 = 1; var r u8 = a - b; return r as int; }"},
+		{"u8 mul", "fn main() int { var a u8 = 16; var b u8 = 16; var r u8 = a * b; return r as int; }"},
+		{"u16 add", "fn main() int { var a u16 = 65535; var b u16 = 1; var r u16 = a + b; return r as int; }"},
+		{"u16 sub", "fn main() int { var a u16 = 0; var b u16 = 1; var r u16 = a - b; return r as int; }"},
+		{"u16 mul", "fn main() int { var a u16 = 256; var b u16 = 256; var r u16 = a * b; return r as int; }"},
+		{"u32 add", "fn main() int { var a u32 = 4294967295; var b u32 = 1; var r u32 = a + b; return r as int; }"},
+		{"u32 sub", "fn main() int { var a u32 = 0; var b u32 = 1; var r u32 = a - b; return r as int; }"},
+		{"u32 mul", "fn main() int { var a u32 = 65536; var b u32 = 65536; var r u32 = a * b; return r as int; }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.src, false, 0, true)
 		})
 	}
 }

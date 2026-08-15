@@ -119,6 +119,54 @@ int64_t pebble_rt_checked_mul_i64(int64_t a, int64_t b, PebbleSourceLoc loc) {
     return result;
 }
 
+int8_t pebble_rt_checked_add_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    int8_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i8 addition overflow", loc);
+    }
+    return result;
+}
+
+int8_t pebble_rt_checked_sub_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    int8_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i8 subtraction overflow", loc);
+    }
+    return result;
+}
+
+int8_t pebble_rt_checked_mul_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    int8_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i8 multiplication overflow", loc);
+    }
+    return result;
+}
+
+int16_t pebble_rt_checked_add_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    int16_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i16 addition overflow", loc);
+    }
+    return result;
+}
+
+int16_t pebble_rt_checked_sub_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    int16_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i16 subtraction overflow", loc);
+    }
+    return result;
+}
+
+int16_t pebble_rt_checked_mul_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    int16_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("i16 multiplication overflow", loc);
+    }
+    return result;
+}
+
 /* The u64 trio: the same contract at the unsigned width. __builtin_*_overflow
  * accepts unsigned operand types directly (GCC and Clang both define them for
  * every integer type, signed or unsigned) and reports unsigned wraparound as
@@ -151,6 +199,78 @@ uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) 
     uint64_t result;
     if (__builtin_mul_overflow(a, b, &result)) {
         pebble_rt_overflow_panic("u64 multiplication overflow", loc);
+    }
+    return result;
+}
+
+uint8_t pebble_rt_checked_add_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    uint8_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u8 addition overflow", loc);
+    }
+    return result;
+}
+
+uint8_t pebble_rt_checked_sub_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    uint8_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u8 subtraction overflow", loc);
+    }
+    return result;
+}
+
+uint8_t pebble_rt_checked_mul_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    uint8_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u8 multiplication overflow", loc);
+    }
+    return result;
+}
+
+uint16_t pebble_rt_checked_add_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    uint16_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u16 addition overflow", loc);
+    }
+    return result;
+}
+
+uint16_t pebble_rt_checked_sub_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    uint16_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u16 subtraction overflow", loc);
+    }
+    return result;
+}
+
+uint16_t pebble_rt_checked_mul_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    uint16_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u16 multiplication overflow", loc);
+    }
+    return result;
+}
+
+uint32_t pebble_rt_checked_add_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    uint32_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u32 addition overflow", loc);
+    }
+    return result;
+}
+
+uint32_t pebble_rt_checked_sub_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    uint32_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u32 subtraction overflow", loc);
+    }
+    return result;
+}
+
+uint32_t pebble_rt_checked_mul_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    uint32_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        pebble_rt_overflow_panic("u32 multiplication overflow", loc);
     }
     return result;
 }
@@ -340,6 +460,36 @@ int32_t pebble_rt_checked_mul_i32(int32_t a, int32_t b, PebbleSourceLoc loc) {
     return (int32_t)((uint32_t)a * (uint32_t)b);
 }
 
+int8_t pebble_rt_checked_add_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)((uint8_t)a + (uint8_t)b);
+}
+
+int8_t pebble_rt_checked_sub_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)((uint8_t)a - (uint8_t)b);
+}
+
+int8_t pebble_rt_checked_mul_i8(int8_t a, int8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int8_t)((uint8_t)a * (uint8_t)b);
+}
+
+int16_t pebble_rt_checked_add_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)((uint16_t)a + (uint16_t)b);
+}
+
+int16_t pebble_rt_checked_sub_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)((uint16_t)a - (uint16_t)b);
+}
+
+int16_t pebble_rt_checked_mul_i16(int16_t a, int16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return (int16_t)((uint16_t)a * (uint16_t)b);
+}
+
 int32_t pebble_rt_checked_neg_i32(int32_t a, PebbleSourceLoc loc) {
     (void)loc;
     return (int32_t)(0u - (uint32_t)a);
@@ -371,6 +521,51 @@ uint64_t pebble_rt_checked_sub_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) 
 }
 
 uint64_t pebble_rt_checked_mul_u64(uint64_t a, uint64_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a * b;
+}
+
+uint8_t pebble_rt_checked_add_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a + b;
+}
+
+uint8_t pebble_rt_checked_sub_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a - b;
+}
+
+uint8_t pebble_rt_checked_mul_u8(uint8_t a, uint8_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a * b;
+}
+
+uint16_t pebble_rt_checked_add_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a + b;
+}
+
+uint16_t pebble_rt_checked_sub_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a - b;
+}
+
+uint16_t pebble_rt_checked_mul_u16(uint16_t a, uint16_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a * b;
+}
+
+uint32_t pebble_rt_checked_add_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a + b;
+}
+
+uint32_t pebble_rt_checked_sub_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
+    (void)loc;
+    return a - b;
+}
+
+uint32_t pebble_rt_checked_mul_u32(uint32_t a, uint32_t b, PebbleSourceLoc loc) {
     (void)loc;
     return a * b;
 }

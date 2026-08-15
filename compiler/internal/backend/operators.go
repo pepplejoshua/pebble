@@ -109,8 +109,13 @@ func checkedArithmeticHelper(op syntax.TokenKind, width types.BuiltinKind) (stri
 	default:
 		return "", false
 	}
-	if width == types.U64 && (op == syntax.Slash || op == syntax.Percent) {
-		return "", false
+	if op == syntax.Slash || op == syntax.Percent {
+		switch width {
+		case types.Int, types.I32, types.I64:
+			// These are the only widths with checked division/modulo helpers.
+		default:
+			return "", false
+		}
 	}
 	suffix := checkedSuffix(width)
 	if suffix == "" {
@@ -286,17 +291,27 @@ func optionalUnwrapSuffix(snapshot *types.Snapshot, id types.TypeID) string {
 }
 
 // checkedSuffix returns the pebble_rt_checked_* function-name suffix for the
-// given width: "i64" for an int or i64 entry (int is the 64-bit target-native
-// word type, C int64_t, so it shares the i64 helper family), "i32" for an i32
-// entry, "u64" for a u64 entry. It is exactly the type's name for the
-// fixed-width entries, but named for what it selects — the width-specific
-// runtime helper family.
+// given width: "i64" for an int or i64 entry, "i32" for an i32 entry, "u64"
+// for a u64 entry, and the width's own name for the narrow fixed-width entries
+// with checked add/sub/mul runtime helpers. Division and modulo remain
+// operator-gated by checkedArithmeticHelper and therefore still reject at
+// narrow widths.
 func checkedSuffix(width types.BuiltinKind) string {
 	switch width {
 	case types.Int, types.I64:
 		return "i64"
 	case types.I32:
 		return "i32"
+	case types.I8:
+		return "i8"
+	case types.I16:
+		return "i16"
+	case types.U8:
+		return "u8"
+	case types.U16:
+		return "u16"
+	case types.U32:
+		return "u32"
 	case types.U64:
 		return "u64"
 	}

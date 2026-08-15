@@ -710,13 +710,11 @@ func TestEmitRejectsU64CheckedDivision(t *testing.T) {
 
 func TestEmitRejectsNarrowCheckedArithmetic(t *testing.T) {
 	t.Parallel()
-	// A checked +, -, *, /, or % at a narrow fixed-width integer (u8, u16,
-	// i8, i16, or u32) has no runtime helper: checkedSuffix yields "" for
-	// every width except int/i32/i64/u64, so the PLAIN BINARY EXPRESSION form
-	// must be rejected CLEANLY at Emit time, not emitted as a call to a
-	// nonexistent empty-suffix pebble_rt_checked_add_/sub_/etc. helper that
-	// would only fail at cc compile. The error must name the operator and the
-	// offending width. uint is deliberately NOT asserted here: uint-typed
+	// A checked / or % at a narrow fixed-width integer (u8, u16, i8, i16, or
+	// u32) has no runtime helper, so the PLAIN BINARY EXPRESSION form must be
+	// rejected CLEANLY at Emit time rather than emitted as a call to a
+	// nonexistent helper. The error must name the operator and offending width.
+	// uint is deliberately NOT asserted here: uint-typed
 	// CheckedArithmetic is lowered by buildUintExpr to plain C arithmetic and
 	// never reaches this helper, so it is unaffected by the guard.
 	for _, tc := range []struct {
@@ -724,15 +722,16 @@ func TestEmitRejectsNarrowCheckedArithmetic(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"add u8", "fn f() u8 { var a u8 = 200; var b u8 = 100; return a + b; } fn main() int { return f() as int; }", "operator + at u8"},
-		{"sub u8", "fn f() u8 { var a u8 = 200; var b u8 = 100; return a - b; } fn main() int { return f() as int; }", "operator - at u8"},
-		{"mul u8", "fn f() u8 { var a u8 = 200; var b u8 = 2; return a * b; } fn main() int { return f() as int; }", "operator * at u8"},
 		{"div u8", "fn f() u8 { var a u8 = 200; var b u8 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u8"},
 		{"mod u8", "fn f() u8 { var a u8 = 200; var b u8 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u8"},
-		{"add u16", "fn f() u16 { var a u16 = 200; var b u16 = 100; return a + b; } fn main() int { return f() as int; }", "operator + at u16"},
-		{"add i8", "fn f() i8 { var a i8 = 100; var b i8 = 20; return a + b; } fn main() int { return f() as int; }", "operator + at i8"},
-		{"add i16", "fn f() i16 { var a i16 = 100; var b i16 = 20; return a + b; } fn main() int { return f() as int; }", "operator + at i16"},
-		{"add u32", "fn f() u32 { var a u32 = 200; var b u32 = 100; return a + b; } fn main() int { return f() as int; }", "operator + at u32"},
+		{"div u16", "fn f() u16 { var a u16 = 200; var b u16 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u16"},
+		{"mod u16", "fn f() u16 { var a u16 = 200; var b u16 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u16"},
+		{"div i8", "fn f() i8 { var a i8 = 100; var b i8 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at i8"},
+		{"mod i8", "fn f() i8 { var a i8 = 100; var b i8 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at i8"},
+		{"div i16", "fn f() i16 { var a i16 = 100; var b i16 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at i16"},
+		{"mod i16", "fn f() i16 { var a i16 = 100; var b i16 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at i16"},
+		{"div u32", "fn f() u32 { var a u32 = 200; var b u32 = 2; return a / b; } fn main() int { return f() as int; }", "operator / at u32"},
+		{"mod u32", "fn f() u32 { var a u32 = 200; var b u32 = 2; return a % b; } fn main() int { return f() as int; }", "operator % at u32"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
