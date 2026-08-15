@@ -134,6 +134,7 @@ func (r *resolver) registerBuiltinFunctions() {
 	}{
 		{"wrapping_mul_u64", BuiltinWrappingMulU64},
 		{"wrapping_add_u64", BuiltinWrappingAddU64},
+		{"str_byte_at", BuiltinStrByteAt},
 	} {
 		id := r.addSymbol(Symbol{Name: function.name, Kind: SymbolBuiltinFunction, Scope: scope, BuiltinFunction: function.kind}, true, 0)
 		r.result.builtinFunctions[function.kind] = id

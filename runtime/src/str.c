@@ -118,6 +118,24 @@ bool pebble_rt_str_eq(PebbleStr a, PebbleStr b) {
     return memcmp(a.data, b.data, a.len) == 0;
 }
 
+/* Read one raw byte from a str at a byte offset (see pebble_rt.h). Unlike
+ * pebble_rt_str_char_at which walks UTF-8 codepoints, this reads the exact
+ * byte at byte_index — useful for inspecting the raw UTF-8 encoding of a
+ * string. In SAFE mode it checks byte_index < s.len and panics with
+ * PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS on violation, using the injected
+ * PebbleSourceLoc so the panic report names the exact call site. In RELEASE
+ * mode the check is omitted and data[byte_index] is read directly.
+ */
+uint8_t pebble_rt_str_byte_at(PebbleStr s, uint64_t byte_index, PebbleSourceLoc loc) {
+    (void)loc;
+#if PEBBLE_RT_CHECKS_ENABLED
+    if (byte_index >= s.len) {
+        pebble_rt_str_index_panic(loc);
+    }
+#endif
+    return s.data[byte_index];
+}
+
 /* Lexicographic byte comparison (see pebble_rt.h). */
 int pebble_rt_str_cmp(PebbleStr a, PebbleStr b) {
     size_t shared = a.len < b.len ? a.len : b.len;

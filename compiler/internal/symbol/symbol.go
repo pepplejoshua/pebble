@@ -170,6 +170,7 @@ type BuiltinFunction uint8
 const (
 	BuiltinWrappingMulU64 BuiltinFunction = iota + 1
 	BuiltinWrappingAddU64
+	BuiltinStrByteAt
 )
 
 // ScopeKind describes an authored or declaration environment.
@@ -324,7 +325,7 @@ type Result struct {
 	prelude          ScopeID
 	builtins         [BuiltinF64 + 1]SymbolID
 	runtimes         [RuntimeContext + 1]SymbolID
-	builtinFunctions [BuiltinWrappingAddU64 + 1]SymbolID
+	builtinFunctions [BuiltinStrByteAt + 1]SymbolID
 	references       map[SyntaxRef]Resolution
 	qualifiers       map[SyntaxRef]ModuleID
 	brackets         map[SyntaxRef]BracketMode

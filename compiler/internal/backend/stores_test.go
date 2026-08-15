@@ -296,9 +296,9 @@ func TestEmitStrReassignmentWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"pebble_local_27 = (PebbleStr){ .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"    (void)pebble_local_27;",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"pebble_local_28 = (PebbleStr){ .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"    (void)pebble_local_28;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

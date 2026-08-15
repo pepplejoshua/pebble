@@ -1,4 +1,4 @@
-unit nodes=27 components=75 snapshot=24 regions=2 functions=1 temps=0
+unit nodes=27 components=75 snapshot=25 regions=2 functions=1 temps=0
 module id=1 package="facts" path="prelude/runtime.peb" source=0 span=0[0,1941)
   decl symbol=17
   decl symbol=22

@@ -177,3 +177,30 @@ func TestStdlibMem(t *testing.T) {
 		t.Fatalf("mem_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
 	}
 }
+
+// TestStdlibStrByteAt exercises str_byte_at — the new checked raw-byte read on
+// str. It verifies ASCII byte reads, multi-byte UTF-8 sequences (reading both
+// raw bytes individually), three-byte and four-byte UTF-8 sequences, embedded
+// NUL handling, empty-string bounds checking, and that the existing str[i]
+// scalar-index path is completely unaffected.
+func TestStdlibStrByteAt(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "str_byte_at_test.peb")
+	t.Logf("str_byte_at_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("str_byte_at_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibStrIndexRegression proves that str[i] (Unicode-scalar indexing)
+// still returns decoded scalars after the str_byte_at addition — not raw bytes.
+func TestStdlibStrIndexRegression(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "str_index_regression_test.peb")
+	t.Logf("str_index_regression_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("str_index_regression_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}

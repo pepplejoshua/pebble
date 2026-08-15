@@ -1200,6 +1200,8 @@ func builtinFunctionCName(st *emitState, symbolID symbol.SymbolID) (string, bool
 		return "pebble_rt_wrapping_mul_u64", true
 	case symbol.BuiltinWrappingAddU64:
 		return "pebble_rt_wrapping_add_u64", true
+	case symbol.BuiltinStrByteAt:
+		return "pebble_rt_str_byte_at", true
 	default:
 		return "", false
 	}

@@ -91,7 +91,7 @@ func TestEmitDeferredLocalDeclarationCOutput(t *testing.T) {
 	// (void) cast, a closing brace, then the return — so the deferred local is
 	// invisible outside the defer, and its declaration cannot collide with a
 	// same-named local in the enclosing body.
-	if !strings.Contains(out, "{\n        int32_t pebble_local_27 = 5;\n        (void)pebble_local_27;\n    }\n    return 0;") {
+	if !strings.Contains(out, "{\n        int32_t pebble_local_28 = 5;\n        (void)pebble_local_28;\n    }\n    return 0;") {
 		t.Errorf("emitted C is missing the block-scoped deferred local declaration:\n%s", out)
 	}
 	if strings.Contains(out, "defer") {

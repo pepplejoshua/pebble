@@ -17,6 +17,8 @@ import (
 func (p *Program) prepareBuiltinSignatures() {
 	builtins := p.builtins()
 	u64 := p.knownTemplate(builtins.U64)
+	u8 := p.knownTemplate(builtins.U8)
+	str := p.knownTemplate(builtins.Str)
 	for _, function := range []symbol.BuiltinFunction{
 		symbol.BuiltinWrappingMulU64,
 		symbol.BuiltinWrappingAddU64,
@@ -37,6 +39,24 @@ func (p *Program) prepareBuiltinSignatures() {
 		// A builtin signature has no type parameters, so its owner-table entry
 		// is the empty list; recording it keeps the semantic snapshot's owner
 		// table consistent with the signature table.
+		p.owners[id] = []symbol.SymbolID(nil)
+	}
+	// str_byte_at takes a str and a u64 byte offset, returns u8. It carries
+	// the Pebble calling convention like any other language-level callable,
+	// but the backend lowers its call directly to the runtime helper
+	// pebble_rt_str_byte_at instead of emitting a pebble_fn wrapper.
+	id, ok := p.inputs.Resolution.BuiltinFunction(symbol.BuiltinStrByteAt)
+	if !ok {
+		p.valid = false
+		p.reporter.error(CodeResourceLimit, "builtin function identity is unavailable", Origin{Role: "builtin prelude"})
+	} else {
+		p.signatures[id] = Signature{
+			Symbol:     id,
+			State:      DeclarationReady,
+			Inputs:     []TemplateID{str, u64},
+			Result:     u8,
+			Convention: types.Pebble,
+		}
 		p.owners[id] = []symbol.SymbolID(nil)
 	}
 }

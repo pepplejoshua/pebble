@@ -383,7 +383,7 @@ func TestEmitCompoundLoweringGoesThroughCheckedHelper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 32})") {
+	if !strings.Contains(out, "pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, 1, (PebbleSourceLoc){\"main.peb\", 1, 32})") {
 		t.Fatalf("emitted C does not combine through the checked helper:\n%s", out)
 	}
 	if strings.Contains(out, " += ") {
@@ -576,9 +576,9 @@ func TestEmitHelperWithFullGrammarBodyWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx) {",
-		"    bool pebble_local_28 = false;",
-		"    while (!(pebble_local_28)) {\n",
-		"    if (pebble_local_29 > 3) {\n",
+		"    bool pebble_local_29 = false;",
+		"    while (!(pebble_local_29)) {\n",
+		"    if (pebble_local_30 > 3) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1098,8 +1098,8 @@ func TestEmitU8ParameterWritesC(t *testing.T) {
 		"static int64_t pebble_fn_24(PebbleContext *ctx, uint8_t pebble_local_25) {",
 		"    (void)pebble_local_25;",
 		"    return (int64_t)(pebble_local_25);",
-		"uint8_t pebble_local_29 = 5u;",
-		"return pebble_fn_24(ctx, pebble_local_29);",
+		"uint8_t pebble_local_30 = 5u;",
+		"return pebble_fn_24(ctx, pebble_local_30);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1246,9 +1246,9 @@ func TestEmitStrReturningHelperWritesC(t *testing.T) {
 		"static PebbleStr pebble_fn_24(PebbleContext *ctx, PebbleStr pebble_local_25) {",
 		"    (void)pebble_local_25;",
 		"    return pebble_local_25;",
-		"PebbleStr pebble_local_29 = pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
-		"    (void)pebble_local_29;",
-		"if (pebble_rt_str_eq(pebble_local_29, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+		"PebbleStr pebble_local_30 = pebble_fn_24(ctx, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 });",
+		"    (void)pebble_local_30;",
+		"if (pebble_rt_str_eq(pebble_local_30, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2152,7 +2152,7 @@ fn main() int {
 		"    (void)pebble_local_30;",
 		"    (void)pebble_local_31;",
 		"    (void)pebble_local_32;",
-		"return pebble_fn_27(ctx, 3LL, true, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }, pebble_local_38, (int64_t *)(&pebble_local_37));",
+		"return pebble_fn_27(ctx, 3LL, true, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 }, pebble_local_39, (int64_t *)(&pebble_local_38));",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

@@ -319,9 +319,9 @@ func TestEmitNoElseIfInLoopBodyWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (pebble_local_27 < 10) {\n",
-		"        if (pebble_local_27 < 5) {\n",
-		"            pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 81});",
+		"    while (pebble_local_28 < 10) {\n",
+		"        if (pebble_local_28 < 5) {\n",
+		"            pebble_local_29 = pebble_rt_checked_add_i32(pebble_local_29, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 81});",
 		"        }",
 	} {
 		if !strings.Contains(out, want) {
@@ -413,10 +413,10 @@ func TestEmitBoolWhileNegationLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"bool pebble_local_27 = false;",
-		"    while (!(pebble_local_27)) {\n",
-		"        if (pebble_local_28 == 5) {\n",
-		"            pebble_local_27 = true;",
+		"bool pebble_local_28 = false;",
+		"    while (!(pebble_local_28)) {\n",
+		"        if (pebble_local_29 == 5) {\n",
+		"            pebble_local_28 = true;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -452,8 +452,8 @@ func TestEmitNegatedComparisonWhileWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (!(pebble_local_27 >= 5)) {\n",
-		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, 1, (PebbleSourceLoc){\"main.peb\", 1, 54});",
+		"    while (!(pebble_local_28 >= 5)) {\n",
+		"        pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, 1, (PebbleSourceLoc){\"main.peb\", 1, 54});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -555,8 +555,8 @@ func TestEmitBreakInsideLoopIfWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    while (pebble_local_27 < 10) {\n",
-		"        if (pebble_local_27 == 5) {\n",
+		"    while (pebble_local_28 < 10) {\n",
+		"        if (pebble_local_28 == 5) {\n",
 		"            break;",
 		"        }",
 	} {
@@ -578,7 +578,7 @@ func TestEmitContinueInsideLoopIfWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"        if (pebble_local_27 == 3) {\n",
+		"        if (pebble_local_28 == 3) {\n",
 		"            continue;",
 	} {
 		if !strings.Contains(out, want) {
@@ -1860,9 +1860,9 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	for _, want := range []string{
 		"    int32_t pebble_temp_22 = 0;\n",
 		"    int32_t pebble_temp_23 = 3;\n",
-		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
-		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 56});",
+		"    int32_t pebble_step_29 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    for (int32_t pebble_local_29 = pebble_temp_22; (pebble_step_29 > 0) ? (pebble_local_29 < pebble_temp_23) : (pebble_local_29 > pebble_temp_23); pebble_local_29 += pebble_step_29) {\n",
+		"        pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_29, (PebbleSourceLoc){\"main.peb\", 1, 56});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1877,8 +1877,8 @@ func TestEmitRangeLoopWritesC(t *testing.T) {
 	for _, want := range []string{
 		"    int32_t pebble_temp_22 = 0;\n",
 		"    int32_t pebble_temp_23 = 3;\n",
-		"    int32_t pebble_done_28 = 0;\n",
-		"    for (int32_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
+		"    int32_t pebble_done_29 = 0;\n",
+		"    for (int32_t pebble_local_29 = pebble_temp_22; !pebble_done_29; pebble_done_29 |= (pebble_step_29 > 0) ? (pebble_local_29 >= pebble_temp_23) : (pebble_local_29 <= pebble_temp_23), pebble_local_29 += pebble_step_29) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2052,9 +2052,9 @@ func TestEmitForLoopWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (int32_t pebble_local_28 = 0; pebble_local_28 < 3; pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, 1, (PebbleSourceLoc){\"main.peb\", 1, 75})) {\n",
-		"        (void)pebble_local_28;",
-		"        pebble_local_27 = pebble_rt_checked_add_i32(pebble_local_27, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 94});",
+		"    for (int32_t pebble_local_29 = 0; pebble_local_29 < 3; pebble_local_29 = pebble_rt_checked_add_i32(pebble_local_29, 1, (PebbleSourceLoc){\"main.peb\", 1, 75})) {\n",
+		"        (void)pebble_local_29;",
+		"        pebble_local_28 = pebble_rt_checked_add_i32(pebble_local_28, pebble_local_29, (PebbleSourceLoc){\"main.peb\", 1, 94});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2111,8 +2111,8 @@ func TestEmitForLoopAssignmentInitializerWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"    for (pebble_local_27 = 0LL; pebble_local_27 < 3; pebble_local_27 = pebble_rt_checked_add_i64(pebble_local_27, 1LL, (PebbleSourceLoc){\"main.peb\", 1, 85})) {\n",
-		"        pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 104});",
+		"    for (pebble_local_28 = 0LL; pebble_local_28 < 3; pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, 1LL, (PebbleSourceLoc){\"main.peb\", 1, 85})) {\n",
+		"        pebble_local_29 = pebble_rt_checked_add_i64(pebble_local_29, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 104});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2172,10 +2172,10 @@ func TestEmitI64WhileWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int64_t pebble_local_27 = 0LL;",
 		"int64_t pebble_local_28 = 0LL;",
-		"    while (pebble_local_27 < 5LL) {\n",
-		"        pebble_local_28 = pebble_rt_checked_add_i64(pebble_local_28, pebble_local_27, (PebbleSourceLoc){\"main.peb\", 1, 69});",
+		"int64_t pebble_local_28 = 0LL;",
+		"    while (pebble_local_28 < 5LL) {\n",
+		"        pebble_local_29 = pebble_rt_checked_add_i64(pebble_local_29, pebble_local_28, (PebbleSourceLoc){\"main.peb\", 1, 69});",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2465,8 +2465,8 @@ func TestEmitSwitchUintSubjectWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"uint64_t pebble_local_27 = 5u;",
-		"switch (pebble_local_27)",
+		"uint64_t pebble_local_28 = 5u;",
+		"switch (pebble_local_28)",
 		"case 5u:",
 		"default:",
 		"return 1LL;",
@@ -2517,8 +2517,8 @@ func TestEmitSwitchU8SubjectWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"uint8_t pebble_local_27 = 5u;",
-		"switch (pebble_local_27)",
+		"uint8_t pebble_local_28 = 5u;",
+		"switch (pebble_local_28)",
 		"case 5u:",
 		"default:",
 		"return 1LL;",
@@ -2652,8 +2652,8 @@ func TestEmitSwitchNegativeCaseLabelWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"pebble_local_27 = pebble_rt_checked_neg_i16(5,",
-		"switch (pebble_local_27)",
+		"pebble_local_28 = pebble_rt_checked_neg_i16(5,",
+		"switch (pebble_local_28)",
 		"case -5:",
 		"default:",
 		"return 1LL;",
@@ -3049,8 +3049,8 @@ func TestEmitSwitchU64SubjectWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"uint64_t pebble_local_27 = 9000000000u;",
-		"switch (pebble_local_27)",
+		"uint64_t pebble_local_28 = 9000000000u;",
+		"switch (pebble_local_28)",
 		"case 5000000000u:",
 		"case 9000000000u:",
 		"case 3000000000u:",
@@ -3118,8 +3118,8 @@ func TestEmitSwitchI8SubjectWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"pebble_local_27 = pebble_rt_checked_neg_i8(5,",
-		"switch (pebble_local_27)",
+		"pebble_local_28 = pebble_rt_checked_neg_i8(5,",
+		"switch (pebble_local_28)",
 		"case -5:",
 		"case 7:",
 		"case 2:",
@@ -3592,8 +3592,8 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	for _, want := range []string{
 		"    int64_t pebble_temp_22 = 5;\n",
 		"    int64_t pebble_temp_23 = 0;\n",
-		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
-		"    for (int64_t pebble_local_28 = pebble_temp_22; (pebble_step_28 > 0) ? (pebble_local_28 < pebble_temp_23) : (pebble_local_28 > pebble_temp_23); pebble_local_28 += pebble_step_28) {\n",
+		"    int32_t pebble_step_29 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    for (int64_t pebble_local_29 = pebble_temp_22; (pebble_step_29 > 0) ? (pebble_local_29 < pebble_temp_23) : (pebble_local_29 > pebble_temp_23); pebble_local_29 += pebble_step_29) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -3611,9 +3611,9 @@ func TestEmitDescendingRangeLoopWritesC(t *testing.T) {
 	}
 	out = buf.String()
 	for _, want := range []string{
-		"    int32_t pebble_step_28 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
-		"    int32_t pebble_done_28 = 0;\n",
-		"    for (int64_t pebble_local_28 = pebble_temp_22; !pebble_done_28; pebble_done_28 |= (pebble_step_28 > 0) ? (pebble_local_28 >= pebble_temp_23) : (pebble_local_28 <= pebble_temp_23), pebble_local_28 += pebble_step_28) {\n",
+		"    int32_t pebble_step_29 = (pebble_temp_22 <= pebble_temp_23) ? 1 : -1;\n",
+		"    int32_t pebble_done_29 = 0;\n",
+		"    for (int64_t pebble_local_29 = pebble_temp_22; !pebble_done_29; pebble_done_29 |= (pebble_step_29 > 0) ? (pebble_local_29 >= pebble_temp_23) : (pebble_local_29 <= pebble_temp_23), pebble_local_29 += pebble_step_29) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

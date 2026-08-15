@@ -982,6 +982,11 @@ func buildDirectCallWithPre(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // pure-expression lowering: each such argument is folded into a GNU
 // statement-expression instead, so no pre is ever returned).
 func buildDirectCallArgs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet *source.FileSet, node tir.Node, locals map[symbol.SymbolID]localInfo, width types.BuiltinKind, nested bool) (string, string, error) {
+	var builtinSym symbol.Symbol
+	var builtinSymOK bool
+	if st.symbols != nil && st.symbols.Symbols != nil {
+		builtinSym, builtinSymOK = st.symbols.Symbols.Symbol(node.Symbol)
+	}
 	// A call to a compiler-owned builtin function (wrapping_mul_u64 /
 	// wrapping_add_u64) is lowered directly to its runtime helper:
 	// pebble_rt_wrapping_<op>_u64(<arg0>, <arg1>). The helper is a real C
@@ -992,7 +997,9 @@ func buildDirectCallArgs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 	// operand's own resolved u64 width, matching the builtin's two u64
 	// parameters; both are pure expressions, so no pre-statement is ever
 	// produced.
-	if builtinName, builtin := builtinFunctionCName(st, node.Symbol); builtin {
+	if builtinSymOK && builtinSym.Kind == symbol.SymbolBuiltinFunction &&
+		(builtinSym.BuiltinFunction == symbol.BuiltinWrappingMulU64 || builtinSym.BuiltinFunction == symbol.BuiltinWrappingAddU64) {
+		builtinName, _ := builtinFunctionCName(st, node.Symbol)
 		if len(node.Children) != 2 {
 			return "", "", fmt.Errorf("entry function body expression contains a call to builtin function symbol %d with %d argument(s), want exactly two (the wrapping u64 arithmetic builtins take two u64 operands)", node.Symbol, len(node.Children))
 		}
@@ -1005,6 +1012,32 @@ func buildDirectCallArgs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 			return "", "", fmt.Errorf("entry function body expression contains a call to builtin function symbol %d whose second argument is invalid: %v", node.Symbol, err)
 		}
 		return "", fmt.Sprintf("%s(%s, %s)", builtinName, left, right), nil
+	}
+	// str_byte_at(str, u64) -> u8: a compiler-owned checked builtin that reads
+	// one raw byte from a str at a byte offset. Unlike the wrapping builtins
+	// above, it takes a str (not u64) as its first argument and needs a real
+	// PebbleSourceLoc at the call site so the bounds-check panic carries the
+	// exact source location (a plain extern fn cannot do this). The callee's
+	// declared signature is (str, u64) -> u8: the str maps to the runtime's
+	// PebbleStr (passed by value — the helper receives s.data / s.len
+	// internally), the u64 maps to uint64_t, and the result is uint8_t.
+	//
+	// In SAFE mode the helper panics with PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS
+	// when byte_index >= s.len, using the injected PebbleSourceLoc. In
+	// RELEASE mode it performs an unchecked data[byte_index] read.
+	if builtinSymOK && builtinSym.Kind == symbol.SymbolBuiltinFunction && builtinSym.BuiltinFunction == symbol.BuiltinStrByteAt {
+		if len(node.Children) != 2 {
+			return "", "", fmt.Errorf("entry function body expression contains a call to str_byte_at with %d argument(s), want exactly two (the str value and the byte offset)", len(node.Children))
+		}
+		strExpr, err := buildStrOperand(st, unit, snapshot, fileSet, node.Children[0], locals, types.Str)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression contains a call to str_byte_at whose first argument is invalid: %v", err)
+		}
+		byteIndexExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[1], locals, types.U64, width)
+		if err != nil {
+			return "", "", fmt.Errorf("entry function body expression contains a call to str_byte_at whose second argument is invalid: %v", err)
+		}
+		return "", fmt.Sprintf("pebble_rt_str_byte_at(%s, %s, %s)", strExpr, byteIndexExpr, buildSourceLoc(fileSet, node.Span)), nil
 	}
 	// A C-convention call (direct call to an extern fn declaration) is
 	// lowered differently from a Pebble-convention call: no context parameter

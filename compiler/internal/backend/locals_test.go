@@ -139,7 +139,7 @@ func TestEmitCompoundI64LocalCombinesViaI64Helper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_rt_checked_add_i64(pebble_local_27, 5") {
+	if !strings.Contains(out, "pebble_rt_checked_add_i64(pebble_local_28, 5") {
 		t.Fatalf("emitted C does not combine at i64 through the checked helper:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_checked_add_i32") {
@@ -203,8 +203,8 @@ func TestEmitBoolLocalIfWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"#include <stdbool.h>",
-		"bool pebble_local_27 = true;",
-		"    if (pebble_local_27) {\n",
+		"bool pebble_local_28 = true;",
+		"    if (pebble_local_28) {\n",
 		"        return 1;",
 		"        return 0;",
 	} {
@@ -498,7 +498,7 @@ func TestEmitStrLocalCopyInitializationWritesC(t *testing.T) {
 	if !copyRE.MatchString(out) {
 		t.Errorf("emitted C contains no whole-str local copy declaration %q:\n%s", copyRE, out)
 	}
-	if !strings.Contains(out, "PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hello\", .len = 5 };") {
+	if !strings.Contains(out, "PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"hello\", .len = 5 };") {
 		t.Errorf("emitted C missing the source local's literal declaration:\n%s", out)
 	}
 }

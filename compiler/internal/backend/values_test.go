@@ -81,8 +81,8 @@ func TestEmitLogicalAndWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_27 = 7;",
-		"    if ((pebble_local_27 < 10 && 1 < 2)) {\n",
+		"int32_t pebble_local_28 = 7;",
+		"    if ((pebble_local_28 < 10 && 1 < 2)) {\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -104,7 +104,7 @@ func TestEmitLogicalAndParenthesizedComparisonWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "if ((pebble_local_27 && 1 < 2)) {") {
+	if !strings.Contains(out, "if ((pebble_local_28 && 1 < 2)) {") {
 		t.Errorf("emitted C missing the unwrapped parenthesized comparison &&:\n%s", out)
 	}
 }
@@ -189,7 +189,7 @@ func TestEmitBoolEqualityWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out = buf.String()
-	if !strings.Contains(out, "    if ((pebble_local_27) == (pebble_local_28)) {\n") {
+	if !strings.Contains(out, "    if ((pebble_local_28) == (pebble_local_29)) {\n") {
 		t.Errorf("emitted C missing the parenthesized bool-local equality:\n%s", out)
 	}
 }
@@ -692,9 +692,9 @@ func TestEmitStrEscapeRoundTripWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 };",
-		"    (void)pebble_local_27;",
-		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 })) {",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 };",
+		"    (void)pebble_local_28;",
+		"if (pebble_rt_str_eq(pebble_local_28, (PebbleStr){ .data = (const uint8_t *)\"a\\0121\\011b\\\"c\\\\d\", .len = 9 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -718,9 +718,9 @@ func TestEmitStrWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"    (void)pebble_local_27;",
-		"if (pebble_rt_str_eq(pebble_local_27, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"    (void)pebble_local_28;",
+		"if (pebble_rt_str_eq(pebble_local_28, (PebbleStr){ .data = (const uint8_t *)\"hi\", .len = 2 })) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -741,9 +741,9 @@ func TestEmitStrNotEqualWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"if (!pebble_rt_str_eq(pebble_local_27, pebble_local_28)) {",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_29 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (!pebble_rt_str_eq(pebble_local_28, pebble_local_29)) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -901,9 +901,9 @@ func TestEmitStrOrderingWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"PebbleStr pebble_local_27 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
-		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
-		"if (pebble_rt_str_cmp(pebble_local_27, pebble_local_28) < 0) {",
+		"PebbleStr pebble_local_28 = { .data = (const uint8_t *)\"hi\", .len = 2 };",
+		"PebbleStr pebble_local_29 = { .data = (const uint8_t *)\"ho\", .len = 2 };",
+		"if (pebble_rt_str_cmp(pebble_local_28, pebble_local_29) < 0) {",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -922,7 +922,7 @@ func TestEmitStrEqualityStillUsesStrEqWritesC(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_27, pebble_local_28)) {") {
+	if !strings.Contains(out, "if (pebble_rt_str_eq(pebble_local_28, pebble_local_29)) {") {
 		t.Errorf("expected pebble_rt_str_eq for ==, got:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_str_cmp") {
@@ -957,7 +957,7 @@ func TestEmitStrIndexWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_28 = pebble_rt_str_char_at_i32(pebble_local_27, 0, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_29 = pebble_rt_str_char_at_i32(pebble_local_28, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -1074,7 +1074,7 @@ func TestEmitStrIndexI64EntryWritesC(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"int32_t pebble_local_28 = pebble_rt_str_char_at_i64(pebble_local_27, 0, (PebbleSourceLoc){\"main.peb\"",
+		"int32_t pebble_local_29 = pebble_rt_str_char_at_i64(pebble_local_28, 0, (PebbleSourceLoc){\"main.peb\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)
@@ -2131,9 +2131,9 @@ func TestEmitCharWritesC(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"static int32_t pebble_fn_24(PebbleContext *ctx, int32_t pebble_local_25) {",
-		"int32_t pebble_local_29 = (int32_t)97;",
-		"pebble_local_29 = pebble_fn_24(ctx, (int32_t)98);",
-		"if (pebble_local_29 == (int32_t)98) {",
+		"int32_t pebble_local_30 = (int32_t)97;",
+		"pebble_local_30 = pebble_fn_24(ctx, (int32_t)98);",
+		"if (pebble_local_30 == (int32_t)98) {",
 		"return pebble_local_25;",
 	} {
 		if !strings.Contains(out, want) {
@@ -2364,10 +2364,10 @@ fn main() int {
 	out := buf.String()
 	for _, want := range []string{
 		"typedef int64_t (*pebble_fnptr_23_t)(PebbleContext *ctx, int64_t, int64_t);",
-		"static int64_t pebble_fn_31(PebbleContext *ctx, int64_t pebble_local_32, int64_t pebble_local_33);",
-		"static int64_t pebble_fn_31(PebbleContext *ctx, int64_t pebble_local_32, int64_t pebble_local_33) {",
-		"return pebble_rt_checked_add_i64(pebble_local_32, pebble_local_33,",
-		"return pebble_fn_24(ctx, pebble_fn_31, 20LL, 22LL);",
+		"static int64_t pebble_fn_32(PebbleContext *ctx, int64_t pebble_local_33, int64_t pebble_local_34);",
+		"static int64_t pebble_fn_32(PebbleContext *ctx, int64_t pebble_local_33, int64_t pebble_local_34) {",
+		"return pebble_rt_checked_add_i64(pebble_local_33, pebble_local_34,",
+		"return pebble_fn_24(ctx, pebble_fn_32, 20LL, 22LL);",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("emitted C missing %q:\n%s", want, out)

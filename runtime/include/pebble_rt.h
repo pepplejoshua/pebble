@@ -542,6 +542,19 @@ int32_t pebble_rt_str_char_at_i32(PebbleStr s, int32_t index, PebbleSourceLoc lo
 int32_t pebble_rt_str_char_at_i64(PebbleStr s, int64_t index, PebbleSourceLoc loc);
 int32_t pebble_rt_str_char_at_u64(PebbleStr s, uint64_t index, PebbleSourceLoc loc);
 
+/* ---- raw byte access into a str -------------------------------------------
+ * Reads one raw byte from a str at a byte offset. Unlike pebble_rt_str_char_at
+ * which walks UTF-8 codepoints (O(n) in the codepoint index), this returns the
+ * exact byte at byte_index in O(1). This is useful for inspecting the raw UTF-8
+ * encoding of a string or for implementing byte-oriented operations on str.
+ *
+ * In SAFE mode it checks byte_index < s.len and panics with
+ * PEBBLE_PANIC_INDEX_OUT_OF_BOUNDS on violation, using the injected
+ * PebbleSourceLoc so the panic report names the exact call site. In RELEASE
+ * mode the check is omitted and data[byte_index] is read directly.
+ */
+uint8_t pebble_rt_str_byte_at(PebbleStr s, uint64_t byte_index, PebbleSourceLoc loc);
+
 /* ---- char-to-UTF-8 encoding -------------------------------------------------
  * Encodes one Pebble `char` — a full Unicode scalar value, carried in an
  * int32_t, the same representation pebble_rt_str_char_at_* decodes to — as

@@ -254,7 +254,7 @@ func TestEmitCheckedShiftNarrowWidthCallsItsOwnHelper(t *testing.T) {
 		t.Fatalf("Emit failed: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pebble_rt_checked_shl_u8(pebble_local_27, (uint8_t)(2LL)") {
+	if !strings.Contains(out, "pebble_rt_checked_shl_u8(pebble_local_28, (uint8_t)(2LL)") {
 		t.Fatalf("emitted C does not call the u8 shift helper at its own width:\n%s", out)
 	}
 	if strings.Contains(out, "pebble_rt_checked_shl_i32") {

@@ -1,0 +1,121 @@
+// Test harness for the str[i] indexing operation (Unicode-scalar access).
+//
+// This test proves that str[i] still returns a decoded Unicode scalar value,
+// NOT a raw byte — confirming that after the str_byte_at addition, the
+// existing char-at path is completely unaffected.
+
+import "std:string";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === ASCII scalar index ===
+
+    // Test 1: str[0] on an ASCII string returns the first codepoint
+    let s1 = "hello";
+    let c1 = s1[0];
+    if c1 != 'h' {
+        print("FAIL: ascii_scalar_0");
+        failures++;
+    }
+
+    // Test 2: str[4] returns 'o'
+    let c2 = s1[4];
+    if c2 != 'o' {
+        print("FAIL: ascii_scalar_4");
+        failures++;
+    }
+
+    // === Multi-byte UTF-8: two-byte sequence é (U+00E9, bytes 0xC3 0xA9) ===
+
+    // Test 3: str[0] on "café" returns 'c' (ASCII, 1 byte)
+    let s3 = "café";
+    let c3 = s3[0];
+    if c3 != 'c' {
+        print("FAIL: multi_utf8_first_ascii");
+        failures++;
+    }
+
+    // Test 4: str[3] on "café" returns 'é' (the 4th codepoint, 2-byte UTF-8)
+    let c4 = s3[3];
+    if c4 != 'é' {
+        print("FAIL: multi_utf8_second_char");
+        failures++;
+    }
+
+    // === Three-byte UTF-8: € (U+20AC, bytes 0xE2 0x82 0xAC) ===
+
+    // Test 5: str[0] on "1€2" returns '1'
+    let s5 = "1€2";
+    let c5 = s5[0];
+    if c5 != '1' {
+        print("FAIL: three_byte_first");
+        failures++;
+    }
+
+    // Test 6: str[1] on "1€2" returns '€'
+    let c6 = s5[1];
+    if c6 != '€' {
+        print("FAIL: three_byte_second");
+        failures++;
+    }
+
+    // Test 7: str[2] on "1€2" returns '2'
+    let c7 = s5[2];
+    if c7 != '2' {
+        print("FAIL: three_byte_third");
+        failures++;
+    }
+
+    // === Four-byte UTF-8: 😀 (U+1F600, bytes 0xF0 0x9F 0x98 0x80) ===
+
+    // Test 8: str[0] on "a😀b" returns 'a'
+    let s8 = "a😀b";
+    let c8 = s8[0];
+    if c8 != 'a' {
+        print("FAIL: four_byte_first");
+        failures++;
+    }
+
+    // Test 9: str[1] on "a😀b" returns '😀'
+    let c9 = s8[1];
+    if c9 != '😀' {
+        print("FAIL: four_byte_second");
+        failures++;
+    }
+
+    // Test 10: str[2] on "a😀b" returns 'b'
+    let c10 = s8[2];
+    if c10 != 'b' {
+        print("FAIL: four_byte_third");
+        failures++;
+    }
+
+    // === Empty string: any index should panic ===
+
+    // Test 11: empty string has length 0
+    let s11 = "";
+    if s11.len != 0 {
+        print("FAIL: empty_len");
+        failures++;
+    }
+
+    // === Bounds checking: out-of-range index panics ===
+
+    // Test 12: index == len panics (we verify by checking the error doesn't
+    // reach here — but since we can't catch panics in Pebble directly, we
+    // use a safe range loop instead to prove normal iteration works)
+    let s12 = "abc";
+    var sum = 0;
+    var i = 0;
+    while i < s12.len {
+        sum += 1;
+        i += 1;
+    }
+    if sum != 3 {
+        print("FAIL: range_loop_count");
+        failures++;
+    }
+
+    return failures as i32;
+}
