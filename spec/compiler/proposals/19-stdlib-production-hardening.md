@@ -214,6 +214,44 @@ suite (real C compile-and-run, SAFE and RELEASE) verified green at
 (finishing at 903s with an unrelated test mid-run in the trace) and a
 clean rerun at 1500s confirmed it wasn't a real hang.
 
+Slice 4 (`String`/`hash_str` byte-vs-scalar correctness) closed in
+`e301aba`. `String.push_str`, `starts_with`, `ends_with`, `find`, and
+`insert` all indexed their `str` parameters with `[i]` — always a
+Unicode-scalar decode, truncated to its low byte via `as u8`. Correct
+for ASCII by coincidence; for any multi-byte UTF-8 character this wrote
+garbage bytes into the buffer with no error or panic, silently
+corrupting a type whose whole contract (`data []u8`, raw UTF-8 bytes)
+depends on byte fidelity. Switched all five to `str_byte_at` (Slice 3).
+`hash::hash_str` had two independent bugs: its loop bound was
+`libc::strlen(s)`, a NUL-terminated C scan — wrong for any `str`
+containing an embedded NUL, since `str` is length-prefixed, not
+NUL-terminated by contract — and the same scalar-decode-and-truncate
+read as above. Fixed the bound to `s.len` and the read to
+`str_byte_at`, and dropped the now-dead `std:libc` import. Added
+`String.push_byte`/`push_bytes` (the plan's own scope item) for callers
+that already hold raw bytes and want an O(1) append instead of
+`push_char`'s UTF-8 encode path; `push_bytes` does a real bulk
+`mem::copy` since `[]u8`, unlike `str`, has a legal raw `.data` pointer.
+
+New `tests/stdlib/string_byte_correctness_test.peb`: byte-exact
+`push_str`/`insert` with 2/3-byte UTF-8 arguments (including inserting
+mid-sequence to prove byte-offset semantics), multi-byte
+`starts_with`/`ends_with`/`find`, `hash_str`'s embedded-NUL and
+multi-byte-sensitivity cases (cross-checked against the pre-existing
+`hash_bytes` as an independent oracle, rather than inventing a golden
+hash value), and `push_byte`/`push_bytes` including embedded NULs.
+Causation-checked via an isolated `git worktree`: pre-fix
+`push_str`/`insert` panic outright on multi-byte input (the old code's
+`new_str[i] as u8` runs `str[i]`'s own scalar-index bounds check against
+a codepoint count, not a byte count, so it goes out of bounds on
+anything non-ASCII), and pre-fix `hash_str` silently truncates at an
+embedded NUL. The dispatch stalled once during its own final full-suite
+verification pass (a real `provider_stalled` timeout, not a bad diff —
+all the actual code and tests were already written and correct at that
+point); re-verified independently rather than resuming the session,
+since only that last long-running check was left. Full backend suite
+(real C compile-and-run, SAFE and RELEASE) green at 998s.
+
 ### Planned slice order
 
 1. Test harness bootstrap + `Vec.eq`/`Vec.reverse` correctness.
