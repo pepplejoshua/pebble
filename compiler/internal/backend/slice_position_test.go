@@ -47,13 +47,14 @@ fn main() int {
 // slice-typed field is constructed inline used directly as a return value
 // (Phase 3 #5, buildStructValueExpr's statement-expression folding).
 func TestStructLiteralSliceFieldInlineAsReturn(t *testing.T) {
+	// Keep the backing array caller-owned: a callee-local array would leave a dangling slice after mk returns, which is outside this test's scope.
 	emitAndRun(t, `type Bag = struct { items []int; };
-fn mk() Bag {
-    var arr [3]int = [1, 2, 3];
-    return Bag.{ items = arr[:] };
+fn mk(s []int) Bag {
+    return Bag.{ items = s[:] };
 }
 fn main() int {
-    var b Bag = mk();
+    var arr [3]int = [1, 2, 3];
+    var b Bag = mk(arr[:]);
     return b.items[1];
 }`, false, 2, false)
 }

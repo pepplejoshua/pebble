@@ -70,7 +70,8 @@ func TestOptionalSlicePayloadShapes(t *testing.T) {
 		{"some-local-unwrap-local", "fn main() int { var a [3]int = [1, 2, 3]; var s []int = a[:]; var o ?[]int = some s; if o.has_value { var t []int = o!; return t[0]; } return 0; }", 1},
 		{"some-construct-unwrap-local", "fn main() int { var a [3]int = [1, 2, 3]; var o ?[]int = some a[:]; if o.has_value { var t []int = o!; return t[2]; } return 0; }", 3},
 		{"none-has-value-false", "fn main() int { var o ?[]int = none; if o.has_value { return 1; } return 0; }", 0},
-		{"return-some", "fn mk() ?[]int { var a [3]int = [1, 2, 3]; return some a[:]; } fn main() int { var o ?[]int = mk(); if o.has_value { var t []int = o!; return t[1]; } return 0; }", 2},
+		// Keep the backing array caller-owned: a callee-local array would leave a dangling slice after mk returns, which is outside this test's scope.
+		{"return-some", "fn mk(s []int) ?[]int { return some s[:]; } fn main() int { var a [3]int = [1, 2, 3]; var o ?[]int = mk(a[:]); if o.has_value { var t []int = o!; return t[1]; } return 0; }", 2},
 		{"return-none", "fn mk() ?[]int { return none; } fn main() int { var o ?[]int = mk(); if o.has_value { return 1; } return 0; }", 0},
 		{"argument", "fn g(o ?[]int) int { if o.has_value { var t []int = o!; return t[0]; } return 0; } fn main() int { var a [3]int = [1, 2, 3]; return g(some a[:]); }", 1},
 		{"argument-none", "fn g(o ?[]int) int { if o.has_value { return 1; } return 0; } fn main() int { return g(none); }", 0},
