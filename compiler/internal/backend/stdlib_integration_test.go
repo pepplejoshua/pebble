@@ -224,6 +224,39 @@ func TestStdlibStringByteCorrectness(t *testing.T) {
 	}
 }
 
+// TestStdlibHmapBoundedProbe exercises the bounded HashMap probing added in
+// Slice 6: insert/get_by_ref/remove now probe at most self.cap slots instead of
+// looping with an unbounded `while true`. It verifies ordinary correctness is
+// unaffected across multiple rehashes (the main risk of the change is an
+// off-by-one in the bound silently breaking lookups), that insert-after-remove
+// reuses a tombstone slot correctly, and a stress case where colliding keys
+// build probe chains of real length (~21 occupied slots of a 32-slot table) so
+// the bounded loop's upper edge gets real coverage.
+func TestStdlibHmapBoundedProbe(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "hmap_bounded_probe_test.peb")
+	t.Logf("hmap_bounded_probe_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("hmap_bounded_probe_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibSetBoundedProbe exercises the bounded Set probing added in Slice 6:
+// insert/contains/remove now probe at most self.cap slots instead of looping
+// with an unbounded `while true`. It mirrors the HashMap test: ordinary
+// correctness across multiple rehashes, tombstone-slot reuse after a remove,
+// and a colliding-keys stress case building probe chains of real length.
+func TestStdlibSetBoundedProbe(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "set_bounded_probe_test.peb")
+	t.Logf("set_bounded_probe_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("set_bounded_probe_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
 // TestStdlibIoResult exercises the Result-returning checked I/O API added in
 // Slice 5: open_checked (existing and non-existing paths), write_all +
 // read_all_into round-trip with byte-exact comparison, read_line_into line-by-

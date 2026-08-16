@@ -1,0 +1,167 @@
+// Test harness for bounded Set probing (Slice 6).
+//
+// Before this slice, Set.insert / contains / remove used an unbounded
+// `while true` linear probe. In correct operation that loop always terminates
+// (maybe_grow keeps the load factor under 0.7, so at least 30% of slots are
+// always .Empty, and step-1 probing over cap slots visits every distinct index
+// before repeating), but nothing enforced the bound. The probe is now explicit:
+// at most self.cap steps. These tests prove the bounded loop behaves
+// identically to the unbounded one for all NORMAL operation — the main risk of
+// this change is an off-by-one in the bound silently breaking lookups that
+// used to work.
+//
+// We deliberately do NOT attempt to trigger the bound-exhausted defensive
+// path: that would require a broken hash_fn/eq_fn pair (a pathological
+// adversarial input), which is out of scope for "bound the loop safely".
+
+import "std:set";
+
+fn hash_uint(x uint) u64 {
+    return x as u64;
+}
+
+fn eq_uint(a uint, b uint) bool {
+    return a == b;
+}
+
+fn main() i32 {
+    var failures = 0;
+
+    // === Ordinary correctness across rehash/grow ===
+
+    // Inserting 0..50 forces several rehashes: cap grows 8 -> 16 -> 32 -> 64
+    // -> 128 as the load factor crosses 0.7, so every insert path runs under
+    // the bounded loop on a grown table.
+    var s1 = set::new[uint](hash_uint, eq_uint);
+    loop 0..50 : i {
+        s1.insert(i);
+    }
+
+    // Every key present.
+    loop 0..50 : i {
+        if !s1.contains(i) {
+            print("FAIL: grow_contains_missing");
+            failures++;
+        }
+    }
+
+    // Remove every third key.
+    loop 0..50 : i {
+        if i % 3 == 0 {
+            if !s1.remove(i) {
+                print("FAIL: grow_remove_missing");
+                failures++;
+            }
+        }
+    }
+
+    // Removed keys are gone; remaining keys still present.
+    loop 0..50 : i {
+        if i % 3 == 0 {
+            if s1.contains(i) {
+                print("FAIL: grow_removed_still_present");
+                failures++;
+            }
+        } else if !s1.contains(i) {
+            print("FAIL: grow_remaining_lost");
+            failures++;
+        }
+    }
+
+    // Removing an already-removed key returns false.
+    if s1.remove(0) {
+        print("FAIL: grow_remove_twice");
+        failures++;
+    }
+    set::delete(&s1);
+
+    // === Insert-after-remove reuses a tombstone slot ===
+
+    // Fixed cap (16), no rehash, so the probe chain is stable. 116 == 100
+    // (mod 16), so the second insert probes into the bucket the removed key
+    // vacated and must reuse the tombstone slot.
+    var s2 = set::with_capacity[uint](16, hash_uint, eq_uint);
+    s2.insert(100);
+    if !s2.remove(100) {
+        print("FAIL: tombstone_remove");
+        failures++;
+    }
+    s2.insert(116);
+    if !s2.contains(116) {
+        print("FAIL: tombstone_reuse_visible");
+        failures++;
+    }
+    if s2.contains(100) {
+        print("FAIL: tombstone_removed_visible");
+        failures++;
+    }
+
+    // The chain continues past the reused slot: 132 == 100 (mod 16) too.
+    s2.insert(132);
+    if !s2.contains(132) {
+        print("FAIL: tombstone_chain_after_reuse");
+        failures++;
+    }
+    if !s2.contains(116) {
+        print("FAIL: tombstone_chain_preserves_116");
+        failures++;
+    }
+    if s2.len != 2 {
+        print("FAIL: tombstone_len");
+        failures++;
+    }
+    set::delete(&s2);
+
+    // === Stress: probe chains of real length ===
+
+    // All keys are congruent to 0 (mod 32), so with cap 32 every insert lands
+    // in bucket 0 and the chain grows to ~21 occupied slots — real-length
+    // probe chains exercising the bounded loop's upper edge, not single-probe
+    // hits. 22 keys keeps the load factor at 22/32 = 0.69 < 0.7, so no rehash
+    // breaks the chain (the 23rd key would cross the threshold and grow).
+    var s3 = set::with_capacity[uint](32, hash_uint, eq_uint);
+    loop 0..22 : i {
+        s3.insert(i * 32);
+    }
+    // Each contains must walk the whole chain to reach its slot.
+    loop 0..22 : i {
+        if !s3.contains(i * 32) {
+            print("FAIL: stress_chain_value");
+            failures++;
+        }
+    }
+    // An absent colliding key walks the whole chain, hits the first .Empty
+    // slot, and is reported absent — the pre-fix unbounded loop did the same.
+    if s3.contains(22 * 32) {
+        print("FAIL: stress_absent_in_chain");
+        failures++;
+    }
+    // Remove a middle-of-chain key (tombstone), then insert a new colliding
+    // key that reuses the tombstone slot. Keys on both sides of the reused
+    // slot must remain reachable.
+    if !s3.remove(10 * 32) {
+        print("FAIL: stress_chain_remove");
+        failures++;
+    }
+    if s3.contains(10 * 32) {
+        print("FAIL: stress_removed_still_present");
+        failures++;
+    }
+    s3.insert(25 * 32);
+    if !s3.contains(25 * 32) {
+        print("FAIL: stress_tombstone_reuse");
+        failures++;
+    }
+    if !s3.contains(9 * 32) || !s3.contains(11 * 32) {
+        print("FAIL: stress_chain_split");
+        failures++;
+    }
+    // 22 inserts, 1 remove, 1 insert -> 22 occupied.
+    if s3.len != 22 {
+        print("FAIL: stress_len");
+        failures++;
+    }
+    set::delete(&s3);
+
+    return failures as i32;
+}

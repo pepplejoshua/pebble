@@ -76,7 +76,13 @@ type HashMap[K, V] = struct {
         var index = (hash as uint) % self.cap;
         var tombstone_index ?uint = none;
 
-        while true {
+        // Bounded linear probe: self.cap probes is the exact, provably
+        // sufficient upper bound — step-1 probing over cap slots visits every
+        // distinct index before repeating, and maybe_grow keeps the load factor
+        // under 0.7, so at least 30% of slots are always .Empty and an insert
+        // can never need more than cap probes. Exhausting the bound is
+        // defensive-only, unreachable in correct operation.
+        for var probes = 0; probes < self.cap; probes += 1 {
             let entry = &self.entries[index];
 
             if entry.state == .Empty {
@@ -108,6 +114,22 @@ type HashMap[K, V] = struct {
 
             index = (index + 1) % self.cap;
         }
+
+        // Bound exhausted — provably unreachable in correct operation (see the
+        // loop comment: maybe_grow guarantees an .Empty slot within cap
+        // probes). Never silently drop a key though: if a tombstone was
+        // recorded during the scan, write the pair into it. Only when no
+        // tombstone was found either (table 100% .Occupied, no matching key)
+        // do nothing at all — touching entries/len there could only corrupt an
+        // already-inconsistent table.
+        if tombstone_index.has_value {
+            let t = tombstone_index!;
+            let slot = &self.entries[t];
+            slot.key = key;
+            slot.value = value;
+            slot.state = .Occupied;
+            self.len += 1;
+        }
     }
 
     // Returns a pointer to value or none.
@@ -119,7 +141,12 @@ type HashMap[K, V] = struct {
         let hash = self.hash_fn(key);
         var index = (hash as uint) % self.cap;
 
-        while true {
+        // Bounded linear probe (defensive): self.cap probes is the exact bound
+        // — step-1 probing visits every slot before repeating, and maybe_grow
+        // keeps the load factor under 0.7 so an .Empty slot is always reached
+        // within it. Exhausting the bound means the invariants were violated;
+        // "not found" is the safe, correct answer.
+        for var probes = 0; probes < self.cap; probes += 1 {
             let entry = &self.entries[index];
 
             if entry.state == .Empty {
@@ -132,6 +159,8 @@ type HashMap[K, V] = struct {
 
             index = (index + 1) % self.cap;
         }
+
+        return none;
     }
 
     // Returns a value directly.
@@ -157,7 +186,12 @@ type HashMap[K, V] = struct {
         let hash = self.hash_fn(key);
         var index = (hash as uint) % self.cap;
 
-        while true {
+        // Bounded linear probe (defensive): self.cap probes is the exact bound
+        // — step-1 probing visits every slot before repeating, and maybe_grow
+        // keeps the load factor under 0.7 so an .Empty slot is always reached
+        // within it. Exhausting the bound means the invariants were violated;
+        // "nothing to remove" is the safe, correct answer.
+        for var probes = 0; probes < self.cap; probes += 1 {
             let entry = &self.entries[index];
 
             if entry.state == .Empty {
@@ -172,6 +206,8 @@ type HashMap[K, V] = struct {
 
             index = (index + 1) % self.cap;
         }
+
+        return false;
     }
 
     // Remove all key-value pairs but keep capacity.
