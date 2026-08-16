@@ -349,6 +349,65 @@ dedicated stress test (22 probes), confirming the bound's upper edge
 gets genuine exercise. Full backend suite (real C compile-and-run, SAFE
 and RELEASE) green at 846s.
 
+Slice 7 (final smoke-coverage pass) closed in `4b5b120`. **This closes
+the initiative — all 7 planned slices are now done.** Added real
+coverage for the modules still untested through the integration
+harness: `math.peb` (`abs`/`min`/`max`/`clamp`), the remaining
+`hash.peb` functions (`hash_i8`..`hash_u64`, `hash_bytes` — only
+`hash_str` had coverage before, from Slice 4), and `mem/arena.peb`
+(allocation/readback/realloc/destroy — previously only covered by
+example files, not the `tests/stdlib/` + Go harness pattern). `libc.peb`
+is pure `extern` declarations with no logic of its own and is already
+exercised transitively by every module that calls into it — skipped
+deliberately.
+
+`func.peb` and `result.peb` needed more than tests to get REAL
+coverage: passing a named function value to a generic higher-order
+function (`map`/`filter`/`reduce`/`find`/`any`/`all`/`zip`), and
+instantiating `Result[T, E]` at all, both fail to type-check from an
+external module (`T0505`/`T0510`) — the exact class of limitation
+Slice 5 already worked around for `io.peb`. A first attempt at this
+slice gave up and shipped `func_test.peb`/`result_test.peb` as hollow
+"import the module, print PASS" tests with no real assertions — caught
+by reading the test bodies directly rather than trusting the green
+result, and rejected as not genuine coverage. Redone by applying
+Slice 5's exact pattern: public wrapper functions inside each module
+(`test_map_doubles`, `test_filter_evens`, etc. in `func.peb`;
+`test_ok_is_ok`, `test_ok_map`, etc. in `result.peb`) that do the
+generic/function-value work internally and expose only primitive or
+slice results, which cross module boundaries cleanly — real,
+compiled-and-run coverage of each module's full public API.
+
+Two small, isolated bugs surfaced and were fixed directly while landing
+this (each independently verified against a fresh build before
+proceeding, not left for a follow-up dispatch): `Result.map`'s wrapper
+called `r.map[_double]` (bracket syntax, misparsed as a type argument,
+producing `T0501`/`T0510`) instead of the correct `r.map(_double)`
+ordinary call with `U` inferred; and `func_test.peb`'s `items_t[0] = -1;`
+needed an explicit `as i32` — a negated integer literal doesn't pick up
+the same slice-element-type inference context a positive literal
+assignment does in the same position, a narrow width-inference gap
+worth a closer look on its own, not a blocker here.
+
+One separate finding flagged but explicitly NOT fixed here (out of
+scope for a coverage slice): `math::abs[f64]` fails a generic
+`LiteralFits` constraint in the checker — confirmed directly, the plain
+extern math functions (`sqrt` etc.) work fine standalone, only the
+generic `abs`/`min`/`max`/`clamp` instantiated at `f64` hit this. A
+real, narrow checker gap, candidate for a future slice or standalone
+fix.
+
+Full backend suite (real C compile-and-run, SAFE and RELEASE) green at
+602s.
+
+**Still outstanding, not part of the 7 planned slices**: the
+ID-normalization test-helper hardening deferred after Slice 3 (see
+project memory `project_golden_test_id_fragility.md`) — 73 backend
+tests still assert exact numeric generated IDs instead of structural
+shape, so any future change to global symbol-allocation order will
+break them again the same way a new builtin already did once. Worth
+picking up as its own item.
+
 ### Planned slice order
 
 1. Test harness bootstrap + `Vec.eq`/`Vec.reverse` correctness.
