@@ -522,6 +522,20 @@ func (w *walker) finishOperator(ref symbol.SyntaxRef, node syntax.Node, ctx walk
 	if !p.concreteResult {
 		w.applyExpected(result, p.exact, ctx.expected, origin)
 	}
+	// Propagate expected-type context to negated-literal results when the
+	// destination was not carried through expectationFor (expectNone with a
+	// valid destination ID means the destination existed but had no Known
+	// type — exactly the index-place scenario where the resolver hadn't
+	// resolved the index element's concrete type yet). The LiteralFits
+	// constraint lets the solver bind the negated literal's width from that
+	// destination, mirroring what expectLiteral does for plain integer
+	// literals.
+	if family == operatorLiteralNegate && p.exact != (infer.Term{}) && ctx.expected.Kind == expectNone {
+		if destID := ctx.expected.Destination; destID != 0 && w.generation.hasValue(destID) {
+			destVal := w.generation.values[destID-1]
+			w.addConstraint(infer.LiteralFits(p.exact, destVal.Term, w.origin(ref, node, "negated literal width", ctx.typeOwner, ctx.genericOwner)))
+		}
+	}
 	if destination := w.optionalDestinations[ref]; destination != 0 {
 		w.retainCompatibility(ref, ctx.genericOwner, result.ID, destination, compatibilityOptionalInjection, 0, 0, node.Span(), false)
 	}
