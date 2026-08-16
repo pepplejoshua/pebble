@@ -507,6 +507,18 @@ PebbleStr pebble_rt_str_from_parts(PebbleContext *ctx, const PebbleStrPart *part
  * shared length. Not NUL-terminated-dependent, per this type's own contract
  * above.
  */
+/* Constructs a PebbleStr from a NUL-terminated C string (e.g. the return
+ * value of an extern C function declared to return str, whose real C ABI
+ * return type is char*). Computes the length via strlen. A NULL input
+ * produces an empty PebbleStr ({ .data = NULL, .len = 0 }) rather than
+ * dereferencing NULL via strlen. The resulting PebbleStr aliases the C
+ * string's own bytes (no copy, no ownership transfer); the caller must keep
+ * the source alive as long as the PebbleStr is used, exactly as with any
+ * other borrowed str. Mode-independent: SAFE and RELEASE builds behave
+ * identically.
+ */
+PebbleStr pebble_rt_str_from_cstr(const char *s);
+
 bool pebble_rt_str_eq(PebbleStr a, PebbleStr b);
 
 /* Lexicographic byte comparison, the same contract as C's memcmp/strcmp:

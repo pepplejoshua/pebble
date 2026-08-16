@@ -150,6 +150,38 @@ fn main() int {
 	compileAndRun(t, buf.Bytes(), 0, false)
 }
 
+func TestEmitExternStrReturningCallCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A C-convention extern declared to return Pebble str (libc strerror's
+	// real shape) has a REAL C ABI return type of char*, not PebbleStr — the
+	// backend must wrap the bare call in pebble_rt_str_from_cstr(...) so the
+	// result matches the PebbleStr type the consuming expression expects.
+	// Before the fix the emitted C was
+	// `PebbleStr pebble_local_N = strerror(2);`, which cc rejects under the
+	// mandated -Wall -Wextra -Werror with "initializing 'PebbleStr' ... with
+	// an expression of incompatible type 'char *'". This test asserts the
+	// wrapping text is present at BOTH consumption positions — a str-typed
+	// local's direct initializer (buildStrLocalDeclaration) and a str call
+	// argument nested directly in another call (buildStrOperand), the two
+	// shapes that share buildDirectCallArgs — AND proves correctness
+	// end-to-end: the program compares the resulting PebbleStr's length
+	// (strlen of its data) against the real C string's strlen, so an absent
+	// conversion fails the cc compile and a wrong length fails the run.
+	unit, snapshot, entryID, sources, resolution := buildFixtureWithSymbols(t, `extern fn strerror(errnum i32) str; extern fn strlen(s str) uint; fn main() int { var msg = strerror(2); var expected = strlen(strerror(2)); var actual = strlen(msg); if actual != expected { return 1; } if actual == 0 { return 2; } return 0; }`)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, resolution, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	emitted := buf.String()
+	if !strings.Contains(emitted, "pebble_rt_str_from_cstr(strerror(2))") {
+		t.Errorf("emitted C does not wrap the str-returning extern call in pebble_rt_str_from_cstr:\n%s", emitted)
+	}
+	if !strings.Contains(emitted, "PebbleStr pebble_local_") {
+		t.Errorf("emitted C does not declare the str-returning extern's result as a PebbleStr local:\n%s", emitted)
+	}
+	compileAndRun(t, buf.Bytes(), 0, false)
+}
+
 // TestEmitGenericHelperConcreteWidthWritesInt32TParams asserts the emitted-C
 // shape for the widened case, not just that Emit succeeds: the generic
 // specialization identity[i32] must be declared AND defined as

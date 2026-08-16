@@ -1044,7 +1044,13 @@ func buildDirectCallArgs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 	// is threaded, the callee is called by its real C name (malloc, not
 	// pebble_fn_<symbolID>), and the result is the function's own C return
 	// type (which the consuming expression — a cast, assignment, or
-	// discarded-statement — already matches).
+	// discarded-statement — already matches). The ONE exception is an extern
+	// declared to return str: Pebble's str is the PebbleStr struct (data +
+	// length), but the extern's REAL C ABI return type is char* (e.g.
+	// strerror, getenv), so the bare call's char* result does not match a
+	// PebbleStr-typed consuming expression — the call is wrapped in the
+	// runtime helper pebble_rt_str_from_cstr to convert it. Every other
+	// return type continues exactly as before.
 	if node.Convention == types.C {
 		if node.ContextAction != tir.ContextNone {
 			return "", "", fmt.Errorf("entry function body expression contains a C-convention call that records ContextAction %s, want NoContext", node.ContextAction)
@@ -1076,10 +1082,20 @@ func buildDirectCallArgs(st *emitState, unit *tir.Unit, snapshot *types.Snapshot
 		if err != nil {
 			return "", "", err
 		}
+		var callExpr string
 		if callArgs == "" {
-			return callPre, fmt.Sprintf("%s()", calleeName), nil
+			callExpr = fmt.Sprintf("%s()", calleeName)
+		} else {
+			callExpr = fmt.Sprintf("%s(%s)", calleeName, callArgs)
 		}
-		return callPre, fmt.Sprintf("%s(%s)", calleeName, callArgs), nil
+		if isStr(snapshot, node.Type) {
+			// A str-returning extern's real C ABI return type is char*, not
+			// PebbleStr — wrap the bare call in the runtime conversion helper
+			// so the resulting expression carries the PebbleStr type the
+			// consuming cast/assignment/discarded-statement expects.
+			callExpr = fmt.Sprintf("pebble_rt_str_from_cstr(%s)", callExpr)
+		}
+		return callPre, callExpr, nil
 	}
 	if node.Convention != types.Pebble {
 		return "", "", fmt.Errorf("entry function body expression contains a call using the %s calling convention, want Pebble", callingConventionName(node.Convention))

@@ -107,6 +107,23 @@ int32_t pebble_rt_str_char_at_u64(PebbleStr s, uint64_t index, PebbleSourceLoc l
     return 0; /* unreachable */
 }
 
+/* Constructs a PebbleStr from a NUL-terminated C string (see pebble_rt.h).
+ * Computes the length via strlen. A NULL input produces an empty PebbleStr
+ * ({ .data = NULL, .len = 0 }) rather than dereferencing NULL via strlen.
+ */
+PebbleStr pebble_rt_str_from_cstr(const char *s) {
+    if (s == NULL) {
+        PebbleStr empty;
+        empty.data = NULL;
+        empty.len = 0;
+        return empty;
+    }
+    PebbleStr result;
+    result.data = (const uint8_t *)s;
+    result.len = strlen(s);
+    return result;
+}
+
 /* Byte-for-byte str equality (see pebble_rt.h). */
 bool pebble_rt_str_eq(PebbleStr a, PebbleStr b) {
     if (a.len != b.len) {
