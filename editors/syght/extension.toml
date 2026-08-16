@@ -1,0 +1,11 @@
+id = "pebble"
+name = "Pebble"
+version = "0.1.0"
+schema_version = 1
+grammar = "pebble"
+authors = ["Joshua Pepple"]
+repository = "https://github.com/pepplejoshua/pebble"
+
+[grammars.pebble]
+repository = "https://github.com/pepplejoshua/pebble"
+rev = "PLACEHOLDER_UPDATE_AFTER_GRAMMAR_COMMIT"
