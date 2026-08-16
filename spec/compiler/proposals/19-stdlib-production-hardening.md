@@ -252,6 +252,78 @@ point); re-verified independently rather than resuming the session,
 since only that last long-running check was left. Full backend suite
 (real C compile-and-run, SAFE and RELEASE) green at 998s.
 
+Slice 5 (Result-returning checked I/O) closed in `a541618`. Added
+`open_checked`, `open_error_message`, `read_all_into`, `read_line_into`,
+`write_all` to `compiler/std/io.peb`, alongside (not replacing) every
+prior function in that file. This was the riskiest and most exploratory
+slice yet — it hit four distinct, real, confirmed compiler/language
+limitations, each worked around rather than "fixed" (fixing any of them
+for real would be its own separate initiative):
+
+1. Generic `Result[T, E]` from `std:result` cannot be instantiated
+   across module boundaries in this checker — used two new local,
+   non-generic tagged unions instead (`IoResultUint`, `IoResultBool`).
+2. A union-enum variant payload cannot be a pointer type, so
+   `IoResultUint`/`IoResultBool` can never carry `*FILE` — `open_checked`
+   returns the handle directly (`*FILE`, nil on failure — a genuinely
+   usable handle, unlike an early draft that opened and immediately
+   closed the file) instead of being Result-wrapped; a companion
+   `open_error_message` supplies the failure message by convention.
+2b. `**FILE` (the alternative — thread the handle out via an output
+   parameter) fails specifically at C emission (`pointerTypeNameForUnit`
+   has no pointer-pointee case), confirmed empirically before choosing
+   the direct-return design in 2.
+3. Union-enum methods are not callable from outside the type's declaring
+   module (confirmed empirically: `.is_ok()` works called from within
+   `io.peb` itself, fails with `T0507`/`T0510` from an external
+   importer) — added a public, non-underscore free-function accessor
+   surface (`is_ok_uint`/`ok_value_uint`/`err_message_uint` and the
+   `_bool` variants) so external callers can actually inspect a
+   `Result` they get back; the private underscore-prefixed versions
+   stay for internal use. `.Ok` dot-access outside a `switch` is
+   separately rejected (`C0605`) regardless of module — both accessor
+   families read the payload via `switch`.
+4. Discovered mid-slice: an extern function declared to return `str`
+   (e.g. `strerror`, which `get_file_error` already called) has a real
+   C ABI return type of `char*`, not `PebbleStr` — the call-lowering
+   path emitted invalid C the moment any `strerror`-based error path
+   actually ran for real. This is a genuine backend bug, not a stdlib
+   design constraint, and predates this whole initiative — it just went
+   undetected because nothing had ever compiled a real error path
+   through it before. Fixed and closed as its own commit (`7ad56b1`,
+   `pebble_rt_str_from_cstr` + a `calls.go` wrap on str-returning extern
+   calls), independent of this slice.
+
+Also surfaced, by directly running the earlier passing test through a
+real `import "std:io"` probe rather than trusting it: `tests/stdlib/
+io_result_test.peb` (from an earlier dispatch attempt) never actually
+imports `std:io` at all — it's a self-contained inline reimplementation
+of the whole I/O layer, meaning the real module had zero test coverage
+despite a fully green test run. Kept that file as extra coverage of the
+underlying Result-returning logic, and added a second, genuine test —
+`tests/stdlib/io_module_test.peb` — that actually does `import
+"std:io";` and exercises the real functions (round-trip, multi-line
+read to clean EOF, empty file, `open_checked` on both an existing and a
+missing path, and two real `Err`-triggering cases — writing under a
+nonexistent parent directory, reading a nonexistent file — confirming
+non-empty error messages, not simulated failures). `*FILE` still can't
+cross a module boundary in any signature at all, so a set of public
+`test_*` wrapper functions in `io.peb` (`test_write_all`/`test_read_all`/
+`test_read_line`/`test_roundtrip`/`test_read_lines`) encapsulate full
+open→act→close scenarios behind primitive-only signatures for the
+external test to call.
+
+Three separate dispatch attempts stalled during their own long-running
+final verification pass (the non-`-short` backend suite, which
+genuinely takes 10-17 minutes) — each time the actual code was already
+correct and complete at the stall point, confirmed by reviewing the
+diff directly rather than trusting the "failed" status; re-verified
+independently each time rather than blindly resuming. One resume was
+additionally interrupted by a real machine lockout (unrelated to the
+work itself); the working tree was untouched by the interruption and
+verification was simply re-run from a clean state afterward. Full
+backend suite (real C compile-and-run, SAFE and RELEASE) green at 693s.
+
 ### Planned slice order
 
 1. Test harness bootstrap + `Vec.eq`/`Vec.reverse` correctness.
