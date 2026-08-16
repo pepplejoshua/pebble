@@ -324,6 +324,31 @@ work itself); the working tree was untouched by the interruption and
 verification was simply re-run from a clean state afterward. Full
 backend suite (real C compile-and-run, SAFE and RELEASE) green at 693s.
 
+Slice 6 (bounded HashMap/Set probing) closed in `ef83399`. All six
+linear-probe loops (`HashMap.insert`/`get_by_ref`/`remove`,
+`Set.insert`/`contains`/`remove`) used `while true { ... }` with no
+defensive limit; converted each to a bounded loop capped at `self.cap`
+iterations — the exact, provably sufficient bound, since step-1 probing
+over `cap` slots visits every distinct index before repeating and
+`maybe_grow` keeps the load factor under 0.7, guaranteeing an `.Empty`
+slot within `cap` probes in correct operation. On bound exhaustion
+(unreachable given that invariant, documented in a loop comment):
+lookups/removal return not-found (same as hitting `.Empty`); insert
+writes into a tombstone slot found during the scan if one exists
+(reusing the loop's own tombstone-preference logic, so a key is never
+silently dropped when a valid slot was available) and otherwise leaves
+`entries`/`len` untouched rather than risk corrupting an
+already-inconsistent table. New `tests/stdlib/hmap_bounded_probe_test
+.peb`/`set_bounded_probe_test.peb` cover ordinary correctness under
+the new bound plus a stress case. Causation-checked via an isolated
+`git worktree` with temporary probe-count instrumentation: found real,
+non-trivial probe chains in both the "ordinary" test (a 50-probe
+tombstone run after removing every 3rd key — longer than predicted,
+traced to its actual cause rather than accepted at face value) and the
+dedicated stress test (22 probes), confirming the bound's upper edge
+gets genuine exercise. Full backend suite (real C compile-and-run, SAFE
+and RELEASE) green at 846s.
+
 ### Planned slice order
 
 1. Test harness bootstrap + `Vec.eq`/`Vec.reverse` correctness.
