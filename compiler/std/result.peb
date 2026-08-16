@@ -35,3 +35,70 @@ fn result_ok[T, E](value T) Result[T, E] {
 fn result_err[T, E](error E) Result[T, E] {
     return Result[T, E].{ Err = error };
 }
+
+// ── Public test helpers via internal wrappers (Slice 7) ─────────────
+// Instantiating or manipulating Result[T, E] from an external module fails
+// with T0510 because the generic union enum type cannot be resolved across
+// module boundaries.  These wrapper functions are defined here so they can
+// instantiate Result[i32, str] and exercise every public method and free
+// function INTERNALLY.  Each wrapper exposes only primitive return types
+// that cross module boundaries cleanly, letting external tests exercise
+// real compiled-and-run logic.
+
+fn _double(x i32) i32 {
+    return x * 2;
+}
+
+// test_ok_is_ok returns true by constructing a Result::Ok value and
+// calling .is_ok() on it internally.
+fn test_ok_is_ok(value i32) bool {
+    let r = result_ok[i32, str](value);
+    return r.is_ok();
+}
+
+// test_err_is_not_ok returns false by constructing a Result::Err value
+// and calling .is_ok() on it internally.
+fn test_err_is_not_ok(msg str) bool {
+    let r = result_err[i32, str](msg);
+    return !r.is_ok();
+}
+
+// test_ok_unwrap_or returns the Ok payload when the result is Ok.
+fn test_ok_unwrap_or(value i32, def i32) i32 {
+    let r = result_ok[i32, str](value);
+    return r.unwrap_or(def);
+}
+
+// test_err_unwrap_or returns the default when the result is Err.
+fn test_err_unwrap_or(msg str, def i32) i32 {
+    let r = result_err[i32, str](msg);
+    return r.unwrap_or(def);
+}
+
+// test_ok_map applies a transformation to the Ok payload via .map().
+fn test_ok_map(value i32) i32 {
+    let r = result_ok[i32, str](value);
+    let mapped = r.map(_double);
+    switch mapped {
+        case .Ok: return mapped.Ok;
+        case .Err: return -1;
+    }
+}
+
+// test_err_map preserves the error payload via .map().
+fn test_err_map_preserved(msg str) str {
+    let r = result_err[i32, str](msg);
+    let mapped = r.map(_double);
+    switch mapped {
+        case .Ok: return "unexpected_ok";
+        case .Err: return mapped.Err;
+    }
+}
+
+// test_set_error mutates an Ok result into an Err result via .set_error().
+fn test_set_error_was_ok(value i32) bool {
+    var r = result_ok[i32, str](value);
+    if !r.is_ok() { return false; }
+    r.set_error("mutation");
+    return !r.is_ok();
+}

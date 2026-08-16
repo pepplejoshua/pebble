@@ -1,0 +1,118 @@
+// Smoke-test for std:result via internal wrappers.
+//
+// Instantiating or manipulating Result[T, E] from an external module fails
+// with T0510 because the generic union enum type cannot be resolved across
+// module boundaries.  The wrapper functions in result.peb (test_ok_is_ok,
+// test_err_is_not_ok, test_ok_unwrap_or, test_err_unwrap_or, test_ok_map,
+// test_err_map_preserved, test_set_error_was_ok) instantiate Result[i32,
+// str] and exercise every public method and free function INTERNALLY, then
+// expose only primitive return types that cross module boundaries cleanly.
+// This gives real compiled-and-run coverage of the entire Result API.
+
+import "std:result";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === result_ok / .is_ok() ===
+
+    // Test: ok value reports is_ok() == true
+    if !result::test_ok_is_ok(42) {
+        print("FAIL: ok_is_ok_true");
+        failures++;
+    }
+
+    // Test: ok with zero value still reports is_ok() == true
+    if !result::test_ok_is_ok(0) {
+        print("FAIL: ok_zero_is_ok_true");
+        failures++;
+    }
+
+    // === result_err / .is_ok() ===
+
+    // Test: err value reports is_ok() == false
+    if !result::test_err_is_not_ok("something went wrong") {
+        print("FAIL: err_is_ok_false");
+        failures++;
+    }
+
+    // Test: err with empty message still reports is_ok() == false
+    if !result::test_err_is_not_ok("") {
+        print("FAIL: err_empty_msg_is_ok_false");
+        failures++;
+    }
+
+    // === .unwrap_or() on Ok ===
+
+    // Test: unwrap_or on Ok returns the payload, ignoring default
+    if result::test_ok_unwrap_or(42, 99) != 42 {
+        print("FAIL: ok_unwrap_or_returns_value");
+        failures++;
+    }
+
+    // Test: unwrap_or on Ok ignores default even when payload is zero
+    if result::test_ok_unwrap_or(0, 7) != 0 {
+        print("FAIL: ok_unwrap_or_zero_value");
+        failures++;
+    }
+
+    // === .unwrap_or() on Err ===
+
+    // Test: unwrap_or on Err returns the default
+    if result::test_err_unwrap_or("error", 42) != 42 {
+        print("FAIL: err_unwrap_or_returns_default");
+        failures++;
+    }
+
+    // Test: unwrap_or on Err with default zero
+    if result::test_err_unwrap_or("error", 0) != 0 {
+        print("FAIL: err_unwrap_or_zero_default");
+        failures++;
+    }
+
+    // === .map() on Ok ===
+
+    // Test: map on Ok applies transformation (double 21 -> 42)
+    if result::test_ok_map(21) != 42 {
+        print("FAIL: ok_map_transform");
+        failures++;
+    }
+
+    // Test: map on Ok with zero input (double 0 -> 0)
+    if result::test_ok_map(0) != 0 {
+        print("FAIL: ok_map_zero");
+        failures++;
+    }
+
+    // === .map() on Err ===
+
+    // Test: map on Err preserves error message
+    let msg = result::test_err_map_preserved("my error");
+    if msg != "my error" {
+        print("FAIL: err_map_preserves_error");
+        failures++;
+    }
+
+    // Test: map on Err with empty error message
+    let msg2 = result::test_err_map_preserved("");
+    if msg2 != "" {
+        print("FAIL: err_map_preserves_empty_error");
+        failures++;
+    }
+
+    // === .set_error() ===
+
+    // Test: set_error mutates Ok into Err
+    if !result::test_set_error_was_ok(100) {
+        print("FAIL: set_error_mutates_ok_to_err");
+        failures++;
+    }
+
+    // Test: set_error on Ok(0) also works
+    if !result::test_set_error_was_ok(0) {
+        print("FAIL: set_error_on_ok_zero");
+        failures++;
+    }
+
+    return failures as i32;
+}

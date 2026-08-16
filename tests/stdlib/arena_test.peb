@@ -1,0 +1,84 @@
+import "std:mem/arena";
+
+type Point = struct {
+    x int;
+    y int;
+};
+
+fn main() i32 {
+    var failures = 0;
+
+    // Initialize arena with small capacity to exercise slab growth
+    var a arena::Arena = arena::Arena.{
+        backing = context.default_allocator,
+        current = nil,
+        slab_size = 0,
+        free_head = nil,
+        free_current = nil,
+    };
+    arena::init(&a, 64, context.default_allocator);
+    let backing = arena::allocator(&a);
+
+    // Allocate first object
+    var p1 = backing.alloc(backing.ptr, sizeof Point) as *Point;
+    p1.x = 10;
+    p1.y = 20;
+
+    // Allocate second object
+    var p2 = backing.alloc(backing.ptr, sizeof Point) as *Point;
+    p2.x = 30;
+    p2.y = 40;
+
+    // Allocate third object (may trigger slab growth with small initial capacity)
+    var p3 = backing.alloc(backing.ptr, sizeof Point) as *Point;
+    p3.x = 50;
+    p3.y = 60;
+
+    // Read back and verify p1
+    if p1.x != 10 || p1.y != 20 {
+        print("FAIL: p1_readback");
+        failures++;
+    } else {
+        print("PASS: p1_readback");
+    }
+
+    // Read back and verify p2
+    if p2.x != 30 || p2.y != 40 {
+        print("FAIL: p2_readback");
+        failures++;
+    } else {
+        print("PASS: p2_readback");
+    }
+
+    // Read back and verify p3
+    if p3.x != 50 || p3.y != 60 {
+        print("FAIL: p3_readback");
+        failures++;
+    } else {
+        print("PASS: p3_readback");
+    }
+
+    // Realloc p3 to same size, verify data preserved
+    var p3_realloc = backing.realloc(backing.ptr, p3 as *void, sizeof Point) as *Point;
+    if p3_realloc.x != 50 || p3_realloc.y != 60 {
+        print("FAIL: p3_realloc_readback");
+        failures++;
+    } else {
+        print("PASS: p3_realloc_readback");
+    }
+
+    // Modify through realloc'd pointer, verify write works
+    p3_realloc.x = 99;
+    if p3_realloc.x != 99 {
+        print("FAIL: realloc_modify");
+        failures++;
+    } else {
+        print("PASS: realloc_modify");
+    }
+
+    // Destroy arena (should not crash)
+    arena::destroy(&a);
+    print("PASS: arena_destroy");
+
+    return failures as i32;
+}

@@ -1,0 +1,85 @@
+import "std:math";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === abs tests ===
+
+    if math::abs[i32](-5) != 5 {
+        print("FAIL: abs_negative");
+        failures++;
+    } else {
+        print("PASS: abs_negative");
+    }
+
+    if math::abs[i32](0) != 0 {
+        print("FAIL: abs_zero");
+        failures++;
+    } else {
+        print("PASS: abs_zero");
+    }
+
+    if math::abs[i32](5) != 5 {
+        print("FAIL: abs_positive");
+        failures++;
+    } else {
+        print("PASS: abs_positive");
+    }
+
+    // === min tests ===
+
+    if math::min[i32](3, 5) != 3 {
+        print("FAIL: min_less");
+        failures++;
+    } else {
+        print("PASS: min_less");
+    }
+
+    if math::min[i32](5, 3) != 3 {
+        print("FAIL: min_greater");
+        failures++;
+    } else {
+        print("PASS: min_greater");
+    }
+
+    // === max tests ===
+
+    if math::max[i32](3, 5) != 5 {
+        print("FAIL: max_less");
+        failures++;
+    } else {
+        print("PASS: max_less");
+    }
+
+    if math::max[i32](5, 3) != 5 {
+        print("FAIL: max_greater");
+        failures++;
+    } else {
+        print("PASS: max_greater");
+    }
+
+    // === clamp tests ===
+
+    if math::clamp[i32](-5, 0, 10) != 0 {
+        print("FAIL: clamp_below");
+        failures++;
+    } else {
+        print("PASS: clamp_below");
+    }
+
+    if math::clamp[i32](5, 0, 10) != 5 {
+        print("FAIL: clamp_inside");
+        failures++;
+    } else {
+        print("PASS: clamp_inside");
+    }
+
+    if math::clamp[i32](15, 0, 10) != 10 {
+        print("FAIL: clamp_above");
+        failures++;
+    } else {
+        print("PASS: clamp_above");
+    }
+
+    return failures as i32;
+}

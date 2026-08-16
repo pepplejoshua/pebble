@@ -272,19 +272,71 @@ func TestStdlibIoResult(t *testing.T) {
 	}
 }
 
-// TestStdlibIoModule exercises the REAL std:io module imported via
-// "import \"std:io\"": public accessor functions (is_ok_uint, ok_value_uint,
-// err_message_uint, is_ok_bool, ok_value_bool, err_message_bool) via the
-// public test helpers (test_write_all, test_read_all, test_read_line,
-// test_roundtrip), plus open_checked and open_error_message.  Covers
-// write+read round-trip, multi-line read with clean EOF, empty file,
-// and real Err results with non-empty error messages.
-func TestStdlibIoModule(t *testing.T) {
+// TestStdlibFunc exercises generic functional helpers from std:func:
+// map, filter, reduce, find, any, all, and zip. It verifies correct
+// transformation, filtering, accumulation, searching, and predicate
+// evaluation across non-empty and empty slices.
+func TestStdlibFunc(t *testing.T) {
 	t.Parallel()
 
-	code, output := compilePebbleTestFile(t, "io_module_test.peb")
-	t.Logf("io_module_test.peb output:\n%s", output)
+	code, output := compilePebbleTestFile(t, "func_test.peb")
+	t.Logf("func_test.peb output:\n%s", output)
 	if code != 0 {
-		t.Fatalf("io_module_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+		t.Fatalf("func_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibMath exercises generic numeric helpers (abs, min, max, clamp)
+// and confirms the extern math functions (sqrt, pow, floor, ceil, fabs)
+// link against the C math library and produce correct results. It also
+// verifies the PI and E constants.
+func TestStdlibMath(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "math_test.peb")
+	t.Logf("math_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("math_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibHashExtended smoke-tests the hash functions not covered by
+// string-byte-correctness testing: hash_i8, hash_i16, hash_i32, hash_i64,
+// hash_u8, hash_u16, hash_u32, hash_u64, and hash_bytes. Each function is
+// verified for determinism (same input → same hash) and uniqueness
+// (different inputs → different hashes).
+func TestStdlibHashExtended(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "hash_extended_test.peb")
+	t.Logf("hash_extended_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("hash_extended_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibResult exercises the Result[T, E] generic API directly:
+// result_ok, result_err, .is_ok(), .unwrap_or(), .map(), and .set_error.
+// Uses concrete Result[i32, str] instantiations imported from std:result.
+func TestStdlibResult(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "result_test.peb")
+	t.Logf("result_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("result_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibArena exercises arena allocation: creating an arena, allocating
+// multiple objects, writing and reading them back, reallocating, and
+// destroying the arena without crashing.
+func TestStdlibArena(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "arena_test.peb")
+	t.Logf("arena_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("arena_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
 	}
 }

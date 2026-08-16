@@ -1,0 +1,298 @@
+// Smoke-test for std:func higher-order functions via internal wrappers.
+//
+// Passing a named function value as an argument to a generic higher-order
+// function from an external module fails with T0505/T0510 errors because
+// the concrete function type does not unify with the generic fn(T) Ret
+// parameter shape across module boundaries.  The wrapper functions in
+// func.peb (_double, _is_even, _sum, _to_bool combined with
+// test_map_doubles, test_filter_evens, test_reduce_sum, test_find_even,
+// test_any_even, test_all_nonzero, test_zip_pairs) do the calls
+// INTERNALLY so the limitation is avoided, then expose only primitive or
+// slice results that cross module boundaries cleanly.  This gives real
+// compiled-and-run coverage of all seven higher-order functions.
+
+import "std:func";
+import "std:mem";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === map ===
+
+    // Test: map doubles [1,2,3] -> [2,4,6]
+    var items_a = mem::new_slice[i32](3);
+    items_a[0] = 1;
+    items_a[1] = 2;
+    items_a[2] = 3;
+    var result_a = func::test_map_doubles(items_a);
+    if result_a.len != 3 || result_a[0] != 2 || result_a[1] != 4 || result_a[2] != 6 {
+        print("FAIL: map_doubles");
+        failures++;
+    }
+
+    // Test: map doubles empty slice
+    var items_b = mem::new_slice[i32](0);
+    var result_b = func::test_map_doubles(items_b);
+    if result_b.len != 0 {
+        print("FAIL: map_doubles_empty");
+        failures++;
+    }
+
+    // === filter ===
+
+    // Test: filter evens [1,2,3,4,5,6] -> [2,4,6]
+    var items_c = mem::new_slice[i32](6);
+    items_c[0] = 1;
+    items_c[1] = 2;
+    items_c[2] = 3;
+    items_c[3] = 4;
+    items_c[4] = 5;
+    items_c[5] = 6;
+    var result_c = func::test_filter_evens(items_c);
+    if result_c.len != 3 || result_c[0] != 2 || result_c[1] != 4 || result_c[2] != 6 {
+        print("FAIL: filter_evens");
+        failures++;
+    }
+
+    // Test: filter evens with no evens
+    var items_d = mem::new_slice[i32](3);
+    items_d[0] = 1;
+    items_d[1] = 3;
+    items_d[2] = 5;
+    var result_d = func::test_filter_evens(items_d);
+    if result_d.len != 0 {
+        print("FAIL: filter_evens_none");
+        failures++;
+    }
+
+    // Test: filter evens with all evens
+    var items_e = mem::new_slice[i32](3);
+    items_e[0] = 2;
+    items_e[1] = 4;
+    items_e[2] = 6;
+    var result_e = func::test_filter_evens(items_e);
+    if result_e.len != 3 || result_e[0] != 2 || result_e[1] != 4 || result_e[2] != 6 {
+        print("FAIL: filter_evens_all");
+        failures++;
+    }
+
+    // === reduce ===
+
+    // Test: reduce sum [1,2,3] with initial 0 -> 6
+    var items_f = mem::new_slice[i32](3);
+    items_f[0] = 1;
+    items_f[1] = 2;
+    items_f[2] = 3;
+    var result_f = func::test_reduce_sum(items_f, 0);
+    if result_f != 6 {
+        print("FAIL: reduce_sum");
+        failures++;
+    }
+
+    // Test: reduce sum with non-zero initial
+    var result_g = func::test_reduce_sum(items_f, 10);
+    if result_g != 16 {
+        print("FAIL: reduce_sum_initial");
+        failures++;
+    }
+
+    // Test: reduce sum empty slice
+    var items_h = mem::new_slice[i32](0);
+    var result_h = func::test_reduce_sum(items_h, 42);
+    if result_h != 42 {
+        print("FAIL: reduce_sum_empty");
+        failures++;
+    }
+
+    // === find ===
+
+    // Test: find first even in [1,3,4,5] -> some(4)
+    var items_i = mem::new_slice[i32](4);
+    items_i[0] = 1;
+    items_i[1] = 3;
+    items_i[2] = 4;
+    items_i[3] = 5;
+    var result_i = func::test_find_even(items_i);
+    if !result_i.has_value {
+        print("FAIL: find_even_found");
+        failures++;
+    } else {
+        let val = result_i!;
+        if val != 4 {
+            print("FAIL: find_even_found");
+            failures++;
+        }
+    }
+
+    // Test: find even in [1,3,5] -> none
+    var items_j = mem::new_slice[i32](3);
+    items_j[0] = 1;
+    items_j[1] = 3;
+    items_j[2] = 5;
+    var result_j = func::test_find_even(items_j);
+    if result_j.has_value {
+        print("FAIL: find_even_none_should_be_none");
+        failures++;
+    }
+
+    // Test: find even in [2,4,6] -> some(2), first match
+    var items_k = mem::new_slice[i32](3);
+    items_k[0] = 2;
+    items_k[1] = 4;
+    items_k[2] = 6;
+    var result_k = func::test_find_even(items_k);
+    if !result_k.has_value {
+        print("FAIL: find_even_first_match_none");
+        failures++;
+    } else {
+        let val = result_k!;
+        if val != 2 {
+            print("FAIL: find_even_first_match");
+            failures++;
+        }
+    }
+
+    // Test: find even in empty slice -> none
+    var items_l = mem::new_slice[i32](0);
+    var result_l = func::test_find_even(items_l);
+    if result_l.has_value {
+        print("FAIL: find_even_empty_some");
+        failures++;
+    }
+
+    // === any ===
+
+    // Test: any even in [1,3,4,5] -> true
+    var items_m = mem::new_slice[i32](4);
+    items_m[0] = 1;
+    items_m[1] = 3;
+    items_m[2] = 4;
+    items_m[3] = 5;
+    if !func::test_any_even(items_m) {
+        print("FAIL: any_even_true");
+        failures++;
+    }
+
+    // Test: any even in [1,3,5] -> false
+    var items_n = mem::new_slice[i32](3);
+    items_n[0] = 1;
+    items_n[1] = 3;
+    items_n[2] = 5;
+    if func::test_any_even(items_n) {
+        print("FAIL: any_even_false");
+        failures++;
+    }
+
+    // Test: any even in empty slice -> false
+    var items_o = mem::new_slice[i32](0);
+    if func::test_any_even(items_o) {
+        print("FAIL: any_even_empty");
+        failures++;
+    }
+
+    // Test: any even in [2,4,6] -> true
+    var items_p = mem::new_slice[i32](3);
+    items_p[0] = 2;
+    items_p[1] = 4;
+    items_p[2] = 6;
+    if !func::test_any_even(items_p) {
+        print("FAIL: any_even_all_true");
+        failures++;
+    }
+
+    // === all ===
+
+    // Test: all nonzero in [1,2,3] -> true
+    var items_q = mem::new_slice[i32](3);
+    items_q[0] = 1;
+    items_q[1] = 2;
+    items_q[2] = 3;
+    if !func::test_all_nonzero(items_q) {
+        print("FAIL: all_nonzero_true");
+        failures++;
+    }
+
+    // Test: all nonzero in [1,0,3] -> false
+    var items_r = mem::new_slice[i32](3);
+    items_r[0] = 1;
+    items_r[1] = 0;
+    items_r[2] = 3;
+    if func::test_all_nonzero(items_r) {
+        print("FAIL: all_nonzero_false");
+        failures++;
+    }
+
+    // Test: all nonzero in empty slice -> true
+    var items_s = mem::new_slice[i32](0);
+    if !func::test_all_nonzero(items_s) {
+        print("FAIL: all_nonzero_empty");
+        failures++;
+    }
+
+    // Test: all nonzero in [-1,1,2] -> true (negative is nonzero)
+    var items_t = mem::new_slice[i32](3);
+    items_t[0] = -1 as i32;
+    items_t[1] = 1;
+    items_t[2] = 2;
+    if !func::test_all_nonzero(items_t) {
+        print("FAIL: all_nonzero_negative");
+        failures++;
+    }
+
+    // === zip ===
+
+    // Test: zip [1,2,3] and [4,5,6] -> [(1,4),(2,5),(3,6)]
+    var items_u = mem::new_slice[i32](3);
+    items_u[0] = 1;
+    items_u[1] = 2;
+    items_u[2] = 3;
+    var items_v = mem::new_slice[i32](3);
+    items_v[0] = 4;
+    items_v[1] = 5;
+    items_v[2] = 6;
+    var result_u = func::test_zip_pairs(items_u, items_v);
+    if result_u.len != 3 {
+        print("FAIL: zip_len");
+        failures++;
+    } else {
+        if result_u[0].0 != 1 || result_u[0].1 != 4 {
+            print("FAIL: zip_first_pair");
+            failures++;
+        }
+        if result_u[1].0 != 2 || result_u[1].1 != 5 {
+            print("FAIL: zip_middle_pair");
+            failures++;
+        }
+        if result_u[2].0 != 3 || result_u[2].1 != 6 {
+            print("FAIL: zip_last_pair");
+            failures++;
+        }
+    }
+
+    // Test: zip with different lengths (shorter second)
+    var items_w = mem::new_slice[i32](3);
+    items_w[0] = 1;
+    items_w[1] = 2;
+    items_w[2] = 3;
+    var items_x = mem::new_slice[i32](1);
+    items_x[0] = 99;
+    var result_x = func::test_zip_pairs(items_w, items_x);
+    if result_x.len != 1 || result_x[0].0 != 1 || result_x[0].1 != 99 {
+        print("FAIL: zip_different_lengths");
+        failures++;
+    }
+
+    // Test: zip empty first
+    var items_y = mem::new_slice[i32](0);
+    var items_z = mem::new_slice[i32](3);
+    items_z[0] = 1;
+    items_z[1] = 2;
+    items_z[2] = 3;
+    var result_y = func::test_zip_pairs(items_y, items_z);
+    if result_y.len != 0 {
+        print("FAIL: zip_empty_first");
+        failures++;
+    }
+
+    return failures as i32;
+}

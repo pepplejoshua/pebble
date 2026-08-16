@@ -75,3 +75,65 @@ fn zip[T, U](items1 []T, items2 []U) [](T, U) {
 
     return result;
 }
+
+// ── Public test helpers via internal wrappers (Slice 7) ─────────────
+// Passing a named function value as an argument to a generic higher-order
+// function from an external module fails with T0505/T0510 errors because
+// the concrete function type does not unify with the generic fn(T) Ret
+// parameter shape across module boundaries.  These wrapper functions are
+// defined here so they can pass function values to map/filter/reduce/find/
+// any/all/zip INTERNALLY (the limitation is specific to crossing a module
+// boundary, not to using these functions at all).  Each wrapper exposes
+// only slice or primitive return types that cross module boundaries
+// cleanly, letting external tests exercise real compiled-and-run logic.
+
+fn _double(x i32) i32 {
+    return x * 2;
+}
+
+fn _is_even(x i32) bool {
+    return x % 2 == 0;
+}
+
+fn _sum(acc i32, x i32) i32 {
+    return acc + x;
+}
+
+fn _to_bool(x i32) bool {
+    return x != 0;
+}
+
+// test_map_doubles returns each element doubled via map.
+fn test_map_doubles(items []i32) []i32 {
+    return map(items, _double);
+}
+
+// test_filter_evens returns only even elements via filter.
+fn test_filter_evens(items []i32) []i32 {
+    return filter(items, _is_even);
+}
+
+// test_reduce_sum returns the sum of all elements via reduce.
+fn test_reduce_sum(items []i32, initial i32) i32 {
+    return reduce(items, initial, _sum);
+}
+
+// test_find_even returns the first even element (wrapped in ?i32) via find.
+fn test_find_even(items []i32) ?i32 {
+    return find(items, _is_even);
+}
+
+// test_any_even returns true if any element is even via any.
+fn test_any_even(items []i32) bool {
+    return any(items, _is_even);
+}
+
+// test_all_nonzero returns true if every element is nonzero via all.
+fn test_all_nonzero(items []i32) bool {
+    return all(items, _to_bool);
+}
+
+// test_zip_pairs returns zipped pairs of two integer slices via zip.
+fn test_zip_pairs(a []i32, b []i32) [](i32, i32) {
+    return zip(a, b);
+}

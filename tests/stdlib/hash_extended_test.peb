@@ -1,0 +1,198 @@
+import "std:hash";
+import "std:mem";
+
+fn main() i32 {
+    var failures = 0;
+
+    // === hash_i8 tests ===
+
+    var h_i8_a = hash::hash_i8(42 as i8);
+    var h_i8_b = hash::hash_i8(42 as i8);
+    if h_i8_a != h_i8_b {
+        print("FAIL: hash_i8_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_i8_deterministic");
+    }
+
+    var h_i8_c = hash::hash_i8(43 as i8);
+    if h_i8_a == h_i8_c {
+        print("FAIL: hash_i8_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_i8_different_inputs");
+    }
+
+    // === hash_i16 tests ===
+
+    var h_i16_a = hash::hash_i16(42 as i16);
+    var h_i16_b = hash::hash_i16(42 as i16);
+    if h_i16_a != h_i16_b {
+        print("FAIL: hash_i16_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_i16_deterministic");
+    }
+
+    var h_i16_c = hash::hash_i16(43 as i16);
+    if h_i16_a == h_i16_c {
+        print("FAIL: hash_i16_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_i16_different_inputs");
+    }
+
+    // === hash_i32 tests ===
+
+    var h_i32_a = hash::hash_i32(42);
+    var h_i32_b = hash::hash_i32(42);
+    if h_i32_a != h_i32_b {
+        print("FAIL: hash_i32_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_i32_deterministic");
+    }
+
+    var h_i32_c = hash::hash_i32(43);
+    if h_i32_a == h_i32_c {
+        print("FAIL: hash_i32_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_i32_different_inputs");
+    }
+
+    // === hash_i64 tests ===
+
+    var h_i64_a = hash::hash_i64(42 as i64);
+    var h_i64_b = hash::hash_i64(42 as i64);
+    if h_i64_a != h_i64_b {
+        print("FAIL: hash_i64_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_i64_deterministic");
+    }
+
+    var h_i64_c = hash::hash_i64(43 as i64);
+    if h_i64_a == h_i64_c {
+        print("FAIL: hash_i64_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_i64_different_inputs");
+    }
+
+    // === hash_u8 tests ===
+
+    var h_u8_a = hash::hash_u8(42 as u8);
+    var h_u8_b = hash::hash_u8(42 as u8);
+    if h_u8_a != h_u8_b {
+        print("FAIL: hash_u8_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_u8_deterministic");
+    }
+
+    var h_u8_c = hash::hash_u8(43 as u8);
+    if h_u8_a == h_u8_c {
+        print("FAIL: hash_u8_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_u8_different_inputs");
+    }
+
+    // === hash_u16 tests ===
+
+    var h_u16_a = hash::hash_u16(42 as u16);
+    var h_u16_b = hash::hash_u16(42 as u16);
+    if h_u16_a != h_u16_b {
+        print("FAIL: hash_u16_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_u16_deterministic");
+    }
+
+    var h_u16_c = hash::hash_u16(43 as u16);
+    if h_u16_a == h_u16_c {
+        print("FAIL: hash_u16_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_u16_different_inputs");
+    }
+
+    // === hash_u32 tests ===
+
+    var h_u32_a = hash::hash_u32(42 as u32);
+    var h_u32_b = hash::hash_u32(42 as u32);
+    if h_u32_a != h_u32_b {
+        print("FAIL: hash_u32_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_u32_deterministic");
+    }
+
+    var h_u32_c = hash::hash_u32(43 as u32);
+    if h_u32_a == h_u32_c {
+        print("FAIL: hash_u32_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_u32_different_inputs");
+    }
+
+    // === hash_u64 tests ===
+
+    var h_u64_a = hash::hash_u64(42);
+    var h_u64_b = hash::hash_u64(42);
+    if h_u64_a != h_u64_b {
+        print("FAIL: hash_u64_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_u64_deterministic");
+    }
+
+    var h_u64_c = hash::hash_u64(43);
+    if h_u64_a == h_u64_c {
+        print("FAIL: hash_u64_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_u64_different_inputs");
+    }
+
+    // === hash_bytes tests ===
+
+    var data1 = mem::new_slice[u8](3);
+    data1[0] = 1;
+    data1[1] = 2;
+    data1[2] = 3;
+    var h_bytes_a = hash::hash_bytes(data1);
+
+    var data2 = mem::new_slice[u8](3);
+    data2[0] = 1;
+    data2[1] = 2;
+    data2[2] = 3;
+    var h_bytes_b = hash::hash_bytes(data2);
+
+    if h_bytes_a != h_bytes_b {
+        print("FAIL: hash_bytes_deterministic");
+        failures++;
+    } else {
+        print("PASS: hash_bytes_deterministic");
+    }
+
+    var data3 = mem::new_slice[u8](3);
+    data3[0] = 4;
+    data3[1] = 5;
+    data3[2] = 6;
+    var h_bytes_c = hash::hash_bytes(data3);
+
+    if h_bytes_a == h_bytes_c {
+        print("FAIL: hash_bytes_different_inputs");
+        failures++;
+    } else {
+        print("PASS: hash_bytes_different_inputs");
+    }
+
+    mem::delete_slice(&data1);
+    mem::delete_slice(&data2);
+    mem::delete_slice(&data3);
+
+    return failures as i32;
+}
