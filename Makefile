@@ -18,8 +18,8 @@ DEPS = $(OBJS:.o=.d)
 # Tells make these dont product files
 .PHONY: clean install uninstall
 
-pebc: $(OBJS)
-	$(CC) $(CFLAGS) -o pebc $(OBJS) -fsanitize=address -g
+pebcv1: $(OBJS)
+	$(CC) $(CFLAGS) -o pebcv1 $(OBJS) -fsanitize=address -g
 
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
@@ -27,13 +27,13 @@ pebc: $(OBJS)
 -include $(DEPS)
 
 clean:
-	rm -f pebc $(OBJS) $(DEPS)
+	rm -f pebcv1 $(OBJS) $(DEPS)
 
-install: pebc
+install: pebcv1
 	install -d $(BINDIR)
-	install -m 755 pebc $(BINDIR)
+	install -m 755 pebcv1 $(BINDIR)
 	cp -r compiler/std $(BINDIR)
 
 uninstall:
-	rm -f $(BINDIR)/pebc
+	rm -f $(BINDIR)/pebcv1
 	rm -rf $(BINDIR)/std
