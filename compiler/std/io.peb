@@ -2,6 +2,187 @@
 import "std:string";
 import "std:mem";
 
+// ── Local Result types ────────────────────────────────────────────
+// Simple Result-like tagged unions mirroring std:result.Result.
+// Defined locally here (and non-generic per-payload-kind) because
+// Pebble's checker cannot instantiate generic types from transitive
+// dependencies across module boundaries, AND Pebble rejects pointer
+// types (*FILE) as union-enum variant payloads, AND Pebble rejects
+// method receivers on union enum types (T0507).  Value-only payloads
+// (uint, bool, str) work fine.  Free functions replace inline methods.
+
+type IoResultUint = union enum {
+    Ok uint;
+    Err str;
+};
+
+fn _is_io_result_uint_ok(r IoResultUint) bool {
+    switch r {
+        case .Ok: return true;
+        case .Err: return false;
+    }
+}
+
+type IoResultBool = union enum {
+    Ok bool;
+    Err str;
+};
+
+fn _is_io_result_bool_ok(r IoResultBool) bool {
+    switch r {
+        case .Ok: return true;
+        case .Err: return false;
+    }
+}
+
+// Payload extractors: the checker rejects .Ok dot-access on union-enum values
+// from outside a switch (C0605), so payload reads must go through a switch —
+// exactly the pattern _is_io_result_*_ok uses.  These mirror the same free-
+// function discipline for the Ok payload itself.
+
+fn _io_result_uint_ok_val(r IoResultUint) uint {
+    switch r {
+        case .Ok: return r.Ok;
+        case .Err: return 0;
+    }
+}
+
+fn _io_result_bool_ok_val(r IoResultBool) bool {
+    switch r {
+        case .Ok: return r.Ok;
+        case .Err: return false;
+    }
+}
+
+// ── PUBLIC accessors for IoResultUint / IoResultBool ──────────────
+// These are the public (no leading underscore) accessor surface for
+// IoResultUint and IoResultBool.  Union enum types cannot have externally-
+// callable methods in this language — the checker rejects method receivers
+// on union enums (T0507) and rejects .Ok dot-access outside a switch (C0605).
+// Callers outside this module must use these free functions instead of
+// `.is_ok()` or `.Ok` dot-access.  The err_message_* extractors are also
+// included here so callers can inspect the Err payload; without them, an
+// Err result is opaque to external code.
+
+fn is_ok_uint(r IoResultUint) bool { return _is_io_result_uint_ok(r); }
+fn ok_value_uint(r IoResultUint) uint { return _io_result_uint_ok_val(r); }
+fn err_message_uint(r IoResultUint) str {
+    switch r {
+        case .Ok: return "";
+        case .Err: return r.Err;
+    }
+}
+
+fn is_ok_bool(r IoResultBool) bool { return _is_io_result_bool_ok(r); }
+fn ok_value_bool(r IoResultBool) bool { return _io_result_bool_ok_val(r); }
+fn err_message_bool(r IoResultBool) str {
+    switch r {
+        case .Ok: return "";
+        case .Err: return r.Err;
+    }
+}
+
+// ── Public test helpers ───────────────────────────────────────────
+// Pebble's checker rejects pointer types (*FILE) across module boundaries
+// — they cannot appear anywhere in a function signature visible to an
+// external caller.  These public helpers encapsulate full I/O scenarios
+// (open → write/read/close) so external tests can exercise the real
+// std:io module without ever mentioning *FILE directly.  Each helper
+// returns only primitive types (bool, uint, str) that cross module
+// boundaries cleanly.
+
+// test_write_all writes data to a file at path using open + write_all +
+// close, then returns IoResultUint via the three-public-accessor surface.
+// On fopen failure returns Err with strerror-based message.
+fn test_write_all(path str, data str) IoResultUint {
+    var f = open(path, MODE_WRITE_BINARY);
+    if f == nil {
+        var err = errno;
+        var err_msg = strerror(err);
+        if strlen(err_msg) == 0 {
+            return IoResultUint.{ Err = "test_write_all: fopen failed" };
+        }
+        return IoResultUint.{ Err = err_msg };
+    }
+    var wr = write_all(f, data);
+    close(f);
+    return wr;
+}
+
+// test_read_all reads back the full contents of the file at path into out
+// and returns IoResultUint.  On fopen failure returns Err.
+fn test_read_all(path str, out *string::String) IoResultUint {
+    var f = open(path, MODE_READ_BINARY);
+    if f == nil {
+        var err = errno;
+        var err_msg = strerror(err);
+        if strlen(err_msg) == 0 {
+            return IoResultUint.{ Err = "test_read_all: fopen failed" };
+        }
+        return IoResultUint.{ Err = err_msg };
+    }
+    var rr = read_all_into(f, out);
+    close(f);
+    return rr;
+}
+
+// test_read_line reads one line from the file at path into out, returning
+// IoResultBool (Ok=true means a line was read, Ok=false means EOF).
+// On fopen failure returns Err.
+fn test_read_line(path str, out *string::String) IoResultBool {
+    var f = open(path, MODE_READ_BINARY);
+    if f == nil {
+        var err = errno;
+        var err_msg = strerror(err);
+        if strlen(err_msg) == 0 {
+            return IoResultBool.{ Err = "test_read_line: fopen failed" };
+        }
+        return IoResultBool.{ Err = err_msg };
+    }
+    var rl = read_line_into(f, out);
+    close(f);
+    return rl;
+}
+
+// test_roundtrip writes data to path via test_write_all, reads it back
+// via test_read_all, and returns true if byte counts match.
+fn test_roundtrip(path str, data str) bool {
+    var wr = test_write_all(path, data);
+    if !is_ok_uint(wr) { return false; }
+    var buf = string::new();
+    var rr = test_read_all(path, &buf);
+    if !is_ok_uint(rr) { string::delete(&buf); return false; }
+    var ok = ok_value_uint(rr) == data.len;
+    string::delete(&buf);
+    return ok;
+}
+
+// test_read_lines opens the file at path, reads exactly count lines
+// successfully, then performs one additional read that must yield EOF
+// (Ok = false, not Err). Returns true if all conditions are met.
+fn test_read_lines(path str, count uint) bool {
+    var f = open(path, MODE_READ_BINARY);
+    if f == nil { return false; }
+
+    for var i = 0; i < count; i += 1 {
+        var buf = string::new();
+        var rl = read_line_into(f, &buf);
+        if !is_ok_bool(rl) || !ok_value_bool(rl) {
+            string::delete(&buf);
+            close(f);
+            return false;
+        }
+        string::delete(&buf);
+    }
+
+    // One more read should be clean EOF (Ok = false, not Err)
+    var eof_buf = string::new();
+    var eof_rl = read_line_into(f, &eof_buf);
+    close(f);
+    string::delete(&eof_buf);
+    return is_ok_bool(eof_rl) && !ok_value_bool(eof_rl);
+}
+
 extern {
     // Opaque types (map to struct in C)
     type FILE;
@@ -271,4 +452,298 @@ fn makedir_with_mode(path str, mode u16) bool {
 
 fn makedir(path str) bool {
     return makedir_with_mode(path, MODE_DIR_DEFAULT);
+}
+
+// ── Result-returning checked I/O (Slice 5) ──────────────────────────
+// These mirror the existing APIs above but return IoResult[T] so callers
+// can distinguish success from failure without a separate get_file_error()
+// call.  All error messages are built via strerror(errno), matching the
+// pattern already used by get_file_error().
+//
+// NOTE: T = void is NOT usable as a generic type argument in this
+// language — the backend's tagged-union collection requires at least one
+// non-void variant (see collect.go:1868 and types.go:486-494).  We use
+// IoResult[uint] for read_all_into and write_all, carrying the byte
+// count in Ok.
+
+// open_checked is the Result-style replacement for open().  It returns the
+// *FILE handle directly (nil on failure) so the caller actually owns a usable
+// handle, unlike the old bool-only version that opened then immediately closed
+// the file.  Because the checker rejects pointer types (*FILE) as union-enum
+// variant payloads AND the backend rejects **FILE parameters, the handle
+// cannot ride inside an IoResult — so the handle is the return value and, on a
+// nil return, open_error_message(path, mode) supplies the real error message.
+fn open_checked(path str, mode str) *FILE {
+    return fopen(path, mode);
+}
+
+// open_error_message returns a strerror(errno)-based message describing why
+// open_checked(path, mode) failed.  It is only called BY CONVENTION when
+// open_checked returned nil.  It re-attempts the fopen so errno is fresh at
+// message-build time, mirroring the strerror(errno) pattern used by
+// get_file_error() and the other Result-returning functions.
+fn open_error_message(path str, mode str) str {
+    var file = fopen(path, mode);
+    if file != nil {
+        fclose(file);
+    }
+    var err = errno;
+    var err_msg = strerror(err);
+    if strlen(err_msg) == 0 {
+        return "open_checked: failed to open file";
+    }
+    return err_msg;
+}
+
+// read_all_into writes the full contents of *file into *out and returns
+// IoResult[uint].{ Ok = bytes_read } on success.
+// On failure it leaves *out empty (string::delete + string::new) and
+// returns IoResult[..., str].{ Err = <message> }.
+// This properly distinguishes "empty file" (Ok = 0) from "read error"
+// (Err), which the old read_all() could not do (both returned an empty
+// String).
+fn read_all_into(file *FILE, out *string::String) IoResultUint {
+    var pos = ftell(file);
+    if pos == -1 {
+        string::delete(out);
+        *out = string::new();
+        return IoResultUint.{ Err = "read_all_into: ftell failed" };
+    }
+
+    var seek_res = fseek(file, 0, SeekEnd);
+    if seek_res != 0 {
+        string::delete(out);
+        *out = string::new();
+        fseek(file, pos, SeekStart);
+        return IoResultUint.{ Err = "read_all_into: seek to end failed" };
+    }
+
+    var size = ftell(file);
+    if size == -1 {
+        string::delete(out);
+        *out = string::new();
+        fseek(file, pos, SeekStart);
+        return IoResultUint.{ Err = "read_all_into: ftell after seek failed" };
+    }
+
+    seek_res = fseek(file, 0, SeekStart);
+    if seek_res != 0 {
+        string::delete(out);
+        *out = string::new();
+        fseek(file, pos, SeekStart);
+        return IoResultUint.{ Err = "read_all_into: seek to start failed" };
+    }
+
+    // Empty file — valid, just zero bytes.
+    if size == 0 {
+        string::delete(out);
+        *out = string::new();
+        fseek(file, pos, SeekStart);
+        return IoResultUint.{ Ok = 0 };
+    }
+
+    var s = string::new();
+    var needed uint = (size as uint) + 1;
+    if needed > s.capacity {
+        s.grow(needed);
+    }
+
+    var bytes_read = fread(s.data.data as *void, 1, size as uint, file);
+    if bytes_read != size as uint {
+        string::delete(&s);
+        string::delete(out);
+        *out = string::new();
+        fseek(file, pos, SeekStart);
+        return IoResultUint.{ Err = "read_all_into: partial read" };
+    }
+
+    s.len = bytes_read;
+    s.data[s.len] = 0 as u8;
+    fseek(file, pos, SeekStart);
+
+    string::delete(out);
+    *out = s;
+    return IoResultUint.{ Ok = bytes_read };
+}
+
+// read_line_into reads one line from *file into *out, mirroring read_line's
+// byte-at-a-bit logic (byte-by-byte via read, stripping trailing \n).
+// Three distinct outcomes:
+//   Ok = true  — a line was read successfully (*out contains the line)
+//   Ok = false — EOF reached with nothing left to read (not an error)
+//   Err        — a real I/O error occurred (*out is left empty/deleted)
+fn read_line_into(file *FILE, out *string::String) IoResultBool {
+    var s = string::new();
+    var ch char = '\0';
+
+    while true {
+        var bytes = read(file, &ch as *void, 1);
+        if bytes == 0 {
+            if is_eof(file) {
+                // Normal EOF
+                if s.len > 0 {
+                    string::delete(out);
+                    *out = s;
+                    return IoResultBool.{ Ok = true };
+                } else {
+                    string::delete(&s);
+                    string::delete(out);
+                    *out = string::new();
+                    return IoResultBool.{ Ok = false };
+                }
+            } else {
+                // Real read error
+                string::delete(&s);
+                string::delete(out);
+                *out = string::new();
+                var err = errno;
+                var err_msg = strerror(err);
+                if strlen(err_msg) == 0 {
+                    return IoResultBool.{ Err = "read_line_into: read error" };
+                }
+                return IoResultBool.{ Err = err_msg };
+            }
+        }
+
+        s.push_char(ch);
+        if ch == '\n' {
+            s.len -= 1;
+            s.data[s.len] = 0 as u8;
+            string::delete(out);
+            *out = s;
+            return IoResultBool.{ Ok = true };
+        }
+    }
+}
+
+// write_all writes every byte of data to file.  Unlike write(data, size),
+// it derives the byte count from data.len itself — no mismatch possible.
+// Returns IoResultUint.{ Ok = bytes_written } on success.
+// A short write (bytes_written < data.len with no error flag) is reported
+// as Err, since silent partial writes are exactly the bug this API exists
+// to prevent.  A real write error also returns Err.
+fn write_all(file *FILE, data str) IoResultUint {
+    var total uint = data.len;
+    if total == 0 {
+        return IoResultUint.{ Ok = 0 };
+    }
+
+    var written = fwrite(data, 1, total, file);
+    if written != total {
+        // If ferror indicates a real error, report the OS error message.
+        // Otherwise it was a short write with no error flag — still Err.
+        if ferror(file) != 0 {
+            var err = errno;
+            var err_msg = strerror(err);
+            if strlen(err_msg) == 0 {
+                return IoResultUint.{ Err = "write_all: write error" };
+            }
+            return IoResultUint.{ Err = err_msg };
+        }
+        return IoResultUint.{ Err = "write_all: short write" };
+    }
+
+    return IoResultUint.{ Ok = written };
+}
+
+// ── Self-contained test helpers ───────────────────────────────────
+// These run full test scenarios inside io.peb (where *FILE is visible)
+// and return simple bool values.  The external test module calls these
+// without ever seeing *FILE or IoResult types.
+//
+// NOTE: Pebble's checker requires all types in imported function bodies
+// to be resolvable from the caller's context.  Since *FILE is an extern
+// type local to io.peb, callers cannot invoke io functions directly.
+// These helpers encapsulate the full I/O + Result logic so callers only
+// see bool / uint signatures.
+
+fn _test_open_existing(path str) bool {
+    // Create file via write_all, then verify open_checked succeeds AND yields
+    // a genuinely usable handle: open it read-only, read one byte back, and
+    // confirm it is 'h' (the first byte of "hello") before closing it.
+    var f = open(path, MODE_WRITE_BINARY);
+    if f == nil { return false; }
+    var wr = write_all(f, "hello");
+    var created = _is_io_result_uint_ok(wr);
+    close(f);
+    if !created { return false; }
+    var handle = open_checked(path, MODE_READ_BINARY);
+    if handle == nil { return false; }
+    var ch char = '\0';
+    var got = read(handle, &ch as *void, 1);
+    close(handle);
+    return got == 1 && ch == 'h';
+}
+
+fn _test_open_nonexistent(path str) bool {
+    // Non-existent file should fail open_checked (nil handle), and the
+    // convention-paired open_error_message should still produce a message.
+    var handle = open_checked(path, MODE_READ_BINARY);
+    if handle != nil {
+        close(handle);
+        return false;
+    }
+    var msg = open_error_message(path, MODE_READ_BINARY);
+    return strlen(msg) > 0;
+}
+
+fn _test_roundtrip(path str, content str) bool {
+    // Write content via write_all, read back via read_all_into, verify len
+    var f = open(path, MODE_WRITE_BINARY);
+    if f == nil { return false; }
+    var wr = write_all(f, content);
+    close(f);
+    if !_is_io_result_uint_ok(wr) { return false; }
+    f = open(path, MODE_READ_BINARY);
+    if f == nil { return false; }
+    var buf = string::new();
+    var rr = read_all_into(f, &buf);
+    close(f);
+    if !_is_io_result_uint_ok(rr) { string::delete(&buf); return false; }
+    var ok = _io_result_uint_ok_val(rr) == content.len;
+    string::delete(&buf);
+    return ok;
+}
+
+fn _test_read_lines(path str) bool {
+    // Write 3-line file, read each line, verify EOF cleanly
+    var lines = "Line 1\nLine 2\nLine 3\n";
+    var f = open(path, MODE_WRITE_BINARY);
+    if f == nil { return false; }
+    var wr = write_all(f, lines);
+    close(f);
+    if !_is_io_result_uint_ok(wr) { return false; }
+    f = open(path, MODE_READ_BINARY);
+    if f == nil { return false; }
+    var buf = string::new();
+    var r1 = read_line_into(f, &buf);
+    if !_is_io_result_bool_ok(r1) || !_io_result_bool_ok_val(r1) { string::delete(&buf); close(f); return false; }
+    string::delete(&buf);
+    var r2 = read_line_into(f, &buf);
+    if !_is_io_result_bool_ok(r2) || !_io_result_bool_ok_val(r2) { string::delete(&buf); close(f); return false; }
+    string::delete(&buf);
+    var r3 = read_line_into(f, &buf);
+    if !_is_io_result_bool_ok(r3) || !_io_result_bool_ok_val(r3) { string::delete(&buf); close(f); return false; }
+    string::delete(&buf);
+    // Line 4 should be EOF (Ok = false, not Err)
+    var r4 = read_line_into(f, &buf);
+    close(f);
+    string::delete(&buf);
+    return _is_io_result_bool_ok(r4) && !_io_result_bool_ok_val(r4);
+}
+
+fn _test_empty_file(path str) bool {
+    // Create empty file, read back, verify 0 bytes
+    var f = open(path, MODE_WRITE_BINARY);
+    if f == nil { return false; }
+    close(f);
+    f = open(path, MODE_READ_BINARY);
+    if f == nil { return false; }
+    var buf = string::new();
+    var rr = read_all_into(f, &buf);
+    close(f);
+    if !_is_io_result_uint_ok(rr) { string::delete(&buf); return false; }
+    var ok = _io_result_uint_ok_val(rr) == 0 && buf.len == 0;
+    string::delete(&buf);
+    return ok;
 }

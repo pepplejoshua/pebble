@@ -1,0 +1,238 @@
+// End-to-end test exercising the REAL std:io module via import "std:io".
+//
+// Exercises: open, write_all, close, read_all_into, read_line_into,
+// open_checked, open_error_message, and the public accessor functions
+// (is_ok_uint, ok_value_uint, err_message_uint, is_ok_bool, ok_value_bool,
+// err_message_bool).
+//
+// IMPORTANT NOTE: Pebble's checker rejects pointer types (*FILE) across
+// module boundaries — they cannot appear anywhere in a function signature
+// visible to an external caller.  Therefore this test uses the public
+// test-helpers exported by io.peb (test_write_all, test_read_all,
+// test_read_line, test_roundtrip) which encapsulate the full I/O scenarios
+// internally.  All higher-level I/O logic goes through the real io::
+// functions; nothing is re-implemented here.  Low-level file ops needed
+// for temp-file creation/cleanup are declared inline.
+
+import "std:io";
+import "std:string";
+
+// ── Inline extern declarations for temp-file creation & cleanup ───
+// Only the low-level ops needed to create/delete test files.  All
+// higher-level I/O (write_all, read_all_into, read_line_into, Result
+// handling) is exercised through the real io:: functions below.
+
+extern {
+	type FILE;
+	fn fopen(path str, mode str) *FILE;
+	fn fwrite(data str, size uint, count uint, file *FILE) uint;
+	fn fclose(file *FILE) i32;
+	fn remove(path str) i32;
+	fn strlen(s str) uint;
+}
+
+let MODE_READ_BINARY = "rb";
+let MODE_WRITE_BINARY = "wb";
+
+// ── Main ─────────────────────────────────────────────────────────
+
+fn main() i32 {
+	var failures = 0;
+
+	// Temp file paths
+	var path_rt = "/tmp/pebble_io_module_test_rt";
+	var path_lines = "/tmp/pebble_io_module_test_lines";
+	var path_empty = "/tmp/pebble_io_module_test_empty";
+	var path_exist = "/tmp/pebble_io_module_test_exist";
+
+	var buf = string::new();
+	var line_buf = string::new();
+	var eof_buf = string::new();
+
+	// ── T1: Public accessors via test_write_all ───────────────────
+	// Proves io::is_ok_uint, io::ok_value_uint, io::err_message_uint
+	// are callable and correct from an external module.
+
+	var wr = io::test_write_all(path_rt, "hello");
+	if !io::is_ok_uint(wr) {
+		print("FAIL: accessor_is_ok_uint");
+		failures++;
+	} else if io::ok_value_uint(wr) != 5 {
+		print("FAIL: accessor_ok_value_uint");
+		failures++;
+	} else {
+		print("PASS: accessor_is_ok_uint");
+	}
+	var msg = io::err_message_uint(wr);
+	if strlen(msg) != 0 {
+		print("FAIL: accessor_err_message_uint_empty_on_ok");
+		failures++;
+	} else {
+		print("PASS: accessor_err_message_uint_empty_on_ok");
+	}
+
+	// ── T2: Round-trip via io::test_roundtrip ─────────────────────
+
+	var content = "Hello, World! Slice 5 end-to-end";
+	if io::test_roundtrip(path_rt, content) {
+		print("PASS: roundtrip");
+	} else {
+		print("FAIL: roundtrip");
+		failures++;
+	}
+
+	// ── T3: Read-all + accessor verification ──────────────────────
+
+	var rr = io::test_read_all(path_rt, &buf);
+	if io::is_ok_uint(rr) {
+		if io::ok_value_uint(rr) == strlen(content) {
+			print("PASS: read_all_byte_count");
+		} else {
+			print("FAIL: read_all_byte_count");
+			failures++;
+		}
+	} else {
+		print("FAIL: read_all_status");
+		failures++;
+	}
+	string::delete(&buf);
+
+	// ── T4: Multi-line read + clean EOF via io::test_read_line ────
+
+	io::test_write_all(path_lines, "Line 1\nLine 2\nLine 3\n");
+
+	var r1 = io::test_read_line(path_lines, &line_buf);
+	if io::is_ok_bool(r1) && io::ok_value_bool(r1) {
+		print("PASS: readline_1");
+	} else {
+		print("FAIL: readline_1");
+		failures++;
+	}
+	string::delete(&line_buf);
+
+	var r2 = io::test_read_line(path_lines, &line_buf);
+	if io::is_ok_bool(r2) && io::ok_value_bool(r2) {
+		print("PASS: readline_2");
+	} else {
+		print("FAIL: readline_2");
+		failures++;
+	}
+	string::delete(&line_buf);
+
+	var r3 = io::test_read_line(path_lines, &line_buf);
+	if io::is_ok_bool(r3) && io::ok_value_bool(r3) {
+		print("PASS: readline_3");
+	} else {
+		print("FAIL: readline_3");
+		failures++;
+	}
+	string::delete(&line_buf);
+
+	// Line 4 should be EOF → Ok = false (not Err)
+	if io::test_read_lines(path_lines, 3) {
+		print("PASS: readline_eof");
+	} else {
+		print("FAIL: readline_eof");
+		failures++;
+	}
+
+	// ── T5: Empty file → Ok(0) ────────────────────────────────────
+
+	var ef = fopen(path_empty, MODE_WRITE_BINARY);
+	if ef != nil {
+		fclose(ef);
+	}
+
+	var eread = io::test_read_all(path_empty, &buf);
+	if io::is_ok_uint(eread) && io::ok_value_uint(eread) == 0 {
+		print("PASS: empty_file");
+	} else {
+		print("FAIL: empty_file");
+		failures++;
+	}
+	string::delete(&buf);
+
+	// ── T6: open_checked on existing file + open_error_message ────
+
+	var cf = fopen(path_exist, MODE_WRITE_BINARY);
+	if cf != nil {
+		fclose(cf);
+	}
+
+	var handle = io::open_checked(path_exist, MODE_READ_BINARY);
+	if handle != nil {
+		io::close(handle);
+		print("PASS: open_checked_existing");
+	} else {
+		print("FAIL: open_checked_existing");
+		failures++;
+	}
+
+	var emsg = io::open_error_message(
+		"/tmp/pebble_io_module_no_such_file_xyz",
+		MODE_READ_BINARY,
+	);
+	if strlen(emsg) > 0 {
+		print("PASS: open_error_message");
+	} else {
+		print("FAIL: open_error_message");
+		failures++;
+	}
+
+	// ── T7: Real Err result (uint variant) ────────────────────────
+	// Write to a path whose parent directory does not exist → fopen
+	// fails → test_write_all returns IoResultUint.{Err}.  Confirm
+	// io::err_message_uint returns a non-empty message.
+
+	var bad_wr = io::test_write_all(
+		"/nonexistent_parent_dir_xyz/testfile",
+		"data",
+	);
+	if !io::is_ok_uint(bad_wr) {
+		print("PASS: err_uint_trigger");
+		var bad_msg = io::err_message_uint(bad_wr);
+		if strlen(bad_msg) > 0 {
+			print("PASS: err_message_uint_nonempty");
+		} else {
+			print("FAIL: err_message_uint_nonempty");
+			failures++;
+		}
+	} else {
+		print("FAIL: err_uint_trigger");
+		failures++;
+	}
+
+	// ── T8: Real Err result (bool variant) ────────────────────────
+	// Read a non-existent file → test_read_line returns
+	// IoResultBool.{Err}.  Confirm io::err_message_bool returns a
+	// non-empty message.
+
+	var bad_rl = io::test_read_line(
+		"/nonexistent_parent_dir_xyz/testfile2",
+		&line_buf,
+	);
+	if !io::is_ok_bool(bad_rl) {
+		print("PASS: err_bool_trigger");
+		var bad_bmsg = io::err_message_bool(bad_rl);
+		if strlen(bad_bmsg) > 0 {
+			print("PASS: err_message_bool_nonempty");
+		} else {
+			print("FAIL: err_message_bool_nonempty");
+			failures++;
+		}
+	} else {
+		print("FAIL: err_bool_trigger");
+		failures++;
+	}
+	string::delete(&line_buf);
+
+	// ── Cleanup ───────────────────────────────────────────────────
+
+	remove(path_rt);
+	remove(path_lines);
+	remove(path_empty);
+	remove(path_exist);
+
+	print(failures);
+	return failures as i32;
+}

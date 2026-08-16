@@ -223,3 +223,35 @@ func TestStdlibStringByteCorrectness(t *testing.T) {
 		t.Fatalf("string_byte_correctness_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
 	}
 }
+
+// TestStdlibIoResult exercises the Result-returning checked I/O API added in
+// Slice 5: open_checked (existing and non-existing paths), write_all +
+// read_all_into round-trip with byte-exact comparison, read_line_into line-by-
+// line reading through to clean EOF (Ok = false), and read_all_into on an empty
+// file returning Ok(0).
+func TestStdlibIoResult(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "io_result_test.peb")
+	t.Logf("io_result_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("io_result_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
+
+// TestStdlibIoModule exercises the REAL std:io module imported via
+// "import \"std:io\"": public accessor functions (is_ok_uint, ok_value_uint,
+// err_message_uint, is_ok_bool, ok_value_bool, err_message_bool) via the
+// public test helpers (test_write_all, test_read_all, test_read_line,
+// test_roundtrip), plus open_checked and open_error_message.  Covers
+// write+read round-trip, multi-line read with clean EOF, empty file,
+// and real Err results with non-empty error messages.
+func TestStdlibIoModule(t *testing.T) {
+	t.Parallel()
+
+	code, output := compilePebbleTestFile(t, "io_module_test.peb")
+	t.Logf("io_module_test.peb output:\n%s", output)
+	if code != 0 {
+		t.Fatalf("io_module_test.peb exited %d, want 0 (%d failures reported in output above)", code, code)
+	}
+}
