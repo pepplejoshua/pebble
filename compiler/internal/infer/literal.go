@@ -302,6 +302,13 @@ func LiteralFitsBuiltin(builtin types.BuiltinKind, kind ExactLiteralKind, numera
 		if !ok {
 			return false
 		}
+		if class == builtinF32 || class == builtinF64 {
+			rat := new(big.Rat).SetFrac(value, big.NewInt(1))
+			if class == builtinF32 {
+				return floatFits(rat, 32)
+			}
+			return floatFits(rat, 64)
+		}
 		return integerFits(value, class, wordBits)
 	}
 	if kind == ExactFloat {

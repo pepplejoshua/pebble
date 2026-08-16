@@ -55,8 +55,19 @@ func TestLiteralFitsBuiltin(t *testing.T) {
 		{"f64 2^1024 overflows", types.F64, ExactFloat, powerOfTwo(1024), "1", 64, false},
 		{"f32 denominator scales down", types.F32, ExactFloat, powerOfTwo(1024), powerOfTwo(1024), 64, true},
 
+		// Integer literals against float types implicitly convert, so they go
+		// through the same finite-magnitude-range check as float literals.
+		{"f32 zero integer", types.F32, ExactInteger, "0", "", 64, true},
+		{"f64 zero integer", types.F64, ExactInteger, "0", "", 64, true},
+		{"f32 one integer", types.F32, ExactInteger, "1", "", 64, true},
+		{"f64 one integer", types.F64, ExactInteger, "1", "", 64, true},
+		{"f32 negative integer", types.F32, ExactInteger, "-1", "", 64, true},
+		{"f32 2^53+1 integer fits magnitude", types.F64, ExactInteger, "9007199254740993", "", 64, true},
+		{"f32 2^128 integer overflows", types.F32, ExactInteger, powerOfTwo(128), "", 64, false},
+		{"f64 2^1024 integer overflows", types.F64, ExactInteger, powerOfTwo(1024), "", 64, false},
+
 		// Category mismatches and non-numeric builtins never fit.
-		{"integer against float", types.F32, ExactInteger, "1", "", 64, false},
+		{"integer against bool", types.Bool, ExactInteger, "1", "", 64, false},
 		{"float against integer", types.I8, ExactFloat, "1", "1", 64, false},
 		{"bool against integer", types.Bool, ExactInteger, "1", "", 64, false},
 		{"unrecognized builtin", types.BuiltinKind(255), ExactInteger, "1", "", 64, false},
