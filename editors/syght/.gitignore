@@ -1,8 +1,5 @@
 grammar/node_modules/
 grammar/build/
-grammar/src/tree_sitter/
-grammar/src/parser.c
-grammar/src/grammar.json
-grammar/src/node-types.json
 grammar/*.wasm
 target/
+/extension.wasm
