@@ -8,4 +8,5 @@ repository = "https://github.com/pepplejoshua/pebble"
 
 [grammars.pebble]
 repository = "https://github.com/pepplejoshua/pebble"
-rev = "PLACEHOLDER_UPDATE_AFTER_GRAMMAR_COMMIT"
+rev = "c63f3a41b3b1dcf088e67fd627d64f7f32b55f80"
+path = "editors/syght/grammar"
