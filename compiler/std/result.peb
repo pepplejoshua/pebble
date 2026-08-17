@@ -37,13 +37,16 @@ fn result_err[T, E](error E) Result[T, E] {
 }
 
 // ── Public test helpers via internal wrappers (Slice 7) ─────────────
-// Instantiating or manipulating Result[T, E] from an external module fails
-// with T0510 because the generic union enum type cannot be resolved across
-// module boundaries.  These wrapper functions are defined here so they can
-// instantiate Result[i32, str] and exercise every public method and free
-// function INTERNALLY.  Each wrapper exposes only primitive return types
-// that cross module boundaries cleanly, letting external tests exercise
-// real compiled-and-run logic.
+// At the time these wrappers were written, instantiating or manipulating
+// Result[T, E] from an external module failed with T0510 because the
+// generic union enum type could not be resolved across module boundaries.
+// That limitation has since been fixed (verified directly: Result[T, E]
+// instantiation, method calls including generic .map(), and passing a
+// named function value to .map() all now type-check and compile/run
+// correctly from an external module, with zero wrapping required) — but
+// these wrappers are kept as-is rather than removed, since they still give
+// real, primitive-typed compiled-and-run coverage of the module's full
+// public API without depending on the calling test module's own setup.
 
 fn _double(x i32) i32 {
     return x * 2;
