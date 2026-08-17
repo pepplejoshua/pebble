@@ -97,9 +97,21 @@ func TestEmitIndirectCallResultInValueSourcePositionsCompileAndRun(t *testing.T)
 	// All three shapes already worked (the float-result argument variant is
 	// covered in function_value_float_test.go); these pin the int-width
 	// forms in one compile-link-run matrix.
-	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn triple(x int) int { return x * 3; } fn main() int { var f fn(int, int) int = add; return triple(f(1, 2)); }", false, 9, false)
-	emitAndRun(t, "type Box = struct { x int; }; fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; var b Box = Box.{ x = f(3, 4) }; return b.x; }", false, 7, false)
-	emitAndRun(t, "fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; return f(f(1, 2), f(3, 4)); }", false, 10, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"call_argument", "fn add(a int, b int) int { return a + b; } fn triple(x int) int { return x * 3; } fn main() int { var f fn(int, int) int = add; return triple(f(1, 2)); }", 9},
+		{"struct_field_construct", "type Box = struct { x int; }; fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; var b Box = Box.{ x = f(3, 4) }; return b.x; }", 7},
+		{"nested_indirect_call", "fn add(a int, b int) int { return a + b; } fn main() int { var f fn(int, int) int = add; return f(f(1, 2), f(3, 4)); }", 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitSequentialIndirectCallsThroughSameLocalCompileAndRun(t *testing.T) {

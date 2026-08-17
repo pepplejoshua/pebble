@@ -1549,10 +1549,22 @@ func TestEmitBoolReturningDirectCallWithShortCircuitCompilesAndRuns(t *testing.T
 	// The && cases prove short-circuit composition (the false-left case skips
 	// the right operand exactly as Pebble would), and the || / ! cases prove
 	// the call also works on the right of an operator and under negation.
-	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(true) && flag { return 1; } else { return 2; } }", true, 1, false)
-	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(false) && flag { return 1; } else { return 2; } }", true, 2, false)
-	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { var flag bool = false; if id(true) || flag { return 1; } else { return 2; } }", true, 1, false)
-	emitAndRun(t, "fn id(b bool) bool { return b; } fn main() int { if !id(false) { return 1; } else { return 2; } }", true, 1, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"and_true_left", "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(true) && flag { return 1; } else { return 2; } }", 1},
+		{"and_false_left", "fn id(b bool) bool { return b; } fn main() int { var flag bool = true; if id(false) && flag { return 1; } else { return 2; } }", 2},
+		{"or_true_left", "fn id(b bool) bool { return b; } fn main() int { var flag bool = false; if id(true) || flag { return 1; } else { return 2; } }", 1},
+		{"not", "fn id(b bool) bool { return b; } fn main() int { if !id(false) { return 1; } else { return 2; } }", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, true, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitBoolReturningMethodCallInConditionCompilesAndRuns(t *testing.T) {
@@ -1791,6 +1803,7 @@ func TestEmitNarrowFixedWidthFunctionTypeParamCompilesAndRuns(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, tc.src, false, tc.wantCode, false)
 		})
 	}
@@ -1829,9 +1842,21 @@ func TestEmitOtherFunctionTypeParamShapesCompilesAndRuns(t *testing.T) {
 	// explicit case), char (int32_t), and str (PebbleStr). The ambient
 	// entry-width, u64, bool, and pointer parameter shapes already have their
 	// own tests above/below, so they are not duplicated here.
-	emitAndRun(t, "fn add_one(x uint) int { return x as int + 1; } fn main() int { var u uint = 5; var f fn(uint) int = add_one; return f(u); }", false, 6, false)
-	emitAndRun(t, "fn isA(c char) int { if c == 'a' { return 1; } else { return 0; } } fn main() int { var f fn(char) int = isA; return f('a'); }", false, 1, false)
-	emitAndRun(t, "fn getLen(s str) int { return 1; } fn main() int { var f fn(str) int = getLen; return f(\"hi\"); }", false, 1, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"uint_param", "fn add_one(x uint) int { return x as int + 1; } fn main() int { var u uint = 5; var f fn(uint) int = add_one; return f(u); }", 6},
+		{"char_param", "fn isA(c char) int { if c == 'a' { return 1; } else { return 0; } } fn main() int { var f fn(char) int = isA; return f('a'); }", 1},
+		{"str_param", "fn getLen(s str) int { return 1; } fn main() int { var f fn(str) int = getLen; return f(\"hi\"); }", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitNarrowU8FunctionTypeResultStillRejected(t *testing.T) {

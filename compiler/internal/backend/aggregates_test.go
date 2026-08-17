@@ -4241,10 +4241,27 @@ func TestEmitOptionalIntegerToEnumFromLocalCompilesAndRuns(t *testing.T) {
 	// A source value from a local (not a literal): `n as ?Color` where n is
 	// an i32 local. In range (n = 2, blue), has_value is true and the unwrap
 	// round-trips to 2; out of range (n = 7), has_value is false.
-	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", false, 2, false)
-	emitAndRun(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", false, 0, false)
-	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", 2, false)
-	emitAndRunRelease(t, "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", 0, false)
+	cases := []struct {
+		name    string
+		source  string
+		want    int
+		release bool
+	}{
+		{"in-range", "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", 2, false},
+		{"out-of-range", "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", 0, false},
+		{"in-range-release", "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 2;\nvar c ?Color = n as ?Color;\nif !c.has_value { return 99; }\nreturn c! as i32;\n}", 2, true},
+		{"out-of-range-release", "type Color = enum { red, green, blue }; fn main() i32 {\nvar n i32 = 7;\nvar c ?Color = n as ?Color;\nif c.has_value { return 99; } else { return 0; }\n}", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.release {
+				emitAndRunRelease(t, tc.source, tc.want, false)
+			} else {
+				emitAndRun(t, tc.source, false, tc.want, false)
+			}
+		})
+	}
 }
 
 func TestEmitOptionalIntegerToEnumEvaluatesSourceExactlyOnce(t *testing.T) {

@@ -14,6 +14,7 @@ import "testing"
 // array-typed struct field's construction value — plus the surrounding shapes
 // that must not regress.
 func TestCompileRunAddressOfDereferenceWholeAggregate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		source string
@@ -60,6 +61,7 @@ func TestCompileRunAddressOfDereferenceWholeAggregate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, c.source, false, c.want, false)
 		})
 	}

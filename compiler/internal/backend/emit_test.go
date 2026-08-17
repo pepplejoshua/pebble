@@ -2650,10 +2650,22 @@ func emitArgvAndRun(t *testing.T, sourceText string, args []string, wantCode int
 func TestEntryArgvSlice(t *testing.T) {
 	t.Parallel()
 	const program = "fn main(argv []str) int { return argv.len as int; }"
-	emitArgvAndRun(t, program, nil, 1)
-	emitArgvAndRun(t, program, []string{"alpha"}, 2)
-	emitArgvAndRun(t, program, []string{"alpha", "beta", "gamma"}, 4)
-	emitArgvAndRun(t, program, []string{"", "with space", "x=y"}, 4)
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"no-args", nil, 1},
+		{"one-arg", []string{"alpha"}, 2},
+		{"three-args", []string{"alpha", "beta", "gamma"}, 4},
+		{"spaces-and-eq", []string{"", "with space", "x=y"}, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitArgvAndRun(t, program, tc.args, tc.want)
+		})
+	}
 }
 
 // TestEntryArgvVoid exercises the void-result argv form: pebble_user_main

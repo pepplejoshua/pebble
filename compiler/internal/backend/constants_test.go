@@ -17,6 +17,7 @@ import (
 // exercised by TestPlainNarrowWidthArithmeticCompilesAndRuns, while this test
 // focuses on module-level constant value shapes and use positions.
 func TestModuleConstantValueShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		source string
@@ -79,6 +80,7 @@ func TestModuleConstantValueShapes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			emitAndRun(t, c.source, false, c.want, false)
 		})
 	}

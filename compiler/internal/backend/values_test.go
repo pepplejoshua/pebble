@@ -846,9 +846,21 @@ func TestEmitStrOrderingNonPrefixDifferentLengthCompilesAndRuns(t *testing.T) {
 	// true even though "ab" is the LONGER string — the byte-value ordering a
 	// length-only or prefix-only comparison would get wrong. "b" > "ab" is
 	// the same comparison in the other direction.
-	emitAndRun(t, "fn main() i32 { let s str = \"ab\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
-	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
-	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s > t { return 10; } else { return 20; } }", false, 10, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"ab_lt_b", "fn main() i32 { let s str = \"ab\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", 10},
+		{"b_lt_ab_false", "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s < t { return 10; } else { return 20; } }", 20},
+		{"b_gt_ab", "fn main() i32 { let s str = \"b\"; let t str = \"ab\"; if s > t { return 10; } else { return 20; } }", 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitStrByteValueOrderingCompilesAndRuns(t *testing.T) {
@@ -857,10 +869,22 @@ func TestEmitStrByteValueOrderingCompilesAndRuns(t *testing.T) {
 	// < "b" is true ('a' is 97, 'b' is 98), "b" < "a" is false, and "b" >=
 	// "a" is true. These prove the comparison orders by byte VALUE, not by
 	// length or by string identity.
-	emitAndRun(t, "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", false, 10, false)
-	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s < t { return 10; } else { return 20; } }", false, 20, false)
-	emitAndRun(t, "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s >= t { return 10; } else { return 20; } }", false, 10, false)
-	emitAndRun(t, "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s >= t { return 10; } else { return 20; } }", false, 20, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"a_lt_b", "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s < t { return 10; } else { return 20; } }", 10},
+		{"b_lt_a_false", "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s < t { return 10; } else { return 20; } }", 20},
+		{"b_ge_a", "fn main() i32 { let s str = \"b\"; let t str = \"a\"; if s >= t { return 10; } else { return 20; } }", 10},
+		{"a_ge_b_false", "fn main() i32 { let s str = \"a\"; let t str = \"b\"; if s >= t { return 10; } else { return 20; } }", 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitStrLengthAwareEqualityCompilesAndRuns(t *testing.T) {
@@ -2097,12 +2121,24 @@ func TestEmitCharLessEqualGreaterComparisonsCompilesAndRuns(t *testing.T) {
 	// TestEmitCharNotEqual, and TestEmitCharOrdering). 'a' is 97 and 'b' is
 	// 98, so each row asserts the correct numeric ordering of the two Unicode
 	// scalar values, both the true and the false outcome.
-	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c <= 'a' { return 1; } else { return 0; } }", false, 1, false)
-	emitAndRun(t, "fn main() i32 { let c char = 'b'; let d char = 'a'; if c <= 'a' { return 1; } else { return 0; } }", false, 0, false)
-	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if d > c { return 1; } else { return 0; } }", false, 1, false)
-	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c > d { return 1; } else { return 0; } }", false, 0, false)
-	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if d >= 'b' { return 1; } else { return 0; } }", false, 1, false)
-	emitAndRun(t, "fn main() i32 { let c char = 'a'; let d char = 'b'; if c >= 'b' { return 1; } else { return 0; } }", false, 0, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"le_true", "fn main() i32 { let c char = 'a'; let d char = 'b'; if c <= 'a' { return 1; } else { return 0; } }", 1},
+		{"le_false", "fn main() i32 { let c char = 'b'; let d char = 'a'; if c <= 'a' { return 1; } else { return 0; } }", 0},
+		{"gt_true", "fn main() i32 { let c char = 'a'; let d char = 'b'; if d > c { return 1; } else { return 0; } }", 1},
+		{"gt_false", "fn main() i32 { let c char = 'a'; let d char = 'b'; if c > d { return 1; } else { return 0; } }", 0},
+		{"ge_true", "fn main() i32 { let c char = 'a'; let d char = 'b'; if d >= 'b' { return 1; } else { return 0; } }", 1},
+		{"ge_false", "fn main() i32 { let c char = 'a'; let d char = 'b'; if c >= 'b' { return 1; } else { return 0; } }", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitCharI64EntryCompilesAndRuns(t *testing.T) {

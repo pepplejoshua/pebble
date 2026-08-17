@@ -194,18 +194,30 @@ func TestEmitCheckedShiftsNarrowWidthsCompileAndRun(t *testing.T) {
 	// width-to-helper mapping was what returned false). The exit code is the
 	// OS-visible low byte, so each fixture's result stays below 256 (or is the
 	// exact two's-complement low byte for a negative result).
-	emitAndRun(t, "fn main() int { var x u8 = 5; var z u8 = x << 2; return z as int; }", false, 20, false)
-	emitAndRun(t, "fn main() int { var x u8 = 200; var z u8 = x >> 3; return z as int; }", false, 25, false)
-	emitAndRun(t, "fn main() int { var x u16 = 5; var z u16 = x << 4; return z as int; }", false, 80, false)
-	emitAndRun(t, "fn main() int { var x u16 = 40000; var z u16 = x >> 8; return z as int; }", false, 156, false)
-	emitAndRun(t, "fn main() int { var x u32 = 5; var z u32 = x << 4; return z as int; }", false, 80, false)
-	emitAndRun(t, "fn main() int { var x i8 = 5; var z i8 = x << 2; return z as int; }", false, 20, false)
-	emitAndRun(t, "fn main() int { var x i16 = 5; var z i16 = x << 4; return z as int; }", false, 80, false)
-	// A negative signed value shifts through the width's own helper: -5 << 2
-	// = -20 (exit code 236, the low byte) and -8 >> 2 = -2 (exit code 254) —
-	// the same arithmetic-shift semantics the i32/i64 helpers already apply.
-	emitAndRun(t, "fn main() int { var x i8 = -5 as i8; var z i8 = x << 2; return z as int; }", false, 236, false)
-	emitAndRun(t, "fn main() int { var x i16 = -8 as i16; var z i16 = x >> 2; return z as int; }", false, 254, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"u8_shl", "fn main() int { var x u8 = 5; var z u8 = x << 2; return z as int; }", 20},
+		{"u8_shr", "fn main() int { var x u8 = 200; var z u8 = x >> 3; return z as int; }", 25},
+		{"u16_shl", "fn main() int { var x u16 = 5; var z u16 = x << 4; return z as int; }", 80},
+		{"u16_shr", "fn main() int { var x u16 = 40000; var z u16 = x >> 8; return z as int; }", 156},
+		{"u32_shl", "fn main() int { var x u32 = 5; var z u32 = x << 4; return z as int; }", 80},
+		{"i8_shl", "fn main() int { var x i8 = 5; var z i8 = x << 2; return z as int; }", 20},
+		{"i16_shl", "fn main() int { var x i16 = 5; var z i16 = x << 4; return z as int; }", 80},
+		// A negative signed value shifts through the width's own helper: -5 << 2
+		// = -20 (exit code 236, the low byte) and -8 >> 2 = -2 (exit code 254) —
+		// the same arithmetic-shift semantics the i32/i64 helpers already apply.
+		{"i8_neg_shl", "fn main() int { var x i8 = -5 as i8; var z i8 = x << 2; return z as int; }", 236},
+		{"i16_neg_shr", "fn main() int { var x i16 = -8 as i16; var z i16 = x >> 2; return z as int; }", 254},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitCheckedShiftNarrowWidthOutOfRangeAbortsInSafeMode(t *testing.T) {
@@ -214,10 +226,22 @@ func TestEmitCheckedShiftNarrowWidthOutOfRangeAbortsInSafeMode(t *testing.T) {
 	// a shift amount >= the operand's own bit width (8, 16, or 32) aborts
 	// through pebble_rt_checked_shl_<w> in PEBBLE_RT_MODE_SAFE, exactly as
 	// 1 << 32 already aborts through the i32 helper.
-	emitAndRun(t, "fn main() int { var x u8 = 5; var z u8 = x << 8; return z as int; }", false, 0, true)
-	emitAndRun(t, "fn main() int { var x u16 = 5; var z u16 = x << 16; return z as int; }", false, 0, true)
-	emitAndRun(t, "fn main() int { var x u32 = 5; var z u32 = x << 32; return z as int; }", false, 0, true)
-	emitAndRun(t, "fn main() int { var x i8 = 5; var z i8 = x << 8; return z as int; }", false, 0, true)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"u8_shl_8_aborts", "fn main() int { var x u8 = 5; var z u8 = x << 8; return z as int; }", 0},
+		{"u16_shl_16_aborts", "fn main() int { var x u16 = 5; var z u16 = x << 16; return z as int; }", 0},
+		{"u32_shl_32_aborts", "fn main() int { var x u32 = 5; var z u32 = x << 32; return z as int; }", 0},
+		{"i8_shl_8_aborts", "fn main() int { var x i8 = 5; var z i8 = x << 8; return z as int; }", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, true)
+		})
+	}
 }
 
 func TestEmitCheckedShiftNarrowWidthMasksCountInReleaseMode(t *testing.T) {
@@ -422,9 +446,14 @@ func TestEmitWrappingU64BuiltinsCompileAndRun(t *testing.T) {
 	// failure code so a regression in any one boundary is distinguishable.
 	// Wrapping must not panic in SAFE mode, so every case runs in the standard
 	// compileAndRun harness.
-	emitAndRunWithSymbols(t, "fn main() int { return wrapping_mul_u64(6, 7) as int; }", 42)
-	emitAndRunWithSymbols(t, "fn main() int { return wrapping_add_u64(2, 3) as int; }", 5)
-	emitAndRunWithSymbols(t, `fn main() int {
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"mul_normal", "fn main() int { return wrapping_mul_u64(6, 7) as int; }", 42},
+		{"add_normal", "fn main() int { return wrapping_add_u64(2, 3) as int; }", 5},
+		{"boundary_matrix", `fn main() int {
     var r u64 = wrapping_mul_u64(6, 7);
     if r != 42 { return 1; }
     var w u64 = wrapping_mul_u64(1, 18446744073709551615);
@@ -444,7 +473,14 @@ func TestEmitWrappingU64BuiltinsCompileAndRun(t *testing.T) {
     var e u64 = wrapping_add_u64(18446744073709551615, 18446744073709551615);
     if e != 18446744073709551614 { return 9; }
     return 0;
-}`, 0)
+}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRunWithSymbols(t, tc.source, tc.wantCode)
+		})
+	}
 }
 
 func TestEmitUintArithmeticCompilesAndRuns(t *testing.T) {
@@ -478,9 +514,21 @@ func TestEmitUintArithmeticBoundaryWrapCompilesAndRuns(t *testing.T) {
 	// PEBBLE_RT_MODE_SAFE. max + 1 wraps to 0, 0 - 1 wraps to max, and
 	// max * 2 wraps to max - 1 — each at the full 64-bit word width, not a
 	// 32-bit truncation.
-	emitAndRun(t, "fn main() int { var m uint = 18446744073709551615; var w uint = m + 1; if w == 0 { return 42; } else { return 1; } }", false, 42, false)
-	emitAndRun(t, "fn main() int { var n uint = 0; var s uint = n - 1; if s == 18446744073709551615 { return 42; } else { return 1; } }", false, 42, false)
-	emitAndRun(t, "fn main() int { var m uint = 18446744073709551615; var p uint = m * 2; if p == 18446744073709551614 { return 42; } else { return 1; } }", false, 42, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"add_wraps_to_zero", "fn main() int { var m uint = 18446744073709551615; var w uint = m + 1; if w == 0 { return 42; } else { return 1; } }", 42},
+		{"sub_wraps_to_max", "fn main() int { var n uint = 0; var s uint = n - 1; if s == 18446744073709551615 { return 42; } else { return 1; } }", 42},
+		{"mul_wraps_to_max_minus_1", "fn main() int { var m uint = 18446744073709551615; var p uint = m * 2; if p == 18446744073709551614 { return 42; } else { return 1; } }", 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitI64DivisionAndModuloCompilesAndRuns(t *testing.T) {
@@ -503,9 +551,21 @@ func TestEmitIntArithmeticOperatorsCompileAndRun(t *testing.T) {
 	// literal range (64-bit checker word vs the int32_t C type) is the
 	// unresolved architectural question recorded in proposal 14, so only
 	// values safe under both interpretations are used.
-	emitAndRun(t, "fn main() int { var a int = 50; var b int = 8; var d int = a - b; if d == 42 { return 42; } else { return 1; } }", false, 42, false)
-	emitAndRun(t, "fn main() int { var a int = 6; var b int = 7; var m int = a * b; if m == 42 { return 42; } else { return 1; } }", false, 42, false)
-	emitAndRun(t, "fn main() int { var a int = 22; var b int = 7; var q int = a / b; var r int = a % b; if q == 3 && r == 1 { return 42; } else { return 1; } }", false, 42, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"sub", "fn main() int { var a int = 50; var b int = 8; var d int = a - b; if d == 42 { return 42; } else { return 1; } }", 42},
+		{"mul", "fn main() int { var a int = 6; var b int = 7; var m int = a * b; if m == 42 { return 42; } else { return 1; } }", 42},
+		{"div_mod", "fn main() int { var a int = 22; var b int = 7; var q int = a / b; var r int = a % b; if q == 3 && r == 1 { return 42; } else { return 1; } }", 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitF32ArithmeticOperatorsCompileAndRun(t *testing.T) {

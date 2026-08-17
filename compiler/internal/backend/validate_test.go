@@ -698,10 +698,22 @@ func TestEmitU64CheckedDivisionCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// This supersedes the former negative test: u64 now has dedicated checked
 	// division and modulo helpers, including compound assignment lowering.
-	emitAndRun(t, "fn main() int { var a u64 = 100; var b u64 = 3; var c u64 = a / b; return c as int; }", false, 33, false)
-	emitAndRun(t, "fn f() u64 { var a u64 = 100; var b u64 = 3; return a % b; } fn main() int { return f() as int; }", false, 1, false)
-	emitAndRun(t, "fn f() u64 { var x u64 = 100; x /= 3; return x; } fn main() int { return f() as int; }", false, 33, false)
-	emitAndRun(t, "fn f() u64 { var x u64 = 100; x %= 3; return x; } fn main() int { return f() as int; }", false, 1, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"div", "fn main() int { var a u64 = 100; var b u64 = 3; var c u64 = a / b; return c as int; }", 33},
+		{"mod", "fn f() u64 { var a u64 = 100; var b u64 = 3; return a % b; } fn main() int { return f() as int; }", 1},
+		{"div_assign", "fn f() u64 { var x u64 = 100; x /= 3; return x; } fn main() int { return f() as int; }", 33},
+		{"mod_assign", "fn f() u64 { var x u64 = 100; x %= 3; return x; } fn main() int { return f() as int; }", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestEmitRejectsNarrowCheckedArithmetic(t *testing.T) {

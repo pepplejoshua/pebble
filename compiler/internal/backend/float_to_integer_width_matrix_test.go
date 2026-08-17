@@ -152,9 +152,21 @@ func TestFloatToIntegerUintPositions(t *testing.T) {
 	// value positions beyond a local declaration initializer: a comparison
 	// operand (uint goes through buildComparisonOperand's buildUintExpr
 	// branch) and a helper-function return value.
-	emitAndRun(t, "fn main() int { let v f64 = 3.5; if (v as uint) == 3 { return 42; } return 1; }", false, 42, false)
-	emitAndRun(t, "fn f() uint { let x f64 = 3.5; return x as uint; } fn main() int { if f() == 3 { return 42; } return 1; }", false, 42, false)
-	emitAndRun(t, "fn main() int { let v f64 = 3.5; let o ?uint = v as uint; if o! == 3 { return 42; } return 1; }", false, 42, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"comparison_operand", "fn main() int { let v f64 = 3.5; if (v as uint) == 3 { return 42; } return 1; }", 42},
+		{"helper_return", "fn f() uint { let x f64 = 3.5; return x as uint; } fn main() int { if f() == 3 { return 42; } return 1; }", 42},
+		{"optional_local", "fn main() int { let v f64 = 3.5; let o ?uint = v as uint; if o! == 3 { return 42; } return 1; }", 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
 
 func TestFloatToIntegerCallArgumentAndField(t *testing.T) {
@@ -162,7 +174,19 @@ func TestFloatToIntegerCallArgumentAndField(t *testing.T) {
 	// The newly-added widths must work in every FloatToInteger position, not
 	// just a local declaration: a call argument, a struct field's
 	// construction value, and a store (assignment).
-	emitAndRun(t, "fn f(x i8) int { if x == 3 { return 42; } return 1; } fn main() int { let v f64 = 3.5; return f(v as i8); }", false, 42, false)
-	emitAndRun(t, "type S = struct { n u16; }; fn main() int { let v f64 = 3.5; let s S = S.{ n = v as u16 }; if s.n == 3 { return 42; } return 1; }", false, 42, false)
-	emitAndRun(t, "fn main() int { var r u8 = 0; let v f32 = 3.5; r = v as u8; if r == 3 { return 42; } return 1; }", false, 42, false)
+	cases := []struct {
+		name     string
+		source   string
+		wantCode int
+	}{
+		{"call_argument", "fn f(x i8) int { if x == 3 { return 42; } return 1; } fn main() int { let v f64 = 3.5; return f(v as i8); }", 42},
+		{"struct_field_construct", "type S = struct { n u16; }; fn main() int { let v f64 = 3.5; let s S = S.{ n = v as u16 }; if s.n == 3 { return 42; } return 1; }", 42},
+		{"store", "fn main() int { var r u8 = 0; let v f32 = 3.5; r = v as u8; if r == 3 { return 42; } return 1; }", 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitAndRun(t, tc.source, false, tc.wantCode, false)
+		})
+	}
 }
