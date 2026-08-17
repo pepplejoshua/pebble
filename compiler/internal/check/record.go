@@ -458,20 +458,21 @@ type frozenRecords struct {
 	components uint64
 }
 
+// Records returns a shared, read-only view into the frozen records. The slice
+// aliases frozen state: there is no defensive copy, so callers MUST NOT mutate
+// it or anything reachable through it (fields, nested slices, pointed-to
+// records). Mutating it corrupts what every other caller observes.
 func (f frozenRecords) Records() []retainedRecord {
-	result := make([]retainedRecord, len(f.values))
-	for index := range f.values {
-		result[index] = cloneRetainedRecord(f.values[index])
-	}
-	return result
+	return f.values
 }
 
+// Controls returns a shared, read-only view into the frozen control regions.
+// The slice aliases frozen state: there is no defensive copy, so callers MUST
+// NOT mutate it or anything reachable through it (including the Children
+// slices of individual regions). Mutating it corrupts what every other caller
+// observes.
 func (f frozenRecords) Controls() []controlRegion {
-	result := make([]controlRegion, len(f.controls))
-	for index := range f.controls {
-		result[index] = cloneControlRegion(f.controls[index])
-	}
-	return result
+	return f.controls
 }
 
 func (f frozenRecords) Components() uint64 { return f.components }

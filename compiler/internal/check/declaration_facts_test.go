@@ -627,7 +627,13 @@ func TestDeclarationFactsGenericAnonymousReachesFullPipeline(t *testing.T) {
 	}
 }
 
-func TestDeclarationFactsFreezePreservesExactRecords(t *testing.T) {
+// TestDeclarationFactsFreezePreservesRecords verifies freeze() preserves the
+// exact records built during the mutable phase: headers, type-use slot roots,
+// and callable-result slot roots all survive. The frozenRecords Records()
+// accessor no longer defensively copies (frozen state is immutable by contract,
+// callers must not mutate the shared view), so no mutate-then-reread isolation
+// is asserted here.
+func TestDeclarationFactsFreezePreservesRecords(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`fn use(value i32) void { let local i32 = value; context; }`)})
 	facts := run06a3(inputs, diagnostics, Config{})
 	before, _ := facts.Generation.records.record(1)
@@ -651,14 +657,6 @@ func TestDeclarationFactsFreezePreservesExactRecords(t *testing.T) {
 			if !exists || root.Kind != rootSlot || root.Slot == (infer.SlotID{}) {
 				t.Fatalf("freeze lost callable-result slot root: %+v", record.Callable)
 			}
-		}
-		if record.Callable != nil && len(record.Callable.Parameters) != 0 {
-			record.Callable.Parameters[0] = 0
-		}
-	}
-	for _, record := range frozen.records.Records() {
-		if record.Callable != nil && len(record.Callable.Parameters) != 0 && record.Callable.Parameters[0] == 0 {
-			t.Fatal("freeze exposed callable parameter backing storage")
 		}
 	}
 }

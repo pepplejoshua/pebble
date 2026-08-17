@@ -303,7 +303,13 @@ func TestGenerationEveryLimitIsAtomic(t *testing.T) {
 	}
 }
 
-func TestGenerationFreezeIsOneWayAndDefensivelyCopied(t *testing.T) {
+// TestGenerationFreezeIsOneWay verifies freeze() is one-way: the mutable
+// generation rejects every mutation after freezing, and the frozen snapshot is
+// defensively copied from the mutable arena at freeze time. The frozen
+// Values()/roots accessors copy on each call; the frozenRecords Records() and
+// Controls() accessors deliberately do NOT defensively copy anymore, so no
+// mutate-then-reread isolation is asserted for them.
+func TestGenerationFreezeIsOneWay(t *testing.T) {
 	inputs := validGenerationInputs(t)
 	diagnostics := diagnostic.NewDiagnosticSet()
 	generation := newGeneration(inputs, diagnostics, Config{})
@@ -312,7 +318,7 @@ func TestGenerationFreezeIsOneWayAndDefensivelyCopied(t *testing.T) {
 		t.Fatal("root rejected")
 	}
 	control, _ := generation.addControl(0)
-	record, _ := generation.addRecord(retainedRecord{Header: rootHeader(t, inputs), Values: []valueID{value}, Controls: []controlID{control}})
+	_, _ = generation.addRecord(retainedRecord{Header: rootHeader(t, inputs), Values: []valueID{value}, Controls: []controlID{control}})
 	frozen, ok := generation.freeze()
 	if !ok || generation.state != generationFrozen || frozen.inputs.Graph != inputs.Graph {
 		t.Fatalf("freeze = %+v, %t", frozen, ok)
@@ -327,16 +333,6 @@ func TestGenerationFreezeIsOneWayAndDefensivelyCopied(t *testing.T) {
 	roots[0].Value = 99
 	if _, ok := frozen.roots.Root(value); !ok {
 		t.Fatal("frozen roots exposed backing slice")
-	}
-	records := frozen.records.Records()
-	records[0].Values[0] = 99
-	if frozen.records.Records()[0].Values[0] != value || frozen.records.Records()[0].Header.ID != record {
-		t.Fatal("frozen records exposed backing slice")
-	}
-	controls := frozen.records.Controls()
-	controls[0].ID = 99
-	if frozen.records.Controls()[0].ID != control {
-		t.Fatal("frozen controls exposed backing slice")
 	}
 
 	if _, ok := generation.freeze(); ok {
@@ -360,7 +356,13 @@ func TestGenerationFreezeIsOneWayAndDefensivelyCopied(t *testing.T) {
 	}
 }
 
-func TestRecordControlHierarchyConstructionAndCopies(t *testing.T) {
+// TestRecordControlHierarchyConstruction verifies the mutable control arena
+// builds the expected parent/depth hierarchy and that freeze() materializes the
+// same hierarchy with correct child lists. The frozenRecords Controls()
+// accessor no longer defensively copies (frozen state is immutable by contract,
+// callers must not mutate the shared view), so no mutate-then-reread isolation
+// is asserted here.
+func TestRecordControlHierarchyConstruction(t *testing.T) {
 	inputs := validGenerationInputs(t)
 	generation := newGeneration(inputs, diagnostic.NewDiagnosticSet(), Config{MaxControlDepth: 3, MaxSemanticRecords: 5})
 	root, ok := generation.addControl(0)
@@ -427,12 +429,6 @@ func TestRecordControlHierarchyConstructionAndCopies(t *testing.T) {
 	}
 	if edges != len(controls)-roots {
 		t.Fatalf("hierarchy edges = %d, regions = %d, roots = %d", edges, len(controls), roots)
-	}
-	controls[root-1].Children[0] = 99
-	controls[child-1].Children[0] = 99
-	controls = frozen.records.Controls()
-	if !reflect.DeepEqual(controls[root-1].Children, []controlID{child, sibling}) || !reflect.DeepEqual(controls[child-1].Children, []controlID{grandchild}) {
-		t.Fatalf("frozen controls exposed children: %+v", controls)
 	}
 }
 

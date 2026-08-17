@@ -1018,10 +1018,13 @@ func TestControlFactsAcceptsValidCompositionSequences(t *testing.T) {
 	}
 }
 
-// TestControlFactsCompositionIsDefensivelyCopied proves cloneRetainedRecord
-// copies Composition, so a consumer cannot reach generation storage through a
-// structural role.
-func TestControlFactsCompositionIsDefensivelyCopied(t *testing.T) {
+// TestControlFactsComposition verifies cloneRetainedRecord copies Composition,
+// so a consumer cannot reach generation storage through a structural role, and
+// that the mutable recordArena retains records defensively. The frozenRecords
+// Records()/Controls() accessors no longer defensively copy (frozen state is
+// immutable by contract, callers must not mutate the shared view), so no
+// mutate-then-reread isolation is asserted for them here.
+func TestControlFactsComposition(t *testing.T) {
 	header := rootHeader(t, validGenerationInputs(t))
 	original := retainedRecord{
 		Header:   header,
@@ -1048,13 +1051,6 @@ func TestControlFactsCompositionIsDefensivelyCopied(t *testing.T) {
 	original.Control.Composition[0].Role = roleElse
 	if arena.values[0].Control.Composition[0].Role != roleThen {
 		t.Fatal("retention exposed caller composition backing storage")
-	}
-	frozen := frozenRecords{values: arena.values, components: arena.components}
-	first := frozen.Records()
-	first[0].Control.Composition[0].Role = roleElse
-	second := frozen.Records()
-	if second[0].Control.Composition[0].Role != roleThen {
-		t.Fatal("frozen accessor exposed composition backing storage")
 	}
 }
 

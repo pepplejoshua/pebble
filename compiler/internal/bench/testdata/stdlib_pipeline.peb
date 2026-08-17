@@ -1,0 +1,59 @@
+import "std:hash";
+import "std:hmap";
+import "std:set";
+import "std:vec";
+import "std:result";
+import "std:string";
+import "std:mem/arena";
+
+fn main() int {
+    let strings = ["a", "b", "c"];
+
+    var h = hmap::new[str, uint](
+        hash::hash_str,
+        fn (a, b str) bool => a == b
+    );
+    loop 0..strings.len : i {
+        h.insert(strings[i], i);
+    }
+    hmap::delete(&h);
+
+    var s = set::new[str](hash::hash_str, fn (a, b str) bool => a == b);
+    s.insert("x");
+    var has_x = s.contains("x");
+    set::delete(&s);
+
+    var v = vec::new[int]();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    vec::delete(&v);
+
+    var sb = string::new();
+    sb.push_str("hello");
+    sb.push_str(" world");
+    string::delete(&sb);
+
+    var a arena::Arena = arena::Arena.{
+        backing = context.default_allocator,
+        current = nil,
+        slab_size = 0,
+        free_head = nil,
+        free_current = nil,
+    };
+    arena::init(&a, 256, context.default_allocator);
+    let backing = arena::allocator(&a);
+    var p *int = backing.alloc(backing.ptr, sizeof int) as *int;
+    backing.free(backing.ptr, p as *void);
+    arena::destroy(&a);
+
+    var ok = result::test_ok_is_ok(42);
+    var def = result::test_err_unwrap_or("nope", -1);
+    var not_ok = result::test_err_is_not_ok("nope");
+    var mutated = result::test_set_error_was_ok(1);
+
+    if ok && def == -1 && not_ok && mutated && has_x {
+        return 0;
+    }
+    return 1;
+}
