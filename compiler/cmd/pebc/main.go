@@ -183,8 +183,9 @@ func defaultBinaryPath(entryPath string) string {
 	return strings.TrimSuffix(filepath.Base(entryPath), filepath.Ext(entryPath))
 }
 
-// buildExecutable compiles the emitted C at emittedPath with cc against the
-// runtime into an executable at binaryPath, and returns 0 on success.
+// buildExecutable compiles the emitted C at emittedPath with cc against a
+// cached, prebuilt runtime static library into an executable at binaryPath,
+// and returns 0 on success.
 func buildExecutable(runtimeRootFlag string, release bool, emittedPath, binaryPath string, linkLibs, linkPaths, includePaths []string, stderr io.Writer) int {
 	runtimeRoot, err := locateRuntimeRoot(runtimeRootFlag)
 	if err != nil {
@@ -200,16 +201,12 @@ func buildExecutable(runtimeRootFlag string, release bool, emittedPath, binaryPa
 	if release {
 		define = "-DPEBBLE_RT_MODE_RELEASE"
 	}
-	srcFiles, err := filepath.Glob(filepath.Join(runtimeRoot, "src", "*.c"))
+	archive, err := runtimeArchive(runtimeRoot, define, cc)
 	if err != nil {
-		fmt.Fprintf(stderr, "pebc: cannot glob runtime sources: %v\n", err)
+		fmt.Fprintf(stderr, "pebc: %v\n", err)
 		return 1
 	}
-	if len(srcFiles) == 0 {
-		fmt.Fprintf(stderr, "pebc: no runtime sources found under %q\n", filepath.Join(runtimeRoot, "src"))
-		return 1
-	}
-	args := buildCCArgs(runtimeRoot, define, emittedPath, binaryPath, srcFiles, linkLibs, linkPaths, includePaths)
+	args := buildLinkArgs(runtimeRoot, define, emittedPath, binaryPath, []string{archive}, linkLibs, linkPaths, includePaths)
 	if output, err := exec.Command(cc, args...).CombinedOutput(); err != nil {
 		fmt.Fprintf(stderr, "pebc: cc compilation failed: %v\n%s", err, output)
 		return 1
@@ -221,8 +218,16 @@ func buildExecutable(runtimeRootFlag string, release bool, emittedPath, binaryPa
 // emittedPath into the executable at binaryPath, linking the runtime sources
 // under runtimeRoot/src and any user-supplied -l/-L/-I flags.
 func buildCCArgs(runtimeRoot, define, emittedPath, binaryPath string, srcFiles []string, linkLibs, linkPaths, includePaths []string) []string {
+	return buildLinkArgs(runtimeRoot, define, emittedPath, binaryPath, srcFiles, linkLibs, linkPaths, includePaths)
+}
+
+// buildLinkArgs assembles the cc command line that compiles the emitted C at
+// emittedPath into the executable at binaryPath, linking the given runtime
+// inputs (source files or a prebuilt static library) and any user-supplied
+// -l/-L/-I flags.
+func buildLinkArgs(runtimeRoot, define, emittedPath, binaryPath string, runtimeInputs []string, linkLibs, linkPaths, includePaths []string) []string {
 	args := []string{"-std=c11", "-Wall", "-Wextra", "-Werror", define, "-I" + filepath.Join(runtimeRoot, "include"), emittedPath}
-	args = append(args, srcFiles...)
+	args = append(args, runtimeInputs...)
 	for _, p := range includePaths {
 		args = append(args, "-I"+p)
 	}
