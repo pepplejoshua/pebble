@@ -102,22 +102,32 @@ gone stale as later compiler work fixed the underlying issue without
 either doc being updated. `result.peb`'s comment has been corrected to
 match.)
 
-### `func.peb` — solid generic toolkit, and its cross-module caveat is real and still open
+### `func.peb` — solid generic toolkit, no real cross-module caveat either
 Has: `map`/`filter`/`reduce`/`find`/`any`/`all`/`zip` over plain
 slices.
 
 Missing (nice-to-have, not blockers):
 - `filter_map` (filter+map in one pass), `flat_map`, `take`/`skip`.
 
-**Unlike `result.peb` above, this module's cross-module limitation is
-real and reproduces today**: passing a *named* function value into a
-generic higher-order function (`map`/`filter`/etc.) from outside
-`func.peb` fails with `T0505`/`T0510`. Confirmed directly with a
-minimal repro, and confirmed it's specifically the module boundary that
-breaks it — the identical call pattern already works from inside
-`func.peb` itself (that's exactly what `test_filter_evens` does, and
-it's part of the already-verified stdlib test suite). See the appendix
-below.
+**Correction (2026-08-17): this section previously claimed a real,
+reproducing cross-module limitation here too — that claim was wrong.**
+An earlier version of this doc (and a comment in `func.peb` itself)
+said passing a named function value into a generic higher-order
+function from outside `func.peb` fails with `T0505`/`T0510`, "confirmed
+directly." That confirmation was flawed: the repro used to demonstrate
+it had an unrelated bug (a fixed-size array literal passed where a
+slice parameter was expected), and THAT mismatch — not the module
+boundary — produced the T0505/T0510 pair. A dispatched investigation
+(escalated to a stronger model after two other attempts stalled trying
+to "fix" a bug that turned out not to exist) caught this by refusing to
+trust the stated repro and re-deriving it carefully instead, then
+independently re-verified myself: with the array/slice mismatch
+corrected, both a minimal two-module case and a real call into
+`std:func::filter` from an external module — including against the
+actual `std:func.peb` source — type-check, compile, and run correctly.
+See `internal/backend/cross_module_function_value_test.go` for the
+regression coverage this added. `func.peb`'s own comment has been
+corrected to match.
 
 ### `math.peb` — more complete than it first looked
 Has `PI`/`E` constants, full trig/log/exp set, `abs`/`min`/`max`/
@@ -164,11 +174,11 @@ is a convenience gap, not a blocker.
 
 ## Appendix: the T0510 / cross-module generics limitation, precisely
 
-This came up because `result.peb`'s own comments used to flag it. Worth
-recording precisely since the historical write-up (still true for
-`func.peb`) is easy to misread as one single bug affecting everything
-generic — it isn't, and the two halves now have different, verified
-statuses.
+This came up because `result.peb`'s and `func.peb`'s own comments used
+to both flag it. Worth recording precisely, including the correction
+history, since this doc itself got it wrong once (see item 2 below)
+before being corrected by an independent, more careful re-investigation
+— a useful cautionary example, not just a status log.
 
 **What T0510 actually is**: a single, generic checker diagnostic —
 `internal/infer/diagnostics.go:20` (`CodeUnresolved = "T0510"`), raised
@@ -210,34 +220,47 @@ callable from outside the declaring module.
    `19-stdlib-production-hardening.md` slice log nor `result.peb`'s own
    comment were updated when it was fixed. `result.peb`'s comment has
    now been corrected to reflect this.
-2. **`func.peb`'s higher-order-generic case: STILL BROKEN, confirmed.**
-   Passing a *named* function value into `func::filter` (or `map`/etc.)
-   from a module other than `func.peb` still reproduces `T0505`/`T0510`
-   directly, on the current compiler. Confirmed this is specifically
-   about crossing the module boundary — the identical call pattern (a
-   named function value passed to `filter`) already works when done
-   *inside* `func.peb` itself (that's exactly what the already-verified
-   `test_filter_evens` helper does). This is a real, scoped, still-open
-   compiler bug: generic type-parameter inference for a function-typed
-   parameter breaks specifically when the function value crosses a
-   module boundary.
+2. **`func.peb`'s higher-order-generic case: also fine — this doc
+   originally said otherwise, and that was wrong.** An earlier pass of
+   this audit re-ran a repro (a named function value passed to
+   `func::filter` from an external module) and concluded it still
+   reproduced `T0505`/`T0510`, "confirmed directly." That confirmation
+   itself was flawed: the repro passed a fixed-size array literal (which
+   defaults to `[N]T`) where `filter[T](items []T, ...)` expects a
+   slice — an unrelated array-vs-slice mismatch that happens to also
+   produce `T0505`/`T0510`, and was misattributed to the module
+   boundary instead of investigated further. This was caught by a
+   dispatched orc investigation given the fix task — two primary-tier
+   attempts stalled trying to reproduce and fix a bug that, it turned
+   out, doesn't exist; escalating to a stronger model got a careful
+   re-derivation instead of a speculative fix, and it correctly refused
+   to change the checker for a repro it couldn't actually make fail
+   once the unrelated mismatch was corrected. Independently re-verified
+   directly afterward: with the array/slice mismatch fixed, a minimal
+   two-module case AND a real call into `std:func::filter` — against
+   the actual `std:func.peb` source, with a named function declared in
+   a genuinely separate helper module — both type-check, compile, and
+   run correctly. See
+   `compiler/internal/backend/cross_module_function_value_test.go` for
+   the regression coverage this added. `func.peb`'s own comment has
+   been corrected to match.
 
-**Is this Result-specific? No, and it never fully was** — Result was
-just the type that most visibly surfaced whichever half of this was
-broken at the time. The two halves (generic type/method resolution vs.
-generic higher-order function-value inference) are evidently different
-mechanisms in the checker, since one got fixed independently of the
-other.
+**Is this Result-specific? No, and it never was** — Result was just the
+type that most visibly surfaced the ONE real limitation here (the
+generic union enum case), which has since been fixed. The `func.peb`
+case never had a real limitation at all; it was a documentation error
+compounded by an under-verified repro, not a second checker bug.
 
-**Practical takeaway**: extend `Result` freely — new combinators are
-directly callable from `pjson` or any external importer, no wrapper
-pattern needed anymore. Extending `func.peb`'s generic toolkit still
-needs the wrapper pattern (public, non-generic function declared inside
-`func.peb` itself) for anything called with a named function value from
-outside the module — that limitation is real and unfixed.
+**Practical takeaway**: extend both `Result` and `func.peb` freely —
+new combinators on either are directly callable from `pjson` or any
+external importer, no wrapper-function workaround needed for either
+module. The wrapper functions that remain in both files are kept
+purely as regression-style compiled-and-run coverage, not because
+external code needs to go through them.
 
-**Fixing the `func.peb` limitation for real is compiler work** (checker
-generic type-parameter inference for cross-module function values), not
-something reachable from `.peb` source — a candidate for a scoped
-follow-up investigation/fix if it ever becomes a real blocker, not
-undertaken as part of this audit.
+**Lesson for future audits of this kind**: a diagnostic reproducing is
+not the same as the diagnostic reproducing for the claimed reason —
+always isolate variables in a repro (here: slice vs. array literal
+typing) before attributing a failure to the mechanism under
+investigation, and be willing to have that checked independently rather
+than trusting a first pass at face value, including your own.

@@ -77,15 +77,22 @@ fn zip[T, U](items1 []T, items2 []U) [](T, U) {
 }
 
 // ── Public test helpers via internal wrappers (Slice 7) ─────────────
-// Passing a named function value as an argument to a generic higher-order
-// function from an external module fails with T0505/T0510 errors because
-// the concrete function type does not unify with the generic fn(T) Ret
-// parameter shape across module boundaries.  These wrapper functions are
-// defined here so they can pass function values to map/filter/reduce/find/
-// any/all/zip INTERNALLY (the limitation is specific to crossing a module
-// boundary, not to using these functions at all).  Each wrapper exposes
-// only slice or primitive return types that cross module boundaries
-// cleanly, letting external tests exercise real compiled-and-run logic.
+// At the time these wrappers were written, passing a named function value
+// as an argument to a generic higher-order function from an external module
+// was believed to fail with T0505/T0510 because the concrete function type
+// did not unify with the generic fn(T) Ret parameter shape across module
+// boundaries. That belief was WRONG: a later, careful re-investigation
+// (2026-08-17) found the original repro's failure was actually caused by an
+// unrelated array-vs-slice type mismatch in the test fixture (a fixed-size
+// array literal passed where a slice parameter was expected), not by the
+// module boundary. With that mismatch corrected, passing a named function
+// value into map/filter/reduce/find/any/all/zip from an external module
+// type-checks, compiles, and runs correctly — see
+// internal/backend/cross_module_function_value_test.go for the regression
+// coverage. These wrappers are kept as-is rather than removed, since they
+// still give real, primitive/slice-typed compiled-and-run coverage of the
+// module's full public API without depending on the calling test module's
+// own setup.
 
 fn _double(x i32) i32 {
     return x * 2;
