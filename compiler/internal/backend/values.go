@@ -2691,6 +2691,35 @@ func buildCharOperand(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, f
 			}
 		}
 		return "pebble_rt_str_char_at_" + checkedSuffix(width) + "(" + base + ", " + index + ", " + buildSourceLoc(fileSet, node.Span) + ")", nil
+	case tir.IntegerToChar:
+		// An integer value cast to char (`b as char`, u8 → char only), lowered
+		// as a plain, unchecked C cast of the u8 value's expression to the
+		// char C type int32_t. Every u8 value (the whole 0-255 range) is a
+		// valid Unicode scalar value (Basic Latin + Latin-1 Supplement), so
+		// the cast can never produce an invalid char and needs no runtime
+		// validity check — exactly Go's rune(myByte). The checker restricts
+		// this node to a u8 source (a wider integer would exceed the Unicode
+		// codespace or land in the surrogate gap, which is out of scope), so
+		// the child is built by buildExpr at its own u8 width (uint8_t), the
+		// same way IntegerCast builds its source at the child's own width, and
+		// the emitted C is `(int32_t)(<u8 value expression>)`.
+		if len(node.Children) != 1 {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToChar with %d children, want exactly one", len(node.Children))
+		}
+		child, ok := unit.Node(node.Children[0])
+		if !ok {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToChar referencing invalid child node %d", node.Children[0])
+		}
+		childKey, childKeyOK := snapshot.Key(child.Type)
+		childWidth, childWidthOK := childKey.Builtin()
+		if !childKeyOK || !childWidthOK || childWidth != types.U8 {
+			return "", fmt.Errorf("entry function body expression contains an IntegerToChar whose child has type %s, want u8", describeType(snapshot, child.Type))
+		}
+		childExpr, err := buildExpr(st, unit, snapshot, fileSet, node.Children[0], locals, childWidth, width)
+		if err != nil {
+			return "", fmt.Errorf("entry function body integer-to-char child: %v", err)
+		}
+		return "(" + "int32_t" + ")(" + childExpr + ")", nil
 	default:
 		return "", fmt.Errorf("entry function body expression contains a %s, want a char literal, a reference to a char-typed local declared earlier in the body, a call to a char-returning function, or a str index", node.Kind)
 	}

@@ -1300,6 +1300,32 @@ func TestEmitCharToIntegerAllWidthsCompilesAndRuns(t *testing.T) {
 	}
 }
 
+func TestEmitIntegerToCharCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The exact minimal repro from the brief: `var b u8 = 65; var c = b as
+	// char; return c as int;` — a u8 value read as its Unicode scalar into a
+	// char, round-tripped back out as int. The checker lowers the cast to a
+	// tir.IntegerToChar whose single child is the u8-typed local b, and the
+	// backend lowers it to a plain C cast (int32_t)(<u8 expr>). 65 is 'A' in
+	// both ASCII and as a Unicode scalar, so the exit code is 65.
+	emitAndRun(t, "fn main() int { var b u8 = 65; var c = b as char; return c as int; }", false, 65, false)
+}
+
+func TestEmitIntegerToCharU8MaximumCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The high end of the u8 range: 255 (LATIN SMALL LETTER Y WITH DIAERESIS)
+	// is u8's maximum and a valid Unicode scalar. `255 as char` must produce
+	// 255 — no sign extension, no truncation — and round-trips back as int.
+	emitAndRun(t, "fn main() int { var b u8 = 255; var c = b as char; return c as int; }", false, 255, false)
+}
+
+func TestEmitIntegerToCharU8ZeroCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The low end of the u8 range: 0 is the NUL scalar and a valid char value,
+	// round-tripped back out as int 0.
+	emitAndRun(t, "fn main() int { var b u8 = 0; var c = b as char; return c as int; }", false, 0, false)
+}
+
 func TestEmitCharToIntegerHighByteU8BoundaryCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// A char with a high byte value cast to the narrow destination that can

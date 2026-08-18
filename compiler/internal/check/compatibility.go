@@ -81,6 +81,16 @@ func classifyPrimitive(source, destination types.TypeKey) (compatibilityClass, b
 	if srcKind == types.Char && dstInteger {
 		return compatibleExplicit, true
 	}
+	// u8 → char is unconditionally valid: every u8 value (the whole 0-255
+	// range) is a valid Unicode scalar value (Basic Latin + Latin-1
+	// Supplement), so the cast needs no runtime validity check. Only u8 is
+	// accepted as a source — a wider integer (i16/u16/i32/...) can exceed the
+	// Unicode codespace or land in the surrogate gap and would need a checked
+	// design of its own (out of scope), so this is deliberately restricted to
+	// the exact U8 → Char pair rather than any srcInteger.
+	if srcKind == types.U8 && dstKind == types.Char {
+		return compatibleExplicit, true
+	}
 	return compatibleForbidden, true
 }
 
@@ -185,6 +195,7 @@ const (
 	coercionTupleCoerce
 	coercionEnumToInteger
 	coercionCharToInteger
+	coercionIntegerToChar
 	coercionOptionalIntegerToEnum
 	coercionCheckedIntegerToEnum
 	coercionPointerCast
@@ -220,6 +231,9 @@ func coercionFor(snapshot *infer.SemanticSnapshot, class compatibilityClass, sou
 		}
 		if srcBuiltin == types.Char && isIntegerBuiltin(dstBuiltin) {
 			return coercionCharToInteger
+		}
+		if srcBuiltin == types.U8 && dstBuiltin == types.Char {
+			return coercionIntegerToChar
 		}
 	}
 

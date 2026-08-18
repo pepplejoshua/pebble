@@ -115,6 +115,7 @@ const (
 	CheckedShift
 	EnumToInteger
 	CharToInteger
+	IntegerToChar
 	OptionalIntegerToEnum
 	CheckedIntegerToEnum
 	PointerCast
@@ -562,6 +563,7 @@ var nodeMetas = [nodeKindCount]nodeMeta{
 	{CheckedShift, "CheckedShift", CategoryValue},
 	{EnumToInteger, "EnumToInteger", CategoryValue},
 	{CharToInteger, "CharToInteger", CategoryValue},
+	{IntegerToChar, "IntegerToChar", CategoryValue},
 	{OptionalIntegerToEnum, "OptionalIntegerToEnum", CategoryValue},
 	{CheckedIntegerToEnum, "CheckedIntegerToEnum", CategoryValue},
 	{PointerCast, "PointerCast", CategoryValue},

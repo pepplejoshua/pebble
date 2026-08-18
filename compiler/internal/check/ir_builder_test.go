@@ -3017,6 +3017,37 @@ fn main() void {
 	_ = records
 }
 
+func TestBuildValueIntegerToChar(t *testing.T) {
+	// b/value are function-LOCAL bindings deliberately — see the comment on
+	// TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would now
+	// be inlined to its initializer (IntegerLiteral here) rather than producing
+	// the SymbolValue child this test means to exercise.
+	state, records := testBuildValue(t, `
+fn main() void {
+	let b u8 = 65;
+	let value = b as char;
+}
+`)
+	id := requireValueID(t, state.handoff, records, func(e *expressionRecord) bool { return e.Kind == expressionCast })
+	nid, ok := state.buildValue(id)
+	if !ok {
+		t.Fatal("buildValue failed for integer-to-char cast")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	node := unit.Nodes()[nid-1]
+	if node.Kind != tir.IntegerToChar || len(node.Children) != 1 {
+		t.Fatalf("integer-to-char node = %+v", node)
+	}
+	child := unit.Nodes()[node.Children[0]-1]
+	if child.Kind != tir.SymbolValue {
+		t.Fatalf("integer-to-char child = %+v", child)
+	}
+	_ = records
+}
+
 func TestBuildValuePointerToInteger(t *testing.T) {
 	// x/p/value are function-LOCAL bindings deliberately — see the comment on
 	// TestBuildValueCheckedOptionalUnwrap: a top-level `let` global would now

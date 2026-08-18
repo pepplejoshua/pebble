@@ -59,6 +59,9 @@ func expectedPrimitiveClass(src, dst types.BuiltinKind) compatibilityClass {
 	if src == types.Char && isInteger(dst) {
 		return compatibleExplicit
 	}
+	if src == types.U8 && dst == types.Char {
+		return compatibleExplicit
+	}
 	return compatibleForbidden
 }
 
@@ -291,6 +294,7 @@ func TestCoercionFor(t *testing.T) {
 		{"char to integer u32", f.b, s.Types().Builtins().U32, coercionCharToInteger},
 		{"char to integer u64", f.b, s.Types().Builtins().U64, coercionCharToInteger},
 		{"integer to char", f.integer, f.b, coercionNone},
+		{"u8 to char", s.Types().Builtins().U8, f.b, coercionIntegerToChar},
 		{"u32 to char", s.Types().Builtins().U32, f.b, coercionNone},
 		// 9. pointer conversions — only pointer-width-or-wider integer
 		// destinations (u64, uint, i64, and int — int64_t, exactly

@@ -131,6 +131,37 @@ func TestValidateCastRecordsAcceptsCharToInteger(t *testing.T) {
 	}
 }
 
+func TestValidateCastRecordsAcceptsU8ToChar(t *testing.T) {
+	// The reverse direction restricted to its only safe source: `b as char`
+	// where b is u8. Every u8 value (0-255) is a valid Unicode scalar (Basic
+	// Latin + Latin-1 Supplement), so this cast needs no runtime validity
+	// check and must classify compatibleExplicit.
+	source := `fn f(b u8) char { return b as char; }`
+	diagnostics, result := run06bFixture(t, source)
+	if !result.Successful() || len(diagnostics.Items()) != 0 {
+		t.Fatalf("legal u8->char cast was rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestValidateCastRecordsRejectsI32ToChar(t *testing.T) {
+	// The restriction is load-bearing: a WIDER integer (i32 here) is NOT a
+	// safe char source — its range exceeds the Unicode codespace and can land
+	// in the surrogate gap — so `v as char` for an i32 must STILL be rejected
+	// with the same clean C0601. Regression guard proving the new u8-only rule
+	// did not accidentally open up every integer width.
+	source := `fn f(v i32) char { return v as char; }`
+	diagnostics, result := run06bFixture(t, source)
+	if result.Successful() {
+		t.Fatal("forbidden i32->char cast was accepted")
+	}
+	if got := countCode(diagnostics, CodeConversion); got != 1 {
+		t.Fatalf("expected exactly one C0601, got %d: %+v", got, diagnostics.Items())
+	}
+	if hasCode(diagnostics, CodeGeneration) {
+		t.Fatalf("forbidden cast leaked the C0619 internal-error path: %+v", diagnostics.Items())
+	}
+}
+
 func TestValidateCastRecordsAcceptsPointerToInteger(t *testing.T) {
 	// The forward pointer -> integer direction: `ptr as u64` (the
 	// std/hash.peb hash_ptr shape) must now classify compatibleExplicit and be
