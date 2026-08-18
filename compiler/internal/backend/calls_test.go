@@ -290,6 +290,52 @@ func TestEmitAutoReferencesValueForPointerReceiver(t *testing.T) {
 	emitAndRun(t, `type S = struct { n i32; fn set(self *S, value i32) void { self.n = value; } }; fn main() i32 { var s = S.{ n = 0 }; s.set(9); return s.n; }`, false, 9, false)
 }
 
+func TestEmitAutoDereferencesPointerForValueReceiver(t *testing.T) {
+	t.Parallel()
+	// The mirror of TestEmitAutoReferencesValueForPointerReceiver: a pointer
+	// receiver calling a VALUE-receiver method (`p.read()` where read takes
+	// `self S`) auto-dereferences the pointer. The exact brief repro: 5 from
+	// the value-receiver path through the pointer plus 5 from the
+	// pointer-receiver path through the value = 10 as the exit code.
+	emitAndRun(t, `type Foo = struct { x i32; fn value_method(self Foo) i32 { return self.x; } fn ptr_method(self *Foo) i32 { return self.x; } }; fn main() int { var f = Foo.{ x = 5 }; var p = &f; var a = f.ptr_method(); var b = p.value_method(); return (a + b) as int; }`, false, 10, false)
+}
+
+func TestEmitAutoDerefPointerParameterValueReceiverCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// A pointer PARAMETER (not just a pointer local) calling a value-receiver
+	// method: the receiver type is a KNOWN *S, exercising the resolvedType
+	// branch of the checker's receiver-shape unwrap, and the backend must
+	// still emit the checked dereference at the call site.
+	emitAndRun(t, `type S = struct { n i32; fn read(self S) i32 => self.n; }; fn use(p *S) i32 { return p.read(); } fn main() i32 { var s = S.{ n = 42 }; return use(&s); }`, false, 42, false)
+}
+
+func TestEmitAutoDerefNullPointerValueReceiverPanics(t *testing.T) {
+	t.Parallel()
+	// A pointer whose value is nil at runtime, used as the receiver of a
+	// VALUE-receiver method call. The null value is produced indirectly so the
+	// checker cannot reject it at compile time (a helper stores nil in a local
+	// and returns it). The auto-dereference must route through
+	// pebble_rt_checked_deref_ptr and abort cleanly with a null-pointer panic
+	// instead of segfaulting or reading garbage.
+	emitAndRun(t, "fn getNullPtr() *S { let p *S = nil; return p; } type S = struct { n i32; fn read(self S) i32 => self.n; }; fn main() i32 { let p *S = getNullPtr(); return p.read(); }", false, 0, true)
+}
+
+func TestEmitAutoDerefReceiverEmittedCContainsCheckedDeref(t *testing.T) {
+	t.Parallel()
+	// Verify the emitted C contains pebble_rt_checked_deref_ptr for the
+	// auto-dereferenced value-receiver call, not a raw C dereference.
+	unit, snapshot, entryID, sources := buildFixture(t, `type S = struct { n i32; fn read(self S) i32 => self.n; }; fn main() i32 { var s = S.{ n = 5 }; let p *S = &s; return p.read(); }`, "main", false)
+	var buf bytes.Buffer
+	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
+		t.Fatalf("Emit failed: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pebble_rt_checked_deref_ptr") {
+		t.Errorf("emitted C missing pebble_rt_checked_deref_ptr call:\n%s", out)
+	}
+	compileAndRun(t, buf.Bytes(), 5, false)
+}
+
 func TestEmitGenericPointerReceiverCallsSiblingMethod(t *testing.T) {
 	t.Parallel()
 	emitAndRun(t, `type Vec[T] = struct { value i32; fn reserve(self *Vec[i32], amount i32) void { self.value = amount; } fn push(self *Vec[i32], value i32) void { self.reserve(value); } }; fn main() i32 { var v = Vec[i32].{ value = 0 }; v.push(7); return v.value; }`, false, 7, false)

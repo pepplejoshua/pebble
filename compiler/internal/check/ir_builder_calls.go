@@ -168,6 +168,35 @@ func (s *irBuildState) buildMethodCall(call *callRecord, flow *contextFlowRecord
 					}
 					receiver = address
 				}
+			} else if receiverTypeOK && selfKeyOK && receiverKeyOK && selfKey.Kind() != types.Pointer && receiverKey.Kind() == types.Pointer {
+				// Mirror of the auto-reference above: the resolved method
+				// takes a VALUE receiver (selfType is the pointee) but the
+				// actual receiver argument is a POINTER to that pointee — the
+				// checker-level auto-dereference `p.value_method()` case. The
+				// receiver argument must be the POINTEE VALUE, not the
+				// pointer, so the built receiver is wrapped in a
+				// Load(DereferencePlace(...)) over the pointer value. The
+				// backend's struct-argument path (buildAggregateArgument ->
+				// buildStructValueNode -> buildPlaceLValue) emits that shape
+				// as the null-checked dereference value
+				// `*(pebble_struct_<id>_t *)(pebble_rt_checked_deref_ptr(...))`,
+				// exactly like every other pointer dereference in the
+				// language. This must come after the pointer-receiver case
+				// above: a pointer-receiver method called through a pointer
+				// (selfKey and receiverKey both pointers) takes neither
+				// branch and passes the pointer through unchanged.
+				pointee, pointeeOK := receiverKey.Child()
+				if pointeeOK && pointee == selfType {
+					derefPlace, derefOK := s.addNode(tir.Node{Kind: tir.DereferencePlace, Type: selfType, Span: call.Header.Span, Writable: false, Children: []tir.NodeID{receiver}}, symbol.SyntaxRef{})
+					if !derefOK {
+						return false
+					}
+					load, loadOK := s.addNode(tir.Node{Kind: tir.Load, Type: selfType, Span: call.Header.Span, Children: []tir.NodeID{derefPlace}}, symbol.SyntaxRef{})
+					if !loadOK {
+						return false
+					}
+					receiver = load
+				}
 			}
 		}
 	}

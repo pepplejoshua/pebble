@@ -490,18 +490,45 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 		}
 		receiverShape := Leaf(value.a)
 		receiverPointer := false
+		pointeeShape := Shape{}
+		pointeeKnown := false
 		if receiverType, known := s.resolvedType(value.a); known {
 			if key, found := s.program.typeKey(receiverType); found {
 				receiverPointer = key.Kind() == types.Pointer
+				if receiverPointer {
+					if pointee, ok := key.Child(); ok {
+						pointeeShape = Leaf(s.Known(pointee))
+						pointeeKnown = true
+					}
+				}
 			}
 		} else if value.a.kind != termKnown {
 			root := s.find(value.a.id)
 			if root != 0 && !s.cells[root-1].error && s.cells[root-1].shape != nil {
 				receiverPointer = s.cells[root-1].shape.kind == shapePointer
+				if receiverPointer && len(s.cells[root-1].shape.children) == 1 {
+					pointeeShape = s.cells[root-1].shape.children[0]
+					pointeeKnown = true
+				}
 			}
 		}
 		if s.methodPointerReceivers[value.site] && !receiverPointer {
 			receiverShape = PointerShape(receiverShape)
+		} else if !s.methodPointerReceivers[value.site] && receiverPointer && pointeeKnown {
+			// Mirror of the auto-reference above: the receiver argument is a
+			// pointer but the resolved method takes a VALUE receiver. The
+			// method's own receiver parameter shape is the pointee, so the
+			// receiver argument's shape must be the POINTEE's shape rather
+			// than the pointer's — the checker-level half of auto-
+			// dereferencing the receiver, matching how a value receiver
+			// passed through a pointer already resolves method NAME selection
+			// (receiverNominal unwraps the pointer) but the receiver ARGUMENT
+			// constraint previously still demanded a pointer-shaped parameter
+			// and failed the shape unification. The pointer-receiver-method-
+			// on-a-pointer case is untouched: receiverPointer is true there
+			// but so is methodPointerReceivers, so the branch above applies
+			// and the pointer leaf is kept.
+			receiverShape = pointeeShape
 		}
 		shapes := []Shape{receiverShape}
 		for _, argument := range value.arguments {
@@ -561,6 +588,29 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 	}
 	if shape.kind == shapePointer && len(shape.children) == 1 {
 		shape = &shape.children[0]
+		// A pointer shape produced by address-of keeps its pointee as a leaf
+		// term. That term may already resolve to a known type (a local whose
+		// initializer is a record construct) or acquire its nominal shape
+		// later, and the pointee's own shape can itself resolve through more
+		// than one deferred leaf hop. Follow it until it settles, evaluating a
+		// settled leaf through the same nominal lookup the known-type path
+		// uses and bailing out as still-pending (rather than failing) if a hop
+		// makes no progress or the chain runs unexpectedly long.
+		for hops := 0; shape.kind == shapeLeaf && hops < 8; hops++ {
+			if id, known := s.resolvedType(shape.term); known {
+				return s.receiverNominal(s.Known(id), origin)
+			}
+			childState, _, childShape := s.structure(shape.term)
+			switch childState {
+			case structuralShape:
+				if childShape.kind == shapeLeaf && childShape.term == shape.term {
+					return 0, nil, true, true
+				}
+				shape = &childShape
+			default:
+				return 0, nil, true, true
+			}
+		}
 	}
 	if shape.kind != shapeNominal {
 		return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)

@@ -2686,6 +2686,47 @@ fn read(p *Inner) i32 => (*p).value();
 	}
 }
 
+func TestBuildValueAutoDereferencedPointerReceiverForValueMethod(t *testing.T) {
+	// The IR-builder mirror of TestBuildValueNestedCallsAndPlaceReceiver's
+	// explicit-deref shape: `p.value()` where p is *Inner and value takes a
+	// VALUE receiver must lower the receiver argument to the same
+	// Load(DereferencePlace(pointer)) shape an explicit `(*p).value()` does —
+	// the shape the backend's struct-argument path emits as the null-checked
+	// dereference value. Without this the receiver child would be the raw
+	// pointer SymbolValue and the backend would reject the call as passing a
+	// pointer where a struct is wanted.
+	state, records := testBuildValue(t, `
+type Inner = struct { x i32; fn value(self Inner) i32 => self.x; };
+fn read(p *Inner) i32 => p.value();
+`)
+	methodID := requireCallValueID(t, state, records, func(c *callRecord) bool {
+		return c.Target.Kind == callMethod
+	})
+	if _, ok := state.buildValue(methodID); !ok {
+		t.Fatal("buildValue failed for method call")
+	}
+	unit, err := buildTestIRUnit(state)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	methodNode := unit.Nodes()[state.values[methodID]-1]
+	if methodNode.Kind != tir.MethodCall || len(methodNode.Children) != 1 {
+		t.Fatalf("method call = %+v", methodNode)
+	}
+	receiver := unit.Nodes()[methodNode.Children[0]-1]
+	if receiver.Kind != tir.Load || len(receiver.Children) != 1 {
+		t.Fatalf("method receiver = %+v, want Load over a dereference place", receiver)
+	}
+	receiverPlace := unit.Nodes()[receiver.Children[0]-1]
+	if receiverPlace.Kind != tir.DereferencePlace || len(receiverPlace.Children) != 1 {
+		t.Fatalf("method receiver place = %+v, want DereferencePlace", receiverPlace)
+	}
+	pointerValue := unit.Nodes()[receiverPlace.Children[0]-1]
+	if pointerValue.Kind != tir.SymbolValue {
+		t.Fatalf("method receiver pointer child = %+v, want the pointer SymbolValue", pointerValue)
+	}
+}
+
 func TestBuildValueInactiveGuardedCall(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte("fn add(left i32, right i32) i32 => left; let result i32 = add(1, 2);\n")})
 	handoff := run06a(inputs, diagnostics, Config{})

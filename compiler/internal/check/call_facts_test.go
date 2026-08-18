@@ -96,6 +96,50 @@ fn use() void {
 	}
 }
 
+func TestCallFactsAutoDereferencesPointerForValueReceiver(t *testing.T) {
+	// The mirror of TestCallFactsAutoReferencesValueForPointerReceiver: a
+	// pointer receiver expression calling a VALUE-receiver method (`p.read()`
+	// where read takes `self S` and p is *S) must be accepted by the checker
+	// and dispatch to the value-receiver method — the auto-DEREFERENCE the
+	// solver's receiverNominal and callMember shape handling now perform
+	// (receiverNominal already resolved method NAME selection through the
+	// pointer; the receiver ARGUMENT constraint previously still demanded a
+	// pointer-shaped parameter and failed the call). The same fixture also
+	// exercises the existing auto-REFERENCE direction (`s.set(1)`) and the
+	// pointer-receiver method called through a pointer (`p.set(3)`), proving
+	// the mirror does not disturb either pre-existing path.
+	fixture := `
+type S = struct {
+    n i32;
+    fn read(self S) i32 => self.n;
+    fn touch(self S) void { }
+    fn set(self *S, value i32) void { self.n = value; }
+};
+fn make() S => S.{ n = 0 };
+fn use(p *S) i32 {
+    var s = S.{ n = 7 };
+    var local = &s;
+    var a = local.read();
+    var b = p.read();
+    local.touch();
+    p.touch();
+    s.set(1);
+    p.set(3);
+    return a + b;
+}
+fn main() void {
+    var s = S.{ n = 3 };
+    use(&s);
+}
+`
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(fixture)})
+	facts := run06a3(inputs, diagnostics, Config{})
+	solution := facts.Session.Solve()
+	if !solution.Successful() || diagnostics.HasErrors() {
+		t.Fatalf("diagnostics=%+v", diagnostics.Items())
+	}
+}
+
 func TestCallFactsGenericPointerReceiverCallsSiblingMethod(t *testing.T) {
 	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": []byte(`
 type Vec[T] = struct {
