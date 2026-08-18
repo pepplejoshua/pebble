@@ -114,6 +114,21 @@ func Resolve(graph *module.Graph, sources *source.FileSet, diagnostics *diagnost
 	return r.result
 }
 
+// builtinFunctionDeclarations is the single source of truth for the
+// compiler-owned builtin function spellings and identities. Both the prelude
+// registration loop and the reserved-name guard derive from it, so the list
+// cannot drift between the two. Order is significant: it fixes the prelude
+// symbol IDs that the golden typed-IR dumps and the backend's hardcoded
+// pebble_fn_<symbolID> fixtures depend on.
+var builtinFunctionDeclarations = []struct {
+	name string
+	kind BuiltinFunction
+}{
+	{"wrapping_mul_u64", BuiltinWrappingMulU64},
+	{"wrapping_add_u64", BuiltinWrappingAddU64},
+	{"str_byte_at", BuiltinStrByteAt},
+}
+
 // registerBuiltinFunctions binds the compiler-owned builtin function symbols
 // into the prelude scope. They are deliberately registered AFTER module
 // collection — rather than in installPrelude with the other prelude symbols —
@@ -128,14 +143,7 @@ func (r *resolver) registerBuiltinFunctions() {
 	if scope == 0 {
 		return
 	}
-	for _, function := range []struct {
-		name string
-		kind BuiltinFunction
-	}{
-		{"wrapping_mul_u64", BuiltinWrappingMulU64},
-		{"wrapping_add_u64", BuiltinWrappingAddU64},
-		{"str_byte_at", BuiltinStrByteAt},
-	} {
+	for _, function := range builtinFunctionDeclarations {
 		id := r.addSymbol(Symbol{Name: function.name, Kind: SymbolBuiltinFunction, Scope: scope, BuiltinFunction: function.kind}, true, 0)
 		r.result.builtinFunctions[function.kind] = id
 	}
@@ -434,9 +442,9 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 		return 0
 	}
 	symbol.ID = SymbolID(len(r.result.Symbols.values) + 1)
-	if symbol.Builtin == 0 && symbol.Runtime == 0 && symbol.Name != "" && !symbol.Error && reservedBuiltin(symbol.Name) {
+	if symbol.Builtin == 0 && symbol.Runtime == 0 && symbol.BuiltinFunction == 0 && symbol.Name != "" && !symbol.Error && reservedBuiltin(symbol.Name) {
 		symbol.Error = true
-		r.report(CodeReservedBuiltin, fmt.Sprintf("%q is a reserved compiler-owned type name", symbol.Name), symbol.Span)
+		r.report(CodeReservedBuiltin, fmt.Sprintf("%q is a reserved compiler-owned name", symbol.Name), symbol.Span)
 	}
 	if bind && symbol.Name != "" && !symbol.Error {
 		if original, duplicate := r.bindings[symbol.Scope][symbol.Name]; duplicate {
@@ -457,12 +465,18 @@ func (r *resolver) addSymbol(symbol Symbol, bind bool, functionOwner SymbolID) S
 }
 
 func reservedBuiltin(name string) bool {
-	// Only the actual builtin scalar type names stay reserved against source
-	// redeclaration. "Allocator" is no longer guarded: since the Allocator/
-	// Context cutover it is an ordinary parsed prelude declaration, not a
-	// compiler-owned synthesized type.
+	// Only the actual builtin scalar type names and compiler-owned builtin
+	// function names stay reserved against source redeclaration. "Allocator"
+	// is no longer guarded: since the Allocator/Context cutover it is an
+	// ordinary parsed prelude declaration, not a compiler-owned synthesized
+	// type.
 	for kind := BuiltinBool; kind <= BuiltinF64; kind++ {
 		if name == kind.String() {
+			return true
+		}
+	}
+	for _, function := range builtinFunctionDeclarations {
+		if name == function.name {
 			return true
 		}
 	}

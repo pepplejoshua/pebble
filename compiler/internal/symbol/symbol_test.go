@@ -2,6 +2,7 @@ package symbol
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -304,6 +305,37 @@ func TestBuiltinNamesCannotBeRedeclaredAnywhere(t *testing.T) {
 	for _, item := range items {
 		if item.Code != CodeReservedBuiltin {
 			t.Fatalf("unexpected name diagnostic %s: %+v", item.Code, items)
+		}
+	}
+}
+
+func TestBuiltinFunctionNamesCannotBeRedeclaredAnywhere(t *testing.T) {
+	// The compiler-owned builtin function spellings are reserved exactly like
+	// the builtin scalar type names: any source declaration of one of them —
+	// function, binding, parameter, field, type, or local — receives N0007 and
+	// is never installed in its lexical or member namespace.
+	names := []string{"wrapping_mul_u64", "wrapping_add_u64", "str_byte_at"}
+	contexts := map[string]string{
+		"function":  "fn %s(a u64, b u64) u64 { return a; }",
+		"binding":   "let %s = 1;",
+		"local":     "fn main() int { let %s = 1; return 0; }",
+		"parameter": "fn use(%s u64) void {}",
+		"field":     "type Holder = struct { %s u64; };",
+		"type":      "type %s = struct {};",
+	}
+	for _, name := range names {
+		for context, text := range contexts {
+			name, context, text := name, context, text
+			t.Run(name+"/"+context, func(t *testing.T) {
+				_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": fmt.Sprintf(text, name)}, Config{})
+				items := nameErrors(diagnostics.Items())
+				if len(items) != 1 {
+					t.Fatalf("reserved builtin diagnostics = %+v, want exactly one N0007", items)
+				}
+				if items[0].Code != CodeReservedBuiltin {
+					t.Fatalf("diagnostic %s: %+v, want CodeReservedBuiltin", items[0].Code, items)
+				}
+			})
 		}
 	}
 }
