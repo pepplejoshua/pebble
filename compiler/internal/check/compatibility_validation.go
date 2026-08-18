@@ -40,46 +40,6 @@ func cTypeWidth(k types.BuiltinKind) string {
 	return ""
 }
 
-// builtinTypeName returns the short Pebble-source name for a builtin kind
-// ("i8", "int", "u64", "f32", etc.), used in diagnostic messages.
-func builtinTypeName(k types.BuiltinKind) string {
-	switch k {
-	case types.Bool:
-		return "bool"
-	case types.Char:
-		return "char"
-	case types.Str:
-		return "str"
-	case types.Void:
-		return "void"
-	case types.Int:
-		return "int"
-	case types.Uint:
-		return "uint"
-	case types.I8:
-		return "i8"
-	case types.I16:
-		return "i16"
-	case types.I32:
-		return "i32"
-	case types.I64:
-		return "i64"
-	case types.U8:
-		return "u8"
-	case types.U16:
-		return "u16"
-	case types.U32:
-		return "u32"
-	case types.U64:
-		return "u64"
-	case types.F32:
-		return "f32"
-	case types.F64:
-		return "f64"
-	}
-	return "<type>"
-}
-
 // describeTypeForDiagnostic returns a human-readable name for a type ID,
 // suitable for inclusion in diagnostic messages.
 func describeTypeForDiagnostic(snapshot *infer.SemanticSnapshot, id types.TypeID) string {
@@ -87,29 +47,7 @@ func describeTypeForDiagnostic(snapshot *infer.SemanticSnapshot, id types.TypeID
 	if !ok {
 		return "<unknown>"
 	}
-	if builtin, ok := key.Builtin(); ok {
-		name := builtinTypeName(builtin)
-		if name != "" {
-			return name
-		}
-	}
-	switch key.Kind() {
-	case types.Pointer:
-		return "pointer"
-	case types.Tuple:
-		return "tuple"
-	case types.Optional:
-		return "optional"
-	case types.Array:
-		return "array"
-	case types.Slice:
-		return "slice"
-	case types.Function:
-		return "function"
-	case types.Nominal:
-		return "enum"
-	}
-	return "<type>"
+	return types.DescribeKey(key)
 }
 
 // sameConcreteIntegerWidth reports whether sourceID and destinationID are both

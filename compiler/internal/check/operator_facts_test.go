@@ -192,7 +192,7 @@ func TestOperatorFactsStringAddAndMixedNumeric(t *testing.T) {
 // differing-width outer destination (a return/assignment expected type) handled
 // by the retained compatibility record rather than a hard unify. Previously
 // `fn main() int { var x i32 = 5; return x + 1; }` failed with a T0505
-// "cannot unify semantic type kind 1 with kind 1" ("same operands") because the
+// "cannot unify int with i32" ("same operands") because the
 // literal was pre-pinned to the outer `int` destination while `x` was already
 // `i32`.
 func TestOperatorFactsLiteralOperandAdoptsConcreteSibling(t *testing.T) {
