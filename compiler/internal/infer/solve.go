@@ -49,6 +49,103 @@ func (s *Session) Solve() *Solution {
 	return result
 }
 
+// propagateErrorTaint reports whether value participates in an already-tainted
+// inference cell. When it does, the constraint is skipped (the caller marks it
+// done without applying it) and the taint is forwarded to the constraint's own
+// result/destination term(s), so that cells depending on this constraint's
+// output inherit the error transitively the way rustc's error type flows
+// through a broken expression tree. This is what stops a single root mistake
+// from fanning out into a cascade of separate T0510 diagnostics.
+func (s *Session) propagateErrorTaint(value Constraint) bool {
+	if s.Fatal() {
+		return false
+	}
+	if !s.anyParticipantTainted(value) {
+		return false
+	}
+	for _, term := range constraintResultTerms(value) {
+		s.taintResult(term)
+	}
+	return true
+}
+
+// anyParticipantTainted walks every term of a constraint (across all constraint
+// kinds) and reports whether any of them resolves to an inference cell that is
+// already marked errored.
+func (s *Session) anyParticipantTainted(value Constraint) bool {
+	tainted := false
+	s.visitConstraintTerms(value, func(term Term) {
+		if tainted {
+			return
+		}
+		if s.termTainted(term) {
+			tainted = true
+		}
+	})
+	return tainted
+}
+
+// termTainted reports whether term is an inference variable whose union-find
+// root is marked errored. Known constants and explicit error terms never count.
+func (s *Session) termTainted(term Term) bool {
+	if term.kind != termVariable || !term.belongs(s.token) {
+		return false
+	}
+	root := s.find(term.id)
+	return root != 0 && s.cells[root-1].error
+}
+
+// taintResult marks the root of a variable term as errored, propagating error
+// taint forward through a constraint. Known constants and explicit error terms
+// are left untouched.
+func (s *Session) taintResult(term Term) {
+	if term.kind != termVariable || !term.belongs(s.token) {
+		return
+	}
+	root := s.find(term.id)
+	if root != 0 && !s.cells[root-1].error {
+		s.cells[root-1].error = true
+	}
+}
+
+// constraintResultTerms returns the term(s) a constraint kind treats as its
+// produced result / destination: the cells that structurally depend on the
+// constraint's inputs and would otherwise sit unresolved if an input is
+// already errored. It mirrors apply()'s dispatch; read that switch before
+// changing a mapping here.
+func constraintResultTerms(value Constraint) []Term {
+	switch value.kind {
+	case constraintEqual:
+		return []Term{value.a, value.b}
+	case constraintNumeric, constraintIntegral, constraintOrdered:
+		return []Term{value.a}
+	case constraintLiteralFits:
+		return []Term{value.b}
+	case constraintShape, constraintInstantiate, constraintTypeOccurrence:
+		return []Term{value.a}
+	case constraintHasField, constraintStructuralField, constraintHasComponent:
+		return []Term{value.b}
+	case constraintSelectMethod:
+		return []Term{value.b}
+	case constraintCallMember:
+		terms := []Term{value.c}
+		for _, argument := range value.arguments {
+			terms = append(terms, argument.Destination)
+		}
+		return terms
+	case constraintCallable:
+		terms := []Term{value.b}
+		for _, argument := range value.arguments {
+			terms = append(terms, argument.Destination)
+		}
+		return terms
+	case constraintIndexable, constraintSliceable:
+		return []Term{value.b}
+	default:
+		return nil
+	}
+}
+
 func (s *Session) solveOrdinary() {
 	if s.Fatal() {
 		return
@@ -61,6 +158,20 @@ func (s *Session) solveOrdinary() {
 			}
 			entry := &s.constraints[index]
 			if entry.done || entry.value.kind == constraintOneOf {
+				continue
+			}
+			// A constraint whose result structurally depends on a term that is
+			// already a tainted (errored) inference cell cannot produce a
+			// meaningful outcome and would only re-raise a diagnostic that was
+			// already reported at the tainted root. Skip it without applying,
+			// propagating the taint to this constraint's own result/destination
+			// term(s) so that dependent unresolved cells do not each report a
+			// fresh T0510 (the diagnostic cascade). Only an ALREADY-tainted
+			// participating term triggers this — the first failure that sets
+			// the taint is always processed normally.
+			if s.propagateErrorTaint(entry.value) {
+				entry.done = true
+				changed = true
 				continue
 			}
 			result := s.apply(entry.value)
