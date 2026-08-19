@@ -268,7 +268,11 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 		}
 	}
 	if member == 0 {
-		return false, s.conflict(CodeCapability, "nominal type has no field named "+name, origin), false
+		message := "nominal type has no field named " + name
+		if suggestion, ok := diagnostic.Suggest(name, s.memberCandidates(declaration)); ok {
+			message = fmt.Sprintf("nominal type has no field named %q (did you mean %q?)", name, suggestion)
+		}
+		return false, s.conflict(CodeCapability, message, origin), false
 	}
 	mapping := make(map[symbol.SymbolID]Term, len(decl.Parameters))
 	if len(arguments) != len(decl.Parameters) {
@@ -284,6 +288,18 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 	}
 	changed, success := s.unifyShapeWithTerm(shape, field, origin)
 	return changed, success, false
+}
+
+// memberCandidates returns the declared field, variant, and method names of a
+// nominal type, for use in did-you-mean suggestions on member access.
+func (s *Session) memberCandidates(declaration symbol.SymbolID) []string {
+	var names []string
+	for _, candidateID := range s.program.inputs.Resolution.Members(declaration) {
+		if candidate, exists := s.program.inputs.Resolution.Symbols.Symbol(candidateID); exists && candidate.Name != "" {
+			names = append(names, candidate.Name)
+		}
+	}
+	return names
 }
 
 func (s *Session) selectMethod(value Constraint) (bool, bool, bool) {

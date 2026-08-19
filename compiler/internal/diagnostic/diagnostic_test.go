@@ -404,3 +404,68 @@ func TestDiagnosticSetReplaceNilReceiver(t *testing.T) {
 		t.Fatal("Replace on nil receiver returned true, want false")
 	}
 }
+
+func TestEditDistance(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"a", "", 1},
+		{"", "a", 1},
+		{"a", "a", 0},
+		{"kitten", "sitting", 3},
+		{"compute_total", "compute_totl", 1},
+		{"count", "cout", 1},
+		{"count", "counts", 1},
+		{"xyzzy", "count", 5},
+	}
+	for _, tc := range cases {
+		if got := EditDistance(tc.a, tc.b); got != tc.want {
+			t.Errorf("EditDistance(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestSuggest(t *testing.T) {
+	candidates := []string{"compute_total", "wrapping_add_u64", "count", "main"}
+
+	t.Run("closest within threshold", func(t *testing.T) {
+		got, ok := Suggest("compute_totl", candidates)
+		if !ok || got != "compute_total" {
+			t.Fatalf("Suggest = %q, %t; want %q, true", got, ok, "compute_total")
+		}
+	})
+	t.Run("member typo", func(t *testing.T) {
+		got, ok := Suggest("cout", []string{"count"})
+		if !ok || got != "count" {
+			t.Fatalf("Suggest = %q, %t; want %q, true", got, ok, "count")
+		}
+	})
+	t.Run("unrelated name rejected", func(t *testing.T) {
+		if got, ok := Suggest("xyzzy", candidates); ok {
+			t.Fatalf("Suggest(%q, %v) = %q, true; want false", "xyzzy", candidates, got)
+		}
+	})
+	t.Run("empty target rejected", func(t *testing.T) {
+		if got, ok := Suggest("", candidates); ok {
+			t.Fatalf("Suggest(\"\", ...) = %q, true; want false", got)
+		}
+	})
+	t.Run("no candidates rejected", func(t *testing.T) {
+		if got, ok := Suggest("compute_totl", nil); ok {
+			t.Fatalf("Suggest(..., nil) = %q, true; want false", got)
+		}
+	})
+	t.Run("tie resolves deterministically", func(t *testing.T) {
+		// "bob" is distance 1 from both "job" (substitution) and "bo"
+		// (deletion); the lexicographically smaller one must win regardless of
+		// input order.
+		for _, order := range [][]string{{"job", "bo"}, {"bo", "job"}} {
+			got, ok := Suggest("bob", order)
+			if !ok || got != "bo" {
+				t.Fatalf("Suggest(%q, %v) = %q, %t; want %q, true", "bob", order, got, ok, "bo")
+			}
+		}
+	})
+}

@@ -3,6 +3,7 @@ package symbol
 import (
 	"fmt"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
@@ -739,7 +740,7 @@ func (r *resolver) resolvePath(ctx walkContext, nodeID syntax.NodeID, node synta
 	name := r.nodeText(ctx.file, baseNode)
 	qualifierID := r.lookup(ctx.scope, name)
 	if qualifierID == 0 {
-		r.report(CodeUndefinedName, fmt.Sprintf("undefined name %q", name), baseNode.Span())
+		r.report(CodeUndefinedName, r.undefinedName(name, ctx.scope), baseNode.Span())
 		r.result.references[baseRef] = Resolution{Syntax: baseRef, State: ResolutionError}
 		return Resolution{Syntax: pathRef, State: ResolutionError}
 	}
@@ -791,7 +792,7 @@ func (r *resolver) resolveName(ctx walkContext, nodeID syntax.NodeID, expected n
 	}
 	id := r.lookup(ctx.scope, name)
 	if id == 0 {
-		r.report(CodeUndefinedName, fmt.Sprintf("undefined name %q", name), node.Span())
+		r.report(CodeUndefinedName, r.undefinedName(name, ctx.scope), node.Span())
 		result := Resolution{Syntax: ref, State: ResolutionError}
 		if record {
 			r.result.references[ref] = result
@@ -828,6 +829,41 @@ func (r *resolver) lookup(scope ScopeID, name string) SymbolID {
 		scope = value.Parent
 	}
 	return 0
+}
+
+// visibleNames enumerates every name bound anywhere along the scope chain that
+// lookup would search, so a failed lookup can suggest a nearby spelling. It
+// returns names in no particular order; Suggest resolves ties deterministically.
+func (r *resolver) visibleNames(scope ScopeID) []string {
+	var names []string
+	seen := make(map[string]bool)
+	for scope != 0 {
+		for name := range r.bindings[scope] {
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+		value, ok := r.result.Scopes.Scope(scope)
+		if !ok {
+			break
+		}
+		scope = value.Parent
+	}
+	return names
+}
+
+// undefinedName builds the CodeUndefinedName message for a name that resolved
+// to nothing in scope, appending a did-you-mean suggestion when a visible name
+// is close enough to be worth suggesting.
+func (r *resolver) undefinedName(name string, scope ScopeID) string {
+	message := fmt.Sprintf("undefined name %q", name)
+	suggestion, ok := diagnostic.Suggest(name, r.visibleNames(scope))
+	if !ok {
+		return message
+	}
+	return fmt.Sprintf("undefined name %q (did you mean %q?)", name, suggestion)
 }
 
 func validCategory(kind SymbolKind, expected nameContext) bool {

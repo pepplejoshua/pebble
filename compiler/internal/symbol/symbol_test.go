@@ -720,6 +720,33 @@ func TestNonTypeOwnerRecordFieldKeepsEarlyMemberError(t *testing.T) {
 	}
 }
 
+func TestUndefinedNameSuggestsClosestVisibleName(t *testing.T) {
+	text := `
+fn compute_total(a int) int { return a; }
+fn main() int {
+    return compute_totl(1) + xyzzy(1);
+}`
+	_, diagnostics, _, _ := resolveFiles(t, map[string]string{"main.peb": text}, Config{})
+	var suggested, plain string
+	for _, item := range diagnostics.Items() {
+		if item.Code != CodeUndefinedName {
+			continue
+		}
+		switch {
+		case strings.Contains(item.Message, "compute_totl"):
+			suggested = item.Message
+		case strings.Contains(item.Message, "xyzzy"):
+			plain = item.Message
+		}
+	}
+	if want := `undefined name "compute_totl" (did you mean "compute_total"?)`; suggested != want {
+		t.Fatalf("misspelled name message = %q, want %q", suggested, want)
+	}
+	if want := `undefined name "xyzzy"`; plain != want {
+		t.Fatalf("unrelated name message = %q, want %q", plain, want)
+	}
+}
+
 func TestResultAndSyntaxAreImmutableAndDeterministic(t *testing.T) {
 	files := map[string]string{"main.peb": "type Unit=struct{}; fn use(value Unit) Unit { { let local=value; } return value; }"}
 	first, firstDiagnostics, firstGraph, _ := resolveFiles(t, files, Config{})

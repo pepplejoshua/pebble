@@ -1,9 +1,11 @@
 package check
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
+	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 )
 
 const memberValidationSource = `
@@ -318,6 +320,44 @@ fn get(self Data) int {
 	diagnostics, handoff, records = runMemberValidation(t, wrongCase)
 	if validateMemberRecords(handoff, records, diagnostics, Config{}) || !hasValidationDiagnostic(diagnostics, CodeMember) {
 		t.Fatalf("variant read in a different case arm was not rejected: %+v", diagnostics.Items())
+	}
+}
+
+func TestNominalUnknownFieldSuggestsClosestMember(t *testing.T) {
+	source := `
+type Counter = struct { count i32; };
+fn main() int {
+    var c = Counter.{ count = 1 };
+    return c.cout;
+}`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	var nominal string
+	for _, item := range diagnostics.Items() {
+		if item.Code == infer.CodeCapability && strings.Contains(item.Message, "cout") {
+			nominal = item.Message
+		}
+	}
+	if want := `nominal type has no field named "cout" (did you mean "count"?)`; nominal != want {
+		t.Fatalf("unknown member message = %q, want %q", nominal, want)
+	}
+}
+
+func TestNominalUnknownFieldUnrelatedMemberGetsNoSuggestion(t *testing.T) {
+	source := `
+type Counter = struct { count i32; };
+fn main() int {
+    var c = Counter.{ count = 1 };
+    return c.xyzzy;
+}`
+	diagnostics, _, _ := runMemberValidation(t, source)
+	var nominal string
+	for _, item := range diagnostics.Items() {
+		if item.Code == infer.CodeCapability && strings.Contains(item.Message, "xyzzy") {
+			nominal = item.Message
+		}
+	}
+	if want := "nominal type has no field named xyzzy"; nominal != want {
+		t.Fatalf("unknown member message = %q, want %q", nominal, want)
 	}
 }
 
