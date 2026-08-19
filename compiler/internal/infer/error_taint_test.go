@@ -1,10 +1,12 @@
 package infer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 // These tests pin the error-taint propagation that stops diagnostic cascades.
@@ -161,4 +163,99 @@ func TestErrorTaintReceiverNotNominalDoesNotSuppressIndependentErrors(t *testing
 	if countDiagnostics(diagnostics, CodeUnresolved) != 0 {
 		t.Fatalf("no dependent T0510 cascade expected: %+v", diagnostics.Items())
 	}
+}
+
+// TestErrorTaintPropagatesThroughHasFieldNoMember asserts that a field access
+// whose member name does not exist on a nominal type reports the root T0507
+// (with its did-you-mean suggestion) but taints the field-access result term
+// rather than leaving it unresolved as a fresh T0510. This pins the hasField
+// wiring into the error-taint mechanism: the field cell is a fresh cell created
+// by the same constraint that is failing, so tainting the receiver alone would
+// not suppress its cascade.
+func TestErrorTaintPropagatesThroughHasFieldNoMember(t *testing.T) {
+	program, store, diagnostics, session, field := nominalFieldFixture(t, "cout")
+	session.Add(HasField(session.Known(mustNominal(program, store, "Box")), "cout", field, Origin{Role: "member access"}))
+	session.PublishSymbol(1, field)
+	session.Solve()
+
+	if !hasDiagnostic(diagnostics, CodeCapability) {
+		t.Fatalf("root capability failure must be reported: %+v", diagnostics.Items())
+	}
+	if hasDiagnostic(diagnostics, CodeUnresolved) {
+		t.Fatalf("field term must inherit taint, not report T0510: %+v", diagnostics.Items())
+	}
+	if !suggestionMentioned(diagnostics, "count") {
+		t.Fatalf("did-you-mean suggestion must be preserved: %+v", diagnostics.Items())
+	}
+}
+
+// TestErrorTaintHasFieldNoMemberDoesNotSuppressIndependentErrors is the
+// independence check for the hasField no-such-member family: a second, unrelated
+// type error in the same file still reports independently. Only the field term
+// structurally depending on the failed member access is suppressed.
+func TestErrorTaintHasFieldNoMemberDoesNotSuppressIndependentErrors(t *testing.T) {
+	program, store, diagnostics, session, field := nominalFieldFixture(t, "cout")
+	session.Add(HasField(session.Known(mustNominal(program, store, "Box")), "cout", field, Origin{Role: "member access"}))
+	session.PublishSymbol(1, field)
+
+	a := session.Variable(Origin{Role: "a"})
+	session.Add(Equal(a, session.Known(store.Builtins().Int), Origin{Role: "a is int"}))
+	session.Add(Equal(a, session.Known(store.Builtins().Bool), Origin{Role: "a is bool (conflict)"}))
+	session.PublishSymbol(2, a)
+	session.Solve()
+
+	if !hasDiagnostic(diagnostics, CodeCapability) || !hasDiagnostic(diagnostics, CodeUnification) {
+		t.Fatalf("both independent errors must be reported: %+v", diagnostics.Items())
+	}
+	if countDiagnostics(diagnostics, CodeUnresolved) != 0 {
+		t.Fatalf("no dependent T0510 cascade expected: %+v", diagnostics.Items())
+	}
+}
+
+// nominalFieldFixture prepares a program with a Box struct, the session, and a
+// fresh field variable for a HasField constraint on a nominal Box receiver.
+func nominalFieldFixture(t *testing.T, name string) (*Program, *types.Store, *diagnostic.DiagnosticSet, *Session, Term) {
+	t.Helper()
+	program, pd := prepareSource(t, []byte(`type Box = struct { count i32; };
+fn main() int {
+  var b = Box.{ count = 5 };
+  return b.count;
+}`))
+	if pd.HasErrors() {
+		t.Fatalf("prepare diagnostics: %+v", pd.Items())
+	}
+	store := program.inputs.Types
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	field := session.Variable(Origin{Role: name})
+	return program, store, diagnostics, session, field
+}
+
+// mustNominal returns the interned nominal TypeID for a source type name.
+func mustNominal(program *Program, store *types.Store, name string) types.TypeID {
+	var decl symbol.SymbolID
+	for _, s := range program.inputs.Resolution.Symbols.All() {
+		if s.Kind == symbol.SymbolType && s.Name == name {
+			decl = s.ID
+			break
+		}
+	}
+	if decl == 0 {
+		panic("nominal type not found: " + name)
+	}
+	id, err := store.Intern(types.NominalKey(decl, []types.TypeID{store.Builtins().Int}))
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+// suggestionMentioned reports whether any diagnostic message contains name.
+func suggestionMentioned(set *diagnostic.DiagnosticSet, name string) bool {
+	for _, item := range set.Items() {
+		if strings.Contains(item.Message, name) {
+			return true
+		}
+	}
+	return false
 }

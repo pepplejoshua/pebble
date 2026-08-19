@@ -226,7 +226,7 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 		}
 		decl, ids, nominal := key.Nominal()
 		if !nominal {
-			return false, s.conflict(CodeCapability, "field receiver is not a nominal type", origin), false
+			return false, s.fieldConflict(receiver, field, CodeCapability, "field receiver is not a nominal type", origin), false
 		}
 		declaration = decl
 		for _, arg := range ids {
@@ -257,7 +257,7 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 	}
 	decl, ok := s.program.TypeDeclaration(declaration)
 	if !ok || decl.State != DeclarationReady {
-		return false, s.conflict(CodeCapability, "field receiver declaration is unavailable", origin), false
+		return false, s.fieldConflict(receiver, field, CodeCapability, "field receiver declaration is unavailable", origin), false
 	}
 	var member TemplateID
 	for _, candidate := range decl.Members {
@@ -272,7 +272,7 @@ func (s *Session) hasField(receiver Term, name string, field Term, origin Origin
 		if suggestion, ok := diagnostic.Suggest(name, s.memberCandidates(declaration)); ok {
 			message = fmt.Sprintf("nominal type has no field named %q (did you mean %q?)", name, suggestion)
 		}
-		return false, s.conflict(CodeCapability, message, origin), false
+		return false, s.fieldConflict(receiver, field, CodeCapability, message, origin), false
 	}
 	mapping := make(map[symbol.SymbolID]Term, len(decl.Parameters))
 	if len(arguments) != len(decl.Parameters) {
@@ -671,6 +671,25 @@ func (s *Session) receiverConflict(receiver Term, code diagnostic.Code, message 
 			s.cells[root-1].error = true
 		}
 	}
+	return s.conflict(code, message, origin)
+}
+
+// fieldConflict reports a field-access capability conflict and taints both the
+// receiver's root (mirroring receiverConflict) and the constraint's own result
+// term -- the field cell passed in -- the same way receiverNominal's failure is
+// handled in selectMethod/callMember. A field access' result cell is a fresh
+// cell created by the SAME constraint that is failing: it is not downstream of
+// the receiver through any other constraint, so tainting the receiver alone
+// leaves it unresolved and it re-reports a fresh T0510 (the diagnostic cascade
+// the error-taint mechanism suppresses). Known constants and explicit error
+// terms have no cell to taint and cannot cascade.
+func (s *Session) fieldConflict(receiver, field Term, code diagnostic.Code, message string, origin Origin) bool {
+	if receiver.kind == termVariable && receiver.belongs(s.token) {
+		if root := s.find(receiver.id); root != 0 && !s.Fatal() {
+			s.cells[root-1].error = true
+		}
+	}
+	s.taintResult(field)
 	return s.conflict(code, message, origin)
 }
 
