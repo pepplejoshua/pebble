@@ -1,10 +1,11 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** in progress. 21.1a and 21.1b are implemented, committed, and
-pushed (`ca653de`, `c7ddf92`). This document is being updated in place as
-each slice lands, the same way `07`/`19` are — treat "Completed slices"
-below as authoritative fact and "Slice record and remaining work" as
-current plan, sharpened as each piece is actually built.
+**Status:** in progress. 21.1a, 21.1b, and 21.2a are implemented, committed,
+and pushed (`ca653de`, `c7ddf92`, `d4cdbb2`). This document is being
+updated in place as each slice lands, the same way `07`/`19` are — treat
+"Completed slices" below as authoritative fact and "Slice record and
+remaining work" as current plan, sharpened as each piece is actually
+built.
 
 ## Completed slices (implemented, verified, committed)
 
@@ -40,6 +41,13 @@ current plan, sharpened as each piece is actually built.
   (SIGQUIT) after a live reproduction hung on the very first build
   request, fixed by splitting into a locked wrapper and an internal
   `trackFilesLocked` used by callers that already hold the lock.
+- **21.2a — reverse-dependency (importer) index** (`d4cdbb2`):
+  `Graph.ReverseDependents()` (direct importers, cached at build time
+  alongside the existing dependency order) and
+  `Graph.TransitiveDependents(id)` (full importer closure via BFS,
+  computed fresh per call, ordered so a module always precedes its
+  importers). Pure data structure, not wired into anything yet — the
+  building block 21.2b needs.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -165,12 +173,8 @@ doc" below) — the same bar every slice in `07`/`19`/`20` was held to.
 
 ### 21.2 — Real incremental invalidation
 
-- **21.2a — reverse-dependency index.** `module.Graph.Imports
-  []ImportEdge` (confirmed present at `internal/module/module.go:172`)
-  makes a reverse "who imports module X" index a direct inversion. Build
-  it as a new type/function with unit tests against a small synthetic
-  multi-module graph (A imports B imports C — changing C must report
-  exactly `[B, A]` as affected, in dependency order).
+- **21.2a — reverse-dependency index.** Done — see "Completed slices"
+  above.
 - **21.2b — module-scoped resolve/check entry points (highest-risk
   slice).** `symbol.Resolve` and `check.Check` are whole-graph-only today
   — `check.Check` builds one global `infer.Program`/`infer.Session` and
