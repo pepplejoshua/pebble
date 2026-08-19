@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
@@ -291,6 +292,9 @@ func (s *Session) selectMethod(value Constraint) (bool, bool, bool) {
 	}
 	declaration, receiverArguments, delayed, ok := s.receiverNominal(value.a, value.origin)
 	if delayed || !ok {
+		if !ok && !delayed {
+			s.taintResult(value.b)
+		}
 		return false, ok, delayed
 	}
 	decl, ok := s.program.TypeDeclaration(declaration)
@@ -410,6 +414,13 @@ func (s *Session) callMember(value Constraint) (bool, bool, bool) {
 	}
 	declaration, _, delayed, ok := s.receiverNominal(value.a, value.origin)
 	if delayed || !ok {
+		if !ok && !delayed {
+			s.taintResult(value.b)
+			s.taintResult(value.c)
+			for _, a := range value.arguments {
+				s.taintResult(a.Destination)
+			}
+		}
 		return false, ok, delayed
 	}
 	method := false
@@ -568,7 +579,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 		declaration, ids, nominal := key.Nominal()
 		if !nominal {
-			return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(types.DescribeKey(key)), origin)
+			return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(types.DescribeKey(key)), origin)
 		}
 		arguments := make([]Term, len(ids))
 		for i, argument := range ids {
@@ -581,7 +592,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		if key, ok := s.program.typeKey(receiver.known); ok {
 			name = types.DescribeKey(key)
 		}
-		return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(name), origin)
+		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(name), origin)
 	}
 	root := s.find(receiver.id)
 	if root == 0 || s.cells[root-1].error {
@@ -618,7 +629,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 	}
 	if shape.kind != shapeNominal {
-		return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(s.receiverShapeName(shape)), origin)
+		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(s.receiverShapeName(shape)), origin)
 	}
 	arguments := make([]Term, len(shape.children))
 	for i, child := range shape.children {
@@ -628,6 +639,23 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		arguments[i] = child.term
 	}
 	return shape.declaration, arguments, false, true
+}
+
+// receiverConflict reports a method-receiver capability conflict and, when the
+// receiver is a live inference variable, taints its union-find root the same
+// way markRootConflict taints the participants of a unify failure. Without
+// the taint the receiver cell stays unresolved and every constraint that
+// structurally depends on it re-reports a fresh T0510 (the diagnostic cascade
+// the error-taint mechanism suppresses). A receiver that is a known constant
+// (termKnown) or an explicit error term has no cell to taint and cannot
+// cascade, so it is reported bare.
+func (s *Session) receiverConflict(receiver Term, code diagnostic.Code, message string, origin Origin) bool {
+	if receiver.kind == termVariable && receiver.belongs(s.token) {
+		if root := s.find(receiver.id); root != 0 && !s.Fatal() {
+			s.cells[root-1].error = true
+		}
+	}
+	return s.conflict(code, message, origin)
 }
 
 // methodReceiverNotNominal builds the "receiver is not a nominal type" message

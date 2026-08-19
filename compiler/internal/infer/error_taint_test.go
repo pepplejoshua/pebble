@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 )
 
 // These tests pin the error-taint propagation that stops diagnostic cascades.
@@ -100,4 +101,64 @@ func countDiagnostics(set *diagnostic.DiagnosticSet, code diagnostic.Code) int {
 		}
 	}
 	return n
+}
+
+// TestErrorTaintPropagatesThroughReceiverNotNominal asserts that when a method
+// call fails because the receiver is not a nominal type, the call's own result
+// terms (the callable and the member result) inherit the error taint rather
+// than each reporting a fresh T0510. This pins the receiverNominal wiring into
+// the error-taint mechanism: the root T0507 remains, but no dependent cell
+// cascades into its own unresolved diagnostic.
+func TestErrorTaintPropagatesThroughReceiverNotNominal(t *testing.T) {
+	program, store := testProgram(t)
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	receiver := session.Variable(Origin{Role: "receiver"})
+	session.Add(Equal(receiver, session.Known(store.Builtins().Int), Origin{Role: "receiver is int"}))
+	callable := session.Variable(Origin{Role: "callable"})
+	result := session.Variable(Origin{Role: "result"})
+	site := symbol.SyntaxRef{Module: 1, Node: 1}
+	session.Add(CallMember(receiver, "something", callable, nil, result, nil, site, Origin{Role: "method call"}))
+	session.PublishSyntax(site, result)
+	session.Solve()
+
+	if !hasDiagnostic(diagnostics, CodeCapability) {
+		t.Fatalf("root capability failure must be reported: %+v", diagnostics.Items())
+	}
+	if hasDiagnostic(diagnostics, CodeUnresolved) {
+		t.Fatalf("callable/result must inherit taint, not report T0510: %+v", diagnostics.Items())
+	}
+}
+
+// TestErrorTaintReceiverNotNominalDoesNotSuppressIndependentErrors is the
+// independence check for the receiver-not-nominal family: a second method call
+// on an independent, non-tainted receiver still reports its own T0507. Only
+// cells that structurally depend on the first failed receiver are suppressed.
+func TestErrorTaintReceiverNotNominalDoesNotSuppressIndependentErrors(t *testing.T) {
+	program, store := testProgram(t)
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	receiverA := session.Variable(Origin{Role: "receiver a"})
+	session.Add(Equal(receiverA, session.Known(store.Builtins().Int), Origin{Role: "a is int"}))
+	callableA := session.Variable(Origin{Role: "callable a"})
+	resultA := session.Variable(Origin{Role: "result a"})
+	siteA := symbol.SyntaxRef{Module: 1, Node: 1}
+	session.Add(CallMember(receiverA, "something", callableA, nil, resultA, nil, siteA, Origin{Role: "method call a"}))
+	session.PublishSyntax(siteA, resultA)
+
+	receiverB := session.Variable(Origin{Role: "receiver b"})
+	session.Add(Equal(receiverB, session.Known(store.Builtins().I64), Origin{Role: "b is i64"}))
+	callableB := session.Variable(Origin{Role: "callable b"})
+	resultB := session.Variable(Origin{Role: "result b"})
+	siteB := symbol.SyntaxRef{Module: 1, Node: 2}
+	session.Add(CallMember(receiverB, "something", callableB, nil, resultB, nil, siteB, Origin{Role: "method call b"}))
+	session.PublishSyntax(siteB, resultB)
+	session.Solve()
+
+	if countDiagnostics(diagnostics, CodeCapability) != 2 {
+		t.Fatalf("both independent capability failures must be reported: %+v", diagnostics.Items())
+	}
+	if countDiagnostics(diagnostics, CodeUnresolved) != 0 {
+		t.Fatalf("no dependent T0510 cascade expected: %+v", diagnostics.Items())
+	}
 }
