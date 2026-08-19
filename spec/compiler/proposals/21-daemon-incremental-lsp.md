@@ -1,10 +1,10 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** in progress. 21.1a is implemented, committed, and pushed
-(`ca653de`). This document is being updated in place as each slice lands,
-the same way `07`/`19` are — treat "Completed slices" below as authoritative
-fact and "Slice record and remaining work" as current plan, sharpened as
-each piece is actually built.
+**Status:** in progress. 21.1a and 21.1b are implemented, committed, and
+pushed (`ca653de`, `c7ddf92`). This document is being updated in place as
+each slice lands, the same way `07`/`19` are — treat "Completed slices"
+below as authoritative fact and "Slice record and remaining work" as
+current plan, sharpened as each piece is actually built.
 
 ## Completed slices (implemented, verified, committed)
 
@@ -27,6 +27,19 @@ each piece is actually built.
   multi-process reproduction, not by code review, and the first two fixes
   that looked complete on inspection alone were each proven insufficient
   by rerunning the real repro.
+- **21.1b — file watching + content-hash change detection** (`c7ddf92`):
+  fsnotify wired into the daemon's event loop; content-hash tracking
+  scoped to the module graph of the last successful build (threaded out of
+  `compileOnce` via a new `compileResult.files`), not a whole-project glob
+  — a file outside the current program's import graph is never tracked or
+  reported. Detection only at this slice — nothing skips real work yet,
+  that's 21.2. New `daemon watch-status` RPC for observability. One real
+  bug found and fixed: a reentrant-mutex deadlock (`serveBuild` holds
+  `d.mu` for a build's duration and called `trackFiles`, which tried to
+  re-lock the same non-reentrant mutex) — caught via a goroutine dump
+  (SIGQUIT) after a live reproduction hung on the very first build
+  request, fixed by splitting into a locked wrapper and an internal
+  `trackFilesLocked` used by callers that already hold the lock.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -147,15 +160,8 @@ doc" below) — the same bar every slice in `07`/`19`/`20` was held to.
 
 - **21.1a — process lifecycle skeleton.** Done — see "Completed slices"
   above.
-- **21.1b — file watching + content-hash change detection.** Add the file
-  watcher dependency. On a filesystem event, hash the changed file's
-  content and compare against the daemon's last-known hash for that path;
-  skip re-parsing (not yet re-checking — that's 21.2) if unchanged. This is
-  the primitive 21.2's invalidation will build on.
-  **Test:** touch file A with identical content (same hash) — confirm no
-  reparse occurs (via daemon-side instrumentation/logging count); touch
-  file A with real new content — confirm it does reparse; confirm touching
-  file B never triggers a reparse of unrelated file A.
+- **21.1b — file watching + content-hash change detection.** Done — see
+  "Completed slices" above.
 
 ### 21.2 — Real incremental invalidation
 
