@@ -91,6 +91,7 @@ func build(config BuildConfig, provider SourceProvider, sources *source.FileSet,
 		b.processImports(ModuleID(index+1), b.depths[index])
 	}
 	b.validateCyclesAndOrder()
+	b.buildReverseIndex()
 	return b.graph
 }
 

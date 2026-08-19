@@ -180,6 +180,11 @@ type Graph struct {
 	modules    []Module
 	byKey      map[ModuleKey]ModuleID
 	dependency []ModuleID
+	// reverse indexes every direct importer edge: reverse[target] lists the
+	// modules that import target, in discovery/ID order. It is computed once
+	// during the build and never mutated, matching the cached dependency
+	// order's immutability.
+	reverse map[ModuleID][]ModuleID
 }
 
 // HasPrelude reports whether the graph was built with a configured prelude

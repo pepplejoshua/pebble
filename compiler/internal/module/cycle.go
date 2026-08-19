@@ -54,6 +54,18 @@ func (b *builder) validateCyclesAndOrder() {
 	b.graph.dependency = order
 }
 
+// buildReverseIndex inverts every authored import edge so each target knows
+// which modules import it directly. The result is cached on the graph in
+// module ID order and never mutated, matching the graph's immutability.
+func (b *builder) buildReverseIndex() {
+	b.graph.reverse = make(map[ModuleID][]ModuleID, len(b.graph.modules))
+	for id := ModuleID(1); int(id) <= len(b.graph.modules); id++ {
+		for _, edge := range b.graph.modules[id-1].Imports {
+			b.graph.reverse[edge.Target] = append(b.graph.reverse[edge.Target], id)
+		}
+	}
+}
+
 func (b *builder) reportCycle(chain []ImportEdge) {
 	if len(chain) == 0 || b.moduleErrors >= b.maxDiagnostics {
 		return
