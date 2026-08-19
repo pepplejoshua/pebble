@@ -8,5 +8,5 @@ repository = "https://github.com/pepplejoshua/pebble"
 
 [grammars.pebble]
 repository = "https://github.com/pepplejoshua/pebble"
-rev = "7faf3bcf4b993658f72c678203990841b108a93f"
+rev = "44aee98a56c1db78b48486c9fef0f1f98339d36d"
 path = "editors/syght/grammar"
