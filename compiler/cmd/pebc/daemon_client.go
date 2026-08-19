@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -77,6 +78,79 @@ func daemonPing(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "daemon is not running")
 	return 0
+}
+
+// daemonWatchStatus implements `pebc daemon watch-status`: report the
+// daemon's tracked files and the recent content-change detection log.
+func daemonWatchStatus(args []string, stdout, stderr io.Writer) int {
+	fs := newDaemonFlagSet(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "pebc daemon watch-status: unexpected arguments")
+		return 2
+	}
+	root, err := daemonRoot()
+	if err != nil {
+		fmt.Fprintf(stderr, "pebc daemon watch-status: %v\n", err)
+		return 1
+	}
+	sockPath := daemonSocketPath(root)
+	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+	if err != nil {
+		fmt.Fprintf(stderr, "pebc daemon watch-status: no daemon running for %s: %v\n", root, err)
+		return 1
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := writeDaemonMessage(conn, daemonRequest{Method: "watch-status"}); err != nil {
+		fmt.Fprintf(stderr, "pebc daemon watch-status: %v\n", err)
+		return 1
+	}
+	var resp daemonResponse
+	if err := readDaemonMessage(conn, &resp); err != nil {
+		fmt.Fprintf(stderr, "pebc daemon watch-status: %v\n", err)
+		return 1
+	}
+	if !resp.OK {
+		fmt.Fprintln(stderr, "pebc daemon watch-status: request failed")
+		return 1
+	}
+	if len(resp.WatchFiles) == 0 {
+		fmt.Fprintln(stdout, "no tracked files (run a build first)")
+	} else {
+		fmt.Fprintf(stdout, "tracked files (%d):\n", len(resp.WatchFiles))
+		for _, p := range sortedKeys(resp.WatchFiles) {
+			fmt.Fprintf(stdout, "  %s  %s\n", p, shortHash(resp.WatchFiles[p]))
+		}
+	}
+	fmt.Fprintln(stdout, "recent events:")
+	if len(resp.WatchEvents) == 0 {
+		fmt.Fprintln(stdout, "  (none)")
+	}
+	for _, ev := range resp.WatchEvents {
+		fmt.Fprintf(stdout, "  [%s] %-8s %s\n", ev.Time, ev.Kind, ev.Path)
+	}
+	return 0
+}
+
+// sortedKeys returns the map keys in sorted order for stable output.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// shortHash returns the first 12 hex chars of a content hash.
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }
 
 // daemonBuild implements `pebc daemon build <entry.peb> [-o out]`: send a

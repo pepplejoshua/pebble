@@ -39,6 +39,12 @@ type daemonResponse struct {
 	Diagnostics string `json:"diagnostics,omitempty"`
 	// Error holds a transport or unexpected error message.
 	Error string `json:"error,omitempty"`
+	// WatchFiles maps each tracked source path to its last-known SHA-256,
+	// populated by the watch-status method.
+	WatchFiles map[string]string `json:"watch_files,omitempty"`
+	// WatchEvents is the recent change-detection log (newest first),
+	// populated by the watch-status method.
+	WatchEvents []watchReport `json:"watch_events,omitempty"`
 }
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.

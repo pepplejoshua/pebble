@@ -43,7 +43,10 @@ type compileRequest struct {
 	linkLibs     []string
 	linkPaths    []string
 	includePaths []string
-	stderr       io.Writer
+	// trackFiles, when true, makes compileOnce populate result.files with the
+	// source paths of the resolved module graph (for the daemon's watcher).
+	trackFiles bool
+	stderr     io.Writer
 }
 
 // compileResult is the outcome of one pipeline run.
@@ -51,6 +54,11 @@ type compileResult struct {
 	code        int
 	binaryPath  string
 	diagnostics string
+	// files is the set of source file paths that this compilation actually
+	// loaded (the resolved module graph). It lets the daemon track exactly
+	// the files that participated in a build rather than every *.peb under
+	// the project root. Populated only when req.trackFiles is set.
+	files []string
 }
 
 // compileOnce runs the full pebc pipeline (module discovery, name resolution,
@@ -71,6 +79,23 @@ func compileOnce(req compileRequest) *compileResult {
 		return &compileResult{code: 1}
 	}
 	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", PreludePath: req.prelude, StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
+	var graphFiles []string
+	if req.trackFiles {
+		seen := map[source.ID]bool{}
+		for i := 1; i <= graph.Len(); i++ {
+			m, ok := graph.Module(module.ModuleID(i))
+			if !ok {
+				continue
+			}
+			if seen[m.Source] {
+				continue
+			}
+			seen[m.Source] = true
+			if f, ok := sources.File(m.Source); ok {
+				graphFiles = append(graphFiles, f.Path())
+			}
+		}
+	}
 	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
 	store, err := types.New(types.Config{})
 	if err != nil {
@@ -107,7 +132,7 @@ func compileOnce(req compileRequest) *compileResult {
 		return &compileResult{code: 1, diagnostics: rendered.String()}
 	}
 	if req.mode == modeCheck {
-		return &compileResult{code: 0}
+		return &compileResult{code: 0, files: graphFiles}
 	}
 	unit := result.IR()
 	if unit == nil {
@@ -142,7 +167,7 @@ func compileOnce(req compileRequest) *compileResult {
 		return &compileResult{code: 1}
 	}
 	if req.mode == modeEmitC {
-		return &compileResult{code: 0}
+		return &compileResult{code: 0, files: graphFiles}
 	}
 
 	binaryPath := req.outputPath
@@ -150,9 +175,9 @@ func compileOnce(req compileRequest) *compileResult {
 		binaryPath = defaultBinaryPath(string(entryPath))
 	}
 	if code := buildExecutable(req.runtimeRoot, req.release, emitPath, binaryPath, req.linkLibs, req.linkPaths, req.includePaths, req.stderr); code != 0 {
-		return &compileResult{code: code}
+		return &compileResult{code: code, files: graphFiles}
 	}
-	return &compileResult{code: 0, binaryPath: binaryPath}
+	return &compileResult{code: 0, binaryPath: binaryPath, files: graphFiles}
 }
 
 // stringsBuilder is a minimal thread-free string accumulator used to capture

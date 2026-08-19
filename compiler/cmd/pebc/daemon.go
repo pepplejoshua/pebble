@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // Daemon architecture
@@ -77,7 +79,7 @@ type daemonOptions struct {
 // before the one-shot flags are parsed.
 func runDaemon(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "pebc daemon: missing subcommand (start|build|ping|stop)")
+		fmt.Fprintln(stderr, "pebc daemon: missing subcommand (start|build|ping|stop|watch-status)")
 		return 2
 	}
 	sub, rest := args[0], args[1:]
@@ -90,6 +92,8 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		return daemonPing(rest, stdout, stderr)
 	case "stop":
 		return daemonStop(rest, stdout, stderr)
+	case "watch-status":
+		return daemonWatchStatus(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "pebc daemon: unknown subcommand %q\n", sub)
 		return 2
@@ -193,6 +197,7 @@ func serveDaemon(opts daemonOptions, stdout, stderr io.Writer) int {
 		startupHash:  hash,
 		lastActivity: time.Now(),
 	}
+	d.startWatching()
 	d.run()
 	if !d.handedOff {
 		_ = os.Remove(sockPath)
@@ -209,7 +214,34 @@ type daemon struct {
 	mu           sync.Mutex
 	lastActivity time.Time
 	handedOff    bool
+
+	// watchEvents carries the path of a .peb file whose content may have
+	// changed, produced by the fsnotify goroutine and consumed by run().
+	// Nil when the watcher failed to start; the run() select case then
+	// simply never fires.
+	watchEvents chan string
+	watcher     *fsnotify.Watcher
+	// fileHashes maps a tracked source path to its last-known SHA-256. The
+	// tracked set is derived from the last build's resolved module graph
+	// (see trackFiles), not a glob of every *.peb under the root, so the
+	// daemon only watches files that actually participate in a build.
+	fileHashes map[string]string
+	// recent is a bounded, most-recent-first log of detected watch events,
+	// exposed via the watch-status RPC for observability.
+	recent []watchReport
 }
+
+// watchReport describes one content-change detection for observability.
+type watchReport struct {
+	Path string `json:"path"`
+	// Kind is "changed" (content hash differed) or "noop" (identical rewrite
+	// or touch with no real edit).
+	Kind string `json:"kind"`
+	Time string `json:"time"`
+}
+
+// watchReportCap bounds the number of recent watch reports retained.
+const watchReportCap = 64
 
 // run serves requests until an idle timeout or a stale-binary re-exec.
 func (d *daemon) run() {
@@ -250,6 +282,9 @@ func (d *daemon) run() {
 			if d.reexecIfStale() {
 				return
 			}
+		case path := <-d.watchEvents:
+			d.touch()
+			d.detectChange(path)
 		}
 	}
 }
@@ -265,6 +300,9 @@ func (d *daemon) handle(conn net.Conn) {
 	switch req.Method {
 	case "ping":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
+	case "watch-status":
+		files, recent := d.watchStatusSnapshot()
+		_ = writeDaemonMessage(conn, daemonResponse{OK: true, WatchFiles: files, WatchEvents: recent})
 	case "build":
 		d.touch()
 		if d.reexecIfStale() {
@@ -286,6 +324,179 @@ func (d *daemon) touch() {
 	d.mu.Lock()
 	d.lastActivity = time.Now()
 	d.mu.Unlock()
+}
+
+// startWatching sets up the fsnotify watcher for the project root and begins
+// consuming its events. It is non-fatal: if the watcher cannot be started the
+// daemon keeps running without change detection.
+func (d *daemon) startWatching() {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pebc daemon: cannot start file watcher: %v (change detection disabled)\n", err)
+		return
+	}
+	d.watcher = w
+	d.fileHashes = map[string]string{}
+	d.watchEvents = make(chan string, 256)
+	d.recent = make([]watchReport, 0, watchReportCap)
+	if err := d.watchTree(d.opts.root); err != nil {
+		fmt.Fprintf(os.Stderr, "pebc daemon: cannot watch project root: %v (change detection disabled)\n", err)
+		w.Close()
+		d.watcher = nil
+		d.watchEvents = nil
+		return
+	}
+	go d.watchLoop()
+}
+
+// watchTree recursively adds dir and every subdirectory to the watcher.
+// fsnotify does not recurse automatically, so the tree must be walked and
+// each directory watched explicitly. New subdirectories created after the
+// watch starts are handled in watchLoop by re-walking them on Create.
+func (d *daemon) watchTree(root string) error {
+	return filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if de.IsDir() {
+			if err := d.watcher.Add(path); err != nil {
+				// Best effort: a directory that cannot be watched (e.g. a
+				// permission issue) must not abort the whole walk.
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
+// watchLoop forwards fsnotify events to the daemon's event loop. It also
+// watches newly created directories so .peb files added after startup are
+// still observed.
+func (d *daemon) watchLoop() {
+	for {
+		select {
+		case ev, ok := <-d.watcher.Events:
+			if !ok {
+				return
+			}
+			if ev.Op&fsnotify.Create != 0 {
+				if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
+					_ = d.watchTree(ev.Name)
+				}
+			}
+			if filepath.Ext(ev.Name) != ".peb" {
+				continue
+			}
+			select {
+			case d.watchEvents <- ev.Name:
+			default:
+				// Drop events if the daemon event loop is saturated rather
+				// than block the fsnotify goroutine.
+			}
+		case err, ok := <-d.watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "pebc daemon: watch error: %v\n", err)
+		}
+	}
+}
+
+// trackFiles re-derives the tracked-file set from the module graph of the
+// most recent build, recording each file's current content hash. Files that
+// leave the graph are dropped; new files are added with their current hash.
+func (d *daemon) trackFiles(paths []string) {
+	if d.fileHashes == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.trackFilesLocked(paths)
+}
+
+// trackFilesLocked is trackFiles assuming d.mu is already held.
+func (d *daemon) trackFilesLocked(paths []string) {
+	next := make(map[string]string, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		abs = filepath.Clean(abs)
+		hash, err := fileSHA256(abs)
+		if err != nil {
+			continue
+		}
+		next[abs] = hash
+	}
+	d.fileHashes = next
+}
+
+// detectChange recomputes the content hash of a watched file and records
+// whether it actually changed. Files not in the tracked set are ignored so a
+// touch of an unrelated file never disturbs tracked state. This slice only
+// detects and reports; it never skips any real parse/check work.
+func (d *daemon) detectChange(path string) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	abs = filepath.Clean(abs)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	last, tracked := d.fileHashes[abs]
+	if !tracked {
+		return
+	}
+	hash, err := fileSHA256(abs)
+	if err != nil {
+		return
+	}
+	if hash == last {
+		d.recordLocked(watchReport{Path: abs, Kind: "noop", Time: time.Now().Format(time.RFC3339)})
+		return
+	}
+	d.fileHashes[abs] = hash
+	d.recordLocked(watchReport{Path: abs, Kind: "changed", Time: time.Now().Format(time.RFC3339)})
+}
+
+// recordLocked appends a watch report, keeping the log bounded. Callers must
+// hold d.mu.
+func (d *daemon) recordLocked(r watchReport) {
+	d.recent = append(d.recent, r)
+	if len(d.recent) > watchReportCap {
+		d.recent = append([]watchReport(nil), d.recent[len(d.recent)-watchReportCap:]...)
+	}
+}
+
+// watchStatusSnapshot returns the current tracked files (path -> hash) and the
+// recent watch reports, newest first.
+func (d *daemon) watchStatusSnapshot() (map[string]string, []watchReport) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	files := make(map[string]string, len(d.fileHashes))
+	for k, v := range d.fileHashes {
+		files[k] = v
+	}
+	recent := append([]watchReport(nil), d.recent...)
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
+	return files, recent
+}
+
+// fileSHA256 returns the hex SHA-256 of a file's contents.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // serveBuild runs the full pipeline for one entry file and writes the result.
@@ -310,8 +521,12 @@ func (d *daemon) serveBuild(conn net.Conn, req daemonRequest) {
 		mode:       modeBuild,
 		entryPath:  req.Entry,
 		outputPath: output,
+		trackFiles: true,
 		stderr:     &diag,
 	})
+	if res.files != nil {
+		d.trackFilesLocked(res.files)
+	}
 	if res.code != 0 {
 		_ = writeDaemonMessage(conn, daemonResponse{OK: false, Diagnostics: res.diagnostics, Error: diag.String()})
 		return
