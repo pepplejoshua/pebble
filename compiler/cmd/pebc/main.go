@@ -10,15 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pepplejoshua/pebble/compiler/internal/backend"
-	"github.com/pepplejoshua/pebble/compiler/internal/check"
-	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
-	"github.com/pepplejoshua/pebble/compiler/internal/infer"
 	"github.com/pepplejoshua/pebble/compiler/internal/module"
-	"github.com/pepplejoshua/pebble/compiler/internal/source"
-	"github.com/pepplejoshua/pebble/compiler/internal/stdlib"
-	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
-	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
 func main() {
@@ -27,6 +19,13 @@ func main() {
 
 // run parses the pebc command line and returns the process exit code.
 func run(args []string, stdout, stderr io.Writer) int {
+	// The daemon subcommand owns its own argument parsing and lifecycle.
+	// It must be dispatched before the one-shot flags are parsed so that
+	// `pebc daemon ...` is never misread as a missing entry file.
+	if len(args) > 0 && args[0] == "daemon" {
+		return runDaemon(args[1:], stdout, stderr)
+	}
+
 	flags := flag.NewFlagSet("pebc", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { printUsage(stderr) }
@@ -61,108 +60,57 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	provider := stdlib.New(module.FileSystemProvider{})
-	sources := source.NewFileSet()
-	diagnostics := diagnostic.NewDiagnosticSet()
-	entryPath, err := provider.Canonicalize(flags.Arg(0))
-	if err != nil {
+	if _, err := providerCanonicalize(flags.Arg(0)); err != nil {
 		fmt.Fprintf(stderr, "pebc: cannot resolve entry %q: %v\n", flags.Arg(0), err)
 		return 1
 	}
-	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", PreludePath: *preludeFlag, StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
-	resolution := symbol.Resolve(graph, sources, diagnostics, symbol.Config{})
-	store, err := types.New(types.Config{})
-	if err != nil {
-		fmt.Fprintf(stderr, "pebc: cannot initialize type store: %v\n", err)
-		return 1
-	}
 
-	var entryID symbol.SymbolID
-	for _, candidate := range resolution.Symbols.All() {
-		if candidate.Name == "main" {
-			entryID = candidate.ID
-			break
-		}
-	}
-	if entryID == 0 {
-		if diagnostics.Len() > 0 {
-			_ = diagnostic.RenderText(stderr, sources, diagnostics.Items())
-		}
-		fmt.Fprintln(stderr, "pebc: no main function found")
-		return 1
-	}
-
-	inputs := check.Inputs{
-		Graph: graph, Sources: sources, Resolution: resolution, Types: store,
-		LiteralTarget: infer.LiteralTarget{WordBits: 64},
-	}
-	result := check.Check(inputs, diagnostics, check.Config{
-		Entry: check.EntryPoint{Mode: check.EntryRequired, Symbol: entryID},
-	})
-	if !result.Successful() || diagnostics.Len() > 0 {
-		if err := diagnostic.RenderText(stderr, sources, diagnostics.Items()); err != nil {
-			fmt.Fprintf(stderr, "pebc: rendering diagnostics failed: %v\n", err)
-		}
-		return 1
-	}
+	mode := modeBuild
 	if *checkFlag {
-		return 0
+		mode = modeCheck
+	} else if *emitCFlag != "" {
+		mode = modeEmitC
 	}
-	unit := result.IR()
-	if unit == nil {
-		fmt.Fprintln(stderr, "pebc: internal error: checker returned no typed IR")
-		return 1
-	}
-
-	emitPath := *emitCFlag
-	if emitPath == "" {
-		dir, err := os.MkdirTemp("", "pebc-emit-")
+	binaryPath := *outputPath
+	if binaryPath == "" && *runFlag {
+		dir, err := os.MkdirTemp("", "pebc-run-")
 		if err != nil {
 			fmt.Fprintf(stderr, "pebc: cannot create temp dir: %v\n", err)
 			return 1
 		}
 		defer os.RemoveAll(dir)
-		emitPath = filepath.Join(dir, "program.c")
+		binaryPath = filepath.Join(dir, "program")
 	}
-	file, err := os.Create(emitPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "pebc: cannot create output %q: %v\n", emitPath, err)
-		return 1
-	}
-	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, file); err != nil {
-		file.Close()
-		fmt.Fprintf(stderr, "pebc: emission failed: %v\n", err)
-		return 1
-	}
-	if err := file.Close(); err != nil {
-		fmt.Fprintf(stderr, "pebc: cannot close output %q: %v\n", emitPath, err)
-		return 1
-	}
-	if *emitCFlag != "" {
-		return 0
-	}
-
-	binaryPath := *outputPath
-	if binaryPath == "" {
-		if *runFlag {
-			dir, err := os.MkdirTemp("", "pebc-run-")
-			if err != nil {
-				fmt.Fprintf(stderr, "pebc: cannot create temp dir: %v\n", err)
-				return 1
-			}
-			defer os.RemoveAll(dir)
-			binaryPath = filepath.Join(dir, "program")
-		} else {
-			binaryPath = defaultBinaryPath(string(entryPath))
-		}
-	}
-	if code := buildExecutable(*runtimeRootFlag, *releaseFlag, emitPath, binaryPath, []string(linkLibs), []string(linkPaths), []string(includePaths), stderr); code != 0 {
-		return code
+	res := compileOnce(compileRequest{
+		mode:         mode,
+		entryPath:    flags.Arg(0),
+		outputPath:   binaryPath,
+		emitCPath:    *emitCFlag,
+		prelude:      *preludeFlag,
+		runtimeRoot:  *runtimeRootFlag,
+		release:      *releaseFlag,
+		linkLibs:     []string(linkLibs),
+		linkPaths:    []string(linkPaths),
+		includePaths: []string(includePaths),
+		stderr:       stderr,
+	})
+	if res.code != 0 {
+		return res.code
 	}
 	if *runFlag {
-		return runBinary(binaryPath, stdout, stderr)
+		if res.binaryPath == "" {
+			res.binaryPath = binaryPath
+		}
+		return runBinary(res.binaryPath, stdout, stderr)
 	}
 	return 0
+}
+
+// providerCanonicalize resolves an entry path to its canonical form for the
+// one-shot CLI. It exists so the entry-path check in run() remains visible
+// before compileOnce runs the pipeline.
+func providerCanonicalize(path string) (module.CanonicalPath, error) {
+	return (module.FileSystemProvider{}).Canonicalize(path)
 }
 
 // stringList collects repeated string flags into a slice, so flags like -l,
@@ -335,3 +283,4 @@ func isRuntimeDir(dir string) bool {
 	}
 	return true
 }
+
