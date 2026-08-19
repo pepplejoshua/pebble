@@ -135,7 +135,7 @@ func TestRunFlagCompilesAndRuns(t *testing.T) {
 	}
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "main.peb")
-	writeFile(t, sourcePath, "fn main() int { print 42; return 7; }\n")
+	writeFile(t, sourcePath, "fn main() int { println 42; return 7; }\n")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-run", sourcePath}, &stdout, &stderr); code != 7 {
 		t.Fatalf("run returned %d, want 7; stderr=%q", code, stderr.String())
@@ -156,7 +156,7 @@ func TestRunFlagWithOutputPath(t *testing.T) {
 	}
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "main.peb")
-	writeFile(t, sourcePath, "fn main() int { print 1; return 0; }\n")
+	writeFile(t, sourcePath, "fn main() int { println 1; return 0; }\n")
 	outPath := filepath.Join(dir, "app")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), "-run", "-o", outPath, sourcePath}, &stdout, &stderr); code != 0 {
@@ -189,7 +189,7 @@ func TestRunAutoDetectsRuntimeRoot(t *testing.T) {
 	defer os.Chdir(oldWD)
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "main.peb")
-	writeFile(t, sourcePath, "fn main() int { print 99; return 0; }\n")
+	writeFile(t, sourcePath, "fn main() int { println 99; return 0; }\n")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-run", sourcePath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("run returned %d; stderr=%q", code, stderr.String())
@@ -228,7 +228,7 @@ func TestDefaultBuildModeProducesExecutable(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	sourcePath := filepath.Join(dir, "main.peb")
-	writeFile(t, sourcePath, "fn main() int { print 7; return 0; }\n")
+	writeFile(t, sourcePath, "fn main() int { println 7; return 0; }\n")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), sourcePath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("default build returned %d; stderr=%q", code, stderr.String())
@@ -259,7 +259,7 @@ func TestOutputFlagControlsExecutablePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	sourcePath := filepath.Join(dir, "main.peb")
-	writeFile(t, sourcePath, "fn main() int { print 8; return 0; }\n")
+	writeFile(t, sourcePath, "fn main() int { println 8; return 0; }\n")
 	binaryPath := filepath.Join(dir, "myapp")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-runtime-root", filepath.Join(repoRoot, "runtime"), "-o", binaryPath, sourcePath}, &stdout, &stderr); code != 0 {
