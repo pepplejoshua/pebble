@@ -1,6 +1,7 @@
 package infer
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
@@ -567,7 +568,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 		declaration, ids, nominal := key.Nominal()
 		if !nominal {
-			return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+			return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(types.DescribeKey(key)), origin)
 		}
 		arguments := make([]Term, len(ids))
 		for i, argument := range ids {
@@ -576,7 +577,11 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		return declaration, arguments, false, true
 	}
 	if receiver.kind == termKnown {
-		return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+		name := "<type>"
+		if key, ok := s.program.typeKey(receiver.known); ok {
+			name = types.DescribeKey(key)
+		}
+		return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(name), origin)
 	}
 	root := s.find(receiver.id)
 	if root == 0 || s.cells[root-1].error {
@@ -613,7 +618,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 	}
 	if shape.kind != shapeNominal {
-		return 0, nil, false, s.conflict(CodeCapability, "method receiver is not nominal", origin)
+		return 0, nil, false, s.conflict(CodeCapability, s.methodReceiverNotNominal(s.receiverShapeName(shape)), origin)
 	}
 	arguments := make([]Term, len(shape.children))
 	for i, child := range shape.children {
@@ -623,6 +628,43 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		arguments[i] = child.term
 	}
 	return shape.declaration, arguments, false, true
+}
+
+// methodReceiverNotNominal builds the "receiver is not a nominal type" message
+// with the receiver's actual type name so the diagnostic says what the type
+// really was rather than only that it was not nominal.
+func (s *Session) methodReceiverNotNominal(name string) string {
+	return fmt.Sprintf("cannot call method: %s is not a struct, union, or enum type", name)
+}
+
+// receiverShapeName returns a short human-readable name for a receiver whose
+// inference shape is not nominal, for use in the method-receiver diagnostic.
+func (s *Session) receiverShapeName(shape *Shape) string {
+	if shape == nil {
+		return "value"
+	}
+	switch shape.kind {
+	case shapePointer:
+		return "pointer"
+	case shapeArray:
+		return "array"
+	case shapeSlice:
+		return "slice"
+	case shapeTuple:
+		return "tuple"
+	case shapeOptional:
+		return "optional"
+	case shapeFunction:
+		return "function"
+	case shapeLeaf:
+		if id, known := s.resolvedType(shape.term); known {
+			if key, ok := s.program.typeKey(id); ok {
+				return types.DescribeKey(key)
+			}
+		}
+		return "value"
+	}
+	return "value"
 }
 
 func (s *Session) failMethodState(site symbol.SyntaxRef, message string, origin Origin) bool {
