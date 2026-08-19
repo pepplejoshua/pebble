@@ -43,7 +43,7 @@ func (p *parser) parseStatement() NodeID {
 		return p.parseSwitchStatement()
 	case KwDefer:
 		return p.parseDeferStatement()
-	case KwPrint:
+	case KwPrint, KwPrintln:
 		return p.parsePrintStatement()
 	case KwBreak, KwContinue:
 		return p.parseJumpStatement()
@@ -69,7 +69,7 @@ func startsExpression(kind TokenKind) bool {
 func isStatementStart(kind TokenKind) bool {
 	return kind == LeftBrace || kind == KwLet || kind == KwVar || kind == KwReturn ||
 		kind == KwIf || kind == KwWhile || kind == KwLoop || kind == KwFor ||
-		kind == KwSwitch || kind == KwDefer || kind == KwPrint || kind == KwBreak ||
+		kind == KwSwitch || kind == KwDefer || kind == KwPrint || kind == KwPrintln || kind == KwBreak ||
 		kind == KwContinue || startsExpression(kind)
 }
 
@@ -191,7 +191,7 @@ func (p *parser) parseForStatement() NodeID {
 
 func isStatementKeyword(kind TokenKind) bool {
 	switch kind {
-	case KwReturn, KwIf, KwWhile, KwLoop, KwFor, KwSwitch, KwDefer, KwPrint, KwBreak, KwContinue, KwLet, KwVar:
+	case KwReturn, KwIf, KwWhile, KwLoop, KwFor, KwSwitch, KwDefer, KwPrint, KwPrintln, KwBreak, KwContinue, KwLet, KwVar:
 		return true
 	default:
 		return false

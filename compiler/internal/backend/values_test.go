@@ -203,7 +203,7 @@ func TestEmitUnsuffixedU64MaxLiteralCompilesAndRuns(t *testing.T) {
 	// mandated -Wall -Wextra -Werror via -Wimplicitly-unsigned-literal. The
 	// emitted C must carry a "u" suffix and the program must compile, run,
 	// and print the full value, not a truncated or misinterpreted one.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 18446744073709551615; print y; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 18446744073709551615; println y; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -224,7 +224,7 @@ func TestEmitUnsuffixedU32MaxLiteralCompilesAndRuns(t *testing.T) {
 	// literal's range and cc would warn under -Wall -Wextra -Werror; with the
 	// "u" suffix it is a plain unsigned int constant. The emitted C must use
 	// the suffix and the program must print the full value.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u32 = 4294967295; print y; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u32 = 4294967295; println y; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -246,7 +246,7 @@ func TestEmitSmallUnsignedLiteralRegressionCompilesAndRuns(t *testing.T) {
 	// The already-working small-literal case must keep working: a value well
 	// inside signed range at u64 width still compiles clean (now with a
 	// harmless "u" suffix) and prints the correct value.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 123456789; print y; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { var y u64 = 123456789; println y; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -264,7 +264,7 @@ func TestEmitLargeSignedLiteralNoUnsignedSuffix(t *testing.T) {
 	// program must compile under -Wall -Wextra -Werror (a bare INT64_MAX
 	// decimal is exactly representable as signed long long, so it is
 	// warning-free unsuffixed) and print the correct value.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let y i64 = 9223372036854775807; print y; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let y i64 = 9223372036854775807; println y; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -354,9 +354,9 @@ fn main() int {
         error = -error;
     }
 
-    print "Approximated pi:"; print pi_approx;
-    print "Actual pi:"; print actual_pi;
-    print "Error:"; print error;
+    println "Approximated pi:"; println pi_approx;
+    println "Actual pi:"; println actual_pi;
+    println "Error:"; println error;
 
     return 0;
 }`, false, 0, false)
@@ -2651,7 +2651,7 @@ func TestEmitIntegerLiteralBoundariesAtEachWidthCompilesAndRuns(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; print x; return 0; }"
+			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; println x; return 0; }"
 			if got := emitAndRunCapture(t, src, false, 0, false); got != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", got, tc.want)
 			}
@@ -2693,7 +2693,7 @@ func TestEmitFloatLiteralFormsAndWidthsCompileAndRun(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; print x; return 0; }"
+			src := "fn main() i32 { let x " + tc.width + " = " + tc.value + "; println x; return 0; }"
 			if got := emitAndRunCapture(t, src, false, 0, false); got != tc.want {
 				t.Fatalf("compiled program output = %q, want %q", got, tc.want)
 			}

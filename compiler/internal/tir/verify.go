@@ -339,7 +339,7 @@ func (v *verifier) verifyNode(id NodeID) {
 			v.expectChildCategory(id, n, 0, CategoryValue)
 		}
 	case Print:
-		v.allowOnly(id, n, "Children")
+		v.allowOnly(id, n, "Newline", "Children")
 		for i := range n.Children {
 			v.expectChildCategory(id, n, i, CategoryValue)
 		}
@@ -880,6 +880,7 @@ func (v *verifier) allowOnly(id NodeID, n Node, fields ...string) {
 	check("HasElse", n.HasElse)
 	check("RangeInclusive", n.RangeInclusive)
 	check("ConditionPresent", n.ConditionPresent)
+	check("Newline", n.Newline)
 	check("SliceStartPresent", n.SliceStartPresent)
 	check("SliceEndPresent", n.SliceEndPresent)
 	check("Writable", n.Writable)

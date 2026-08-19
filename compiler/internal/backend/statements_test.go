@@ -288,7 +288,7 @@ func TestEmitPrintInsideWhileBodyCompilesAndRuns(t *testing.T) {
 	// shared buildPrint, so the body prints "hi" once per iteration (three
 	// iterations) and returns the final i = 3 as the exit code. Bounded
 	// execution in case of a miscompiled loop.
-	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { print(\"hi\"); i = i + 1; } return i; }", false, 3, false)
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { println(\"hi\"); i = i + 1; } return i; }", false, 3, false)
 	if want := "hi\nhi\nhi\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -481,7 +481,7 @@ func TestEmitPrintBeforeReturnCompilesAndRuns(t *testing.T) {
 	// line ("hi" plus the statement's trailing newline), then the block's
 	// tail returns 1. Asserting the captured stdout confirms the printed text
 	// is exactly one line — not just that the program compiled and exited.
-	out := emitAndRunCapture(t, "fn main() i32 { print(\"hi\"); return 1; }", false, 1, false)
+	out := emitAndRunCapture(t, "fn main() i32 { println(\"hi\"); return 1; }", false, 1, false)
 	if want := "hi\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -595,7 +595,7 @@ func TestEmitDeferredPrintBeforeBreakCompilesAndRuns(t *testing.T) {
 	// the break, so the loop's first (and only) iteration prints "5" and then
 	// breaks, exiting with i = 0. Bounded execution in case of a miscompiled
 	// loop.
-	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer print 5; } return 0; }", false, 0, false)
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { break; defer println 5; } return 0; }", false, 0, false)
 	if want := "5\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -608,7 +608,7 @@ func TestEmitDeferredPrintBeforeContinueCompilesAndRuns(t *testing.T) {
 	// every pass (i becomes 1, 2, then 3), so the deferred print fires three
 	// times before the loop condition fails at i = 3 and the program returns
 	// 0. Bounded execution in case of a miscompiled loop.
-	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer print 5; } return 0; }", false, 0, false)
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 3 { i = i + 1; continue; defer println 5; } return 0; }", false, 0, false)
 	if want := "5\n5\n5\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -620,7 +620,7 @@ func TestEmitPrintIntegerLiteralCompilesAndRuns(t *testing.T) {
 	// print operand resolves to the unanchored int builtin (int32_t), so the
 	// format specifier comes from PRId32; the captured output is exactly the
 	// value plus the statement's single trailing newline.
-	out := emitAndRunCapture(t, "fn main() i32 { print 42; return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn main() i32 { println 42; return 0; }", false, 0, false)
 	if want := "42\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -641,7 +641,7 @@ func TestEmitPrintEachIntegerWidthCompilesAndRuns(t *testing.T) {
 	} {
 		t.Run(tc.width, func(t *testing.T) {
 			t.Parallel()
-			src := "fn main() i32 { let x " + tc.width + " = 7; print x; return 0; }"
+			src := "fn main() i32 { let x " + tc.width + " = 7; println x; return 0; }"
 			out := emitAndRunCapture(t, src, false, 0, false)
 			if want := "7\n"; out != want {
 				t.Fatalf("compiled program output = %q, want %q", out, want)
@@ -661,10 +661,10 @@ func TestEmitPrintBoolCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"true literal", "fn main() i32 { print true; return 0; }", "true\n"},
-		{"false literal", "fn main() i32 { print false; return 0; }", "false\n"},
-		{"true local", "fn main() i32 { let b bool = true; print b; return 0; }", "true\n"},
-		{"false local", "fn main() i32 { let b bool = false; print b; return 0; }", "false\n"},
+		{"true literal", "fn main() i32 { println true; return 0; }", "true\n"},
+		{"false literal", "fn main() i32 { println false; return 0; }", "false\n"},
+		{"true local", "fn main() i32 { let b bool = true; println b; return 0; }", "true\n"},
+		{"false local", "fn main() i32 { let b bool = false; println b; return 0; }", "false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -693,13 +693,13 @@ func TestEmitPrintCharCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"ascii literal", "fn main() i32 { print 'x'; return 0; }", "x\n"},
-		{"ascii local", "fn main() i32 { let c char = 'x'; print c; return 0; }", "x\n"},
-		{"e-acute", "fn main() i32 { print 'é'; return 0; }", "é\n"},
-		{"euro sign", "fn main() i32 { print '€'; return 0; }", "€\n"},
-		{"grinning face", "fn main() i32 { print '😀'; return 0; }", "😀\n"},
-		{"two char operands", "fn main() i32 { print 'é', '€'; return 0; }", "é€\n"},
-		{"mixed with str", "fn main() i32 { print \"pre\", 'é', \"post\"; return 0; }", "preépost\n"},
+		{"ascii literal", "fn main() i32 { println 'x'; return 0; }", "x\n"},
+		{"ascii local", "fn main() i32 { let c char = 'x'; println c; return 0; }", "x\n"},
+		{"e-acute", "fn main() i32 { println 'é'; return 0; }", "é\n"},
+		{"euro sign", "fn main() i32 { println '€'; return 0; }", "€\n"},
+		{"grinning face", "fn main() i32 { println '😀'; return 0; }", "😀\n"},
+		{"two char operands", "fn main() i32 { println 'é', '€'; return 0; }", "é€\n"},
+		{"mixed with str", "fn main() i32 { println \"pre\", 'é', \"post\"; return 0; }", "preépost\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -724,9 +724,9 @@ func TestEmitPrintStrCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"literal", "fn main() i32 { print \"hello\"; return 0; }", "hello\n"},
-		{"local", "fn main() i32 { let s str = \"hello\"; print s; return 0; }", "hello\n"},
-		{"parenthesized literal", "fn main() i32 { print (\"hi\"); return 0; }", "hi\n"},
+		{"literal", "fn main() i32 { println \"hello\"; return 0; }", "hello\n"},
+		{"local", "fn main() i32 { let s str = \"hello\"; println s; return 0; }", "hello\n"},
+		{"parenthesized literal", "fn main() i32 { println (\"hi\"); return 0; }", "hi\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -758,12 +758,12 @@ func TestEmitPrintStrEmbeddedNulPrintsFullBytes(t *testing.T) {
 		src  string
 		want []byte
 	}{
-		{"literal", "fn main() i32 { print \"x\\0y\"; return 0; }", []byte{'x', 0, 'y', '\n'}},
-		{"local", "fn main() i32 { let s str = \"x\\0y\"; print s; return 0; }", []byte{'x', 0, 'y', '\n'}},
-		{"parenthesized literal", "fn main() i32 { print (\"x\\0y\"); return 0; }", []byte{'x', 0, 'y', '\n'}},
-		{"leading nul", "fn main() i32 { print \"\\0ab\"; return 0; }", []byte{0, 'a', 'b', '\n'}},
-		{"trailing nul", "fn main() i32 { print \"ab\\0\"; return 0; }", []byte{'a', 'b', 0, '\n'}},
-		{"nul then another operand", "fn main() i32 { print \"x\\0y\", \"z\"; return 0; }", []byte{'x', 0, 'y', 'z', '\n'}},
+		{"literal", "fn main() i32 { println \"x\\0y\"; return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"local", "fn main() i32 { let s str = \"x\\0y\"; println s; return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"parenthesized literal", "fn main() i32 { println (\"x\\0y\"); return 0; }", []byte{'x', 0, 'y', '\n'}},
+		{"leading nul", "fn main() i32 { println \"\\0ab\"; return 0; }", []byte{0, 'a', 'b', '\n'}},
+		{"trailing nul", "fn main() i32 { println \"ab\\0\"; return 0; }", []byte{'a', 'b', 0, '\n'}},
+		{"nul then another operand", "fn main() i32 { println \"x\\0y\", \"z\"; return 0; }", []byte{'x', 0, 'y', 'z', '\n'}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -795,11 +795,11 @@ func TestEmitPrintStrStructFieldEmbeddedNulPrintsFullBytes(t *testing.T) {
 		src  string
 		want []byte
 	}{
-		{"struct field", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"a\\0b\" }; print h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 0, 'b', ' ', '}', '\n'}},
-		{"struct field trailing nul", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"ab\\0\" }; print h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 'b', 0, ' ', '}', '\n'}},
-		{"tuple element", "fn main() i32 { print (\"a\\0b\",); return 0; }", []byte{'(', 'a', 0, 'b', ',', ')', '\n'}},
-		{"array element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; print a; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
-		{"slice element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; var s []A = a[:]; print s; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
+		{"struct field", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"a\\0b\" }; println h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 0, 'b', ' ', '}', '\n'}},
+		{"struct field trailing nul", "type Holder = struct { s str; };\nfn main() i32 { var h Holder = Holder.{ s = \"ab\\0\" }; println h; return 0; }", []byte{'H', 'o', 'l', 'd', 'e', 'r', '{', ' ', 's', ':', ' ', 'a', 'b', 0, ' ', '}', '\n'}},
+		{"tuple element", "fn main() i32 { println (\"a\\0b\",); return 0; }", []byte{'(', 'a', 0, 'b', ',', ')', '\n'}},
+		{"array element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; println a; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
+		{"slice element", "type A = struct { s str; };\nfn main() i32 { var a [2]A = [A.{ s = \"x\" }, A.{ s = \"y\\0z\" }]; var s []A = a[:]; println s; return 0; }", []byte{'[', 'A', '{', ' ', 's', ':', ' ', 'x', ' ', '}', ',', ' ', 'A', '{', ' ', 's', ':', ' ', 'y', 0, 'z', ' ', '}', ']', '\n'}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -825,7 +825,7 @@ func TestEmitPrintStrWritesLengthBoundedFwrite(t *testing.T) {
 	// <temp>.len, stdout);` raw statement, the empty-string newline carrier
 	// (`fprintf(stdout, """\n");`), and no `%s` whose argument is a `.data`
 	// field anywhere in the emitted C.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"x\\0y\"; print s; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { let s str = \"x\\0y\"; println s; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -874,14 +874,14 @@ func TestEmitPrintLenReadCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"bare str local", "fn main() i32 { let s str = \"hello\"; print s.len; return 0; }", "5\n"},
-		{"bare str call result", "fn mk() str { return \"hello\"; }\nfn main() i32 { print mk().len; return 0; }", "5\n"},
-		{"bare str field of struct receiver", "type P = struct { s str; };\nfn main() i32 { let p = P.{ s = \"hello\" }; print p.s.len; return 0; }", "5\n"},
-		{"bare slice", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s.len; return 0; }", "3\n"},
-		{"bare fixed array", "fn main() i32 { var a [3]int = [1, 2, 3]; print a.len; return 0; }", "3\n"},
-		{"parenthesized", "fn main() i32 { let s str = \"hi\"; print((s.len)); return 0; }", "2\n"},
-		{"mixed with other operands", "fn main() i32 { let s str = \"hi\"; print \"len=\", s.len; return 0; }", "len=2\n"},
-		{"deferred", "fn main() i32 { let s str = \"hi\"; defer print s.len; return 0; }", "2\n"},
+		{"bare str local", "fn main() i32 { let s str = \"hello\"; println s.len; return 0; }", "5\n"},
+		{"bare str call result", "fn mk() str { return \"hello\"; }\nfn main() i32 { println mk().len; return 0; }", "5\n"},
+		{"bare str field of struct receiver", "type P = struct { s str; };\nfn main() i32 { let p = P.{ s = \"hello\" }; println p.s.len; return 0; }", "5\n"},
+		{"bare slice", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; println s.len; return 0; }", "3\n"},
+		{"bare fixed array", "fn main() i32 { var a [3]int = [1, 2, 3]; println a.len; return 0; }", "3\n"},
+		{"parenthesized", "fn main() i32 { let s str = \"hi\"; println((s.len)); return 0; }", "2\n"},
+		{"mixed with other operands", "fn main() i32 { let s str = \"hi\"; println \"len=\", s.len; return 0; }", "len=2\n"},
+		{"deferred", "fn main() i32 { let s str = \"hi\"; defer println s.len; return 0; }", "2\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -909,9 +909,9 @@ func TestEmitPrintCompositeContainingLenCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"tuple", "fn main() i32 { let s str = \"hello\"; print (s.len,); return 0; }", "(5,)\n"},
-		{"struct field", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; print W.{ l = s.len }; return 0; }", "W{ l: 5 }\n"},
-		{"array element", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; var a [2]W = [W.{ l = s.len }, W.{ l = 7 }]; print a; return 0; }", "[W{ l: 5 }, W{ l: 7 }]\n"},
+		{"tuple", "fn main() i32 { let s str = \"hello\"; println (s.len,); return 0; }", "(5,)\n"},
+		{"struct field", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; println W.{ l = s.len }; return 0; }", "W{ l: 5 }\n"},
+		{"array element", "type W = struct { l uint; };\nfn main() i32 { let s str = \"hello\"; var a [2]W = [W.{ l = s.len }, W.{ l = 7 }]; println a; return 0; }", "[W{ l: 5 }, W{ l: 7 }]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -938,11 +938,11 @@ func TestEmitPrintInterpolatedBoolCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"literal true", "fn main() i32 { print `ok? {true}`; return 0; }", "ok? true\n"},
-		{"literal false", "fn main() i32 { print `ok? {false}`; return 0; }", "ok? false\n"},
-		{"bool local", "fn main() i32 { let b bool = true; print `ok? {b}`; return 0; }", "ok? true\n"},
-		{"bool expression", "fn main() i32 { let b bool = false; print `ok? {!b}`; return 0; }", "ok? true\n"},
-		{"mixed with plain operand", "fn main() i32 { print `pre {true}`, 1; return 0; }", "pre true1\n"},
+		{"literal true", "fn main() i32 { println `ok? {true}`; return 0; }", "ok? true\n"},
+		{"literal false", "fn main() i32 { println `ok? {false}`; return 0; }", "ok? false\n"},
+		{"bool local", "fn main() i32 { let b bool = true; println `ok? {b}`; return 0; }", "ok? true\n"},
+		{"bool expression", "fn main() i32 { let b bool = false; println `ok? {!b}`; return 0; }", "ok? true\n"},
+		{"mixed with plain operand", "fn main() i32 { println `pre {true}`, 1; return 0; }", "pre true1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -965,9 +965,9 @@ func TestEmitPrintFloatCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"f64 literal", "fn main() i32 { print 3.5; return 0; }", "3.500000\n"},
-		{"f64 local", "fn main() i32 { let x f64 = 3.5; print x; return 0; }", "3.500000\n"},
-		{"f32 local", "fn main() i32 { let x f32 = 3.5; print x; return 0; }", "3.500000\n"},
+		{"f64 literal", "fn main() i32 { println 3.5; return 0; }", "3.500000\n"},
+		{"f64 local", "fn main() i32 { let x f64 = 3.5; println x; return 0; }", "3.500000\n"},
+		{"f32 local", "fn main() i32 { let x f32 = 3.5; println x; return 0; }", "3.500000\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -991,9 +991,9 @@ func TestEmitPrintMultipleOperandsOneLineCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"three ints", "fn main() i32 { print 1, 2, 3; return 0; }", "123\n"},
-		{"three strings", "fn main() i32 { print \"a\", \"b\", \"c\"; return 0; }", "abc\n"},
-		{"mixed", "fn main() i32 { print 1, \" \", 2, \" \", 3.25; return 0; }", "1 2 3.250000\n"},
+		{"three ints", "fn main() i32 { println 1, 2, 3; return 0; }", "123\n"},
+		{"three strings", "fn main() i32 { println \"a\", \"b\", \"c\"; return 0; }", "abc\n"},
+		{"mixed", "fn main() i32 { println 1, \" \", 2, \" \", 3.25; return 0; }", "1 2 3.250000\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1011,8 +1011,12 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	// ONE printf call per print statement whose format string concatenates one
 	// specifier per operand in order (integer via the out-of-quotes "%"PRId64
 	// macro spelling, bool/char/float as %s/%s/%f literals — a char operand's
-	// %s is backed by its own UTF-8 buffer, see below) and ends in the literal
-	// \n, with the same number of comma-separated arguments in operand order.
+	// %s is backed by its own UTF-8 buffer, see below) and — for a `println`
+	// statement — ends in the literal \n, with the same number of
+	// comma-separated arguments in operand order. `println` is used here so the
+	// assertion still exercises the trailing-newline emission (a `print`
+	// statement would omit it); see TestEmitPrintNoTrailingNewline and
+	// TestEmitPrintlnTrailingNewline for the two-keyword split.
 	// Asserting the literal C text is what proves the one-call combined shape,
 	// not a per-operand call. The operand texts are confirmed against the
 	// fixture dump: the char literal 'x' emits (int32_t)120, encoded to UTF-8
@@ -1025,7 +1029,7 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	// The buffer name is captured from the declaration so the assertion is
 	// robust to the fixture's normal symbol/numbering, and the absence of any
 	// %c proves the old char path is gone.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { print 1, true, 'x', 3.5; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn main() i32 { println 1, true, 'x', 3.5; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -1054,6 +1058,39 @@ func TestEmitPrintWritesSingleCombinedPrintf(t *testing.T) {
 	}
 }
 
+func TestEmitPrintNoTrailingNewline(t *testing.T) {
+	t.Parallel()
+	// `print` emits NO trailing newline (breaking behavior flip): consecutive
+	// print statements concatenate on one line, and a print of a composite
+	// (struct) operand also omits the trailing newline. The captured stdout is
+	// the exact bytes a print writes — no appended "\n".
+	out := emitAndRunCapture(t, "fn main() i32 { print \"a\"; print \"b\"; print 1; return 0; }", false, 0, false)
+	if want := "ab1"; out != want {
+		t.Fatalf("compiled program output = %q, want %q (print writes no trailing newline)", out, want)
+	}
+	// The composite (struct) path — buildSequentialPrint — must also omit the
+	// trailing newline for a `print`.
+	out = emitAndRunCapture(t, "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; print p; print \"tail\"; return 0; }", false, 0, false)
+	if want := "Point{ x: 1, y: 2 }tail"; out != want {
+		t.Fatalf("compiled program output = %q, want %q (struct print writes no trailing newline)", out, want)
+	}
+}
+
+func TestEmitPrintlnTrailingNewline(t *testing.T) {
+	t.Parallel()
+	// `println` emits a trailing newline, exactly what `print` used to do.
+	out := emitAndRunCapture(t, "fn main() i32 { println \"a\"; println \"b\"; println 1; return 0; }", false, 0, false)
+	if want := "a\nb\n1\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q (println writes a trailing newline per statement)", out, want)
+	}
+	// The composite (struct) path must also append the trailing newline for a
+	// `println`.
+	out = emitAndRunCapture(t, "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; println p; println \"tail\"; return 0; }", false, 0, false)
+	if want := "Point{ x: 1, y: 2 }\ntail\n"; out != want {
+		t.Fatalf("compiled program output = %q, want %q (struct println writes a trailing newline)", out, want)
+	}
+}
+
 func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// Composite print slice 1: a struct whose fields are all scalar types
@@ -1071,13 +1108,13 @@ func TestEmitPrintStructOfScalarsCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"two ints", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", "Point{ x: 1, y: 2 }\n"},
-		{"int bool str", "type Person = struct { name str; active bool; age i32; };\nfn main() i32 { let p = Person.{ name = \"ann\", active = true, age = 30 }; print p; return 0; }", "Person{ name: ann, active: true, age: 30 }\n"},
-		{"signed and unsigned widths", "type Counts = struct { id i64; n u64; big uint; };\nfn main() i32 { let c = Counts.{ id = -5, n = 7, big = 9 }; print c; return 0; }", "Counts{ id: -5, n: 7, big: 9 }\n"},
-		{"inline literal", "type Point = struct { x int; y int; };\nfn main() i32 { print Point.{ x = 3, y = 4 }; return 0; }", "Point{ x: 3, y: 4 }\n"},
-		{"mixed with scalar operands", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p, \" and \", 42; return 0; }", "Point{ x: 1, y: 2 } and 42\n"},
-		{"helper call operand", "type Point = struct { x int; y int; };\nfn make_point(x int) Point { return Point.{ x = x, y = x + 1 }; }\nfn main() i32 { print make_point(10); return 0; }", "Point{ x: 10, y: 11 }\n"},
-		{"two struct operands", "type Point = struct { x int; y int; };\nfn main() i32 { let a = Point.{ x = 1, y = 2 }; let b = Point.{ x = 3, y = 4 }; print a, b; return 0; }", "Point{ x: 1, y: 2 }Point{ x: 3, y: 4 }\n"},
+		{"two ints", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; println p; return 0; }", "Point{ x: 1, y: 2 }\n"},
+		{"int bool str", "type Person = struct { name str; active bool; age i32; };\nfn main() i32 { let p = Person.{ name = \"ann\", active = true, age = 30 }; println p; return 0; }", "Person{ name: ann, active: true, age: 30 }\n"},
+		{"signed and unsigned widths", "type Counts = struct { id i64; n u64; big uint; };\nfn main() i32 { let c = Counts.{ id = -5, n = 7, big = 9 }; println c; return 0; }", "Counts{ id: -5, n: 7, big: 9 }\n"},
+		{"inline literal", "type Point = struct { x int; y int; };\nfn main() i32 { println Point.{ x = 3, y = 4 }; return 0; }", "Point{ x: 3, y: 4 }\n"},
+		{"mixed with scalar operands", "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; println p, \" and \", 42; return 0; }", "Point{ x: 1, y: 2 } and 42\n"},
+		{"helper call operand", "type Point = struct { x int; y int; };\nfn make_point(x int) Point { return Point.{ x = x, y = x + 1 }; }\nfn main() i32 { println make_point(10); return 0; }", "Point{ x: 10, y: 11 }\n"},
+		{"two struct operands", "type Point = struct { x int; y int; };\nfn main() i32 { let a = Point.{ x = 1, y = 2 }; let b = Point.{ x = 3, y = 4 }; println a, b; return 0; }", "Point{ x: 1, y: 2 }Point{ x: 3, y: 4 }\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1101,7 +1138,7 @@ func TestEmitPrintStructWritesSequentialFprintfs(t *testing.T) {
 	// scalar-only path uses. The field projections are matched by regex (their
 	// member symbol IDs depend on the fixture's symbol numbering); the labels
 	// and punctuation are asserted verbatim.
-	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Point = struct { x int; y int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; println p; return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -1139,7 +1176,7 @@ func TestEmitPrintStructFieldNamesAreSourceNames(t *testing.T) {
 	// label order must be y, x regardless of the construction-site order
 	// (`Point.{ x = 1, y = 2 }` lists x first). The generated C names
 	// (pebble_field_<member>) must never appear in the output.
-	out := emitAndRunCapture(t, "type Point = struct { y int; x int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; print p; return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "type Point = struct { y int; x int; };\nfn main() i32 { let p = Point.{ x = 1, y = 2 }; println p; return 0; }", false, 0, false)
 	if want := "Point{ y: 2, x: 1 }\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -1162,13 +1199,13 @@ func TestEmitPrintSliceOfScalarsCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"multi-element", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s; return 0; }", "[1, 2, 3]\n"},
-		{"empty", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[0:0]; print s; return 0; }", "[]\n"},
-		{"partial range", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[1:3]; print s; return 0; }", "[2, 3]\n"},
-		{"inline construction", "fn main() i32 { var arr [3]int = [1, 2, 3]; print arr[:]; return 0; }", "[1, 2, 3]\n"},
-		{"bool elements", "fn main() i32 { var arr [2]bool = [true, false]; var s []bool = arr[:]; print s; return 0; }", "[true, false]\n"},
-		{"char elements", "fn main() i32 { var arr [2]char = ['x', 'é']; var s []char = arr[:]; print s; return 0; }", "[x, é]\n"},
-		{"mixed with scalar operands", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; print s, \" and \", 42; return 0; }", "[1, 2, 3] and 42\n"},
+		{"multi-element", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; println s; return 0; }", "[1, 2, 3]\n"},
+		{"empty", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[0:0]; println s; return 0; }", "[]\n"},
+		{"partial range", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[1:3]; println s; return 0; }", "[2, 3]\n"},
+		{"inline construction", "fn main() i32 { var arr [3]int = [1, 2, 3]; println arr[:]; return 0; }", "[1, 2, 3]\n"},
+		{"bool elements", "fn main() i32 { var arr [2]bool = [true, false]; var s []bool = arr[:]; println s; return 0; }", "[true, false]\n"},
+		{"char elements", "fn main() i32 { var arr [2]char = ['x', 'é']; var s []char = arr[:]; println s; return 0; }", "[x, é]\n"},
+		{"mixed with scalar operands", "fn main() i32 { var arr [3]int = [1, 2, 3]; var s []int = arr[:]; println s, \" and \", 42; return 0; }", "[1, 2, 3] and 42\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1193,8 +1230,8 @@ func TestEmitPrintSliceOfCompositeElementsCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"slice of struct", "type Point = struct { x int; y int; };\nfn main() i32 { var arr [2]Point = [Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }]; var s []Point = arr[:]; print s; return 0; }", "[Point{ x: 1, y: 2 }, Point{ x: 3, y: 4 }]\n"},
-		{"slice of tuple", "fn main() i32 { var arr [2](int, str) = [(1, \"a\"), (2, \"b\")]; var s [](int, str) = arr[:]; print s; return 0; }", "[(1, a), (2, b)]\n"},
+		{"slice of struct", "type Point = struct { x int; y int; };\nfn main() i32 { var arr [2]Point = [Point.{ x = 1, y = 2 }, Point.{ x = 3, y = 4 }]; var s []Point = arr[:]; println s; return 0; }", "[Point{ x: 1, y: 2 }, Point{ x: 3, y: 4 }]\n"},
+		{"slice of tuple", "fn main() i32 { var arr [2](int, str) = [(1, \"a\"), (2, \"b\")]; var s [](int, str) = arr[:]; println s; return 0; }", "[(1, a), (2, b)]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1219,7 +1256,7 @@ func TestEmitPrintSliceWritesRuntimeLoop(t *testing.T) {
 	// slice-returning CALL operand must be materialized exactly once into the
 	// temp — the loop reads the temp, never re-calls the helper, so the
 	// helper call text appears exactly once in the emitted C.
-	unit, snapshot, entryID, sources := buildFixture(t, "fn make() []int { var a [2]int = [10, 20]; return a[:]; }\nfn main() i32 { print make(); return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "fn make() []int { var a [2]int = [10, 20]; return a[:]; }\nfn main() i32 { println make(); return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -1277,12 +1314,12 @@ func TestEmitPrintEnumOfVariantsCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"green", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.green; print c; return 0; }", "Color.green\n"},
-		{"red", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.red; print c; return 0; }", "Color.red\n"},
-		{"blue", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.blue; print c; return 0; }", "Color.blue\n"},
-		{"inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { print Color.green; return 0; }", "Color.green\n"},
-		{"helper call operand", "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { print pick(); return 0; }", "Color.blue\n"},
-		{"mixed with scalar operands", "type Color = enum { red, green, blue };\nfn main() i32 { let a = Color.red; let b = Color.green; print a, \" then \", b; return 0; }", "Color.red then Color.green\n"},
+		{"green", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.green; println c; return 0; }", "Color.green\n"},
+		{"red", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.red; println c; return 0; }", "Color.red\n"},
+		{"blue", "type Color = enum { red, green, blue };\nfn main() i32 { let c = Color.blue; println c; return 0; }", "Color.blue\n"},
+		{"inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { println Color.green; return 0; }", "Color.green\n"},
+		{"helper call operand", "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { println pick(); return 0; }", "Color.blue\n"},
+		{"mixed with scalar operands", "type Color = enum { red, green, blue };\nfn main() i32 { let a = Color.red; let b = Color.green; println a, \" then \", b; return 0; }", "Color.red then Color.green\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1310,7 +1347,7 @@ func TestEmitPrintEnumWritesRuntimeSwitch(t *testing.T) {
 	// uses. An enum-returning CALL operand must be materialized exactly once
 	// into the temp — the switch reads the temp, never re-calls the helper,
 	// so the helper call text appears exactly once in the emitted C.
-	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { print pick(); return 0; }", "main", false)
+	unit, snapshot, entryID, sources := buildFixture(t, "type Color = enum { red, green, blue };\nfn pick() Color { return Color.blue; }\nfn main() i32 { println pick(); return 0; }", "main", false)
 	var buf bytes.Buffer
 	if err := Emit(unit, snapshot, entryID, sources, nil, &buf); err != nil {
 		t.Fatalf("Emit failed: %v", err)
@@ -1364,9 +1401,9 @@ func TestEmitPrintTaggedUnionOfVariantsCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); print r; return 0; }", "Result.ok(42)\n"},
-		{"second payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.error(\"failed\"); print r; return 0; }", "Result.error(failed)\n"},
-		{"payload-less variant", "type Status = union enum { done void; error str; };\nfn main() i32 { let s = Status.done; print s; return 0; }", "Status.done\n"},
+		{"payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.ok(42); println r; return 0; }", "Result.ok(42)\n"},
+		{"second payload variant", "type Result = union enum { ok i32; error str; };\nfn main() i32 { let r = Result.error(\"failed\"); println r; return 0; }", "Result.error(failed)\n"},
+		{"payload-less variant", "type Status = union enum { done void; error str; };\nfn main() i32 { let s = Status.done; println s; return 0; }", "Status.done\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1437,7 +1474,7 @@ func TestEmitPrintTaggedUnionPointerPayloadCompilesAndRuns(t *testing.T) {
 	// proving the type itself is accepted via the int-payload variant is
 	// sufficient.
 	const src = `type Box = union enum { p *i32; n i32; };
-fn main() i32 { let b = Box.n(1); print b; return 0; }`
+fn main() i32 { let b = Box.n(1); println b; return 0; }`
 	out := emitAndRunCapture(t, src, false, 0, false)
 	want := "Box.n(1)\n"
 	if out != want {
@@ -1460,32 +1497,32 @@ func TestEmitPrintOptionalOfIntCompilesAndRuns(t *testing.T) {
 	}{
 		{
 			"some with int payload",
-			"fn main() i32 { var x ?int = some(5); print x; return 0; }",
+			"fn main() i32 { var x ?int = some(5); println x; return 0; }",
 			"some(5)\n",
 		},
 		{
 			"none value",
-			"fn main() i32 { var y ?int = none; print y; return 0; }",
+			"fn main() i32 { var y ?int = none; println y; return 0; }",
 			"none\n",
 		},
 		{
 			"some with i32 payload",
-			"fn main() i32 { var x ?i32 = some(42); print x; return 0; }",
+			"fn main() i32 { var x ?i32 = some(42); println x; return 0; }",
 			"some(42)\n",
 		},
 		{
 			"some with bool payload",
-			"fn main() i32 { var x ?bool = some(true); print x; return 0; }",
+			"fn main() i32 { var x ?bool = some(true); println x; return 0; }",
 			"some(true)\n",
 		},
 		{
 			"none with explicit type",
-			"fn main() i32 { var y ?i32 = none; print y; return 0; }",
+			"fn main() i32 { var y ?i32 = none; println y; return 0; }",
 			"none\n",
 		},
 		{
 			"mixed some and none in one print",
-			"fn main() i32 { var a ?int = some(5); var b ?int = none; print a, \" \", b; return 0; }",
+			"fn main() i32 { var a ?int = some(5); var b ?int = none; println a, \" \", b; return 0; }",
 			"some(5) none\n",
 		},
 	} {
@@ -1543,22 +1580,22 @@ func TestEmitPrintOptionalNestedCompositeCompilesAndRuns(t *testing.T) {
 	}{
 		{
 			"optional of struct",
-			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = some(Point.{ x = 1, y = 2 }); print p; return 0; }",
+			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = some(Point.{ x = 1, y = 2 }); println p; return 0; }",
 			"some(Point{ x: 1, y: 2 })\n",
 		},
 		{
 			"optional of struct with none",
-			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = none; print p; return 0; }",
+			"type Point = struct { x int; y int; };\nfn main() i32 { var p ?Point = none; println p; return 0; }",
 			"none\n",
 		},
 		{
 			"optional of tuple",
-			"fn main() i32 { var t ?(int, int) = some((1, 2)); print t; return 0; }",
+			"fn main() i32 { var t ?(int, int) = some((1, 2)); println t; return 0; }",
 			"some((1, 2))\n",
 		},
 		{
 			"optional of tuple with none",
-			"fn main() i32 { var t ?(int, int) = none; print t; return 0; }",
+			"fn main() i32 { var t ?(int, int) = none; println t; return 0; }",
 			"none\n",
 		},
 	} {
@@ -1586,12 +1623,12 @@ func TestEmitPrintOptionalOfPointerCompilesAndRuns(t *testing.T) {
 	}{
 		{
 			"some pointer",
-			"fn main() i32 { var x i32 = 5; var p ?*i32 = some(&x); print p; return 0; }",
+			"fn main() i32 { var x i32 = 5; var p ?*i32 = some(&x); println p; return 0; }",
 			"", // structural: must start with "some(&0x"
 		},
 		{
 			"nil optional pointer",
-			"fn main() i32 { var p ?*i32 = none; print p; return 0; }",
+			"fn main() i32 { var p ?*i32 = none; println p; return 0; }",
 			"none\n",
 		},
 	} {
@@ -1618,7 +1655,7 @@ func TestEmitDeferredPrintCharCompilesAndRuns(t *testing.T) {
 	// pre-statements must land in the deferred statement sequence at the
 	// ImplicitReturn exit, ahead of the combined printf. Calling the helper
 	// prints the exact UTF-8 encoding of 'é' and the entry returns 0.
-	out := emitAndRunCapture(t, "fn helper() void { defer print 'é'; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn helper() void { defer println 'é'; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
 	if want := "é\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -1630,7 +1667,7 @@ func TestEmitPrintInsideLoopIfCompilesAndRuns(t *testing.T) {
 	// Print case -> buildPrint, so it composes with the if-in-loop-body shape.
 	// The arm fires once (when i == 1), printing "mark", and the loop returns
 	// 2. Bounded execution in case of a miscompiled loop.
-	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 2 { i = i + 1; if i == 1 { print \"mark\"; } } return i; }", false, 2, false)
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 2 { i = i + 1; if i == 1 { println \"mark\"; } } return i; }", false, 2, false)
 	if want := "mark\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -3247,7 +3284,7 @@ func TestEmitStrSwitchCallSubjectEvaluatedOnce(t *testing.T) {
 	// the exact reproduction from proposal 13. The subject is materialized
 	// into a PebbleStr temp before the chain, so the helper runs once total
 	// and the "b" case still returns 0.
-	out := emitAndRunCapture(t, "fn choose() str {\n    print \"called\";\n    return \"b\";\n}\nfn main() int {\n    switch choose() {\n        case \"a\": return 1;\n        case \"b\": return 0;\n        else: return 2;\n    }\n}\n", false, 0, false)
+	out := emitAndRunCapture(t, "fn choose() str {\n    println \"called\";\n    return \"b\";\n}\nfn main() int {\n    switch choose() {\n        case \"a\": return 1;\n        case \"b\": return 0;\n        else: return 2;\n    }\n}\n", false, 0, false)
 	if out != "called\n" {
 		t.Fatalf("compiled program output = %q, want %q (subject helper evaluated exactly once)", out, "called\n")
 	}
@@ -3293,7 +3330,7 @@ func TestEmitStrSwitchBreakCaseBodyUsesTempCompilesAndRuns(t *testing.T) {
 	// wrapper gives break a valid target without intercepting the loop, and
 	// the after-switch accumulation still runs each iteration (total = 3 *
 	// 11 = 33), proving the break does not leak to the loop.
-	out := emitAndRunCaptureBounded(t, "fn choose() str { print \"called\"; return \"b\"; }\nfn main() i32 { var total i32 = 0; var i i32 = 0; while i < 3 { switch choose() { case \"a\": break; case \"b\": total = total + 10; else: total = total + 1; } total = total + 1; i = i + 1; } return total; }", false, 33, false)
+	out := emitAndRunCaptureBounded(t, "fn choose() str { println \"called\"; return \"b\"; }\nfn main() i32 { var total i32 = 0; var i i32 = 0; while i < 3 { switch choose() { case \"a\": break; case \"b\": total = total + 10; else: total = total + 1; } total = total + 1; i = i + 1; } return total; }", false, 33, false)
 	if out != "called\ncalled\ncalled\n" {
 		t.Fatalf("compiled program output = %q, want %q (one subject evaluation per switch)", out, "called\ncalled\ncalled\n")
 	}
@@ -3726,12 +3763,12 @@ func TestEmitPrintPointerCompilesAndRuns(t *testing.T) {
 	}{
 		{
 			"nil pointer",
-			"fn main() i32 { var n *i32 = nil; print n; return 0; }",
+			"fn main() i32 { var n *i32 = nil; println n; return 0; }",
 			"nil\n",
 		},
 		{
 			"non-nil pointer",
-			"fn main() i32 { var x i32 = 5; var p *i32 = &x; print p; return 0; }",
+			"fn main() i32 { var x i32 = 5; var p *i32 = &x; println p; return 0; }",
 			"", // structural: must start with "&0x"
 		},
 	} {
@@ -3792,7 +3829,7 @@ func TestEmitPrintPointerInCompositeCompilesAndRuns(t *testing.T) {
 fn main() i32 {
     var x i32 = 42;
     var c = Container.{ val = 1, ptr = &x };
-    print c;
+    println c;
     return 0;
 }`, false, 0, false)
 	if want := "Container{ val: 1, ptr: &0x"; !strings.HasPrefix(out, want) {
@@ -3815,7 +3852,7 @@ func TestEmitPrintFunctionValueNamedReferenceCompilesAndRuns(t *testing.T) {
     return a + b;
 }
 fn main() i32 {
-    print add;
+    println add;
     var _ = add(1, 2);
     return 0;
 }`, false, 0, false)
@@ -3864,7 +3901,7 @@ func TestEmitPrintFunctionGenericReferenceCompilesAndRuns(t *testing.T) {
     return x;
 }
 fn main() i32 {
-    print identity[i32];
+    println identity[i32];
     var _ = identity[i32](42);
     return 0;
 }`, false, 0, false)

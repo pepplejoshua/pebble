@@ -103,6 +103,10 @@ func (w *walker) finishExpressionStatement(ref symbol.SyntaxRef, node syntax.Nod
 
 func (w *walker) finishPrint(ref symbol.SyntaxRef, node syntax.Node, ctx walkContext, tree *syntax.Tree) {
 	emission := controlEmission{kind: controlPrint, form: statementPrint, region: ctx.control.region}
+	// The AST node retains the exact opening keyword (`print` vs `println`)
+	// through its stored token; only the trailing-newline bit differs between
+	// the two.
+	emission.printNewline = node.Token() == syntax.KwPrintln
 	for ordinal, operand := range semanticRefs(ref.Module, node, tree) {
 		value, ok := w.valuesBySyntax[operand]
 		if !ok || value.ID == 0 || !w.successfulExpressions[operand] {

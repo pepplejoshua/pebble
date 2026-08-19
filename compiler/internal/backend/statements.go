@@ -2794,8 +2794,10 @@ func buildExpressionStatement(st *emitState, unit *tir.Unit, snapshot *types.Sna
 // operand independently type-checked). For an all-scalar print the emission
 // matches v1's print codegen shape exactly: ONE combined printf call per
 // print statement, not one per operand — every operand's format specifier is
-// concatenated into a single format string (ending in the literal `\n`, so
-// every print statement produces exactly one line of output) and every
+// concatenated into a single format string (ending in the literal `\n` only
+// for a `println` statement — `print` emits no trailing newline — so each
+// statement's trailing-newline behavior is driven by which keyword opened it)
+// and every
 // operand's value is a single argument, in the same order. A struct operand
 // (composite print slice 1 — a struct whose fields are all scalar types) does
 // not fold into that single call: it is emitted as DIRECT SEQUENTIAL
@@ -2848,7 +2850,9 @@ func buildExpressionStatement(st *emitState, unit *tir.Unit, snapshot *types.Sna
 //
 //	<indent>printf("<spec0><spec1>...\n", <arg0>, <arg1>);
 //
-// with the \n spelled as the C two-character escape, and no arguments when the
+// with the \n spelled as the C two-character escape — present only for a
+// `println` statement (statement.Newline), omitted for `print` — and no
+// arguments when the
 // print has no operands (only reachable from hand-built IR — the parser
 // requires at least one expression — emitting printf("\n") to print a blank
 // line, matching v1's zero-expression print). Each integer specifier is
@@ -3033,7 +3037,10 @@ func buildPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapshot, fileSet
 		formatParts = append(formatParts, format)
 		args = append(args, arg)
 	}
-	line := indent + "printf(" + strings.Join(formatParts, "") + `"\n"`
+	line := indent + "printf(" + strings.Join(formatParts, "")
+	if statement.Newline {
+		line += `"\n"`
+	}
 	if len(args) != 0 {
 		line += ", " + strings.Join(args, ", ")
 	}
@@ -3559,8 +3566,9 @@ func buildSequentialPrint(st *emitState, unit *tir.Unit, snapshot *types.Snapsho
 	}
 	// Every print statement produces exactly one line of output: the trailing
 	// newline rides on the last fprintf call's format string as an adjacent
-	// `"\n"` literal.
-	if len(calls) != 0 {
+	// `"\n"` literal. `println` statements emit it; `print` statements leave
+	// the last call's format string as-is (no trailing newline).
+	if len(calls) != 0 && statement.Newline {
 		calls[len(calls)-1].format += `"\n"`
 	}
 	lines := make([]string, 0, len(calls))

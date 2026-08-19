@@ -497,8 +497,8 @@ func TestEmitPrintInterpolatedBoolHelperCallCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"bool helper call", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { print `big? {isBig(7)}`; return 0; }", "big? true\n"},
-		{"bool helper expression", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { print `big? {isBig(7) && isBig(3)}`; return 0; }", "big? false\n"},
+		{"bool helper call", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { println `big? {isBig(7)}`; return 0; }", "big? true\n"},
+		{"bool helper expression", "fn isBig(n i32) bool { return n > 5; }\nfn main() i32 { println `big? {isBig(7) && isBig(3)}`; return 0; }", "big? false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -517,7 +517,7 @@ func TestEmitPrintInVoidHelperCompilesAndRuns(t *testing.T) {
 	// operands here (all literals), and the helper body builds its leading
 	// Print through the same buildLeadingStatement the entry uses. The entry
 	// calls the helper, which prints "9" and returns void.
-	out := emitAndRunCapture(t, "fn helper() void { print 9; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn helper() void { println 9; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
 	if want := "9\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -534,8 +534,8 @@ func TestEmitPrintHelperCallOperandCompilesAndRuns(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"int helper", "fn helper() i32 { return 6; }\nfn main() i32 { print helper(); return 0; }", "6\n"},
-		{"str helper", "fn helper() str { return \"hey\"; }\nfn main() i32 { print helper(); return 0; }", "hey\n"},
+		{"int helper", "fn helper() i32 { return 6; }\nfn main() i32 { println helper(); return 0; }", "6\n"},
+		{"str helper", "fn helper() str { return \"hey\"; }\nfn main() i32 { println helper(); return 0; }", "hey\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -553,7 +553,7 @@ func TestEmitDeferredPrintAtVoidHelperExitCompilesAndRuns(t *testing.T) {
 	// ImplicitReturn exit (the tail emits its DeferChain before falling off
 	// the end of the C function), so calling the helper prints "7" and the
 	// entry returns 0.
-	out := emitAndRunCapture(t, "fn helper() void { defer print 7; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn helper() void { defer println 7; }\nfn main() i32 { helper(); return 0; }", false, 0, false)
 	if want := "7\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -772,7 +772,7 @@ func TestEmitF64HelperParamAndReturnCompilesAndRuns(t *testing.T) {
 	// BinaryValue case. 2.5 * 3.0 = 7.5, which prints as 7.500000.
 	out := emitAndRunCapture(t, `
 fn scale(value f64, factor f64) f64 { return value * factor; }
-fn main() i32 { let result f64 = scale(2.5, 3.0); print result; return 0; }`, false, 0, false)
+fn main() i32 { let result f64 = scale(2.5, 3.0); println result; return 0; }`, false, 0, false)
 	if want := "7.500000\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -786,7 +786,7 @@ func TestEmitF32HelperParamAndReturnCompilesAndRuns(t *testing.T) {
 	// variadic %f print call).
 	out := emitAndRunCapture(t, `
 fn scale(value f32, factor f32) f32 { return value * factor; }
-fn main() i32 { let result f32 = scale(1.5, 4.0); print result; return 0; }`, false, 0, false)
+fn main() i32 { let result f32 = scale(1.5, 4.0); println result; return 0; }`, false, 0, false)
 	if want := "6.000000\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -802,7 +802,7 @@ func TestEmitMixedIntFloatHelperParamsCompilesAndRuns(t *testing.T) {
 	// arithmetic inside the helper body. 3 as f64 * 1.5 = 4.5.
 	out := emitAndRunCapture(t, `
 fn scaled(mult int, base f64) f64 { return (mult as f64) * base; }
-fn main() int { let r f64 = scaled(3, 1.5); print r; return 0; }`, false, 0, false)
+fn main() int { let r f64 = scaled(3, 1.5); println r; return 0; }`, false, 0, false)
 	if want := "4.500000\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -818,7 +818,7 @@ func TestEmitFloatHelperReturnForwardCompilesAndRuns(t *testing.T) {
 	out := emitAndRunCapture(t, `
 fn inner(x f64) f64 { return x + 1.0; }
 fn outer(x f64) f64 { return inner(x); }
-fn main() i32 { let r f64 = outer(1.0); print r; return 0; }`, false, 0, false)
+fn main() i32 { let r f64 = outer(1.0); println r; return 0; }`, false, 0, false)
 	if want := "2.000000\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -833,7 +833,7 @@ func TestEmitFloatNegationInHelperCompilesAndRuns(t *testing.T) {
 	// -2.5, prints as -2.500000.
 	out := emitAndRunCapture(t, `
 fn neg(x f64) f64 { return -x; }
-fn main() i32 { let r f64 = neg(2.5); let s f64 = -r; print s; return 0; }`, false, 0, false)
+fn main() i32 { let r f64 = neg(2.5); let s f64 = -r; println s; return 0; }`, false, 0, false)
 	if want := "2.500000\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}
@@ -957,7 +957,7 @@ func TestEmitNonVoidDiscardedCallStatementCompilesAndRuns(t *testing.T) {
 	// side effect (its print of the argument) still runs, its 999 result is
 	// safely ignored, and the exit code reflects only the caller's own
 	// subsequent logic (here return 1).
-	output := emitAndRunCapture(t, "fn f(x i32) i32 { print x; return 999; } fn main() i32 { f(42); return 1; }", false, 1, false)
+	output := emitAndRunCapture(t, "fn f(x i32) i32 { println x; return 999; } fn main() i32 { f(42); return 1; }", false, 1, false)
 	if output != "42\n" {
 		t.Fatalf("captured output = %q, want %q", output, "42\n")
 	}

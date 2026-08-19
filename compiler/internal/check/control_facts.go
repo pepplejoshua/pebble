@@ -27,6 +27,7 @@ type controlEmission struct {
 	conditionPresent bool
 	elsePresent      bool
 	rangeInclusive   bool
+	printNewline     bool
 	syntheticSyntax  bool
 	iteratorSymbol   symbol.SymbolID
 }
@@ -55,7 +56,7 @@ func (w *walker) retainControl(ref symbol.SyntaxRef, ctx walkContext, emission c
 		Callable: callable, StatementForm: emission.form, Values: emission.values,
 		Composition:      emission.composition,
 		ConditionPresent: emission.conditionPresent, ElsePresent: emission.elsePresent,
-		RangeInclusive: emission.rangeInclusive, SyntheticSyntax: emission.syntheticSyntax,
+		RangeInclusive: emission.rangeInclusive, PrintNewline: emission.printNewline, SyntheticSyntax: emission.syntheticSyntax,
 		IteratorSymbol: emission.iteratorSymbol,
 	}
 	controls := []controlID{emission.region}

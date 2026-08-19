@@ -7,7 +7,7 @@ import (
 )
 
 // TestEmitDeferredBlockLocalDeclarationCompilesAndRuns proves a block-wrapped
-// deferred local declaration (`defer { var x = 5; print x; }`) runs its
+// deferred local declaration (`defer { var x = 5; println x; }`) runs its
 // declaration and the rest of the block at function exit: the deferred block's
 // local x is declared and printed inside the defer-local scope, and nothing is
 // emitted at the defer statement's own position. Before the backend gap fix
@@ -15,7 +15,7 @@ import (
 // unsupported-statement-kind default case).
 func TestEmitDeferredBlockLocalDeclarationCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	out := emitAndRunCapture(t, "fn main() i32 { defer { var x i32 = 5; print x; } return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn main() i32 { defer { var x i32 = 5; println x; } return 0; }", false, 0, false)
 	if out != "5\n" {
 		t.Fatalf("deferred block local output = %q, want %q", out, "5\n")
 	}
@@ -24,13 +24,13 @@ func TestEmitDeferredBlockLocalDeclarationCompilesAndRuns(t *testing.T) {
 // TestEmitDeferredBareLocalDeclarationLIFOCompilesAndRuns proves a bare
 // deferred local declaration (`defer var x = init();`) runs its initializer at
 // function exit in the same LIFO defer order the other deferred statement kinds
-// use: the deferred print (registered second) fires first, then the deferred
+// use: the deferred println (registered second) fires first, then the deferred
 // declaration's side-effecting initializer (registered first). Before the
 // backend gap fix this fixture Emit-rejected (the DeferRegister's Initialize
 // child hit the "not supported as a deferred statement yet" rejection).
 func TestEmitDeferredBareLocalDeclarationLIFOCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	out := emitAndRunCapture(t, "fn initx() i32 { print 2; return 2; }\nfn main() i32 { defer var x i32 = initx(); defer print 1; return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn initx() i32 { println 2; return 2; }\nfn main() i32 { defer var x i32 = initx(); defer println 1; return 0; }", false, 0, false)
 	if out != "1\n2\n" {
 		t.Fatalf("deferred LIFO output = %q, want %q", out, "1\n2\n")
 	}
@@ -44,7 +44,7 @@ func TestEmitDeferredBareLocalDeclarationLIFOCompilesAndRuns(t *testing.T) {
 // colliding with the enclosing declaration.
 func TestEmitDeferredLocalDoesNotShadowEnclosingCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	out := emitAndRunCapture(t, "fn main() i32 { var x i32 = 10; defer var x i32 = 99; print x; return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn main() i32 { var x i32 = 10; defer var x i32 = 99; println x; return 0; }", false, 0, false)
 	if out != "10\n" {
 		t.Fatalf("deferred local shadowing output = %q, want %q (enclosing x unchanged by deferred x)", out, "10\n")
 	}
@@ -56,7 +56,7 @@ func TestEmitDeferredLocalDoesNotShadowEnclosingCompilesAndRuns(t *testing.T) {
 // deferred x (declared from y + 4) is scoped to the defer.
 func TestEmitDeferredLocalInitializerReadsEnclosingCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	out := emitAndRunCapture(t, "fn main() i32 { var y i32 = 3; defer { var x i32 = y + 4; print x; } return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn main() i32 { var y i32 = 3; defer { var x i32 = y + 4; println x; } return 0; }", false, 0, false)
 	if out != "7\n" {
 		t.Fatalf("deferred initializer read output = %q, want %q", out, "7\n")
 	}
@@ -68,7 +68,7 @@ func TestEmitDeferredLocalInitializerReadsEnclosingCompilesAndRuns(t *testing.T)
 // deferred block's x is declared and printed just before the break.
 func TestEmitDeferredBlockFiresBeforeBreakCompilesAndRuns(t *testing.T) {
 	t.Parallel()
-	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 0 { defer { var x i32 = 7; print x; } break; } i = i + 1; } return 0; }", false, 0, false)
+	out := emitAndRunCaptureBounded(t, "fn main() i32 { var i i32 = 0; while i < 5 { if i == 0 { defer { var x i32 = 7; println x; } break; } i = i + 1; } return 0; }", false, 0, false)
 	if out != "7\n" {
 		t.Fatalf("deferred block-on-break output = %q, want %q", out, "7\n")
 	}

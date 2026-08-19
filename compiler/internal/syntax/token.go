@@ -96,6 +96,7 @@ const (
 	ShiftLeft
 	ShiftRight
 	KwSlice
+	KwPrintln
 )
 
 var tokenKindNames = [...]string{
@@ -131,6 +132,7 @@ var tokenKindNames = [...]string{
 	KwNil:                  "nil",
 	KwNone:                 "none",
 	KwPrint:                "print",
+	KwPrintln:              "println",
 	KwReturn:               "return",
 	KwSlice:                "slice",
 	KwSizeof:               "sizeof",

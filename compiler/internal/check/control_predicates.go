@@ -83,6 +83,7 @@ type controlRecord struct {
 	Values                                        []controlValue
 	Composition                                   []structuralChild
 	ConditionPresent, ElsePresent, RangeInclusive bool
+	PrintNewline                                  bool
 	SyntheticSyntax                               bool
 	// IteratorSymbol is the range loop's bound iterator variable (`loop
 	// start..end : name { ... }`), zero when the loop has no bound name.
@@ -134,6 +135,9 @@ func validControlRecord(value controlRecord) bool {
 		return false
 	}
 	if value.RangeInclusive && value.Kind != controlRangeLoop {
+		return false
+	}
+	if value.PrintNewline && value.Kind != controlPrint {
 		return false
 	}
 	for _, entry := range value.Values {

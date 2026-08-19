@@ -150,9 +150,9 @@ func TestEmitInterpolatedStringPrintUnaffected(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print literal-only", "fn main() i32 { print `hello`; return 0; }", "hello\n"},
-		{"print with bool", "fn main() i32 { let b bool = true; print `b={b}`; return 0; }", "b=true\n"},
-		{"print with bool false", "fn main() i32 { let b bool = false; print `b={b}`; return 0; }", "b=false\n"},
+		{"print literal-only", "fn main() i32 { println `hello`; return 0; }", "hello\n"},
+		{"print with bool", "fn main() i32 { let b bool = true; println `b={b}`; return 0; }", "b=true\n"},
+		{"print with bool false", "fn main() i32 { let b bool = false; println `b={b}`; return 0; }", "b=false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -290,13 +290,13 @@ func TestEmitInterpolatedStringIntPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print positive int", "fn main() i32 { let x int = 42; print `b={x}`; return 0; }", "b=42\n"},
-		{"print negative int", "fn main() i32 { let x i32 = -7; print `b={x}`; return 0; }", "b=-7\n"},
-		{"print unsigned zero", "fn main() i32 { let x u64 = 0; print `b={x}`; return 0; }", "b=0\n"},
-		{"print large u64", "fn main() i32 { let x u64 = 18446744073709551615; print `b={x}`; return 0; }", "b=18446744073709551615\n"},
-		{"print narrow u8", "fn main() i32 { let x u8 = 255; print `b={x}`; return 0; }", "b=255\n"},
-		{"print narrow i8", "fn main() i32 { let x i8 = -128; print `b={x}`; return 0; }", "b=-128\n"},
-		{"print multiple ints with text", "fn main() i32 { let a int = 1; let b i64 = -2; print `{a} and {b}`; return 0; }", "1 and -2\n"},
+		{"print positive int", "fn main() i32 { let x int = 42; println `b={x}`; return 0; }", "b=42\n"},
+		{"print negative int", "fn main() i32 { let x i32 = -7; println `b={x}`; return 0; }", "b=-7\n"},
+		{"print unsigned zero", "fn main() i32 { let x u64 = 0; println `b={x}`; return 0; }", "b=0\n"},
+		{"print large u64", "fn main() i32 { let x u64 = 18446744073709551615; println `b={x}`; return 0; }", "b=18446744073709551615\n"},
+		{"print narrow u8", "fn main() i32 { let x u8 = 255; println `b={x}`; return 0; }", "b=255\n"},
+		{"print narrow i8", "fn main() i32 { let x i8 = -128; println `b={x}`; return 0; }", "b=-128\n"},
+		{"print multiple ints with text", "fn main() i32 { let a int = 1; let b i64 = -2; println `{a} and {b}`; return 0; }", "1 and -2\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -455,13 +455,13 @@ func TestEmitInterpolatedStringFloatPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print positive f64", "fn main() i32 { let x f64 = 3.5; print `v={x}`; return 0; }", "v=3.500000\n"},
-		{"print negative f64", "fn main() i32 { let x f64 = -2.25; print `v={x}`; return 0; }", "v=-2.250000\n"},
-		{"print zero", "fn main() i32 { let x f64 = 0.0; print `v={x}`; return 0; }", "v=0.000000\n"},
-		{"print f32", "fn main() i32 { let x f32 = 0.5; print `v={x}`; return 0; }", "v=0.500000\n"},
-		{"print very small f64", "fn main() i32 { let x f64 = 1.0e-10; print `v={x}`; return 0; }", "v=0.000000\n"},
-		{"print multiple floats with text", "fn main() i32 { let a f64 = 1.25; let b f32 = -3.5; print `{a} and {b}`; return 0; }", "1.250000 and -3.500000\n"},
-		{"interpolated matches bare print", "fn main() i32 { let x f64 = 3.5; print `v={x}`, x; return 0; }", "v=3.5000003.500000\n"},
+		{"print positive f64", "fn main() i32 { let x f64 = 3.5; println `v={x}`; return 0; }", "v=3.500000\n"},
+		{"print negative f64", "fn main() i32 { let x f64 = -2.25; println `v={x}`; return 0; }", "v=-2.250000\n"},
+		{"print zero", "fn main() i32 { let x f64 = 0.0; println `v={x}`; return 0; }", "v=0.000000\n"},
+		{"print f32", "fn main() i32 { let x f32 = 0.5; println `v={x}`; return 0; }", "v=0.500000\n"},
+		{"print very small f64", "fn main() i32 { let x f64 = 1.0e-10; println `v={x}`; return 0; }", "v=0.000000\n"},
+		{"print multiple floats with text", "fn main() i32 { let a f64 = 1.25; let b f32 = -3.5; println `{a} and {b}`; return 0; }", "1.250000 and -3.500000\n"},
+		{"interpolated matches bare print", "fn main() i32 { let x f64 = 3.5; println `v={x}`, x; return 0; }", "v=3.5000003.500000\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -481,7 +481,7 @@ func TestEmitInterpolatedStringFloatPrint(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			src := fmt.Sprintf("fn main() i32 { let x f64 = %s; print `v={x}`, x; return 0; }", tc.lit)
+			src := fmt.Sprintf("fn main() i32 { let x f64 = %s; println `v={x}`, x; return 0; }", tc.lit)
 			want := "v=" + fmt.Sprintf("%f", tc.v) + fmt.Sprintf("%f", tc.v) + "\n"
 			out := emitAndRunCapture(t, src, false, 0, false)
 			if out != want {
@@ -618,13 +618,13 @@ func TestEmitInterpolatedStringStrPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print str", "fn main() i32 { let s str = \"world\"; print `hello {s}`; return 0; }", "hello world\n"},
-		{"print empty str", "fn main() i32 { let s str = \"\"; print `prefix={s}suffix`; return 0; }", "prefix=suffix\n"},
-		{"print multiple strs", "fn main() i32 { let a str = \"foo\"; let b str = \"bar\"; print `{a}-{b}`; return 0; }", "foo-bar\n"},
-		{"print str with bool", "fn main() i32 { let s str = \"yes\"; let b bool = true; print `{s}={b}`; return 0; }", "yes=true\n"},
-		{"print str with int", "fn main() i32 { let s str = \"count\"; let n int = 7; print `{s}={n}`; return 0; }", "count=7\n"},
-		{"print str with float", "fn main() i32 { let s str = \"val\"; let f f64 = 2.5; print `{s}={f}`; return 0; }", "val=2.500000\n"},
-		{"interpolated matches bare print", "fn main() i32 { let s str = \"hello\"; print `msg={s}`, s; return 0; }", "msg=hellohello\n"},
+		{"print str", "fn main() i32 { let s str = \"world\"; println `hello {s}`; return 0; }", "hello world\n"},
+		{"print empty str", "fn main() i32 { let s str = \"\"; println `prefix={s}suffix`; return 0; }", "prefix=suffix\n"},
+		{"print multiple strs", "fn main() i32 { let a str = \"foo\"; let b str = \"bar\"; println `{a}-{b}`; return 0; }", "foo-bar\n"},
+		{"print str with bool", "fn main() i32 { let s str = \"yes\"; let b bool = true; println `{s}={b}`; return 0; }", "yes=true\n"},
+		{"print str with int", "fn main() i32 { let s str = \"count\"; let n int = 7; println `{s}={n}`; return 0; }", "count=7\n"},
+		{"print str with float", "fn main() i32 { let s str = \"val\"; let f f64 = 2.5; println `{s}={f}`; return 0; }", "val=2.500000\n"},
+		{"interpolated matches bare print", "fn main() i32 { let s str = \"hello\"; println `msg={s}`, s; return 0; }", "msg=hellohello\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -759,14 +759,14 @@ func TestEmitInterpolatedStringCharPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print ascii char", "fn main() i32 { let c char = 'x'; print `c={c}`; return 0; }", "c=x\n"},
-		{"print non-ascii char", "fn main() i32 { let c char = '\u00E9'; print `c={c}`; return 0; }", "c=\u00E9\n"},
-		{"print multiple chars", "fn main() i32 { let a char = 'a'; let b char = '\u00E9'; print `{a}-{b}`; return 0; }", "a-\u00E9\n"},
-		{"print char with bool", "fn main() i32 { let c char = 'x'; let b bool = true; print `{c}={b}`; return 0; }", "x=true\n"},
-		{"print char with int", "fn main() i32 { let c char = 'x'; let n int = 7; print `{c}={n}`; return 0; }", "x=7\n"},
-		{"print char with float", "fn main() i32 { let c char = 'x'; let f f64 = 2.5; print `{c}={f}`; return 0; }", "x=2.500000\n"},
-		{"print char with str", "fn main() i32 { let c char = 'x'; let s str = \"hi\"; print `{c}-{s}`; return 0; }", "x-hi\n"},
-		{"interpolated matches bare print", "fn main() i32 { let c char = '\u00E9'; print `c={c}`, c; return 0; }", "c=\u00E9\u00E9\n"},
+		{"print ascii char", "fn main() i32 { let c char = 'x'; println `c={c}`; return 0; }", "c=x\n"},
+		{"print non-ascii char", "fn main() i32 { let c char = '\u00E9'; println `c={c}`; return 0; }", "c=\u00E9\n"},
+		{"print multiple chars", "fn main() i32 { let a char = 'a'; let b char = '\u00E9'; println `{a}-{b}`; return 0; }", "a-\u00E9\n"},
+		{"print char with bool", "fn main() i32 { let c char = 'x'; let b bool = true; println `{c}={b}`; return 0; }", "x=true\n"},
+		{"print char with int", "fn main() i32 { let c char = 'x'; let n int = 7; println `{c}={n}`; return 0; }", "x=7\n"},
+		{"print char with float", "fn main() i32 { let c char = 'x'; let f f64 = 2.5; println `{c}={f}`; return 0; }", "x=2.500000\n"},
+		{"print char with str", "fn main() i32 { let c char = 'x'; let s str = \"hi\"; println `{c}-{s}`; return 0; }", "x-hi\n"},
+		{"interpolated matches bare print", "fn main() i32 { let c char = '\u00E9'; println `c={c}`, c; return 0; }", "c=\u00E9\u00E9\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -964,12 +964,12 @@ func TestEmitInterpolatedStringEnumPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print enum", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; print `color={c}`; return 0; }", "color=Color.red\n"},
-		{"print enum second variant", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; print `color={c}`; return 0; }", "color=Color.green\n"},
-		{"print multiple enums", "type Color = enum { red, green, blue };\nfn main() i32 { let a Color = Color.green; let b Color = Color.blue; print `{a}-{b}`; return 0; }", "Color.green-Color.blue\n"},
-		{"print enum mixed with all kinds", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let w str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let ch char = 'x'; print `{c},{w},{ok},{ver},{pi},{ch}`; return 0; }", "Color.blue,pebble,true,3,3.140000,x\n"},
-		{"print inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { print `pick={Color.blue}`; return 0; }", "pick=Color.blue\n"},
-		{"interpolated matches bare print", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; print `c={c}`, c; return 0; }", "c=Color.greenColor.green\n"},
+		{"print enum", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.red; println `color={c}`; return 0; }", "color=Color.red\n"},
+		{"print enum second variant", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; println `color={c}`; return 0; }", "color=Color.green\n"},
+		{"print multiple enums", "type Color = enum { red, green, blue };\nfn main() i32 { let a Color = Color.green; let b Color = Color.blue; println `{a}-{b}`; return 0; }", "Color.green-Color.blue\n"},
+		{"print enum mixed with all kinds", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.blue; let w str = \"pebble\"; let ok bool = true; let ver int = 3; let pi f64 = 3.14; let ch char = 'x'; println `{c},{w},{ok},{ver},{pi},{ch}`; return 0; }", "Color.blue,pebble,true,3,3.140000,x\n"},
+		{"print inline variant literal", "type Color = enum { red, green, blue };\nfn main() i32 { println `pick={Color.blue}`; return 0; }", "pick=Color.blue\n"},
+		{"interpolated matches bare print", "type Color = enum { red, green, blue };\nfn main() i32 { let c Color = Color.green; println `c={c}`, c; return 0; }", "c=Color.greenColor.green\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1014,7 +1014,7 @@ func TestEmitInterpolatedStringEnumPrintWithStructOperandCompilesAndRuns(t *test
 		src  string
 		want string
 	}{
-		{"enum interpolation with struct operand", "type Color = enum { red, green, blue };\ntype P = struct { x i32; };\nfn main() i32 { let c Color = Color.green; let p P = P.{ x = 7 }; print `c={c}`, p; return 0; }", "c=Color.greenP{ x: 7 }\n"},
+		{"enum interpolation with struct operand", "type Color = enum { red, green, blue };\ntype P = struct { x i32; };\nfn main() i32 { let c Color = Color.green; let p P = P.{ x = 7 }; println `c={c}`, p; return 0; }", "c=Color.greenP{ x: 7 }\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1091,12 +1091,12 @@ func TestEmitInterpolatedStringStructPrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print two-field struct", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; print `pt={p}`; return 0; }", "pt=Point{ x: 1, y: 2 }\n"},
-		{"print three-field struct", "type Config = struct { name str; count int; };\nfn main() i32 { let c Config = Config.{ name = \"hello\", count = 3 }; print `cfg={c}`; return 0; }", "cfg=Config{ name: hello, count: 3 }\n"},
-		{"print struct with float", "type Measure = struct { val f64; };\nfn main() i32 { let m Measure = Measure.{ val = -2.5 }; print `m={m}`; return 0; }", "m=Measure{ val: -2.500000 }\n"},
-		{"print inline struct construction", "type Point = struct { x int; y int; };\nfn main() i32 { print `pt={Point.{ x = 7, y = 11}}`; return 0; }", "pt=Point{ x: 7, y: 11 }\n"},
-		{"interpolated matches bare print", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 5, y = 10 }; print `p={p}`, p; return 0; }", "p=Point{ x: 5, y: 10 }Point{ x: 5, y: 10 }\n"},
-		{"print struct mixed with other kinds", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; let b bool = true; let n int = 42; print `mix={p},{b},{n}`; return 0; }", "mix=Point{ x: 1, y: 2 },true,42\n"},
+		{"print two-field struct", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; println `pt={p}`; return 0; }", "pt=Point{ x: 1, y: 2 }\n"},
+		{"print three-field struct", "type Config = struct { name str; count int; };\nfn main() i32 { let c Config = Config.{ name = \"hello\", count = 3 }; println `cfg={c}`; return 0; }", "cfg=Config{ name: hello, count: 3 }\n"},
+		{"print struct with float", "type Measure = struct { val f64; };\nfn main() i32 { let m Measure = Measure.{ val = -2.5 }; println `m={m}`; return 0; }", "m=Measure{ val: -2.500000 }\n"},
+		{"print inline struct construction", "type Point = struct { x int; y int; };\nfn main() i32 { println `pt={Point.{ x = 7, y = 11}}`; return 0; }", "pt=Point{ x: 7, y: 11 }\n"},
+		{"interpolated matches bare print", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 5, y = 10 }; println `p={p}`, p; return 0; }", "p=Point{ x: 5, y: 10 }Point{ x: 5, y: 10 }\n"},
+		{"print struct mixed with other kinds", "type Point = struct { x int; y int; };\nfn main() i32 { let p Point = Point.{ x = 1, y = 2 }; let b bool = true; let n int = 42; println `mix={p},{b},{n}`; return 0; }", "mix=Point{ x: 1, y: 2 },true,42\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1234,12 +1234,12 @@ func TestEmitInterpolatedStringTuplePrint(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"print two-element tuple", "fn main() i32 { let t (int, int) = (1, 2); print `t={t}`; return 0; }", "t=(1, 2)\n"},
-		{"print mixed tuple", "fn main() i32 { let t (int, str, bool, f64) = (1, \"hello\", false, 2.5); print `t={t}`; return 0; }", "t=(1, hello, false, 2.500000)\n"},
-		{"print inline tuple construction", "fn main() i32 { print `t={(7, \"a\")}`; return 0; }", "t=(7, a)\n"},
-		{"interpolated matches bare print", "fn main() i32 { let t (int, int) = (5, 10); print `t={t}`, t; return 0; }", "t=(5, 10)(5, 10)\n"},
-		{"one-element tuple matches bare print", "fn main() i32 { let t (int,) = (5,); print `t={t}`, t; return 0; }", "t=(5,)(5,)\n"},
-		{"print tuple mixed with other kinds", "fn main() i32 { let t (int, int) = (1, 2); let b bool = true; let n int = 42; print `mix={t},{b},{n}`; return 0; }", "mix=(1, 2),true,42\n"},
+		{"print two-element tuple", "fn main() i32 { let t (int, int) = (1, 2); println `t={t}`; return 0; }", "t=(1, 2)\n"},
+		{"print mixed tuple", "fn main() i32 { let t (int, str, bool, f64) = (1, \"hello\", false, 2.5); println `t={t}`; return 0; }", "t=(1, hello, false, 2.500000)\n"},
+		{"print inline tuple construction", "fn main() i32 { println `t={(7, \"a\")}`; return 0; }", "t=(7, a)\n"},
+		{"interpolated matches bare print", "fn main() i32 { let t (int, int) = (5, 10); println `t={t}`, t; return 0; }", "t=(5, 10)(5, 10)\n"},
+		{"one-element tuple matches bare print", "fn main() i32 { let t (int,) = (5,); println `t={t}`, t; return 0; }", "t=(5,)(5,)\n"},
+		{"print tuple mixed with other kinds", "fn main() i32 { let t (int, int) = (1, 2); let b bool = true; let n int = 42; println `mix={t},{b},{n}`; return 0; }", "mix=(1, 2),true,42\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

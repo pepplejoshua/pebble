@@ -205,7 +205,7 @@ func isExpressionFollower(kind TokenKind) bool {
 	case EOF, Comma, Semicolon, RightParen, RightBracket, RightBrace, LeftBrace,
 		InterpolationExprEnd, Colon, FatArrow, Assign, Range, RangeInclusive,
 		KwImport, KwLet, KwVar, KwType, KwExtern, KwReturn, KwIf, KwWhile,
-		KwLoop, KwFor, KwSwitch, KwDefer, KwPrint, KwBreak, KwContinue:
+		KwLoop, KwFor, KwSwitch, KwDefer, KwPrint, KwPrintln, KwBreak, KwContinue:
 		return true
 	default:
 		return false

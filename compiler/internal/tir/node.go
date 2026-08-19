@@ -441,6 +441,10 @@ type Node struct {
 	RangeInclusive   bool
 	ConditionPresent bool
 	CaseValue        symbol.SymbolID
+	// Newline is tir.Print-specific: true for a statement opened by the
+	// `println` keyword (which emits a trailing newline), false for `print`.
+	// It is the zero value (false) by default, and no other node kind reads it.
+	Newline bool
 
 	// CheckedSlice bound presence. A CheckedSlice's Children after the base
 	// (Children[0]) are the present bounds only — a 2-child CheckedSlice is

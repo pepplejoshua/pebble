@@ -736,6 +736,35 @@ fn f() void {
 	}
 }
 
+func TestBuildPrintAndPrintlnSetNewlineFlag(t *testing.T) {
+	// The `println` keyword (which emits a trailing newline) must set the
+	// tir.Print node's Newline flag, while a plain `print` (which emits no
+	// trailing newline) leaves it as the zero value (false). The AST node
+	// kind (PrintStmt) is shared by both keywords; only the stored opening
+	// token differs, and finishPrint maps it onto the newline bit.
+	unit, ok := buildUnitFixture(t, `
+fn f() void {
+    print 1;
+    println 2;
+}
+`)
+	if !ok || unit == nil {
+		t.Fatal("print/println fixture was not buildable")
+	}
+	printNodes := nodesOfKind(unit, tir.Print)
+	if len(printNodes) != 2 {
+		t.Fatalf("Print nodes = %d, want 2 (one print, one println)", len(printNodes))
+	}
+	plain := unit.Nodes()[printNodes[0]-1]
+	ln := unit.Nodes()[printNodes[1]-1]
+	if plain.Kind != tir.Print || plain.Newline {
+		t.Fatalf("first Print node = %+v, want Newline=false for `print`", plain)
+	}
+	if ln.Kind != tir.Print || !ln.Newline {
+		t.Fatalf("second Print node = %+v, want Newline=true for `println`", ln)
+	}
+}
+
 func TestBuildUnitG2ForWithClausesAndInfinite(t *testing.T) {
 	unit, ok := buildUnitFixture(t, `
 fn f(limit i32) i32 {

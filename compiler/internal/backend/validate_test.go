@@ -376,7 +376,7 @@ func TestEmitTupleWithStrElementCompilesAndRuns(t *testing.T) {
 	// typedef's element C type is PebbleStr and the element expression is
 	// built by buildStrOperand. The program constructs the tuple and prints
 	// it, exercising the whole tuple-typedef + brace-list path.
-	out := emitAndRunCapture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); print t; return 0; }", false, 0, false)
+	out := emitAndRunCapture(t, "fn main() i32 { let t (i32, str) = (1, \"hi\"); println t; return 0; }", false, 0, false)
 	if want := "(1, hi)\n"; out != want {
 		t.Fatalf("compiled program output = %q, want %q", out, want)
 	}

@@ -2002,8 +2002,9 @@ func assertEmitRejects(t *testing.T, unit *tir.Unit, snapshot *types.Snapshot, e
 
 // print statement emission — every operand type family the checker allows
 // (C0612 restricts print operands to bool, char, str, any integer builtin, or
-// any float builtin), one combined printf per print statement ending in \n,
-// matching v1's print codegen shape.
+// any float builtin), one combined printf per print statement, ending in the
+// literal \n only for a `println` statement (`print` emits no trailing
+// newline), matching v1's print codegen shape.
 
 // assertEmitRejectsContaining is assertEmitRejects for rejections whose error
 // message must name a specific part of the unsupported shape (here: the

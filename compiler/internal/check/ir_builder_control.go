@@ -198,7 +198,7 @@ func (s *irBuildState) buildControlRecord(ctrl *controlRecord) (tir.NodeID, bool
 			}
 			values = append(values, value)
 		}
-		node, ok = s.addNode(tir.Node{Kind: tir.Print, Span: ctrl.Header.Span, Children: values}, ctrl.Header.Syntax)
+		node, ok = s.addNode(tir.Node{Kind: tir.Print, Span: ctrl.Header.Span, Newline: ctrl.PrintNewline, Children: values}, ctrl.Header.Syntax)
 	case controlReturn:
 		values := make([]tir.NodeID, 0, 1)
 		if len(ctrl.Values) > 1 {

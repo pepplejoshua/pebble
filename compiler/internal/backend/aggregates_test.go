@@ -109,7 +109,7 @@ func TestEmitContextAsArgumentPrintsFieldValue(t *testing.T) {
 	out := emitAndRunCapture(t, `fn use_context(c Context) int {
     var p *i32 = (c.default_allocator.alloc)(c.default_allocator.ptr, 4) as *i32;
     *p = 42;
-    print *p;
+    println *p;
     (c.default_allocator.free)(c.default_allocator.ptr, p as *void);
     return 0;
 }
@@ -979,8 +979,8 @@ func TestEmitArrayHelperParameterAndResultCompilesAndRuns(t *testing.T) {
 fn main() int {
     var values [5]int = [2, 1, 3, 4, 5];
     let sorted = sort_once(values);
-    print sorted[0];
-    print sorted[1];
+    println sorted[0];
+    println sorted[1];
     return 0;
 }`, false, 0, false)
 	if output != "1\n2\n" {
@@ -5063,7 +5063,7 @@ func TestEmitSizeofTaggedUnionOnlyReferenceCompilesAndRuns(t *testing.T) {
 };
 fn main() int {
     let s = sizeof Choice;
-    print s;
+    println s;
     return 0;
 }`, false, 0, false)
 	if out != "4\n" {
@@ -5136,7 +5136,7 @@ func TestEmitSizeofFixedArrayCompilesAndRuns(t *testing.T) {
 	// struct, or pointer".
 	out := emitAndRunCapture(t, `fn main() int {
     let s = sizeof [4]int;
-    print s;
+    println s;
     return 0;
 }`, false, 0, false)
 	if out != "32\n" {
@@ -5198,7 +5198,7 @@ func TestEmitSizeofPlainStructOnlyReferenceCompilesAndRuns(t *testing.T) {
 };
 fn main() int {
     let s = sizeof Pair;
-    print s;
+    println s;
     return 0;
 }`, false, 0, false)
 	if out != "16\n" {
@@ -5521,7 +5521,7 @@ func TestEmitSizeofPlainEnumOnlyReferenceCompilesAndRuns(t *testing.T) {
 	out := emitAndRunCapture(t, `type Color = enum { red, green, blue };
 fn main() int {
     let s = sizeof Color;
-    print s;
+    println s;
     return 0;
 }`, false, 0, false)
 	if out != "4\n" {
@@ -6689,7 +6689,7 @@ func TestEmitPrintIndexesMethodCallSliceResultCompilesAndRuns(t *testing.T) {
 fn main() int {
     var a [3]i32 = [10, 20, 30];
     var b Bag = Bag.{ data = a[:] };
-    print b.view()[1];
+    println b.view()[1];
     return 0;
 }`, false, 0, false)
 	if output != "20\n" {
@@ -6707,12 +6707,12 @@ func TestEmitPrintIndexesMethodCallSliceResultEvaluatesBaseOnce(t *testing.T) {
 	// counting occurrences of "99" proves single evaluation.
 	output := emitAndRunCapture(t, `type Bag = struct {
     data []i32;
-    fn view(self Bag) []i32 { print 99; return self.data[:]; }
+    fn view(self Bag) []i32 { println 99; return self.data[:]; }
 };
 fn main() int {
     var a [3]i32 = [10, 20, 30];
     var b Bag = Bag.{ data = a[:] };
-    print b.view()[1];
+    println b.view()[1];
     return 0;
 }`, false, 0, false)
 	if want := "99\n20\n"; output != want {
@@ -6734,7 +6734,7 @@ func TestEmitPrintIndexesMethodCallSliceResultCharElementCompilesAndRuns(t *test
 fn main() int {
     var a [3]char = ['h', 'i', '!'];
     var b Box = Box.{ data = a[:] };
-    print b.view()[1];
+    println b.view()[1];
     return 0;
 }`, false, 0, false)
 	if output != "i\n" {
