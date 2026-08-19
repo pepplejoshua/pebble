@@ -212,6 +212,100 @@ func TestErrorTaintHasFieldNoMemberDoesNotSuppressIndependentErrors(t *testing.T
 	}
 }
 
+// TestErrorTaintAbsorbsViaUnify asserts that when unify() absorbs a termError
+// operand, the other operand's union-find root is tainted. A fresh inference
+// variable that unifies with an already-reported error term (the recovery term
+// from Session.Error, produced whenever upstream syntax or resolution already
+// failed) must inherit that error instead of sitting unresolved and reporting
+// its own T0510 later.
+func TestErrorTaintAbsorbsViaUnify(t *testing.T) {
+	program, _ := testProgram(t)
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	err := session.Error(Origin{Role: "undefined name"})
+	freshLeft := session.Variable(Origin{Role: "fresh left"})
+	freshRight := session.Variable(Origin{Role: "fresh right"})
+	if _, ok := session.unify(err, freshLeft, Origin{Role: "unify error on left"}); !ok {
+		t.Fatalf("absorbing an error term must report success without a diagnostic: %+v", diagnostics.Items())
+	}
+	if !session.termTainted(freshLeft) {
+		t.Fatalf("fresh left variable must inherit the error taint from the absorbed term")
+	}
+	if _, ok := session.unify(freshRight, err, Origin{Role: "unify error on right"}); !ok {
+		t.Fatalf("absorbing an error term must report success without a diagnostic: %+v", diagnostics.Items())
+	}
+	if !session.termTainted(freshRight) {
+		t.Fatalf("fresh right variable must inherit the error taint from the absorbed term")
+	}
+	if hasDiagnostic(diagnostics, CodeUnresolved) || hasDiagnostic(diagnostics, CodeUnification) {
+		t.Fatalf("absorbing an error term must not report any diagnostic: %+v", diagnostics.Items())
+	}
+	session.Add(Equal(session.Variable(Origin{Role: "dependent"}), freshLeft, Origin{Role: "later unify"}))
+	session.PublishSymbol(1, freshLeft)
+	session.Solve()
+	if hasDiagnostic(diagnostics, CodeUnresolved) {
+		t.Fatalf("cells depending on a tainted root must not report T0510: %+v", diagnostics.Items())
+	}
+}
+
+// TestErrorTaintAbsorbDoesNotSuppressIndependentErrors is the independence check
+// for the unify-absorption family: a fresh variable that absorbs an error term
+// is tainted, but a second, unrelated real type error in the same session still
+// reports independently. Only cells structurally downstream of the absorbed
+// error are suppressed; the root diagnostics are never swallowed.
+func TestErrorTaintAbsorbDoesNotSuppressIndependentErrors(t *testing.T) {
+	program, store := testProgram(t)
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+
+	x := session.Variable(Origin{Role: "x"})
+	session.Add(Equal(x, session.Error(Origin{Role: "undefined name"}), Origin{Role: "var initializer"}))
+	session.Add(Equal(session.Variable(Origin{Role: "operator result"}), x, Origin{Role: "arithmetic result"}))
+	session.PublishSymbol(1, x)
+
+	a := session.Variable(Origin{Role: "a"})
+	session.Add(Equal(a, session.Known(store.Builtins().Int), Origin{Role: "a is int"}))
+	session.Add(Equal(a, session.Known(store.Builtins().Str), Origin{Role: "a is str (conflict)"}))
+	session.PublishSymbol(2, a)
+	session.Solve()
+
+	if !hasDiagnostic(diagnostics, CodeUnification) {
+		t.Fatalf("independent unify failure must still be reported: %+v", diagnostics.Items())
+	}
+	if countDiagnostics(diagnostics, CodeUnresolved) != 0 {
+		t.Fatalf("no T0510 cascade expected from the absorbed error: %+v", diagnostics.Items())
+	}
+}
+
+// TestErrorTaintAbsorbsViaUnifySource pins the end-to-end shape of the fix: a
+// source program whose binary-operator operand is an undefined name produces
+// only the resolution N0001, never a cascading T0510. prepareSource runs the
+// resolution phase, so the N0001 lands in the prepare diagnostics; the session
+// then mirrors the constraint the check layer emits for the failed initializer
+// (Equal(var term, Session.Error term)) and must leave the variable tainted.
+func TestErrorTaintAbsorbsViaUnifySource(t *testing.T) {
+	program, pd := prepareSource(t, []byte(`fn main() int {
+  var x = foo_bar_baz + 1;
+  return x;
+}`))
+	if !hasDiagnostic(pd, symbol.CodeUndefinedName) {
+		t.Fatalf("prepare must report the undefined name: %+v", pd.Items())
+	}
+	diagnostics := diagnostic.NewDiagnosticSet()
+	session := NewSession(program, diagnostics, Config{})
+	x := session.Variable(Origin{Role: "var x"})
+	session.Add(Equal(x, session.Error(Origin{Role: "undefined operand"}), Origin{Role: "var initializer"}))
+	session.PublishSymbol(1, x)
+	session.Solve()
+
+	if hasDiagnostic(diagnostics, CodeUnresolved) {
+		t.Fatalf("var bound to an absorbed error term must not report T0510: %+v", diagnostics.Items())
+	}
+	if countDiagnostics(diagnostics, symbol.CodeUndefinedName) != 0 {
+		t.Fatalf("the infer session must not duplicate the resolution N0001: %+v", diagnostics.Items())
+	}
+}
+
 // nominalFieldFixture prepares a program with a Box struct, the session, and a
 // fresh field variable for a HasField constraint on a nominal Box receiver.
 func nominalFieldFixture(t *testing.T, name string) (*Program, *types.Store, *diagnostic.DiagnosticSet, *Session, Term) {

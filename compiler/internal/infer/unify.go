@@ -22,6 +22,8 @@ func (s *Session) unify(a, b Term, origin Origin) (bool, bool) {
 		return false, s.conflict(CodeResourceLimit, "constraint contains a foreign term", origin)
 	}
 	if a.kind == termError || b.kind == termError {
+		s.taintResult(a)
+		s.taintResult(b)
 		return false, true
 	}
 	if !s.stepUnify(origin) {
