@@ -1489,8 +1489,17 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "print"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "print"
+            },
+            {
+              "type": "STRING",
+              "value": "println"
+            }
+          ]
         },
         {
           "type": "SEQ",

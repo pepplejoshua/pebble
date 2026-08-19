@@ -85,7 +85,7 @@ module.exports = grammar({
     switch_statement: ($) => seq("switch", $._expression, "{", repeat1($.switch_case), "}"),
     switch_case: ($) => seq(choice(seq("case", commaSep1($._expression)), "else"), ":", $._statement),
     defer_statement: ($) => seq("defer", $._statement),
-    print_statement: ($) => seq("print", commaSep1($._expression), ";"),
+    print_statement: ($) => seq(choice("print", "println"), commaSep1($._expression), ";"),
     jump_statement: ($) => seq(choice("break", "continue"), ";"),
     assignment_or_expression_statement: ($) => seq($._expression,
       optional(seq($.assignment_operator, $._expression)), ";"),

@@ -39,6 +39,7 @@
   "let"
   "loop"
   "print"
+  "println"
   "return"
   "slice"
   "sizeof"
