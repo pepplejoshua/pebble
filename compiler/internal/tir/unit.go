@@ -226,6 +226,15 @@ func (u *Unit) Nodes() []Node {
 	return out
 }
 
+// ReadOnlyNodes returns the immutable node store without copying it. Callers
+// must not mutate the returned nodes or any of their nested slices.
+func (u *Unit) ReadOnlyNodes() []Node {
+	if u == nil {
+		return nil
+	}
+	return u.nodes
+}
+
 // SourceMap looks up the runtime node for a surface reference.
 func (u *Unit) SourceMap(ref symbol.SyntaxRef) (NodeID, bool) {
 	if u == nil || u.sourceMap == nil {

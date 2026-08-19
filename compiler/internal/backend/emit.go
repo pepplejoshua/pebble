@@ -637,7 +637,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 	// an unreferenced one emits no declaration, and its real C name is not
 	// required to exist in this program at all.
 	externCandidates := make(map[symbol.SymbolID]struct{})
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.ExternDeclaration && node.Function == 0 {
 			externCandidates[node.Symbol] = struct{}{}
 		}
@@ -1115,7 +1115,7 @@ func Emit(unit *tir.Unit, snapshot *types.Snapshot, entrySymbol symbol.SymbolID,
 // than tracked per function — precisely matching which libc header each extern
 // needs is real complexity for zero real benefit right now.
 func hasCExterns(unit *tir.Unit) bool {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.ExternDeclaration && node.Convention == types.C {
 			return true
 		}

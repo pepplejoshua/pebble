@@ -1727,7 +1727,7 @@ func buildUnionConstruction(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 // collectUnionTypesWalk enforces at collection time needs no repetition here.
 func resolveUnionInfoForValue(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) (unionInfo, error) {
 	payloads := make(map[symbol.SymbolID]types.TypeID)
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind != tir.VariantConstruct || node.Type != id || len(node.Children) == 0 {
 			continue
 		}

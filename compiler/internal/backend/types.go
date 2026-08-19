@@ -64,7 +64,7 @@ func isSupportedArrayElementType(unit *tir.Unit, snapshot *types.Snapshot, id ty
 // recovery must be scoped to the instantiation's own type or the first
 // constructed instantiation would supply the field type for the rest.
 func instantiatedFieldType(unit *tir.Unit, structType types.TypeID, member symbol.SymbolID) (types.TypeID, bool) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind != tir.RecordConstruct || node.Type != structType {
 			continue
 		}
@@ -334,7 +334,7 @@ func isEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID) bool 
 	for _, m := range typeDecl.Members {
 		members[m] = true
 	}
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if !members[node.Symbol] {
 			continue
 		}
@@ -414,7 +414,7 @@ func isDefinitelyEnumType(unit *tir.Unit, snapshot *types.Snapshot, id types.Typ
 		members[m] = true
 	}
 	sawVariant := false
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if !members[node.Symbol] {
 			continue
 		}
@@ -441,7 +441,7 @@ func isTaggedUnionType(unit *tir.Unit, snapshot *types.Snapshot, id types.TypeID
 	if !isEnumType(unit, snapshot, id) {
 		return false
 	}
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.VariantConstruct && node.Type == id && len(node.Children) >= 1 {
 			return true
 		}
@@ -530,12 +530,12 @@ func unionVariantPayloadMember(unit *tir.Unit, snapshot *types.Snapshot, ownerTy
 	if !declared {
 		return false
 	}
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.VariantConstruct && node.Type == ownerType && node.Member == member && len(node.Children) >= 1 {
 			return true
 		}
 	}
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind != tir.FieldPlace || node.Member != member || len(node.Children) != 1 {
 			continue
 		}
@@ -730,7 +730,7 @@ func declaredFieldType(unit *tir.Unit, snapshot *types.Snapshot, structType type
 		}
 		break
 	}
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.FieldPlace && node.Member == member && node.Type != 0 {
 			if structOf, ok := fieldPlaceStructType(unit, node); ok && structOf == structType {
 				return node.Type, true

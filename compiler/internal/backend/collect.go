@@ -22,7 +22,7 @@ func findEntryDeclaration(unit *tir.Unit, entrySymbol symbol.SymbolID) (tir.Node
 // declaration; a generic instance would carry non-empty TypeArgs and is
 // excluded, since generic calls are not lowered here.
 func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what string) (tir.Node, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if (node.Kind != tir.FunctionDeclaration && node.Kind != tir.ExternDeclaration) || node.Symbol != symbolID || len(node.TypeArgs) != 0 {
 			continue
 		}
@@ -32,7 +32,7 @@ func findFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, what stri
 }
 
 func findCalledFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, typeArgs []types.TypeID) (tir.Node, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind != tir.FunctionDeclaration || node.Symbol != symbolID || len(node.TypeArgs) != len(typeArgs) {
 			continue
 		}
@@ -48,7 +48,7 @@ func findCalledFunctionDeclaration(unit *tir.Unit, symbolID symbol.SymbolID, typ
 }
 
 func findCalledFunctionByResult(unit *tir.Unit, symbolID symbol.SymbolID, result types.TypeID) (tir.Node, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.FunctionDeclaration && node.Symbol == symbolID && len(node.TypeArgs) != 0 && node.ResultType == result {
 			return node, nil
 		}

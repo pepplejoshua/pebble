@@ -4789,7 +4789,7 @@ func sourceNameAt(fileSet *source.FileSet, span source.Span) (string, error) {
 // structSourceName resolves one struct type's declared source name (Point) by
 // slicing the type's own TypeDeclaration node span out of its source file.
 func structSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
 			return sourceNameAt(fileSet, node.Span)
 		}
@@ -4800,7 +4800,7 @@ func structSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.Symbo
 // fieldSourceName resolves one struct field's declared source name (x) by
 // slicing the field's own FieldDeclaration node span out of its source file.
 func fieldSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.FieldDeclaration && node.Symbol == member {
 			return sourceNameAt(fileSet, node.Span)
 		}
@@ -4814,7 +4814,7 @@ func fieldSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.Symb
 // shared because a TypeDeclaration node carries the declared identifier for
 // every nominal kind.
 func enumSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
 			return sourceNameAt(fileSet, node.Span)
 		}
@@ -4828,7 +4828,7 @@ func enumSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolI
 // for an enum's/struct's declared name, shared because a TypeDeclaration node
 // carries the declared identifier for every nominal kind.
 func unionSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.TypeDeclaration && node.Symbol == decl {
 			return sourceNameAt(fileSet, node.Span)
 		}
@@ -4842,7 +4842,7 @@ func unionSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.Symbol
 // declared name (the checker emits one VariantDeclaration node per enum
 // member, with the member symbol's span covering the variant's identifier).
 func variantSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.VariantDeclaration && node.Symbol == member {
 			return sourceNameAt(fileSet, node.Span)
 		}
@@ -4856,7 +4856,7 @@ func variantSourceName(unit *tir.Unit, fileSet *source.FileSet, member symbol.Sy
 // type's declared name, shared because a FunctionDeclaration node carries the
 // declared identifier for every function declaration.
 func functionSourceName(unit *tir.Unit, fileSet *source.FileSet, decl symbol.SymbolID) (string, error) {
-	for _, node := range unit.Nodes() {
+	for _, node := range unit.ReadOnlyNodes() {
 		if node.Kind == tir.FunctionDeclaration && node.Symbol == decl {
 			return sourceNameAt(fileSet, node.Span)
 		}
