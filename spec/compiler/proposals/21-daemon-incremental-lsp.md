@@ -1,10 +1,32 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** planning complete, slices not yet started. This document is
-being written up front (unlike some proposals in this series that grew
-slice-by-slice) because the phase-concreteness investigation below already
-surfaced the real architectural fork before any code was written — worth
-capturing that reasoning here rather than losing it.
+**Status:** in progress. 21.1a is implemented, committed, and pushed
+(`ca653de`). This document is being updated in place as each slice lands,
+the same way `07`/`19` are — treat "Completed slices" below as authoritative
+fact and "Slice record and remaining work" as current plan, sharpened as
+each piece is actually built.
+
+## Completed slices (implemented, verified, committed)
+
+- **21.1a — daemon process lifecycle skeleton** (`ca653de`):
+  `pebc daemon {start,build,ping,stop}`. Single instance per project root
+  (Unix socket at `<root>/.pebble/daemon.sock`, probe-then-attach), idle-
+  timeout self-shutdown, stale-binary self-restart via re-exec with the
+  listener fd handed to the child. No incrementality yet — every build
+  request still runs the full pipeline via a new `compileOnce` (extracted
+  from the pre-existing one-shot path, used unchanged by both). Real,
+  measured win at this slice: ~5-6x faster per request purely from process
+  reuse (~0.39s cold one-shot vs. ~0.06-0.07s daemon-served). `fsnotify`
+  added as the first third-party dependency (unwired — real watching is
+  21.1b). Three real bugs found and fixed during independent verification,
+  all in the re-exec/socket-ownership path (a `net.UnixListener.Close()`
+  unlink-on-close default, a throwaway listener bind-then-close race, and
+  a `handedOff`-vs-`inherited` ownership conflation that deleted the
+  socket out from under a freshly spawned child) — see the commit message
+  for the full account; every one of the three was caught by an actual
+  multi-process reproduction, not by code review, and the first two fixes
+  that looked complete on inspection alone were each proven insufficient
+  by rerunning the real repro.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -123,25 +145,8 @@ doc" below) — the same bar every slice in `07`/`19`/`20` was held to.
 
 ### 21.1 — Daemon core
 
-- **21.1a — process lifecycle skeleton.** `pebc daemon` subcommand: a
-  long-lived process owning one warm `Program`/module graph (built from the
-  existing callable pipeline in `compiler/cmd/pebc/main.go` — confirmed
-  callable-in-a-loop shaped, only `main()` itself calls `os.Exit`). No
-  incrementality yet at this slice — every rebuild request still does a
-  full re-parse+re-check, matching today's behavior exactly. What's new:
-  the process itself. One instance per project root, discovered via a
-  socket/lock file (e.g. `.pebble/daemon.sock`); idle-timeout
-  self-shutdown; self-restart when the `pebc` binary itself has changed
-  (content hash of the running binary, checked periodically or on next
-  request) rather than silently serving results built by a stale compiler.
-  **Test:** start the daemon, issue two build requests without editing
-  anything, confirm the second is measurably faster than a cold one-shot
-  `pebc` invocation purely from process/pipeline-setup reuse (even with
-  full re-check, this should already show *some* win from not re-execing a
-  process); confirm idle-timeout shutdown; confirm a second `daemon start`
-  when one's already running attaches to the existing instance instead of
-  double-spawning; confirm the stale-binary self-restart with a real
-  rebuild-and-touch test.
+- **21.1a — process lifecycle skeleton.** Done — see "Completed slices"
+  above.
 - **21.1b — file watching + content-hash change detection.** Add the file
   watcher dependency. On a filesystem event, hash the changed file's
   content and compare against the daemon's last-known hash for that path;
