@@ -368,6 +368,13 @@ func (d *daemon) handle(conn net.Conn) {
 			return
 		}
 		d.serveSignatureHelp(conn, req)
+	case "completions":
+		d.touch()
+		if d.reexecIfStale() {
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			return
+		}
+		d.serveCompletions(conn, req)
 	case "stop":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
 		_ = d.listener.Close()
@@ -722,6 +729,23 @@ func (d *daemon) serveSignatureHelp(conn net.Conn, req daemonRequest) {
 
 	help := signatureHelpAtOffset(req.Entry, req.Offset)
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, SignatureHelp: help})
+}
+
+// serveCompletions answers a read-only completion query at a source offset: it
+// runs the same fresh full check a build uses and returns the completion
+// candidates at that position (either scope-aware identifier completion or
+// member completion after a '.'). An empty slice means "no completions here",
+// not an error.
+func (d *daemon) serveCompletions(conn net.Conn, req daemonRequest) {
+	// Serialize compilations; buildProgram is not required to be concurrent.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	items := completionsAtOffset(req.Entry, req.Offset)
+	if items == nil {
+		items = []structuredCompletionItem{}
+	}
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Completions: items})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

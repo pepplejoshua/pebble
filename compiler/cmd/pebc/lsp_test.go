@@ -2107,3 +2107,310 @@ func TestLSPHoverSurvivesUnrelatedError(t *testing.T) {
 	readLSPFrameWithTimeout(t, reader, 10*time.Second)
 	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
 }
+
+// completionRequest sends a real textDocument/completion REQUEST at the given
+// 0-based line/character and returns the parsed completion item list (label +
+// kind + detail), failing the test on any transport/error response. It mimics
+// how a real client asks for completions at a position.
+func completionRequest(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, docURI string, id, line, ch int) []struct {
+	Label  string `json:"label"`
+	Kind   int    `json:"kind"`
+	Detail string `json:"detail"`
+} {
+	t.Helper()
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/completion","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d},"context":{"triggerKind":2}}}`, id, docURI, line, ch)
+	writeLSPFrame(t, stdin, []byte(req))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var resp struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing completion response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("completion returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != id {
+		t.Fatalf("completion response id = %d, want %d (body %s)", resp.ID, id, body)
+	}
+	// The result may be a bare array or a CompletionList; both encode the items
+	// list (possibly under "items" for a list). Unmarshal the union.
+	var items []struct {
+		Label  string `json:"label"`
+		Kind   int    `json:"kind"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(resp.Result, &items); err != nil {
+		var list struct {
+			Items []struct {
+				Label  string `json:"label"`
+				Kind   int    `json:"kind"`
+				Detail string `json:"detail"`
+			} `json:"items"`
+		}
+		if err2 := json.Unmarshal(resp.Result, &list); err2 != nil {
+			t.Fatalf("parsing completion result %s: %v / %v", resp.Result, err, err2)
+		}
+		items = list.Items
+	}
+	return items
+}
+
+// TestLSPCompletion exercises the textDocument/completion feature against a
+// real scratch project with a real struct. It asserts, over a real LSP client
+// round-trip:
+//
+//   - Identifier completion inside a function body includes real locals,
+//     module-scope functions and the module type (asserting specific expected
+//     names are PRESENT, not an exact full list -- prelude/builtin entries
+//     legitimately appear too).
+//   - Member completion after `origin.` on a struct-typed value includes its
+//     real field names `x` and `y`.
+//   - Member completion after a POINTER-typed receiver (`ptr.`) auto-derefs to
+//     the same fields.
+func TestLSPCompletion(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Short, shallow root -- NOT t.TempDir() directly (see the documented
+	// 104-byte Unix socket path limit note in TestLSPDiagnosticsOnSave).
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn make_point(x int, y int) Point {\n" +
+		"    return Point.{ x = x, y = y };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    var ptr *Point = &origin;\n" +
+		"    let moved = make_point(origin.x, origin.y);\n" +
+		"    return moved.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Identifier-completion position: the start of the `let moved` line (a
+	// statement position inside the function body).
+	idLine, idCh := computeLSPPos(t, src, "let moved =")
+	// Member-completion position: right after `origin.` in `origin.x`.
+	memLine, memCh := computeLSPPos(t, src, "origin.")
+	memCh += len("origin.")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// 1. Identifier completion inside the function body.
+	id := 2
+	items := completionRequest(t, stdin, reader, docURI, id, idLine, idCh)
+	id++
+	t.Logf("identifier completion items: %+v", items)
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		labels[it.Label] = true
+	}
+	for _, want := range []string{"origin", "moved", "make_point", "main", "Point"} {
+		if !labels[want] {
+			t.Fatalf("identifier completion missing expected name %q; got %+v", want, items)
+		}
+	}
+
+	// 2. Member completion after `origin.` -- real field names.
+	memItems := completionRequest(t, stdin, reader, docURI, id, memLine, memCh)
+	id++
+	t.Logf("member completion after origin. items: %+v", memItems)
+	memLabels := make(map[string]bool, len(memItems))
+	var xDetail string
+	for _, it := range memItems {
+		memLabels[it.Label] = true
+		if it.Label == "x" {
+			xDetail = it.Detail
+		}
+	}
+	if !memLabels["x"] || !memLabels["y"] {
+		t.Fatalf("member completion after origin. missing field names; got %+v", memItems)
+	}
+	if xDetail != "field x int" {
+		t.Fatalf("member completion field x detail = %q, want %q", xDetail, "field x int")
+	}
+
+	// 3. Pointer auto-deref: member completion after `ptr.` yields the same
+	// fields. Use a complete `ptr.x` expression so the receiver node parses
+	// cleanly.
+	ptrPath := filepath.Join(root, "ptr.peb")
+	ptrSrc := "type Point = struct { x int; y int; };\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    var ptr *Point = &origin;\n" +
+		"    return ptr.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(ptrPath, []byte(ptrSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ptrDocURI := "file://" + ptrPath
+	openPtrReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, ptrDocURI, ptrSrc)
+	writeLSPFrame(t, stdin, []byte(openPtrReq))
+	time.Sleep(200 * time.Millisecond)
+	ptrLine, ptrCh := computeLSPPos(t, ptrSrc, "ptr.x")
+	ptrCh += len("ptr.")
+	ptrItems := completionRequest(t, stdin, reader, ptrDocURI, id, ptrLine, ptrCh)
+	id++
+	t.Logf("pointer member completion after ptr. items: %+v", ptrItems)
+	ptrLabels := make(map[string]bool, len(ptrItems))
+	for _, it := range ptrItems {
+		ptrLabels[it.Label] = true
+	}
+	if !ptrLabels["x"] || !ptrLabels["y"] {
+		t.Fatalf("pointer member completion after ptr. missing fields; got %+v", ptrItems)
+	}
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// TestLSPCompletionSurvivesUnrelatedError mirrors TestLSPHoverSurvivesUnrelatedError
+// for the completion feature: a single unrelated syntax error anywhere in the
+// file must NOT black out completion at positions that are themselves well
+// typed. Identifier completion (scope-walk) and member completion (symbol-first
+// receiver resolution) both follow the store-backed, symbol-first pattern, so
+// they must keep working even though the typed-IR unit was never built.
+func TestLSPCompletionSurvivesUnrelatedError(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    var z int = origin.x;\n" +
+		"    var broken int = add(origin,\n" +
+		"    return 0;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Identifier-completion position: inside the function body on the well-typed
+	// `origin` line (before the unrelated broken call below it).
+	idLine, idCh := computeLSPPos(t, src, "var origin Point")
+	// Member-completion position: right after `origin.` in the well-typed
+	// `var z int = origin.x;` line, which precedes the unrelated error.
+	memLine, memCh := computeLSPPos(t, src, "var z int = origin.")
+	memCh += len("var z int = origin.")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// Identifier completion must still include the local binding and the type.
+	id := 2
+	items := completionRequest(t, stdin, reader, docURI, id, idLine, idCh)
+	id++
+	t.Logf("identifier completion with unrelated error: %+v", items)
+	labels := make(map[string]bool, len(items))
+	for _, it := range items {
+		labels[it.Label] = true
+	}
+	if !labels["origin"] || !labels["Point"] {
+		t.Fatalf("identifier completion with unrelated error missing origin/Point; got %+v", items)
+	}
+
+	// Member completion must still resolve the struct's fields.
+	memItems := completionRequest(t, stdin, reader, docURI, id, memLine, memCh)
+	id++
+	t.Logf("member completion with unrelated error: %+v", memItems)
+	memLabels := make(map[string]bool, len(memItems))
+	for _, it := range memItems {
+		memLabels[it.Label] = true
+	}
+	if !memLabels["x"] || !memLabels["y"] {
+		t.Fatalf("member completion with unrelated error missing fields; got %+v", memItems)
+	}
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}

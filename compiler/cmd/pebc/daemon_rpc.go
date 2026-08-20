@@ -37,6 +37,11 @@ type daemonRequest struct {
 	// file length.
 	StartOffset uint32 `json:"startOffset,omitempty"`
 	EndOffset   uint32 `json:"endOffset,omitempty"`
+	// TriggerChar carries the completion trigger character (e.g. ".") when the
+	// LSP client sends one, populated by the "completions" RPC. The server
+	// prefers checking the raw source byte before Offset when deciding between
+	// member and identifier completion, but keeps the trigger available.
+	TriggerChar string `json:"triggerChar,omitempty"`
 }
 
 // daemonResponse is the JSON body of a response sent back to a client.
@@ -88,6 +93,11 @@ type daemonResponse struct {
 	// "signatureHelp" RPC. A zero value (empty Signatures) means no callable
 	// callee was found at that position, not an error.
 	SignatureHelp structuredSignatureHelp `json:"signature_help,omitempty"`
+	// Completions carries completion candidates at a source offset, populated
+	// by the "completions" RPC. Each item has a Name, an LSP CompletionItemKind
+	// integer, and a Detail holding the real type/signature. An empty slice
+	// means "no completions here", not an error.
+	Completions []structuredCompletionItem `json:"completions,omitempty"`
 }
 
 // structuredDocumentSymbol is the machine-readable form of one outline symbol,
@@ -182,6 +192,17 @@ type structuredSignatureHelp struct {
 type structuredSignature struct {
 	Label      string   `json:"label"`
 	Parameters []string `json:"parameters,omitempty"`
+}
+
+// structuredCompletionItem is the machine-readable form of one completion
+// candidate, following the structuredDocumentSymbol pattern: a Name (the symbol
+// or member name, which is also the inserted text), an LSP CompletionItemKind
+// integer (so the LSP layer only needs a cast), and a Detail holding the real
+// resolved type/signature (e.g. "var origin Point" or "fn add(...) Point").
+type structuredCompletionItem struct {
+	Name   string `json:"name"`
+	Kind   int    `json:"kind"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.

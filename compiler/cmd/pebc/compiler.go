@@ -1247,3 +1247,283 @@ func bindingKeyword(p *compiledProgram, sym symbol.Symbol) string {
 	}
 	return "var"
 }
+
+// completionsAtOffset performs a fresh full check of the entry module (the
+// same daemon build path a build uses -- there is no warm checked state to
+// query yet) and returns the completion candidates at the given byte offset.
+// It dispatches to one of two bounded paths based on the character immediately
+// before the offset:
+//
+//   - If it is '.', it runs MEMBER completion: resolve the receiver expression
+//     immediately before the dot to its checked type, and (auto-derefing a
+//     pointer) collect the declared fields and methods of the nominal type.
+//   - Otherwise it runs SCOPE-AWARE IDENTIFIER completion: find the lexical
+//     scope containing the offset, then walk up the Parent chain collecting
+//     every in-scope symbol (locals/params innermost, then module declarations,
+//     then prelude), deduplicated by name so a shadowed outer symbol does not
+//     produce two entries.
+//
+// In both cases the full candidate set for the scope/receiver is returned;
+// client-side filtering narrows it (standard LSP behavior). An empty result is
+// "no completions here", not an error. Both paths work even when the file has
+// an unrelated syntax error elsewhere, following the same symbol-first,
+// store-backed pattern hover/definition already use.
+func completionsAtOffset(entryPath string, offset uint32) []structuredCompletionItem {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil {
+		return nil
+	}
+	// The entry module is Graph.Root, regardless of any separate prelude.
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok || entryMod.Tree == nil {
+		return nil
+	}
+	tree := entryMod.Tree
+	modID := entryMod.ID
+
+	// Dispatch on the byte immediately before the offset: '.' selects member
+	// completion, anything else selects scope-aware identifier completion. The
+	// byte check is more reliable than trusting the LSP trigger character, which
+	// different clients may send or omit.
+	if offset > 0 {
+		file, ok := p.sources.File(entryMod.Source)
+		if ok {
+			data := file.Text()
+			if uint64(offset-1) < uint64(len(data)) && data[offset-1] == '.' {
+				return memberCompletions(p, modID, tree, offset)
+			}
+		}
+	}
+	return identifierCompletions(p, modID, tree, offset)
+}
+
+// identifierCompletions returns scope-aware identifier completion candidates at
+// offset: it finds the innermost lexical scope whose originating syntax node
+// contains the offset, then walks up the scope's Parent chain collecting every
+// symbol from every scope along the way (locals/params innermost, module-scope
+// declarations, prelude), deduplicating by name so a shadowed outer symbol does
+// not produce a second identical-looking entry -- the innermost one wins. Each
+// symbol becomes one completion item whose Detail carries its real
+// type/signature (reusing the hover description path).
+func identifierCompletions(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree, offset uint32) []structuredCompletionItem {
+	// Every scope's Origin is a SyntaxRef naming the syntax node that created
+	// it (a BlockStmt, function, loop, or the module root). Find the scope whose
+	// origin node's span contains the offset with the SMALLEST width -- that is
+	// the innermost lexical scope enclosing the position. The module scope's
+	// origin is the tree root spanning the whole file, so it is always a valid
+	// outermost fallback.
+	var best symbol.Scope
+	var bestWidth uint32
+	found := false
+	for _, scope := range p.resolution.Scopes.All() {
+		if scope.Module != modID || scope.Origin.Module != modID {
+			continue
+		}
+		node, ok := tree.Node(scope.Origin.Node)
+		if !ok {
+			continue
+		}
+		span := node.Span()
+		if offset < span.Start || offset > span.End {
+			continue
+		}
+		width := span.End - span.Start
+		if !found || width < bestWidth {
+			best = scope
+			bestWidth = width
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	mod, _ := p.graph.Module(modID)
+	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
+
+	seen := make(map[string]bool)
+	var items []structuredCompletionItem
+	for cur := best.ID; cur != 0; {
+		scope, ok := p.resolution.Scopes.Scope(cur)
+		if !ok {
+			break
+		}
+		for _, sid := range scope.Symbols {
+			sym, ok := p.resolution.Symbols.Symbol(sid)
+			if !ok || sym.Name == "" || sym.Error {
+				continue
+			}
+			if seen[sym.Name] {
+				continue
+			}
+			seen[sym.Name] = true
+			items = append(items, completionItemForSymbol(p, sym, resolve))
+		}
+		cur = scope.Parent
+	}
+	return items
+}
+
+// memberCompletions returns member completion candidates for the receiver
+// expression immediately before a '.' at offset. It finds the smallest syntax
+// node whose span ends exactly at the dot (the receiver expression), resolves
+// its checked type, auto-derefs a pointer, and -- when the type is Nominal (a
+// struct/union/enum) -- collects the declared fields and methods whose
+// Containing equals the nominal type's declaration symbol.
+func memberCompletions(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree, offset uint32) []structuredCompletionItem {
+	// The '.' is the byte immediately before the cursor; the receiver is the
+	// node whose span ends exactly at the dot's position.
+	dotPos := offset - 1
+	var receiver syntax.NodeID
+	var receiverWidth uint32
+	found := false
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok {
+			continue
+		}
+		kind := n.Kind()
+		if kind == syntax.File || kind == syntax.Error || kind == syntax.Missing || kind == syntax.EndOfFile {
+			continue
+		}
+		span := n.Span()
+		if span.End != dotPos {
+			continue
+		}
+		width := span.End - span.Start
+		if !found || width < receiverWidth {
+			receiver = id
+			receiverWidth = width
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	typeID, ok := receiverTypeID(p, modID, receiver)
+	if !ok {
+		return nil
+	}
+	lookup := types.LookupFromStore(p.store)
+	key, ok := lookup(typeID)
+	if !ok {
+		return nil
+	}
+	// Auto-deref a pointer receiver exactly as structuralField does.
+	if key.Kind() == types.Pointer {
+		child, _ := key.Child()
+		key, ok = lookup(child)
+		if !ok {
+			return nil
+		}
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return nil
+	}
+
+	mod, _ := p.graph.Module(modID)
+	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
+
+	seen := make(map[string]bool)
+	var items []structuredCompletionItem
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Containing != decl {
+			continue
+		}
+		switch candidate.Kind {
+		case symbol.SymbolField, symbol.SymbolMethod:
+		default:
+			continue
+		}
+		if candidate.Name == "" || candidate.Error {
+			continue
+		}
+		if seen[candidate.Name] {
+			continue
+		}
+		seen[candidate.Name] = true
+		items = append(items, completionItemForSymbol(p, candidate, resolve))
+	}
+	return items
+}
+
+// receiverTypeID resolves the checked type of a receiver expression node. It
+// first tries the symbol path (a bare identifier resolves via the reference
+// table to its binding/parameter symbol, whose type comes from the store) --
+// which works even when a full typed-IR unit was never built (partial-failure
+// resilience). It then falls back to the typed-IR source map for arbitrary
+// expressions (call results, field projections, etc.), which genuinely needs
+// the fully-built unit.
+func receiverTypeID(p *compiledProgram, modID module.ModuleID, nodeID syntax.NodeID) (types.TypeID, bool) {
+	if sym, ok := symbolForNode(p, modID, nodeID); ok {
+		if tr, ok := p.result.SymbolType(sym.ID); ok && tr.Type != 0 {
+			return tr.Type, true
+		}
+	}
+	if p.unit == nil {
+		return 0, false
+	}
+	snap := p.unit.Snapshot()
+	tirID, ok := p.unit.SourceMap(symbol.SyntaxRef{Module: modID, Node: nodeID})
+	if !ok || snap == nil {
+		return 0, false
+	}
+	node, ok := p.unit.Node(tirID)
+	if !ok || node.Type == 0 {
+		return 0, false
+	}
+	if _, ok := snap.Key(node.Type); !ok {
+		return 0, false
+	}
+	return node.Type, true
+}
+
+// completionItemForSymbol converts one resolved symbol into its structured
+// completion form: Name is the symbol's name, Kind is the closest LSP
+// CompletionItemKind, and Detail is the real resolved type/signature reusing
+// the hover description path.
+func completionItemForSymbol(p *compiledProgram, sym symbol.Symbol, resolve func(symbol.SymbolID) string) structuredCompletionItem {
+	detail := ""
+	if txt, ok := renderSymbolHover(p, sym, resolve); ok {
+		detail = txt
+	}
+	return structuredCompletionItem{
+		Name:   sym.Name,
+		Kind:   symbolCompletionKind(p, sym),
+		Detail: detail,
+	}
+}
+
+// symbolCompletionKind maps a resolved SymbolKind to the closest real LSP
+// CompletionItemKind. Functions become Function, methods Method, type
+// declarations Struct/Enum (via the same underlying-aggregate inspection
+// symbolKindToLSP uses for documentSymbol), fields Field, and bindings/
+// parameters/variants Variable/EnumMember.
+func symbolCompletionKind(p *compiledProgram, sym symbol.Symbol) int {
+	switch sym.Kind {
+	case symbol.SymbolFunction, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
+		return int(protocol.CompletionItemKindFunction)
+	case symbol.SymbolMethod:
+		return int(protocol.CompletionItemKindMethod)
+	case symbol.SymbolType, symbol.SymbolExternType, symbol.SymbolBuiltinType, symbol.SymbolRuntimeType:
+		if k := typeSymbolLSPKind(p, sym); k != 0 {
+			if k == int(protocol.SymbolKindEnum) {
+				return int(protocol.CompletionItemKindEnum)
+			}
+			return int(protocol.CompletionItemKindStruct)
+		}
+		return int(protocol.CompletionItemKindStruct)
+	case symbol.SymbolField:
+		return int(protocol.CompletionItemKindField)
+	case symbol.SymbolVariant:
+		return int(protocol.CompletionItemKindEnumMember)
+	case symbol.SymbolParameter, symbol.SymbolTypeParameter:
+		return int(protocol.CompletionItemKindVariable)
+	case symbol.SymbolBinding, symbol.SymbolExternBinding, symbol.SymbolLoopBinding:
+		return int(protocol.CompletionItemKindVariable)
+	default:
+		return int(protocol.CompletionItemKindVariable)
+	}
+}

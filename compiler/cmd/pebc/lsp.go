@@ -122,6 +122,13 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 			SignatureHelpProvider: &protocol.SignatureHelpOptions{
 				TriggerCharacters: []string{"(", ","},
 			},
+			// CompletionProvider advertises textDocument/completion support:
+			// scope-aware identifier completion as the user types a bare
+			// identifier, and member completion triggered by '.' (the sole
+			// trigger character) after a receiver expression.
+			CompletionProvider: &protocol.CompletionOptions{
+				TriggerCharacters: []string{"."},
+			},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
@@ -397,6 +404,61 @@ func (s *lspServer) SignatureHelp(ctx context.Context, params *protocol.Signatur
 	s.log.Printf("signatureHelp: signatures=%d activeSig=%d activeParam=%d",
 		len(resp.SignatureHelp.Signatures), resp.SignatureHelp.ActiveSignature, resp.SignatureHelp.ActiveParameter)
 	return toProtocolSignatureHelp(resp.SignatureHelp), nil
+}
+
+// Completion answers a textDocument/completion REQUEST: it resolves the
+// document URI to a filesystem path, converts the LSP position to a byte
+// offset, asks the daemon for the completion candidates at that offset, and
+// returns them as an LSP CompletionList. The daemon already dispatched to
+// member completion (when the byte before the offset is '.') or scope-aware
+// identifier completion, so this handler only converts. When nothing resolves
+// it returns an empty list (not an error), which is LSP-correct for "no
+// completions here".
+func (s *lspServer) Completion(ctx context.Context, params *protocol.CompletionParams) (protocol.CompletionResult, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+	s.log.Printf("completion: uri=%s line=%d char=%d", docURI, params.Position.Line, params.Position.Character)
+
+	offset, err := offsetForPosition(fsPath, int(params.Position.Line), int(params.Position.Character))
+	if err != nil {
+		s.log.Printf("completion: offsetForPosition failed: %v", err)
+		return protocol.CompletionItemSlice{}, nil
+	}
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("completion: ensureDaemonForRoot(%q) failed: %v", s.root, err)
+		return protocol.CompletionItemSlice{}, nil
+	}
+	req := daemonRequest{Entry: fsPath, Offset: uint32(offset)}
+	if trigger := params.Context.TriggerCharacter; trigger != nil && *trigger != "" {
+		req.TriggerChar = *trigger
+	}
+	resp, err := daemonRPCForRoot(s.root, "completions", req)
+	if err != nil || !resp.OK {
+		s.log.Printf("completion: RPC err=%v ok=%v", err, resp.OK)
+		return protocol.CompletionItemSlice{}, nil
+	}
+	s.log.Printf("completion: items=%d", len(resp.Completions))
+	return toProtocolCompletions(resp.Completions), nil
+}
+
+// toProtocolCompletions converts the daemon's structured completion candidates
+// into LSP protocol.CompletionItems. Each item's Label (also the insert text)
+// is the name; Kind is cast directly from the daemon's LSP CompletionItemKind
+// integer; Detail is the rendered type/signature.
+func toProtocolCompletions(items []structuredCompletionItem) protocol.CompletionItemSlice {
+	out := make(protocol.CompletionItemSlice, 0, len(items))
+	for _, c := range items {
+		item := protocol.CompletionItem{
+			Label: c.Name,
+			Kind:  protocol.CompletionItemKind(c.Kind),
+		}
+		if c.Detail != "" {
+			item.Detail = protocol.NewOptional(c.Detail)
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // toProtocolSignatureHelp converts the daemon's structured signature help into
