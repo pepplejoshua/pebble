@@ -45,6 +45,26 @@ type daemonResponse struct {
 	// WatchEvents is the recent change-detection log (newest first),
 	// populated by the watch-status method.
 	WatchEvents []watchReport `json:"watch_events,omitempty"`
+	// StructuredDiagnostics carries machine-readable diagnostics (with
+	// file/line/column ranges) on a failed build, in addition to the
+	// rendered Diagnostics string. Line/column values are 1-based, matching
+	// source.Position; LSP clients convert to 0-based.
+	StructuredDiagnostics []structuredDiagnostic `json:"structured_diagnostics,omitempty"`
+}
+
+// structuredDiagnostic is the machine-readable form of one compiler diagnostic,
+// with a resolved file path and 1-based line/column endpoints. The daemon's
+// build RPC fills this from the compiler's diagnostic set; the LSP server reads
+// it to publish editor diagnostics.
+type structuredDiagnostic struct {
+	File      string `json:"file"`
+	StartLine int    `json:"startLine"`
+	StartCol  int    `json:"startCol"`
+	EndLine   int    `json:"endLine"`
+	EndCol    int    `json:"endCol"`
+	Severity  string `json:"severity"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
 }
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.

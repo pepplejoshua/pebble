@@ -136,6 +136,13 @@ func ensureDaemon(stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return ensureDaemonForRoot(root, stderr)
+}
+
+// ensureDaemonForRoot makes sure a daemon is running for an explicit project
+// root (used by the LSP server, which receives its root from the editor's
+// initialize params rather than the process working directory).
+func ensureDaemonForRoot(root string, stderr io.Writer) error {
 	sockPath := daemonSocketPath(root)
 	if live, _ := pingDaemon(sockPath); live {
 		return nil
@@ -176,6 +183,13 @@ func daemonRPC(method string, req daemonRequest) (daemonResponse, error) {
 	if err != nil {
 		return daemonResponse{}, err
 	}
+	return daemonRPCForRoot(root, method, req)
+}
+
+// daemonRPCForRoot performs one daemon RPC round-trip for an explicit project
+// root (used by the LSP server, whose root comes from the editor's initialize
+// params rather than the process working directory).
+func daemonRPCForRoot(root string, method string, req daemonRequest) (daemonResponse, error) {
 	conn, err := net.DialTimeout("unix", daemonSocketPath(root), 2*time.Second)
 	if err != nil {
 		return daemonResponse{}, fmt.Errorf("no daemon running for %s: %w", root, err)

@@ -528,10 +528,10 @@ func (d *daemon) serveBuild(conn net.Conn, req daemonRequest) {
 		d.trackFilesLocked(res.files)
 	}
 	if res.code != 0 {
-		_ = writeDaemonMessage(conn, daemonResponse{OK: false, Diagnostics: res.diagnostics, Error: diag.String()})
+		_ = writeDaemonMessage(conn, daemonResponse{OK: false, Diagnostics: res.diagnostics, Error: diag.String(), StructuredDiagnostics: res.structuredDiagnostics})
 		return
 	}
-	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Output: res.binaryPath})
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Output: res.binaryPath, StructuredDiagnostics: res.structuredDiagnostics})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

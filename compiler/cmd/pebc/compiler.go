@@ -59,6 +59,11 @@ type compileResult struct {
 	// the files that participated in a build rather than every *.peb under
 	// the project root. Populated only when req.trackFiles is set.
 	files []string
+	// structuredDiagnostics carries machine-readable diagnostics (file +
+	// 1-based line/column ranges) for the build, populated for both success
+	// (empty slice) and failure (populated) paths. Never nil so the daemon
+	// JSON-encodes [] rather than null.
+	structuredDiagnostics []structuredDiagnostic
 }
 
 // compileOnce runs the full pebc pipeline (module discovery, name resolution,
@@ -76,7 +81,7 @@ func compileOnce(req compileRequest) *compileResult {
 	entryPath, err := provider.Canonicalize(req.entryPath)
 	if err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot resolve entry %q: %v\n", req.entryPath, err)
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", PreludePath: req.prelude, StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
 	var graphFiles []string
@@ -100,7 +105,7 @@ func compileOnce(req compileRequest) *compileResult {
 	store, err := types.New(types.Config{})
 	if err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot initialize type store: %v\n", err)
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 
 	var entryID symbol.SymbolID
@@ -115,7 +120,7 @@ func compileOnce(req compileRequest) *compileResult {
 			_ = diagnostic.RenderText(req.stderr, sources, diagnostics.Items())
 		}
 		fmt.Fprintln(req.stderr, "pebc: no main function found")
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 
 	inputs := check.Inputs{
@@ -129,15 +134,15 @@ func compileOnce(req compileRequest) *compileResult {
 		var rendered stringsBuilder
 		_ = diagnostic.RenderText(&rendered, sources, diagnostics.Items())
 		_, _ = io.WriteString(req.stderr, rendered.String())
-		return &compileResult{code: 1, diagnostics: rendered.String()}
+		return &compileResult{code: 1, diagnostics: rendered.String(), structuredDiagnostics: buildStructuredDiagnostics(diagnostics.Items(), sources)}
 	}
 	if req.mode == modeCheck {
-		return &compileResult{code: 0, files: graphFiles}
+		return &compileResult{code: 0, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	unit := result.IR()
 	if unit == nil {
 		fmt.Fprintln(req.stderr, "pebc: internal error: checker returned no typed IR")
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 
 	emitPath := req.emitCPath
@@ -147,7 +152,7 @@ func compileOnce(req compileRequest) *compileResult {
 		dir, err := os.MkdirTemp("", "pebc-emit-")
 		if err != nil {
 			fmt.Fprintf(req.stderr, "pebc: cannot create temp dir: %v\n", err)
-			return &compileResult{code: 1}
+			return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 		}
 		defer os.RemoveAll(dir)
 		emitPath = filepath.Join(dir, "program.c")
@@ -155,19 +160,19 @@ func compileOnce(req compileRequest) *compileResult {
 	file, err := os.Create(emitPath)
 	if err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot create output %q: %v\n", emitPath, err)
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, file); err != nil {
 		file.Close()
 		fmt.Fprintf(req.stderr, "pebc: emission failed: %v\n", err)
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	if err := file.Close(); err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot close output %q: %v\n", emitPath, err)
-		return &compileResult{code: 1}
+		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	if req.mode == modeEmitC {
-		return &compileResult{code: 0, files: graphFiles}
+		return &compileResult{code: 0, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 
 	binaryPath := req.outputPath
@@ -175,9 +180,9 @@ func compileOnce(req compileRequest) *compileResult {
 		binaryPath = defaultBinaryPath(string(entryPath))
 	}
 	if code := buildExecutable(req.runtimeRoot, req.release, emitPath, binaryPath, req.linkLibs, req.linkPaths, req.includePaths, req.stderr); code != 0 {
-		return &compileResult{code: code, files: graphFiles}
+		return &compileResult{code: code, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 	}
-	return &compileResult{code: 0, binaryPath: binaryPath, files: graphFiles}
+	return &compileResult{code: 0, binaryPath: binaryPath, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 }
 
 // stringsBuilder is a minimal thread-free string accumulator used to capture
@@ -192,3 +197,32 @@ func (b *stringsBuilder) Write(p []byte) (int, error) {
 }
 
 func (b *stringsBuilder) String() string { return string(b.buf) }
+
+// buildStructuredDiagnostics converts the compiler's diagnostic set into the
+// machine-readable form the daemon ships over its build RPC. Each diagnostic's
+// primary span is resolved through the FileSet to a file path and a 1-based
+// start/end line/column. The result is never nil, so the daemon encodes an
+// empty JSON array on a clean build rather than null.
+func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.FileSet) []structuredDiagnostic {
+	out := make([]structuredDiagnostic, 0, len(diags))
+	for _, d := range diags {
+		span := d.Primary.Span
+		file, ok := sources.File(span.Source)
+		if !ok {
+			continue
+		}
+		start := file.Position(span.Start)
+		end := file.Position(span.End)
+		out = append(out, structuredDiagnostic{
+			File:      file.Path(),
+			StartLine: start.Line,
+			StartCol:  start.Column,
+			EndLine:   end.Line,
+			EndCol:    end.Column,
+			Severity:  d.Severity.String(),
+			Code:      string(d.Code),
+			Message:   d.Message,
+		})
+	}
+	return out
+}
