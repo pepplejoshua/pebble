@@ -263,28 +263,35 @@ Examples:
   pebc lsp                         run as an LSP server (for editors)
 `
 
-// locateRuntimeRoot returns the runtime/ directory. An explicit override is
-// used as-is; otherwise the working directory is walked upward (up to 6
-// levels) looking for a directory containing both runtime/include and
-// runtime/src.
+// locateRuntimeRoot returns the runtime/ directory, in this order:
+//
+//  1. An explicit -runtime-root override, used as-is.
+//  2. A runtime/ sibling of the running binary's own location (the layout
+//     `make install` creates by symlinking compiler/runtime next to pebc), so
+//     an installed binary works from any working directory.
+//  3. The working directory walked upward (up to 6 levels) looking for a
+//     directory containing both runtime/include and runtime/src.
+//
+// There is no embedded fallback: the runtime is C source compiled by cc, never
+// baked into the binary.
 func locateRuntimeRoot(override string) (string, error) {
 	if override != "" {
 		return override, nil
+	}
+	if dir := executableDirFunc(); dir != "" && isRuntimeDir(dir) {
+		return filepath.Join(dir, "runtime"), nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine working directory: %v", err)
 	}
-	dir := cwd
-	for i := 0; i < 6; i++ {
+	if found := walkUp(cwd, func(dir string) (string, bool) {
 		if isRuntimeDir(dir) {
-			return filepath.Join(dir, "runtime"), nil
+			return filepath.Join(dir, "runtime"), true
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+		return "", false
+	}); found != "" {
+		return found, nil
 	}
 	return "", errors.New("cannot locate runtime/ — pass -runtime-root explicitly")
 }
@@ -303,25 +310,52 @@ func isRuntimeDir(dir string) bool {
 
 // locateStdRoot returns the on-disk std/ directory the embedded standard
 // library was compiled from (compiler/std under the checkout root, the sibling
-// of runtime/), walking up from the working directory exactly the way
-// locateRuntimeRoot does. It returns an error when no such directory can be
-// found, so callers can fall back to the synthetic embedded paths.
+// of runtime/), in this order:
+//
+//  1. A std/ sibling of the running binary's own location (the layout `make
+//     install` creates by symlinking compiler/std next to pebc).
+//  2. The working directory walked upward (up to 6 levels) exactly the way
+//     locateRuntimeRoot does.
+//
+// It returns an error when no such directory can be found, so callers can fall
+// back to the synthetic embedded paths.
 func locateStdRoot() (string, error) {
+	if dir := executableDirFunc(); dir != "" {
+		if candidate := filepath.Join(dir, "std"); isStdDir(candidate) {
+			return candidate, nil
+		}
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine working directory: %v", err)
 	}
-	dir := cwd
-	for i := 0; i < 6; i++ {
-		if isRuntimeDir(dir) {
-			for _, candidate := range []string{
-				filepath.Join(dir, "compiler", "std"),
-				filepath.Join(dir, "std"),
-			} {
-				if isStdDir(candidate) {
-					return candidate, nil
-				}
+	if found := walkUp(cwd, func(dir string) (string, bool) {
+		if !isRuntimeDir(dir) {
+			return "", false
+		}
+		for _, candidate := range []string{
+			filepath.Join(dir, "compiler", "std"),
+			filepath.Join(dir, "std"),
+		} {
+			if isStdDir(candidate) {
+				return candidate, true
 			}
+		}
+		return "", false
+	}); found != "" {
+		return found, nil
+	}
+	return "", errors.New("cannot locate std/ directory (no checkout found by walking up from the working directory)")
+}
+
+// walkUp checks start and each ancestor toward the filesystem root (up to 6
+// levels) and returns the first result probe accepts. It returns "" when no
+// level matches.
+func walkUp(start string, probe func(dir string) (string, bool)) string {
+	dir := start
+	for i := 0; i < 6; i++ {
+		if found, ok := probe(dir); ok {
+			return found
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -329,7 +363,25 @@ func locateStdRoot() (string, error) {
 		}
 		dir = parent
 	}
-	return "", errors.New("cannot locate std/ directory (no checkout found by walking up from the working directory)")
+	return ""
+}
+
+// executableDirFunc returns the directory containing the running binary,
+// resolved through symlinks so a binary invoked through a PATH symlink still
+// finds its std/ and runtime/ siblings at their real location. It returns ""
+// when the executable's location cannot be determined; callers then fall back
+// to walking up from the working directory. It is a variable so tests can
+// simulate an installed layout by pointing it at a scratch directory.
+var executableDirFunc = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(resolved)
 }
 
 // isStdDir reports whether dir looks like the compiler's embedded stdlib
