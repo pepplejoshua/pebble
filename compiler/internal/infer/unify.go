@@ -33,7 +33,7 @@ func (s *Session) unify(a, b Term, origin Origin) (bool, bool) {
 		if a.known == b.known {
 			return false, true
 		}
-		return false, s.conflict(CodeUnification, s.describeTypeConflict(a.known, b.known), origin)
+		return false, s.conflict(CodeUnification, s.describeTypeConflict(a.known, b.known, origin), origin)
 	}
 	if a.kind == termKnown {
 		return s.bindKnown(b, a.known, origin)
@@ -56,7 +56,7 @@ func (s *Session) unify(a, b Term, origin Origin) (bool, bool) {
 		return false, s.markRootsConflict(ra, rb, CodeUnification, "integer and floating literal classes cannot unify", origin)
 	}
 	if ca.known != 0 && cb.known != 0 && ca.known != cb.known {
-		return false, s.markRootsConflict(ra, rb, CodeUnification, s.describeTypeConflict(ca.known, cb.known), origin)
+		return false, s.markRootsConflict(ra, rb, CodeUnification, s.describeTypeConflict(ca.known, cb.known, origin), origin)
 	}
 	if ca.known != 0 && cb.shape != nil {
 		if _, ok := s.matchKnownShape(ca.known, *cb.shape, origin); !ok {
@@ -141,7 +141,7 @@ func (s *Session) bindKnown(term Term, id types.TypeID, origin Origin) (bool, bo
 		if term.known == id {
 			return false, true
 		}
-		return false, s.conflict(CodeUnification, s.describeTypeConflict(term.known, id), origin)
+		return false, s.conflict(CodeUnification, s.describeTypeConflict(term.known, id, origin), origin)
 	}
 	root := s.find(term.id)
 	if root == 0 {
@@ -155,7 +155,7 @@ func (s *Session) bindKnown(term Term, id types.TypeID, origin Origin) (bool, bo
 		if cell.known == id {
 			return false, true
 		}
-		return false, s.markRootConflict(root, CodeUnification, s.describeTypeConflict(cell.known, id), origin)
+		return false, s.markRootConflict(root, CodeUnification, s.describeTypeConflict(cell.known, id, origin), origin)
 	}
 	if cell.shape != nil {
 		if _, ok := s.matchKnownShape(id, *cell.shape, origin); !ok {
@@ -577,10 +577,10 @@ func childOrigin(origin Origin, index int) Origin {
 	return origin
 }
 
-func (s *Session) describeTypeConflict(a, b types.TypeID) string {
+func (s *Session) describeTypeConflict(a, b types.TypeID, origin Origin) string {
 	ka, _ := s.program.typeKey(a)
 	kb, _ := s.program.typeKey(b)
 	lookup := func(id types.TypeID) (types.TypeKey, bool) { return s.program.typeKey(id) }
-	resolve := types.ResolveFromResult(s.program.inputs.Resolution)
+	resolve := types.ResolveFromResultQualified(s.program.inputs.Resolution, origin.Syntax.Module, types.QualifierMap(s.program.modules[origin.Syntax.Module].Imports))
 	return fmt.Sprintf("cannot unify %s with %s", types.DescribeKeyResolved(ka, lookup, resolve), types.DescribeKeyResolved(kb, lookup, resolve))
 }

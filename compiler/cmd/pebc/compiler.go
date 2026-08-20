@@ -330,7 +330,7 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	}
 
 	snap := p.unit.Snapshot()
-	resolve := types.ResolveFromResult(p.resolution)
+	resolve := types.ResolveFromResultQualified(p.resolution, entryMod.ID, types.QualifierMap(entryMod.Imports))
 
 	// A symbol-typed hover: resolve the position to a declaration or reference
 	// symbol when possible (a parameter name, a var binding name, a field, a
@@ -443,10 +443,18 @@ func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinitio
 	}
 	// Prefer the module's canonical path over the display basename so the
 	// returned location is an absolute, jump-able filesystem path even when
-	// the target is a different (e.g. imported) file.
+	// the target is a different (e.g. imported) file. A module under the
+	// embedded standard library carries a synthetic key path like
+	// "std:embedded/set.peb" that is not a real filesystem path; translate it
+	// to the real on-disk stdlib file this checkout was built from (the embed
+	// is byte-identical to compiler/std/*.peb, so line/column math carries
+	// over), falling back to the synthetic path when no checkout is found.
 	path := file.Path()
 	if m, ok := p.graph.Module(sym.Module); ok && m.Key.Path != "" {
-		path = filepath.FromSlash(string(m.Key.Path))
+		path = realStdlibPath(string(m.Key.Path))
+		if path == "" {
+			path = filepath.FromSlash(string(m.Key.Path))
+		}
 	}
 	start := file.Position(sym.Span.Start)
 	end := file.Position(sym.Span.End)
@@ -457,6 +465,27 @@ func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinitio
 		EndLine:   end.Line,
 		EndCol:    end.Column,
 	}
+}
+
+// realStdlibPath translates an embedded-stdlib module key path (e.g.
+// "std:embedded/set.peb") into the real on-disk file under the checkout's
+// std/ directory, or "" when the key path is not a stdlib module, the on-disk
+// std tree cannot be located (pebc running outside a checkout), or the target
+// file does not exist on disk.
+func realStdlibPath(keyPath string) string {
+	if !strings.HasPrefix(keyPath, stdlib.StandardRoot+"/") {
+		return ""
+	}
+	stdRoot, err := locateStdRoot()
+	if err != nil {
+		return ""
+	}
+	relative := strings.TrimPrefix(keyPath, stdlib.StandardRoot+"/")
+	candidate := filepath.Join(stdRoot, filepath.FromSlash(relative))
+	if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+		return ""
+	}
+	return candidate
 }
 
 // inlayHintsInRange walks the entry module's syntax tree once and returns
@@ -554,7 +583,8 @@ func bindingTypeHint(p *compiledProgram, modID module.ModuleID, tree *syntax.Tre
 	if !ok {
 		return structuredInlayHint{}, false
 	}
-	resolve := types.ResolveFromResult(p.resolution)
+	mod, _ := p.graph.Module(modID)
+	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
 	typ := types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
 	return makeInlayHint(file, anchor, " "+typ, inlayHintType), true
 }

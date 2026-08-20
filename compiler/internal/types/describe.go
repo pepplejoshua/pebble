@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 )
 
@@ -92,6 +93,64 @@ func ResolveFromResult(resolution *symbol.Result) func(symbol.SymbolID) string {
 			return s.Name
 		}
 		return ""
+	}
+}
+
+// QualifierMap builds the ModuleID-to-qualifier map the qualified resolver
+// uses to prefix cross-module nominal type names, from a module's authored
+// import edges. The qualifier for a target module is the one the importing
+// module actually wrote for it (e.g. "set" for `import "std:set"`), recorded
+// as ImportEdge.Qualifier by the module graph build.
+func QualifierMap(imports []module.ImportEdge) map[module.ModuleID]string {
+	if len(imports) == 0 {
+		return nil
+	}
+	out := make(map[module.ModuleID]string, len(imports))
+	for _, edge := range imports {
+		if edge.Qualifier != "" {
+			out[edge.Target] = edge.Qualifier
+		}
+	}
+	return out
+}
+
+// ResolveFromResultQualified builds a declaration-name resolver closure for
+// DescribeKeyResolved that qualifies nominal type names whose declaring module
+// differs from the module a hover, inlay hint, or diagnostic is being rendered
+// FOR. The qualifiers map is that current module's own import qualifiers
+// (e.g. {"set" for the std:set module}), so a cross-module type renders as
+// "set::Set[str]" while a type declared in the current module (or reachable
+// only through a module the current file does not import) renders bare,
+// exactly as the authored source reads. The common same-module case and the
+// type-parameter/builtin cases are never qualified, so a nil or empty
+// qualifiers map, a zero current module, or a plain same-module type all
+// behave exactly like ResolveFromResult.
+func ResolveFromResultQualified(resolution *symbol.Result, currentModule module.ModuleID, qualifiers map[module.ModuleID]string) func(symbol.SymbolID) string {
+	if resolution == nil || resolution.Symbols == nil {
+		return nil
+	}
+	if currentModule == 0 || len(qualifiers) == 0 {
+		return ResolveFromResult(resolution)
+	}
+	return func(id symbol.SymbolID) string {
+		s, ok := resolution.Symbols.Symbol(id)
+		if !ok {
+			return ""
+		}
+		if s.Module == currentModule {
+			return s.Name
+		}
+		switch s.Kind {
+		case symbol.SymbolType, symbol.SymbolExternType, symbol.SymbolRuntimeType:
+		default:
+			// Type parameters are local to their generic declaration and
+			// builtins have no importable owning module; neither is qualified.
+			return s.Name
+		}
+		if q := qualifiers[s.Module]; q != "" {
+			return q + "::" + s.Name
+		}
+		return s.Name
 	}
 }
 

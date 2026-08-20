@@ -240,6 +240,21 @@ type Scope struct {
 // SymbolStore owns symbols in deterministic ID order.
 type SymbolStore struct{ values []Symbol }
 
+// NewSymbolStoreForTest returns a SymbolStore holding the given symbols in the
+// order they were passed. It exists only so other packages' tests can build a
+// store without running a full Resolve pass; production code builds stores via
+// Resolve.
+func NewSymbolStoreForTest(symbols ...Symbol) *SymbolStore {
+	return &SymbolStore{values: append([]Symbol(nil), symbols...)}
+}
+
+// SetSymbolStoreForTest attaches a symbol store to a Result. It exists only so
+// other packages' tests can fabricate a resolution without running a full
+// Resolve pass.
+func (r *Result) SetSymbolStoreForTest(store *SymbolStore) {
+	r.Symbols = store
+}
+
 func (s *SymbolStore) Len() int {
 	if s == nil {
 		return 0

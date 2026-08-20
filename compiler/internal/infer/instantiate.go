@@ -595,7 +595,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 		declaration, ids, nominal := key.Nominal()
 		if !nominal {
-			return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))), origin)
+			return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(s.describeKeyResolved(key, origin)), origin)
 		}
 		arguments := make([]Term, len(ids))
 		for i, argument := range ids {
@@ -606,7 +606,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 	if receiver.kind == termKnown {
 		name := "<type>"
 		if key, ok := s.program.typeKey(receiver.known); ok {
-			name = types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))
+			name = s.describeKeyResolved(key, origin)
 		}
 		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(name), origin)
 	}
@@ -645,7 +645,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 	}
 	if shape.kind != shapeNominal {
-		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(s.receiverShapeName(shape)), origin)
+		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(s.receiverShapeName(shape, origin)), origin)
 	}
 	arguments := make([]Term, len(shape.children))
 	for i, child := range shape.children {
@@ -706,9 +706,18 @@ func (s *Session) typeKeyLookup() func(types.TypeID) (types.TypeKey, bool) {
 	return func(id types.TypeID) (types.TypeKey, bool) { return s.program.typeKey(id) }
 }
 
+// describeKeyResolved renders a type key for a diagnostic through the
+// session's type store and symbol table, qualifying cross-module nominal names
+// relative to the module the diagnostic's origin lives in (mirroring the LSP's
+// hover/inlay rendering), so a receiver from an imported module reads as e.g.
+// "set::Set[str]" rather than bare "Set[str]".
+func (s *Session) describeKeyResolved(key types.TypeKey, origin Origin) string {
+	return types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResultQualified(s.program.inputs.Resolution, origin.Syntax.Module, types.QualifierMap(s.program.modules[origin.Syntax.Module].Imports)))
+}
+
 // receiverShapeName returns a short human-readable name for a receiver whose
 // inference shape is not nominal, for use in the method-receiver diagnostic.
-func (s *Session) receiverShapeName(shape *Shape) string {
+func (s *Session) receiverShapeName(shape *Shape, origin Origin) string {
 	if shape == nil {
 		return "value"
 	}
@@ -728,7 +737,7 @@ func (s *Session) receiverShapeName(shape *Shape) string {
 	case shapeLeaf:
 		if id, known := s.resolvedType(shape.term); known {
 			if key, ok := s.program.typeKey(id); ok {
-				return types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))
+				return s.describeKeyResolved(key, origin)
 			}
 		}
 		return "value"

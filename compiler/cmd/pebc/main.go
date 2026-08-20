@@ -301,3 +301,49 @@ func isRuntimeDir(dir string) bool {
 	return true
 }
 
+// locateStdRoot returns the on-disk std/ directory the embedded standard
+// library was compiled from (compiler/std under the checkout root, the sibling
+// of runtime/), walking up from the working directory exactly the way
+// locateRuntimeRoot does. It returns an error when no such directory can be
+// found, so callers can fall back to the synthetic embedded paths.
+func locateStdRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine working directory: %v", err)
+	}
+	dir := cwd
+	for i := 0; i < 6; i++ {
+		if isRuntimeDir(dir) {
+			for _, candidate := range []string{
+				filepath.Join(dir, "compiler", "std"),
+				filepath.Join(dir, "std"),
+			} {
+				if isStdDir(candidate) {
+					return candidate, nil
+				}
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", errors.New("cannot locate std/ directory (no checkout found by walking up from the working directory)")
+}
+
+// isStdDir reports whether dir looks like the compiler's embedded stdlib
+// source tree: the .peb modules and mem/ subdirectory that go:embed packs.
+func isStdDir(dir string) bool {
+	for _, entry := range []string{"set.peb", "vec.peb", "mem"} {
+		info, err := os.Stat(filepath.Join(dir, entry))
+		if err != nil {
+			return false
+		}
+		if entry == "mem" && !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+

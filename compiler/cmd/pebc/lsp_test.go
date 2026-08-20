@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1244,4 +1245,254 @@ func TestLSPGarbageInputDoesNotCrash(t *testing.T) {
 			t.Fatalf("pebc lsp panicked while handling garbage: %s", stderr.String())
 		}
 	}
+}
+
+// TestLSPQualifiedCrossModuleTypes exercises cross-module type qualification
+// through a real LSP round-trip rooted at a temp directory. A value whose type
+// comes from an imported module (Set[str] from std:set) must render qualified
+// ("set::Set[str]") in both hover and inlay hints, while a type declared in the
+// current module (Point) must stay bare. Qualification does not depend on the
+// on-disk std tree, so a temp-rooted daemon exercises it fully.
+func TestLSPQualifiedCrossModuleTypes(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "import \"std:hash\";\n" +
+		"import \"std:set\";\n" +
+		"\n" +
+		"type Point = struct { x int; y int; };\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var s = set::new[str](hash::hash_str, fn (a, b str) bool => a == b);\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    return origin.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Hover the `s` declaration name: must render qualified.
+	sLine, sCh := computeLSPPos(t, src, "var s = set::new")
+	sCh += len("var ") // the "s" name
+	// Inlay type hint anchor is right after the `s` name.
+	sEndCh := sCh + len("s")
+	// Hover the `origin` declaration name: must stay bare.
+	oLine, oCh := computeLSPPos(t, src, "var origin Point")
+	oCh += len("var ")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// Hover `s` -> qualified cross-module type.
+	hoverAndExpect(t, stdin, reader, docURI, 2, sLine, sCh, "var s set::Set[str]")
+	// Hover `origin` -> same-module type stays bare.
+	hoverAndExpect(t, stdin, reader, docURI, 3, oLine, oCh, "var origin Point")
+
+	// Inlay hint over the whole file: the unannotated `s` binding must get a
+	// qualified type hint " set::Set[str]" at its name end.
+	endLine := strings.Count(src, "\n")
+	inlayReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":%q},"range":{"start":{"line":0,"character":0},"end":{"line":%d,"character":100000}}}}`, docURI, endLine)
+	writeLSPFrame(t, stdin, []byte(inlayReq))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var resp struct {
+		ID     int             `json:"id"`
+		Error  json.RawMessage `json:"error"`
+		Result []struct {
+			Position struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"position"`
+			Label string `json:"label"`
+			Kind  int    `json:"kind"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing inlayHint response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("inlayHint returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != 4 {
+		t.Fatalf("inlayHint response id = %d, want 4 (body %s)", resp.ID, body)
+	}
+	found := false
+	for _, h := range resp.Result {
+		if h.Kind == 1 && h.Position.Line == sLine && h.Position.Character == sEndCh {
+			found = true
+			if h.Label != " set::Set[str]" {
+				t.Fatalf("s type hint label = %q, want %q", h.Label, " set::Set[str]")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a type hint at (s name end) (%d,%d); got hints %+v", sLine, sEndCh, resp.Result)
+	}
+	t.Logf("qualified inlay hint for s: %+v", resp.Result)
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":5,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// TestLSPStdlibDefinitionRealFile exercises go-to-definition INTO the embedded
+// standard library through a real LSP round-trip. The daemon runs rooted at a
+// scratch directory placed under the repo root (the checkout), so walking up
+// from the daemon's working directory locates the real on-disk std/ tree
+// exactly as a self-hosted editor session would. A definition request on a
+// stdlib symbol must therefore resolve to a REAL file on disk (os.Stat
+// confirms the target exists), not a synthetic "std:embedded/..." URI.
+func TestLSPStdlibDefinitionRealFile(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Repo root is the parent of the module (go.mod) directory; it holds both
+	// runtime/ (locateRuntimeRoot's anchor) and compiler/std.
+	compilerRoot := findModuleRoot(t)
+	repoRoot := filepath.Dir(compilerRoot)
+	if info, err := os.Stat(filepath.Join(repoRoot, "runtime", "include")); err != nil || !info.IsDir() {
+		t.Skipf("runtime/ not found under %q; cannot resolve on-disk std", repoRoot)
+	}
+
+	// A short scratch dir under the repo root so the daemon's cwd walks up to
+	// find runtime/ + compiler/std, and its socket path is isolated from any
+	// real editor daemon.
+	root, err := os.MkdirTemp(repoRoot, "pebclspstd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	mainPath := filepath.Join(root, "main.peb")
+	src := "import \"std:hash\";\n" +
+		"import \"std:set\";\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var s = set::new[str](hash::hash_str, fn (a, b str) bool => a == b);\n" +
+		"    return 0;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Position of the `new` callee in `set::new[str]` -- a symbol declared in
+	// std:set. This must resolve to the real on-disk std/set.peb file.
+	newLine, newCh := computeLSPPos(t, src, "set::new[str]")
+	newCh += len("set::")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// Definition on the `new` callee (declared in std:set). The returned URI
+	// must be a REAL file on disk -- the std/set.peb this checkout was built
+	// from -- not a synthetic "std:embedded/set.peb" path.
+	loc, body := definitionAt(t, stdin, reader, docURI, 2, newLine, newCh)
+	if loc == nil {
+		t.Fatalf("definition for set::new resolved to null (body %s)", body)
+	}
+	fsPath, err := urlPathToFsPath(loc.URI)
+	if err != nil {
+		t.Fatalf("definition URI %q is not a valid file path: %v (body %s)", loc.URI, err, body)
+	}
+	if strings.Contains(fsPath, "std:embedded") {
+		t.Fatalf("definition URI %q still uses the synthetic embedded path; want a real file (body %s)", loc.URI, body)
+	}
+	info, err := os.Stat(fsPath)
+	if err != nil || info.IsDir() {
+		t.Fatalf("definition target %q is not a real file on disk: %v (body %s)", loc.URI, err, body)
+	}
+	if filepath.Base(fsPath) != "set.peb" {
+		t.Fatalf("definition target %q does not point at std/set.peb (body %s)", loc.URI, body)
+	}
+	t.Logf("definition for set::new -> real file %s", fsPath)
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":4,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// urlPathToFsPath converts a file:// URI to a filesystem path, failing on a
+// URI that does not start with file://.
+func urlPathToFsPath(uri string) (string, error) {
+	const prefix = "file://"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", fmt.Errorf("not a file:// URI")
+	}
+	// LSP file:// URIs are absolute filesystem paths (file:///...). Strip the
+	// scheme and percent-decode the remainder (e.g. "%3A" -> ":").
+	raw := strings.TrimPrefix(uri, prefix)
+	p, err := url.PathUnescape(raw)
+	if err != nil {
+		return "", err
+	}
+	return p, nil
 }

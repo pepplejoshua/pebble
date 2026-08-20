@@ -2,9 +2,13 @@ package check
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/diagnostic"
 	"github.com/pepplejoshua/pebble/compiler/internal/infer"
+	"github.com/pepplejoshua/pebble/compiler/internal/module"
+	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -41,13 +45,60 @@ func cTypeWidth(k types.BuiltinKind) string {
 }
 
 // describeTypeForDiagnostic returns a human-readable name for a type ID,
-// suitable for inclusion in diagnostic messages.
-func describeTypeForDiagnostic(snapshot *infer.SemanticSnapshot, id types.TypeID) string {
+// suitable for inclusion in diagnostic messages. The current module is the
+// module the diagnostic's offending record lives in; nominal types declared in
+// a different module are qualified with the import qualifier the current
+// module actually uses for them (e.g. "set::Set[str]"), mirroring the LSP's
+// hover/inlay rendering.
+func describeTypeForDiagnostic(handoff *solveHandoff, snapshot *infer.SemanticSnapshot, currentModule module.ModuleID, id types.TypeID) string {
 	key, ok := snapshot.Types().Key(id)
 	if !ok {
 		return "<unknown>"
 	}
-	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snapshot.Types()), types.ResolveFromResult(snapshot.Resolution()))
+	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snapshot.Types()), qualifiedResolver(handoff, snapshot, currentModule))
+}
+
+// qualifiedResolver builds the DescribeKeyResolved name resolver for a
+// diagnostic rendered against currentModule, qualifying cross-module nominal
+// types with the qualifier that module's own imports assign to each target
+// module. The frozen compilation drops the authored qualifier from its import
+// edges, but the qualifier always equals the target module's file basename
+// minus ".peb" (module.importQualifier), so it is recovered from each target
+// module's canonical key path. Modules the current file does not import (e.g.
+// the prelude) are never targets of an import edge and so render bare, exactly
+// as they read in the authored source.
+func qualifiedResolver(handoff *solveHandoff, snapshot *infer.SemanticSnapshot, currentModule module.ModuleID) func(symbol.SymbolID) string {
+	if handoff == nil || snapshot == nil {
+		return nil
+	}
+	basename := make(map[module.ModuleID]string, len(handoff.Compilation.Modules))
+	for _, m := range handoff.Compilation.Modules {
+		basename[m.ID] = moduleNameFromPath(string(m.Key.Path))
+	}
+	qualifiers := map[module.ModuleID]string{}
+	for _, m := range handoff.Compilation.Modules {
+		if m.ID != currentModule {
+			continue
+		}
+		for _, imp := range m.Imports {
+			if q := basename[imp.Target]; q != "" {
+				qualifiers[imp.Target] = q
+			}
+		}
+		break
+	}
+	return types.ResolveFromResultQualified(snapshot.Resolution(), currentModule, qualifiers)
+}
+
+// moduleNameFromPath returns the authored import qualifier a module's
+// canonical key path corresponds to: the file basename without the ".peb"
+// extension ("/abs/helper.peb" and "std:embedded/set.peb" both yield
+// "helper"/"set"). A key path with no usable basename yields "" (no qualifier).
+func moduleNameFromPath(keyPath string) string {
+	if keyPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(path.Base(keyPath), ".peb")
 }
 
 // sameConcreteIntegerWidth reports whether sourceID and destinationID are both
@@ -215,8 +266,8 @@ func validateCompatibilityRecords(handoff *solveHandoff, records *solvedRecords,
 					continue
 				}
 				failed = true
-				srcName := describeTypeForDiagnostic(handoff.Semantics, source.Type)
-				dstName := describeTypeForDiagnostic(handoff.Semantics, destination.Type)
+				srcName := describeTypeForDiagnostic(handoff, handoff.Semantics, compatibility.Header.Syntax.Module, source.Type)
+				dstName := describeTypeForDiagnostic(handoff, handoff.Semantics, compatibility.Header.Syntax.Module, destination.Type)
 				reporter.add(diagnostic.Diagnostic{
 					Severity: diagnostic.Error,
 					Code:     CodeConversion,
@@ -228,8 +279,8 @@ func validateCompatibilityRecords(handoff *solveHandoff, records *solvedRecords,
 					continue
 				}
 				failed = true
-				srcName := describeTypeForDiagnostic(handoff.Semantics, source.Type)
-				dstName := describeTypeForDiagnostic(handoff.Semantics, destination.Type)
+				srcName := describeTypeForDiagnostic(handoff, handoff.Semantics, compatibility.Header.Syntax.Module, source.Type)
+				dstName := describeTypeForDiagnostic(handoff, handoff.Semantics, compatibility.Header.Syntax.Module, destination.Type)
 				reporter.add(diagnostic.Diagnostic{
 					Severity: diagnostic.Error,
 					Code:     CodeConversion,

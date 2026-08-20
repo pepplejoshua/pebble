@@ -3,6 +3,7 @@ package types
 import (
 	"testing"
 
+	"github.com/pepplejoshua/pebble/compiler/internal/module"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
 )
 
@@ -117,4 +118,68 @@ func storeSnapshot(t *testing.T, store *Store) *Snapshot {
 		t.Fatalf("Snapshot: %v", err)
 	}
 	return snap
+}
+
+// TestResolveFromResultQualified verifies the cross-module qualification
+// resolver: a nominal type declared in a module the current module imports
+// renders qualified ("set::Set[str]"), while same-module types, builtins, and
+// type parameters render bare.
+func TestResolveFromResultQualified(t *testing.T) {
+	store := mustStore(t, Config{})
+	b := store.Builtins()
+
+	localID := symbol.SymbolID(1)
+	stdID := symbol.SymbolID(2)
+	tpID := symbol.SymbolID(3)
+	const (
+		localModule module.ModuleID = 5
+		stdModule   module.ModuleID = 7
+	)
+
+	ss := symbol.NewSymbolStoreForTest(
+		symbol.Symbol{ID: localID, Name: "Point", Kind: symbol.SymbolType, Module: localModule},
+		symbol.Symbol{ID: stdID, Name: "Set", Kind: symbol.SymbolType, Module: stdModule},
+		symbol.Symbol{ID: tpID, Name: "T", Kind: symbol.SymbolTypeParameter, Module: stdModule},
+	)
+	resolution := &symbol.Result{}
+	resolution.SetSymbolStoreForTest(ss)
+
+	qualifiers := map[module.ModuleID]string{stdModule: "set"}
+	resolve := ResolveFromResultQualified(resolution, localModule, qualifiers)
+	lookup := LookupFromSnapshot(storeSnapshot(t, store))
+
+	localNominal := NominalKey(localID, nil)
+	stdNominal := NominalKey(stdID, []TypeID{b.Str})
+	stdTypeParam := TypeParameterKey(tpID)
+
+	cases := []struct {
+		name string
+		key  TypeKey
+		want string
+	}{
+		{"same-module nominal stays bare", localNominal, "Point"},
+		{"cross-module nominal qualifies", stdNominal, "set::Set[str]"},
+		{"type parameter stays bare", stdTypeParam, "T"},
+		{"builtin stays bare", BuiltinKey(Str), "str"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DescribeKeyResolved(tc.key, lookup, resolve)
+			if got != tc.want {
+				t.Fatalf("DescribeKeyResolved = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// A module the current file does not import has no qualifier entry, so its
+	// nominal still renders bare (matches how the authored source reads).
+	unimported := ResolveFromResultQualified(resolution, localModule, map[module.ModuleID]string{})
+	if got := DescribeKeyResolved(stdNominal, lookup, unimported); got != "Set[str]" {
+		t.Fatalf("unimported nominal = %q, want \"Set[str]\"", got)
+	}
+
+	// A nil or empty qualifiers map must behave exactly like ResolveFromResult.
+	if got := DescribeKeyResolved(stdNominal, lookup, ResolveFromResultQualified(resolution, localModule, nil)); got != "Set[str]" {
+		t.Fatalf("nil-qualifier nominal = %q, want \"Set[str]\"", got)
+	}
 }
