@@ -52,6 +52,26 @@ fn
 	}
 }
 
+func TestIncompleteMemberNameDoesNotMakeGenerationFatal(t *testing.T) {
+	source := []byte(`
+type Point = struct { x i32; };
+fn main() int {
+    var point Point = Point.{ x = 1 };
+	point.
+    return 0;
+}
+`)
+
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": source})
+	if !diagnostics.HasErrors() {
+		t.Fatal("fixture should produce recovered syntax diagnostics")
+	}
+	result := Check(inputs, diagnostics, Config{AllowPartialOnRecoveredErrors: true})
+	if result.Solution() == nil {
+		t.Fatal("incomplete member access should preserve the solved result")
+	}
+}
+
 func TestUndefinedNameNeverPublishesEvenWithOptIn(t *testing.T) {
 	source := []byte(`
 fn main() int { return missing(); }

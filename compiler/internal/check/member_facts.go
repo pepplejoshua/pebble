@@ -31,6 +31,7 @@ type memberPlan struct {
 	base, name symbol.SyntaxRef
 	nameText   string
 	nameSpan   source.Span
+	damaged    bool
 	kind       memberKind
 	member     symbol.SymbolID
 	ordinal    uint32
@@ -73,6 +74,7 @@ func (w *walker) prepareMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkC
 	name, _ := tree.Node(children[1])
 	p.nameSpan = name.Span()
 	p.nameText = string(w.copySource(name.Span()))
+	p.damaged = name.Kind() == syntax.Missing || name.Kind() == syntax.Error
 	if name.Kind() == syntax.Literal {
 		if n, err := strconv.ParseUint(p.nameText, 10, 32); err == nil {
 			p.kind, p.ordinal = memberTuple, uint32(n)
@@ -107,6 +109,10 @@ func (w *walker) finishMember(ref symbol.SyntaxRef, node syntax.Node, ctx walkCo
 		return
 	}
 	origin := w.origin(ref, node, "member result", ctx.typeOwner, ctx.genericOwner)
+	if p.damaged {
+		w.failExpression(ref, origin)
+		return
+	}
 	base := typedValue{}
 	if p.kind != memberStatic && p.kind != memberVariant {
 		base = w.valuesBySyntax[p.base]
