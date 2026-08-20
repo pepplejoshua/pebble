@@ -1397,6 +1397,7 @@ func identifierCompletions(p *compiledProgram, modID module.ModuleID, tree *synt
 		}
 		cur = scope.Parent
 	}
+	items = append(items, keywordCompletionItems()...)
 	return items
 }
 
@@ -1530,6 +1531,57 @@ func completionItemForSymbol(p *compiledProgram, sym symbol.Symbol, resolve func
 		Kind:   symbolCompletionKind(p, sym),
 		Detail: detail,
 	}
+}
+
+// pebbleKeywords is the flat list of every Pebble keyword. It should be kept
+// in sync with internal/syntax/lexer.go's keyword table.
+var pebbleKeywords = []string{
+	"as",
+	"break",
+	"case",
+	"context",
+	"continue",
+	"defer",
+	"else",
+	"enum",
+	"extern",
+	"false",
+	"fn",
+	"for",
+	"if",
+	"import",
+	"inline",
+	"let",
+	"loop",
+	"nil",
+	"none",
+	"print",
+	"println",
+	"return",
+	"slice",
+	"sizeof",
+	"some",
+	"struct",
+	"switch",
+	"true",
+	"type",
+	"union",
+	"var",
+	"while",
+}
+
+// keywordCompletionItems returns one structuredCompletionItem per Pebble
+// keyword. Name is the keyword text (also the inserted text) and Kind is the
+// LSP CompletionItemKind for Keyword. Detail is left empty.
+func keywordCompletionItems() []structuredCompletionItem {
+	items := make([]structuredCompletionItem, 0, len(pebbleKeywords))
+	for _, kw := range pebbleKeywords {
+		items = append(items, structuredCompletionItem{
+			Name: kw,
+			Kind: int(protocol.CompletionItemKindKeyword),
+		})
+	}
+	return items
 }
 
 // symbolCompletionKind maps a resolved SymbolKind to the closest real LSP
