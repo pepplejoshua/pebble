@@ -92,11 +92,17 @@ type structuredDiagnostic struct {
 // anchor Position sits right after a binding name (type hints) or immediately
 // before a call argument (parameter hints). Kind is "type" or "parameter".
 type structuredInlayHint struct {
-	File  string `json:"file"`
-	Line  int    `json:"line"`
-	Col   int    `json:"col"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"`
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+	// PadLeft reports whether the LSP layer should render an extra leading
+	// space before Label. Only true when the source byte immediately before
+	// the anchor is NOT already whitespace (e.g. right after "(" in a call
+	// with no space), so a comma-space that's already in the source doesn't
+	// get doubled up by also padding the hint.
+	PadLeft bool   `json:"padLeft,omitempty"`
+	Label   string `json:"label"`
+	Kind    string `json:"kind"`
 }
 
 // inlayHint kinds, shared by the daemon's structured form and the LSP layer's

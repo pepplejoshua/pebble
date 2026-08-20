@@ -517,9 +517,33 @@ func callParamHints(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree
 		if argText := string(file.Slice(argNode.Span())); argText == params[i].Name {
 			continue
 		}
-		hints = append(hints, makeInlayHint(file, anchor, params[i].Name+": ", inlayHintParameter))
+		hint := makeInlayHint(file, anchor, params[i].Name+": ", inlayHintParameter)
+		hint.PadLeft = needsLeadingPad(file, anchor)
+		hints = append(hints, hint)
 	}
 	return hints
+}
+
+// needsLeadingPad reports whether the source byte immediately before offset
+// is NOT already whitespace (e.g. right after a call's "(" with no space),
+// so the LSP layer knows to add its own padding there. When the preceding
+// byte is already a space -- the overwhelmingly common case, a comma-space
+// between call arguments -- no extra padding is needed; adding one anyway
+// would visibly double the gap ("add(p: 1,  scale: 2)").
+func needsLeadingPad(file *source.File, offset uint32) bool {
+	if offset == 0 {
+		return false
+	}
+	prev := file.Slice(source.Span{Source: file.ID(), Start: offset - 1, End: offset})
+	if len(prev) == 0 {
+		return false
+	}
+	switch prev[0] {
+	case ' ', '\t', '\n', '\r':
+		return false
+	default:
+		return true
+	}
 }
 
 // makeInlayHint builds a structured inlay hint at a byte offset, resolving the

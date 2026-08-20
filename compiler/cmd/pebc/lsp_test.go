@@ -619,8 +619,9 @@ func TestLSPInlayHints(t *testing.T) {
 				Line      int `json:"line"`
 				Character int `json:"character"`
 			} `json:"position"`
-			Label string `json:"label"`
-			Kind  int    `json:"kind"`
+			Label       string `json:"label"`
+			Kind        int    `json:"kind"`
+			PaddingLeft bool   `json:"paddingLeft"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -643,13 +644,13 @@ func TestLSPInlayHints(t *testing.T) {
 		}
 		return "", false
 	}
-	findParam := func(line, ch int) (string, bool) {
+	findParam := func(line, ch int) (string, bool, bool) {
 		for _, h := range resp.Result {
 			if h.Kind == 2 && h.Position.Line == line && h.Position.Character == ch {
-				return h.Label, true
+				return h.Label, h.PaddingLeft, true
 			}
 		}
-		return "", false
+		return "", false, false
 	}
 
 	// 1. Unannotated binding `count` gets a " int" type hint at its name end.
@@ -678,20 +679,30 @@ func TestLSPInlayHints(t *testing.T) {
 		t.Fatalf("annotated binding `origin` should NOT produce a type hint, but one was found at (%d,%d)", originLine, originEndCh)
 	}
 
-	// 4. Parameter hints: "p: " before `origin`, "scale: " before `5`.
-	plabel, ok := findParam(arg0Line, arg0Ch)
+	// 4. Parameter hints: "p: " before `origin`, "scale: " before `5`. The
+	// call is written `add(origin, 5)` -- the first argument sits right
+	// after "(" (no source space, so the hint needs its own PaddingLeft),
+	// the second sits right after ", " (source already has a space, so
+	// PaddingLeft must be false or the gap would visibly double).
+	plabel, ppad, ok := findParam(arg0Line, arg0Ch)
 	if !ok {
 		t.Fatalf("expected parameter hint before first arg `origin` at (%d,%d); got hints %+v", arg0Line, arg0Ch, resp.Result)
 	}
 	if plabel != "p: " {
 		t.Fatalf("first parameter hint label = %q, want \"p: \"", plabel)
 	}
-	plabel, ok = findParam(arg1Line, arg1Ch)
+	if !ppad {
+		t.Fatalf("first parameter hint (right after '(', no source space) should have PaddingLeft=true")
+	}
+	plabel, ppad, ok = findParam(arg1Line, arg1Ch)
 	if !ok {
 		t.Fatalf("expected parameter hint before second arg `5` at (%d,%d); got hints %+v", arg1Line, arg1Ch, resp.Result)
 	}
 	if plabel != "scale: " {
 		t.Fatalf("second parameter hint label = %q, want \"scale: \"", plabel)
+	}
+	if ppad {
+		t.Fatalf("second parameter hint (right after an existing ', ') should have PaddingLeft=false to avoid doubling the gap")
 	}
 
 	// Shut the server down cleanly.

@@ -248,8 +248,10 @@ func (s *lspServer) InlayHint(ctx context.Context, params *protocol.InlayHintPar
 
 // toProtocolInlayHints converts the daemon's structured hints into LSP
 // protocol.InlayHint values, converting the 1-based source positions to the
-// 0-based positions LSP expects. Parameter hints get PaddingLeft so they don't
-// visually crowd the `(` or the argument they annotate.
+// 0-based positions LSP expects. A parameter hint only gets PaddingLeft when
+// the daemon determined the source doesn't already have a space right before
+// it (h.PadLeft) -- most call arguments already have one from the preceding
+// comma, and padding those too would visibly double the gap.
 func toProtocolInlayHints(hints []structuredInlayHint) []protocol.InlayHint {
 	out := make([]protocol.InlayHint, 0, len(hints))
 	for _, h := range hints {
@@ -265,7 +267,7 @@ func toProtocolInlayHints(hints []structuredInlayHint) []protocol.InlayHint {
 			Label:    protocol.String(h.Label),
 			Kind:     kind,
 		}
-		if h.Kind == inlayHintParameter {
+		if h.Kind == inlayHintParameter && h.PadLeft {
 			pad := true
 			hint.PaddingLeft = &pad
 		}
