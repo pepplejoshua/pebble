@@ -149,12 +149,23 @@ func buildProgram(req compileRequest) (*compiledProgram, bool) {
 			break
 		}
 	}
+	// A build/emit-c needs a real, linkable entry point; modeCheck (and every
+	// read-only LSP query, which uses modeCheck too) only needs the program to
+	// check, so a library file with no main is legitimate there -- the checker
+	// already supports this via check.EntryNone, buildProgram just never used
+	// to give it the chance. Confirmed live: hovering/completing inside a real
+	// compiler/std/*.peb file (none of which declare main) previously failed
+	// outright with "no main function found" before this existed.
+	entryMode := check.EntryRequired
 	if entryID == 0 {
-		if diagnostics.Len() > 0 {
-			_ = diagnostic.RenderText(req.stderr, sources, diagnostics.Items())
+		if req.mode != modeCheck {
+			if diagnostics.Len() > 0 {
+				_ = diagnostic.RenderText(req.stderr, sources, diagnostics.Items())
+			}
+			fmt.Fprintln(req.stderr, "pebc: no main function found")
+			return nil, true
 		}
-		fmt.Fprintln(req.stderr, "pebc: no main function found")
-		return nil, true
+		entryMode = check.EntryNone
 	}
 
 	inputs := check.Inputs{
@@ -162,7 +173,7 @@ func buildProgram(req compileRequest) (*compiledProgram, bool) {
 		LiteralTarget: infer.LiteralTarget{WordBits: 64},
 	}
 	result := check.Check(inputs, diagnostics, check.Config{
-		Entry: check.EntryPoint{Mode: check.EntryRequired, Symbol: entryID},
+		Entry: check.EntryPoint{Mode: entryMode, Symbol: entryID},
 	})
 	return &compiledProgram{
 		graph:       graph,
@@ -291,7 +302,7 @@ func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.F
 // "field f i32", "type Color"). Otherwise it falls back to the plain type
 // description of the expression or literal at the position.
 func hoverTypeAtOffset(entryPath string, offset uint32) string {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return ""
 	}
@@ -390,7 +401,7 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 // (standard LSP behavior: jumping to a symbol you're already on is a no-op
 // navigation, not an error).
 func definitionAtOffset(entryPath string, offset uint32) structuredDefinition {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return structuredDefinition{}
 	}
@@ -496,7 +507,7 @@ func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinitio
 // and the tight SelectionRange (the symbol's own name span), plus a Detail with
 // the real resolved type/signature (reusing the hover type-description path).
 func documentSymbolsForFile(entryPath string) []structuredDocumentSymbol {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return nil
 	}
@@ -752,7 +763,7 @@ func realStdlibPath(keyPath string) string {
 // (e.g. visible-region) query only returns the hints that apply to what the
 // client actually requested.
 func inlayHintsInRange(entryPath string, startOffset, endOffset uint32) []structuredInlayHint {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return nil
 	}
@@ -1059,7 +1070,7 @@ func (p *compiledProgram) sourcesNode(modID module.ModuleID, nodeID syntax.NodeI
 // some children are Missing/Error placeholders (parseCallSuffix already
 // handles this for inlay hints).
 func signatureHelpAtOffset(entryPath string, offset uint32) structuredSignatureHelp {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return structuredSignatureHelp{}
 	}
@@ -1269,7 +1280,7 @@ func bindingKeyword(p *compiledProgram, sym symbol.Symbol) string {
 // an unrelated syntax error elsewhere, following the same symbol-first,
 // store-backed pattern hover/definition already use.
 func completionsAtOffset(entryPath string, offset uint32) []structuredCompletionItem {
-	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	p, fatal := buildProgram(compileRequest{mode: modeCheck, entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil {
 		return nil
 	}
