@@ -1,8 +1,8 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** 21.1a, 21.1b, 21.2a, and 21.3 are implemented, committed, and
-pushed (`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`) — all stand on their
-own regardless of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
+**Status:** 21.1a, 21.1b, 21.2a, 21.3, and 21.4a are implemented,
+committed, and pushed (`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`,
+`16e39fa`) — all stand on their own regardless of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
 its own required design investigation (session `ses_6a864385d74fb0faae4048c7`,
 independently spot-verified) returned a decisive verdict — a correct
 module-scoped recheck is not achievable as a minimal wrapper around
@@ -68,6 +68,22 @@ updated in place as each slice lands, the same way `07`/`19` are.
   get faster automatically once `22` lands. Verified with a genuinely
   long-running child (a busy-loop program) across a real compile error,
   confirming it survives untouched and recovers once fixed.
+- **21.4a — LSP transport skeleton** (`16e39fa`): `pebc lsp` starts an
+  LSP server over stdio using `go.lsp.dev/protocol` (go directive
+  bumped to 1.26.0, required by the library). Implements only the
+  initialize/shutdown/exit handshake — no real features yet. Found and
+  fixed a real bug: the stdio adapter's `Close()` was a no-op, so
+  `jsonrpc2.Conn.Close()` (called from the `exit` handler) could never
+  unblock the read goroutine blocked in `os.Stdin.Read()` — the process
+  hung forever on `exit` instead of terminating; fixed by having
+  `Close()` actually close `os.Stdin`. Verified independently with both
+  the dispatch's own subprocess test harness and a from-scratch manual
+  Content-Length-framed JSON-RPC handshake. Fifth dispatch attempt on
+  this slice — the first four (two models) died 15-20s in mid-tool-call
+  with a false "completed" status, an apparent transient infra issue
+  (confirmed via near-zero token spend at time of death); `opencode-go/
+  hy3` completed it correctly on the retry after a smoke test confirmed
+  it and two other candidate models' health.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -213,10 +229,7 @@ Done — see "Completed slices" above.
 
 ### 21.4 — LSP core
 
-- **21.4a — transport.** Add the chosen LSP protocol library and `go.sum`.
-  Minimal JSON-RPC-over-stdio wiring responding to `initialize`/`shutdown`
-  only — prove an editor can connect without crashing before adding real
-  features.
+- **21.4a — transport.** Done — see "Completed slices" above.
 - **21.4b — diagnostics on save.** UPDATED (2026-08-19): 21.2b is blocked
   (see "Status" above), so this does NOT wire into real incremental
   rechecking. Wire `textDocument/didSave` (or `didChange` with debounce)
