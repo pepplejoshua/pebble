@@ -237,10 +237,19 @@ Flags:
   -L <path>            add <path> to the linker search path (repeatable)
   -I <path>            add <path> to the C include search path (repeatable)
   -prelude <path>      parse <path> before the entry module; its
-                       top-level declarations are visible everywhere
-                       without an import
+                        top-level declarations are visible everywhere
+                        without an import
   -runtime-root <dir>  path to the runtime/ directory (auto-detected
-                       from the working directory when omitted)
+                        from the working directory when omitted)
+
+Subcommands:
+  pebc daemon start|build|ping|stop|watch-status
+                       manage a persistent background compiler daemon
+                       for the current project root
+  pebc dev <entry.peb> watch for changes and automatically rebuild and
+                       restart the built program on save
+  pebc lsp             run a Language Server Protocol server over stdio
+                       (for editor integration)
 
 Examples:
   pebc main.peb                    build ./main
@@ -250,6 +259,8 @@ Examples:
   pebc main.peb -check             just check for errors
   pebc main.peb -emit-c out.c      inspect the generated C
   pebc server.peb -l pthread -run  link against libpthread
+  pebc dev main.peb                fast rebuild-restart on save
+  pebc lsp                         run as an LSP server (for editors)
 `
 
 // locateRuntimeRoot returns the runtime/ directory. An explicit override is
