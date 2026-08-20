@@ -52,6 +52,40 @@ type solveHandoff struct {
 	Constants           frozenConstants
 	GenerationHadErrors bool
 	GenerationFailed    bool
+	// RecoverableDiagnosticsOnly is true when every existing error-severity
+	// diagnostic comes from the lexer/parser recovery machinery (codes "L*"
+	// or "P*") rather than name resolution ("N*") or the checker itself
+	// ("C*"). Only lexer/parser errors are structurally isolated by parser
+	// recovery (see internal/syntax's recoverTo/isRecoveryBoundary) without
+	// affecting the semantic validity of surrounding, unrelated code. A
+	// name-resolution or checker error (e.g. a call to an undefined symbol)
+	// means the program is genuinely semantically broken and must never be
+	// treated as partial-publication-safe, no matter what
+	// Config.AllowPartialOnRecoveredErrors says.
+	RecoverableDiagnosticsOnly bool
+}
+
+// diagnosticsAreRecoverable reports whether every error-severity diagnostic
+// in the set originates from the lexer or parser (codes "L*"/"P*"). Any
+// other error code (name resolution "N*", checker "C*", or anything else)
+// disqualifies the whole set, since those represent real semantic failures
+// that partial publication must never paper over.
+func diagnosticsAreRecoverable(diagnostics *diagnostic.DiagnosticSet) bool {
+	for _, item := range diagnostics.Items() {
+		if item.Severity != diagnostic.Error {
+			continue
+		}
+		if len(item.Code) == 0 {
+			return false
+		}
+		switch item.Code[0] {
+		case 'L', 'P':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // run06a is the sole entry point for freeze audit, solve, and handoff assembly.
@@ -100,13 +134,14 @@ func run06a(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config)
 
 	// Step 8: Assemble and return the handoff.
 	return &solveHandoff{
-		Compilation:         compilation,
-		Semantics:           semantics,
-		Solution:            solution,
-		Records:             frozen.records,
-		Roots:               frozen.roots,
-		Constants:           facts.Constants.freeze(),
-		GenerationHadErrors: diagnostics.HasErrors(),
+		Compilation:                compilation,
+		Semantics:                  semantics,
+		Solution:                   solution,
+		Records:                    frozen.records,
+		Roots:                      frozen.roots,
+		Constants:                  facts.Constants.freeze(),
+		GenerationHadErrors:        diagnostics.HasErrors(),
+		RecoverableDiagnosticsOnly: diagnosticsAreRecoverable(diagnostics),
 	}
 }
 

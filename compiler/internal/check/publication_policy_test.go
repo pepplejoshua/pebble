@@ -13,8 +13,9 @@ func TestCanContinueWithPartial(t *testing.T) {
 		{name: "hard failure without opt in", handoff: &solveHandoff{GenerationFailed: true}, want: false},
 		{name: "hard failure with opt in", handoff: &solveHandoff{GenerationFailed: true, GenerationHadErrors: true}, config: Config{AllowPartialOnRecoveredErrors: true}, want: false},
 		{name: "clean default", handoff: &solveHandoff{}, config: Config{}, want: true},
-		{name: "diagnostic default", handoff: &solveHandoff{GenerationHadErrors: true}, config: Config{}, want: false},
-		{name: "diagnostic opt in", handoff: &solveHandoff{GenerationHadErrors: true}, config: Config{AllowPartialOnRecoveredErrors: true}, want: true},
+		{name: "diagnostic default", handoff: &solveHandoff{GenerationHadErrors: true, RecoverableDiagnosticsOnly: true}, config: Config{}, want: false},
+		{name: "diagnostic opt in", handoff: &solveHandoff{GenerationHadErrors: true, RecoverableDiagnosticsOnly: true}, config: Config{AllowPartialOnRecoveredErrors: true}, want: true},
+		{name: "diagnostic opt in but not recoverable", handoff: &solveHandoff{GenerationHadErrors: true, RecoverableDiagnosticsOnly: false}, config: Config{AllowPartialOnRecoveredErrors: true}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,6 +49,20 @@ fn
 	}
 	if withOptIn.IR() == nil {
 		t.Fatal("completed recovered-syntax fixture should publish IR with opt-in")
+	}
+}
+
+func TestUndefinedNameNeverPublishesEvenWithOptIn(t *testing.T) {
+	source := []byte(`
+fn main() int { return missing(); }
+`)
+	inputs, diagnostics := factInputs(t, checkProvider{"main.peb": source})
+	if !diagnostics.HasErrors() {
+		t.Fatal("fixture should produce an undefined-name diagnostic")
+	}
+	result := Check(inputs, diagnostics, Config{AllowPartialOnRecoveredErrors: true})
+	if result.IR() != nil {
+		t.Fatal("a name-resolution error must never publish IR, opt-in or not")
 	}
 }
 

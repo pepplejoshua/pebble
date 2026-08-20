@@ -173,7 +173,8 @@ func buildProgram(req compileRequest) (*compiledProgram, bool) {
 		LiteralTarget: infer.LiteralTarget{WordBits: 64},
 	}
 	result := check.Check(inputs, diagnostics, check.Config{
-		Entry: check.EntryPoint{Mode: entryMode, Symbol: entryID},
+		Entry:                         check.EntryPoint{Mode: entryMode, Symbol: entryID},
+		AllowPartialOnRecoveredErrors: req.mode == modeCheck,
 	})
 	return &compiledProgram{
 		graph:       graph,
