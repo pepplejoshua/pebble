@@ -73,6 +73,20 @@ func isStatementStart(kind TokenKind) bool {
 		kind == KwContinue || startsExpression(kind)
 }
 
+// isRecoveryBoundary is the statement-only subset of isStatementStart.
+// Unlike expression-starting tokens, these keywords cannot be valid contents
+// of an expression, type, or parameter list, so they unambiguously begin the
+// next statement during list recovery.
+func isRecoveryBoundary(kind TokenKind) bool {
+	switch kind {
+	case LeftBrace, KwLet, KwVar, KwReturn, KwIf, KwWhile, KwLoop, KwFor,
+		KwSwitch, KwDefer, KwPrint, KwPrintln, KwBreak, KwContinue:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *parser) recoverStatement() NodeID {
 	start := p.current().Span.Start
 	end := start

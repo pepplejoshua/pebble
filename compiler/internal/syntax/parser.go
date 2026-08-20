@@ -178,9 +178,13 @@ func (p *parser) recoverTo(expected, message string, stops ...TokenKind) NodeID 
 		return 0
 	}
 	start := p.current().Span.Start
+	if isRecoveryBoundary(p.current().Kind) {
+		p.report(codeInvalidSyntax, message, p.current().Span)
+		return p.tree.add(Error, source.NewSpan(p.file.ID(), start, start), EOF, expected)
+	}
 	reported := false
 	end := start
-	for !p.at(EOF) && !tokenIn(p.current().Kind, stops...) {
+	for !p.at(EOF) && !tokenIn(p.current().Kind, stops...) && !isRecoveryBoundary(p.current().Kind) {
 		token := p.cursor.advance()
 		end = token.Span.End
 		if !reported && token.Kind != Invalid {

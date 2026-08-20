@@ -256,6 +256,55 @@ func TestParserRecoveryConsumesDamagedListElementLocally(t *testing.T) {
 	}
 }
 
+func TestParserRecoveryStopsBeforeFollowingStatement(t *testing.T) {
+	text := `type Point = struct {
+    x int;
+    y int;
+};
+
+fn add(p Point, scale int) Point {
+    return Point.{ x = p.x + scale, y = p.y + scale };
+}
+
+fn main() int {
+    var origin Point = Point.{ x = 0, y = 0 };
+    var broken int = add(origin,
+    return origin.x as int;
+}`
+	tree, diagnostics, sources := parseFragmentText(t, "recovery.peb", text, Parse)
+	file, _ := sources.File(tree.source)
+
+	foundCallDiagnostic := false
+	for _, item := range diagnostics.Items() {
+		if item.Code == codeInvalidSyntax && strings.Contains(item.Message, "expected ',' or ')' after call argument") {
+			foundCallDiagnostic = true
+		}
+	}
+	if !foundCallDiagnostic {
+		t.Fatalf("missing call-argument diagnostic: %+v\n%s", diagnostics.Items(), tree.DumpString())
+	}
+
+	returnCount, memberCount, originCount := 0, 0, 0
+	for id := NodeID(1); ; id++ {
+		node, ok := tree.Node(id)
+		if !ok {
+			break
+		}
+		if node.Kind() == ReturnStmt && strings.Contains(string(file.Slice(node.Span())), "return origin.x") {
+			returnCount++
+		}
+		if node.Kind() == MemberExpr && strings.Contains(string(file.Slice(node.Span())), "origin.x") {
+			memberCount++
+		}
+		if node.Kind() == Name && string(file.Slice(node.Span())) == "origin" {
+			originCount++
+		}
+	}
+	if returnCount != 1 || memberCount != 1 || originCount != 3 {
+		t.Fatalf("following statement was not structurally preserved: returns=%d members=%d origins=%d\n%s", returnCount, memberCount, originCount, tree.DumpString())
+	}
+}
+
 func TestLexerAndParserDiagnosticsStayInSourceOrder(t *testing.T) {
 	_, diagnostics, _ := parseFragmentText(t, "ordering.peb", "value extra @", parseExpressionFragment)
 	items := diagnostics.Items()
