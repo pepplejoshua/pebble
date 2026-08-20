@@ -10,3 +10,7 @@ repository = "https://github.com/pepplejoshua/pebble"
 repository = "https://github.com/pepplejoshua/pebble"
 rev = "44aee98a56c1db78b48486c9fef0f1f98339d36d"
 path = "editors/syght/grammar"
+
+[language_servers.pebble]
+name = "Pebble Language Server"
+language = "Pebble"
