@@ -398,4 +398,3 @@ func isStdDir(dir string) bool {
 	}
 	return true
 }
-
