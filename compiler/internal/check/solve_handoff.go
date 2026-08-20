@@ -51,6 +51,7 @@ type solveHandoff struct {
 	Roots               frozenRoots
 	Constants           frozenConstants
 	GenerationHadErrors bool
+	GenerationFailed    bool
 }
 
 // run06a is the sole entry point for freeze audit, solve, and handoff assembly.
@@ -58,10 +59,10 @@ func run06a(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config)
 	// Step 1: run06a3 to get the complete mutable fact arena.
 	facts := run06a3(inputs, diagnostics, config)
 	if facts == nil || facts.Generation == nil || facts.Session == nil || facts.Program == nil {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 	if facts.Session.Fatal() {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 2: Build and freeze the frozenCompilation. Note this reads limits
@@ -69,18 +70,18 @@ func run06a(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config)
 	// this function's own config parameter, which may still be zero-valued.
 	compilation, ok := buildFrozenCompilation(facts.Generation, inputs)
 	if !ok {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 3: Freeze the generation to obtain frozen records, roots, values.
 	frozen, ok := facts.Generation.freeze()
 	if !ok {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 4: Perform additional freeze-audit checks.
 	if !auditFrozen(facts.Generation, frozen, compilation) {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 5: Call Solve() exactly once.
@@ -89,12 +90,12 @@ func run06a(inputs Inputs, diagnostics *diagnostic.DiagnosticSet, config Config)
 	// Step 6: Create the semantic snapshot.
 	semantics, ok := infer.Snapshot(facts.Program, solution, diagnostics)
 	if !ok {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 7: Post-solve ownership audit.
 	if !semantics.Matches(solution) || semantics.Resolution() != inputs.Resolution {
-		return &solveHandoff{GenerationHadErrors: true}
+		return &solveHandoff{GenerationHadErrors: true, GenerationFailed: true}
 	}
 
 	// Step 8: Assemble and return the handoff.

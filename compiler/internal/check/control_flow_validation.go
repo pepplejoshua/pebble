@@ -28,7 +28,7 @@ type controlExit struct {
 // It deliberately does not validate switch categories or defer edges; those
 // consumers use the same exit representation in later validation passes.
 func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
-	if handoff == nil || handoff.GenerationHadErrors || records == nil || handoff.Semantics == nil {
+	if !canContinueWithPartial(handoff, config) || records == nil || handoff.Semantics == nil {
 		return true
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)

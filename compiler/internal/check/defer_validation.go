@@ -21,7 +21,7 @@ type deferExit struct {
 }
 
 func validateDefers(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
-	if handoff == nil || handoff.GenerationHadErrors || handoff.Solution == nil || records == nil {
+	if !canContinueWithPartial(handoff, config) || handoff.Solution == nil || records == nil {
 		return true
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)

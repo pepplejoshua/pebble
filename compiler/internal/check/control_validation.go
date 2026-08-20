@@ -191,7 +191,7 @@ func integerSwitchIsExhaustive(builtin types.BuiltinKind, covered map[int64]bool
 // handoff it independently re-verifies every tree-free invariant derivable
 // from the frozen arena and records alone. Any disagreement emits C0619.
 func auditControlArena(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
-	if handoff.GenerationHadErrors {
+	if !canContinueWithPartial(handoff, config) {
 		return true
 	}
 	reporter := newValidationReporter(diagnostics, config.MaxDiagnostics)

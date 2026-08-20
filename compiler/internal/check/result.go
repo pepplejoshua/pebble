@@ -103,13 +103,12 @@ func (r *Result) Instantiation(ref symbol.SyntaxRef) (infer.Instantiation, bool)
 }
 
 // IR returns the closed typed-IR unit, or nil when publication is gated off.
-// IR() is non-nil exactly when the whole checker succeeded: no earlier-phase
-// errors, a successful solve, every retained record resolved and validated,
-// structural control/global/context/generic-body/entry validation passed, and
-// typed-IR construction with its closed verification succeeded. run06b builds
-// the unit as its final step and stores it only on a fully successful result,
-// so a failed result always carries nil IR and a successful result always
-// carries non-nil IR.
+// A non-nil unit means either that generation completed without errors, or that
+// partial publication was explicitly enabled, generation did not hard-fail,
+// and every applicable audit, validator, typed-IR construction, and closed
+// verification step succeeded. It does not mean that an opt-in partial unit
+// is free of all earlier recovered diagnostics; those diagnostics are retained
+// by the caller and the unit is not a substitute for a clean build result.
 func (r *Result) IR() *tir.Unit {
 	if r == nil {
 		return nil

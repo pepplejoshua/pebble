@@ -18,7 +18,7 @@ fn test() void {
 `)})
 
 	// Set a very low component limit to trigger failure during compilation building.
-	cfg := Config{MaxRecordComponents: 3}
+	cfg := Config{MaxRecordComponents: 3, AllowPartialOnRecoveredErrors: true}
 	handoff := run06a(inputs, diagnostics, cfg)
 
 	if handoff == nil {
@@ -26,6 +26,9 @@ fn test() void {
 	}
 	if !handoff.GenerationHadErrors {
 		t.Fatal("GenerationHadErrors should be true when limits exceeded")
+	}
+	if !handoff.GenerationFailed {
+		t.Fatal("GenerationFailed should remain fatal even with partial publication enabled")
 	}
 
 	// Verify diagnostic set is bounded and contains error diagnostics.
@@ -60,7 +63,7 @@ fn nested() void {
 `)})
 
 	// Set a very low semantic records limit to trigger control hierarchy overflow.
-	cfg := Config{MaxSemanticRecords: 3}
+	cfg := Config{MaxSemanticRecords: 3, AllowPartialOnRecoveredErrors: true}
 	handoff := run06a(inputs, diagnostics, cfg)
 
 	if handoff == nil {
@@ -68,6 +71,9 @@ fn nested() void {
 	}
 	if !handoff.GenerationHadErrors {
 		t.Fatal("GenerationHadErrors should be true when limits exceeded")
+	}
+	if !handoff.GenerationFailed {
+		t.Fatal("GenerationFailed should remain fatal even with partial publication enabled")
 	}
 
 	// Verify we produced a diagnostic but didn't panic or crash.

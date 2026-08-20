@@ -62,6 +62,9 @@ fn main() void {
 	if handoff == nil {
 		t.Fatal("handoff is nil")
 	}
+	if handoff.GenerationFailed {
+		t.Fatal("clean step-8 handoff marked as a generation failure")
+	}
 	if !handoff.GenerationHadErrors {
 		// No errors during generation (though there may be other-phase errors)
 	}
@@ -128,6 +131,9 @@ fn conflict() void {
 	// GenerationHadErrors should match diagnostics.HasErrors()
 	if handoff.GenerationHadErrors != diagnostics.HasErrors() {
 		t.Fatalf("GenerationHadErrors=%v, but diagnostics.HasErrors()=%v", handoff.GenerationHadErrors, diagnostics.HasErrors())
+	}
+	if handoff.GenerationFailed {
+		t.Fatal("completed step-8 handoff marked as a generation failure")
 	}
 
 	// The key distinguishing case: we have a real conflict (solution not successful),

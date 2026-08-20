@@ -24,7 +24,7 @@ func auditHandoff(handoff *solveHandoff, diagnostics *diagnostic.DiagnosticSet, 
 		return false
 	}
 
-	if handoff.GenerationHadErrors && handoff.Semantics == nil {
+	if handoff == nil || handoff.GenerationFailed || (handoff.Semantics == nil && !canContinueWithPartial(handoff, config)) {
 		return false
 	}
 

@@ -45,25 +45,26 @@ type EntryPoint struct {
 // documented defaults. Inference is forwarded unchanged by the later slice
 // that prepares and creates the inference session.
 type Config struct {
-	Inference              infer.Config
-	MaxSyntaxVisits        uint32
-	MaxTraversalDepth      uint32
-	MaxSemanticRecords     uint32
-	MaxRecordComponents    uint32
-	MaxControlDepth        uint32
-	MaxTrackedPlaces       uint32
-	MaxGenericRequirements uint32
-	MaxConstantDepth       uint32
-	MaxConstantOperations  uint64
-	MaxConstantBits        uint32
-	MaxDiagnostics         uint32
-	MaxValidationSteps     uint64
-	MaxIRNodes             uint32
-	MaxIRComponents        uint64
-	MaxFlowStates          uint32
-	MaxDeferEdges          uint64
-	MaxDumpBytes           uint64
-	Entry                  EntryPoint
+	Inference                     infer.Config
+	AllowPartialOnRecoveredErrors bool
+	MaxSyntaxVisits               uint32
+	MaxTraversalDepth             uint32
+	MaxSemanticRecords            uint32
+	MaxRecordComponents           uint32
+	MaxControlDepth               uint32
+	MaxTrackedPlaces              uint32
+	MaxGenericRequirements        uint32
+	MaxConstantDepth              uint32
+	MaxConstantOperations         uint64
+	MaxConstantBits               uint32
+	MaxDiagnostics                uint32
+	MaxValidationSteps            uint64
+	MaxIRNodes                    uint32
+	MaxIRComponents               uint64
+	MaxFlowStates                 uint32
+	MaxDeferEdges                 uint64
+	MaxDumpBytes                  uint64
+	Entry                         EntryPoint
 }
 
 func normalizeConfig(config Config) Config {

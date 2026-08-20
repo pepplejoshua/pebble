@@ -14,7 +14,7 @@ import (
 // intentionally not called by run06b yet: later 06b.7b parts add values,
 // places, calls, coercions, and statements at this orchestration point.
 func buildUnit(handoff *solveHandoff, records *solvedRecords, requirements map[symbol.SymbolID][]Requirement, diagnostics *diagnostic.DiagnosticSet, config Config, store *types.Store) (unit *tir.Unit, ok bool) {
-	if handoff == nil || handoff.GenerationHadErrors || handoff.Semantics == nil || handoff.Solution == nil || records == nil {
+	if !canContinueWithPartial(handoff, config) || handoff.Semantics == nil || handoff.Solution == nil || records == nil {
 		return nil, false
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)

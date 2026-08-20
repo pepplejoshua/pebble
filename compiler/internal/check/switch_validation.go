@@ -9,7 +9,7 @@ import (
 )
 
 func validateSwitches(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
-	if handoff == nil || handoff.GenerationHadErrors || records == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil {
+	if !canContinueWithPartial(handoff, config) || records == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil {
 		return true
 	}
 
