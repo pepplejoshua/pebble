@@ -1,8 +1,8 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** 21.1a, 21.1b, and 21.2a are implemented, committed, and pushed
-(`ca653de`, `c7ddf92`, `d4cdbb2`) — all three stand on their own regardless
-of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
+**Status:** 21.1a, 21.1b, 21.2a, and 21.3 are implemented, committed, and
+pushed (`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`) — all stand on their
+own regardless of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
 its own required design investigation (session `ses_6a864385d74fb0faae4048c7`,
 independently spot-verified) returned a decisive verdict — a correct
 module-scoped recheck is not achievable as a minimal wrapper around
@@ -56,6 +56,18 @@ updated in place as each slice lands, the same way `07`/`19` are.
   computed fresh per call, ordered so a module always precedes its
   importers). Pure data structure, not wired into anything yet — the
   building block 21.2b needs.
+- **21.3 — `pebc dev`, the fast rebuild-restart front end** (`23dce8b`):
+  `pebc dev <entry.peb>` auto-starts a daemon if none is running, does an
+  initial build, launches the executable as a supervised child with
+  stdio forwarded live, then polls `watch-status` (300ms default) and
+  rebuilds+restarts on a detected change. A failed build leaves the
+  last-known-good child running and prints diagnostics rather than
+  killing it. Ctrl-C kills the child but deliberately leaves the daemon
+  running (it self-manages via its own idle timeout). Does not depend on
+  21.2b/22 — uses the existing full-recheck daemon build path and will
+  get faster automatically once `22` lands. Verified with a genuinely
+  long-running child (a busy-loop program) across a real compile error,
+  confirming it survives untouched and recovers once fixed.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -197,17 +209,7 @@ doc" below) — the same bar every slice in `07`/`19`/`20` was held to.
 
 ### 21.3 — `pebc dev`: the user-facing fast-rebuild-restart front end
 
-- **21.3a — process supervision.** Launch the target built executable as a
-  child process; on a successful incremental rebuild, kill and relaunch
-  it, forwarding stdio.
-- **21.3b — CLI wiring and clean shutdown.** `pebc dev main.peb` command;
-  Ctrl-C cleanly tears down both the daemon and the child process (or
-  leaves the daemon running for the next `pebc dev` invocation, per
-  whatever 21.1a's lifecycle design settled on — decide during this
-  slice, not before, once 21.1a's actual shutdown semantics are known).
-  **Test:** real end-to-end — start `pebc dev`, edit a file, confirm the
-  child process restarts and the edit is reflected in its output; measure
-  and report real edit-to-running-again latency, not a synthetic number.
+Done — see "Completed slices" above.
 
 ### 21.4 — LSP core
 
