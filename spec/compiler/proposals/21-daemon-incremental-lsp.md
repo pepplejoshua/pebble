@@ -1,8 +1,9 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** 21.1a, 21.1b, 21.2a, 21.3, and 21.4a are implemented,
+**Status:** 21.1a, 21.1b, 21.2a, 21.3, 21.4a, and 21.4b are implemented,
 committed, and pushed (`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`,
-`16e39fa`) — all stand on their own regardless of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
+`16e39fa`, `c42c4df`) — all stand on their own regardless of what happens
+below. **21.2b (module-scoped resolve/check) is BLOCKED**:
 its own required design investigation (session `ses_6a864385d74fb0faae4048c7`,
 independently spot-verified) returned a decisive verdict — a correct
 module-scoped recheck is not achievable as a minimal wrapper around
@@ -84,6 +85,24 @@ updated in place as each slice lands, the same way `07`/`19` are.
   (confirmed via near-zero token spend at time of death); `opencode-go/
   hy3` completed it correctly on the retry after a smoke test confirmed
   it and two other candidate models' health.
+- **21.4b — diagnostics on save** (`c42c4df`): `textDocument/didSave`
+  triggers a full build via the existing daemon path and publishes real,
+  positioned `protocol.Diagnostic`s (a new `structuredDiagnostic` list
+  threaded through the daemon RPC via `Diagnostic.Primary.Span` +
+  `source.File.Position`, kept alongside the existing plain-text
+  diagnostics unchanged). Captures the real workspace root from the
+  editor's `initialize` params rather than assuming process cwd. Always
+  publishes, including an empty array on a clean build, to clear stale
+  markers. Two real findings surfaced and documented rather than
+  silently worked around: a `go.lsp.dev/jsonrpc2` stream-reading race
+  where two zero-gap notifications can silently drop the second one's
+  dispatch (no real editor fires didOpen/didSave with zero gap, so
+  documented as a known limitation, not fixed); and a latent daemon
+  robustness gap (21.1a, not new here) — the Unix socket path can
+  exceed macOS's 104-byte `sun_path` limit for deep project roots,
+  confirmed with a real 107-byte path that silently failed to bind
+  (found via Go's own `t.TempDir()` nesting; flagged as a future
+  daemon-hardening item, not fixed in this slice).
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -230,14 +249,7 @@ Done — see "Completed slices" above.
 ### 21.4 — LSP core
 
 - **21.4a — transport.** Done — see "Completed slices" above.
-- **21.4b — diagnostics on save.** UPDATED (2026-08-19): 21.2b is blocked
-  (see "Status" above), so this does NOT wire into real incremental
-  rechecking. Wire `textDocument/didSave` (or `didChange` with debounce)
-  to trigger a FULL recheck via the existing daemon build path (same
-  mechanism `pebc dev`/21.3 already uses) and publish
-  `textDocument/publishDiagnostics` from the real `DiagnosticSet`,
-  converted to LSP diagnostic ranges. Will get faster automatically once
-  `22` lands, without this slice's own code changing.
+- **21.4b — diagnostics on save.** Done — see "Completed slices" above.
 - **21.4c — hover.** UPDATED (2026-08-19): the daemon has no warm checked
   state to query yet (confirmed by the 21.2b investigation — `compileOnce`
   rebuilds everything fresh on every request). A hover request therefore
