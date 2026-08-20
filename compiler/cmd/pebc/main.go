@@ -25,6 +25,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "daemon" {
 		return runDaemon(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "dev" {
+		return runDev(args[1:], stdout, stderr)
+	}
 
 	flags := flag.NewFlagSet("pebc", flag.ContinueOnError)
 	flags.SetOutput(stderr)
