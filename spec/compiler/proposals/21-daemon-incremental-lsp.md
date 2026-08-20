@@ -1,9 +1,11 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** 21.1a, 21.1b, 21.2a, 21.3, 21.4a, and 21.4b are implemented,
-committed, and pushed (`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`,
-`16e39fa`, `c42c4df`) — all stand on their own regardless of what happens
-below. **21.2b (module-scoped resolve/check) is BLOCKED**:
+**Status:** all slices except 21.2b/21.2c are complete. 21.1a, 21.1b, 21.2a,
+21.3, 21.4a, 21.4b, and 21.4c are implemented, committed, and pushed
+(`ca653de`, `c7ddf92`, `d4cdbb2`, `23dce8b`, `16e39fa`, `c42c4df`,
+`9708b19`) — a working daemon, `pebc dev`, and an LSP core (handshake,
+diagnostics-on-save, hover) all exist and are verified working today.
+**21.2b (module-scoped resolve/check) is BLOCKED**:
 its own required design investigation (session `ses_6a864385d74fb0faae4048c7`,
 independently spot-verified) returned a decisive verdict — a correct
 module-scoped recheck is not achievable as a minimal wrapper around
@@ -103,6 +105,20 @@ updated in place as each slice lands, the same way `07`/`19` are.
   confirmed with a real 107-byte path that silently failed to bind
   (found via Go's own `t.TempDir()` nesting; flagged as a future
   daemon-hardening item, not fixed in this slice).
+- **21.4c — hover** (`9708b19`): `textDocument/hover` via a new daemon
+  `hover` RPC — finds the smallest syntax node at the requested byte
+  offset, maps it through `tir.Unit.SourceMap` to its checked TIR node,
+  and renders the type with `types.DescribeKey`. No warm state reused
+  (same as 21.4b), so every hover pays a full recheck — correct, not
+  instant, explicitly acceptable pending `22`. A "gap" found during
+  manual review (hovering a variable reference, not just a literal,
+  seemed to return nothing) turned out to be an unrelated type error in
+  the reproduction program, not a real bug — confirmed by a dispatched
+  follow-up and locked in as a passing test
+  (`TestLSPHoverVariableReference`) with no code changes needed. This
+  closes out the full 21.4 slice sequence (transport, diagnostics,
+  hover) and the daemon-side half of this proposal — only the blocked
+  21.2b/21.2c remain, tracked in `22-incremental-check-refactor.md`.
 
 **Motivation.** `pebc` today is a one-shot batch pipeline: every invocation
 parses, resolves, type-checks, and emits C for the entire program from a
@@ -250,17 +266,7 @@ Done — see "Completed slices" above.
 
 - **21.4a — transport.** Done — see "Completed slices" above.
 - **21.4b — diagnostics on save.** Done — see "Completed slices" above.
-- **21.4c — hover.** UPDATED (2026-08-19): the daemon has no warm checked
-  state to query yet (confirmed by the 21.2b investigation — `compileOnce`
-  rebuilds everything fresh on every request). A hover request therefore
-  triggers a fresh full check (same cost as one daemon build, ~60-70ms per
-  the measured baseline) just to answer one query — correct, but not
-  "instant." Acceptable for a v1 core; revisit once `22` gives the daemon
-  real warm state to query without a full recheck per hover.
-  **Test:** connect a real LSP client (a minimal test harness or an actual
-  editor) and confirm diagnostics appear and clear correctly as the file is
-  edited; confirm hover reports real inferred types at real cursor
-  positions, not placeholder text.
+- **21.4c — hover.** Done — see "Completed slices" above.
 
 ## Verification discipline used for this doc
 
