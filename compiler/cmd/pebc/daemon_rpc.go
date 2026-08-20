@@ -75,6 +75,36 @@ type daemonResponse struct {
 	// (empty File) means no definition is available at the requested offset,
 	// not an error.
 	Definition structuredDefinition `json:"definition,omitempty"`
+	// DocumentSymbols carries the outline tree of the requested entry file,
+	// populated by the "documentSymbols" RPC. Each entry is a symbol with a
+	// 1-based (line,column) enclosing Range (the whole declaration) and a tight
+	// SelectionRange (the symbol's own name span), nested via Children. The
+	// LSP server converts the 1-based positions to 0-based. Kind is the bare
+	// LSP SymbolKind integer (go.lsp.dev/protocol.SymbolKind) so the LSP layer
+	// only needs a cast, not a string round-trip.
+	DocumentSymbols []structuredDocumentSymbol `json:"document_symbols,omitempty"`
+}
+
+// structuredDocumentSymbol is the machine-readable form of one outline symbol,
+// following the structuredDefinition pattern: a resolved file path and 1-based
+// line/column endpoints for BOTH the enclosing declaration Range (Start*/End*)
+// and the tight name SelectionRange (SelStart*/SelEnd*). Children nests a
+// type's members (struct/union fields, enum variants, methods) under their
+// owning type so the client renders a real tree rather than a flat list. Kind
+// is the LSP SymbolKind integer value.
+type structuredDocumentSymbol struct {
+	Name         string                     `json:"name"`
+	Detail       string                     `json:"detail,omitempty"`
+	Kind         int                        `json:"kind"`
+	StartLine    int                        `json:"startLine"`
+	StartCol     int                        `json:"startCol"`
+	EndLine      int                        `json:"endLine"`
+	EndCol       int                        `json:"endCol"`
+	SelStartLine int                        `json:"selStartLine"`
+	SelStartCol  int                        `json:"selStartCol"`
+	SelEndLine   int                        `json:"selEndLine"`
+	SelEndCol    int                        `json:"selEndCol"`
+	Children     []structuredDocumentSymbol `json:"children,omitempty"`
 }
 
 // structuredDiagnostic is the machine-readable form of one compiler diagnostic,

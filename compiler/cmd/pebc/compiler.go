@@ -19,6 +19,7 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
 	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
+	"go.lsp.dev/protocol"
 )
 
 // compileMode selects which pipeline stages run for one compilation.
@@ -470,6 +471,236 @@ func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinitio
 		EndLine:   end.Line,
 		EndCol:    end.Column,
 	}
+}
+
+// documentSymbolsForFile performs a fresh full check of the entry module (the
+// same daemon build path a build uses -- there is no warm checked state to
+// query yet) and walks the resolved symbol table for that module, returning a
+// nested outline TREE (not a flat list). Top-level entries are module-scope
+// declarations worth showing in an outline: functions, methods' owning types,
+// type/external-type declarations, and module-scope bindings. A type symbol's
+// members (struct/union fields, enum variants, and methods) are nested under
+// the type via Children, so the client renders a real, useful outline rather
+// than a flat dump. Parameters are intentionally NOT shown as children:
+// matching gopls' convention, the outline lists top-level symbols and a type's
+// own members, but never a function's parameters. Each returned symbol carries
+// both the whole-declaration Range (from the symbol's Declaration node span)
+// and the tight SelectionRange (the symbol's own name span), plus a Detail with
+// the real resolved type/signature (reusing the hover type-description path).
+func documentSymbolsForFile(entryPath string) []structuredDocumentSymbol {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil {
+		return nil
+	}
+	// The entry module is Graph.Root, regardless of any separate prelude.
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok {
+		return nil
+	}
+	modID := entryMod.ID
+
+	// Filter to the requested file's module (a module-scope symbol lives in
+	// exactly one module, so this selects "this file's" declarations) AND to
+	// outline-worthy kinds. Parameters and type parameters share the same
+	// Containing mechanism fields/variants/methods use to nest under their
+	// owning type, but neither belongs in a real outline -- gopls never lists
+	// a function's parameters, only actual declarations -- so they're excluded
+	// unconditionally. A binding/loop binding is only excluded when it's a
+	// LOCAL (Containing != 0, i.e. nested inside a function body): a
+	// module-scope var/let (Containing == 0) is a real top-level declaration,
+	// same as Go's package-level vars showing in gopls' outline, and stays.
+	// SymbolModule is an import qualifier binding (e.g. "hash" for
+	// `import "std:hash"`), not a declaration -- confirmed live it otherwise
+	// shows up as a bogus top-level "Variable" entry named after the import.
+	// A symbol with no authored name (an anonymous function literal passed
+	// as a value, e.g. `fn (a, b str) bool => a == b`) has nothing meaningful
+	// to show in an outline either, confirmed live it otherwise appears as an
+	// empty-named top-level entry.
+	var syms []symbol.Symbol
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Module != modID {
+			continue
+		}
+		if candidate.Name == "" {
+			continue
+		}
+		switch candidate.Kind {
+		case symbol.SymbolParameter, symbol.SymbolTypeParameter, symbol.SymbolModule:
+			continue
+		case symbol.SymbolBinding, symbol.SymbolExternBinding, symbol.SymbolLoopBinding:
+			if candidate.Containing != 0 {
+				continue
+			}
+		}
+		syms = append(syms, candidate)
+	}
+
+	// Build a mutable tree: map each symbol ID to its structured form (with a
+	// Children slice we fill in a second pass) and record its owning symbol.
+	nodes := make(map[symbol.SymbolID]*structuredDocumentSymbol, len(syms))
+	owning := make(map[symbol.SymbolID]symbol.SymbolID, len(syms))
+	var order []symbol.SymbolID
+	for i := range syms {
+		sym := syms[i]
+		ds := toStructuredSymbol(p, modID, sym)
+		nodes[sym.ID] = &ds
+		owning[sym.ID] = sym.Containing
+		order = append(order, sym.ID)
+	}
+
+	// Pass 1: link every child into its parent's Children slice first. nodes
+	// holds pointers, so this mutates the shared structs in place regardless
+	// of which order ids come in -- a child with a higher SymbolID than its
+	// parent (the overwhelmingly common case, since a struct's own symbol is
+	// always collected before its fields) must still land in the parent's
+	// Children before pass 2 takes its value.
+	isChild := make(map[symbol.SymbolID]bool, len(syms))
+	for _, id := range order {
+		owner := owning[id]
+		if owner == 0 {
+			continue
+		}
+		parent, ok := nodes[owner]
+		if !ok {
+			continue
+		}
+		parent.Children = append(parent.Children, *nodes[id])
+		isChild[id] = true
+	}
+	// Pass 2: now that every parent's Children is fully populated, collect
+	// the top-level (non-child) symbols by value.
+	var top []structuredDocumentSymbol
+	for _, id := range order {
+		if isChild[id] {
+			continue
+		}
+		top = append(top, *nodes[id])
+	}
+	return top
+}
+
+// toStructuredSymbol converts one resolved symbol into its machine-readable
+// outline form. The enclosing Range comes from the symbol's Declaration node
+// (the whole declaration statement), falling back to the name span when the
+// declaration node cannot be resolved; the SelectionRange is the symbol's own
+// name span (sym.Span), exactly like hover/definition already use. Detail holds
+// the real resolved type/signature (reusing the hover description path), which
+// gives a function its signature and a field/binding its type in the outline.
+func toStructuredSymbol(p *compiledProgram, modID module.ModuleID, sym symbol.Symbol) structuredDocumentSymbol {
+	file, ok := p.sources.File(sym.Span.Source)
+	if !ok {
+		return structuredDocumentSymbol{Name: sym.Name, Kind: symbolKindToLSP(p, sym)}
+	}
+	// Tight name span (SelectionRange).
+	selStart := file.Position(sym.Span.Start)
+	selEnd := file.Position(sym.Span.End)
+	// Whole-declaration span (Range), from the Declaration node.
+	declStart, declEnd := selStart, selEnd
+	if n, ok := p.sourcesNode(sym.Declaration.Module, sym.Declaration.Node); ok {
+		ds := n.Span()
+		if ds.Start <= ds.End {
+			declStart = file.Position(ds.Start)
+			declEnd = file.Position(ds.End)
+		}
+	}
+
+	detail := ""
+	if !isTypeKind(sym.Kind) && p.unit != nil {
+		if mod, ok := p.graph.Module(sym.Module); ok {
+			resolve := types.ResolveFromResultQualified(p.resolution, sym.Module, types.QualifierMap(mod.Imports))
+			if txt, ok := renderSymbolHover(p, sym, resolve); ok {
+				detail = txt
+			}
+		}
+	}
+
+	return structuredDocumentSymbol{
+		Name:         sym.Name,
+		Detail:       detail,
+		Kind:         symbolKindToLSP(p, sym),
+		StartLine:    declStart.Line,
+		StartCol:     declStart.Column,
+		EndLine:      declEnd.Line,
+		EndCol:       declEnd.Column,
+		SelStartLine: selStart.Line,
+		SelStartCol:  selStart.Column,
+		SelEndLine:   selEnd.Line,
+		SelEndCol:    selEnd.Column,
+	}
+}
+
+// isTypeKind reports whether a symbol kind is a type declaration (struct/enum/
+// union/extern/type-parameter/builtin/runtime). These render with just their
+// name in the outline (the Name already shows the type name), so we omit the
+// redundant "type X" Detail that the hover path would produce.
+func isTypeKind(k symbol.SymbolKind) bool {
+	switch k {
+	case symbol.SymbolType, symbol.SymbolExternType, symbol.SymbolBuiltinType, symbol.SymbolRuntimeType, symbol.SymbolTypeParameter:
+		return true
+	default:
+		return false
+	}
+}
+
+// symbolKindToLSP maps a resolved SymbolKind to the closest real LSP
+// SymbolKind. Type declarations are refined to Struct/Enum when their
+// underlying aggregate shape (struct/union/enum) is cheaply recoverable from
+// the Declaration node; otherwise they fall back to Struct. Parameters and
+// bindings become Variable, fields become Field, variants become EnumMember,
+// and methods become Method.
+func symbolKindToLSP(p *compiledProgram, sym symbol.Symbol) int {
+	switch sym.Kind {
+	case symbol.SymbolFunction, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
+		return int(protocol.SymbolKindFunction)
+	case symbol.SymbolMethod:
+		return int(protocol.SymbolKindMethod)
+	case symbol.SymbolType, symbol.SymbolExternType, symbol.SymbolBuiltinType, symbol.SymbolRuntimeType:
+		if k := typeSymbolLSPKind(p, sym); k != 0 {
+			return k
+		}
+		return int(protocol.SymbolKindStruct)
+	case symbol.SymbolField:
+		return int(protocol.SymbolKindField)
+	case symbol.SymbolVariant:
+		return int(protocol.SymbolKindEnumMember)
+	case symbol.SymbolParameter, symbol.SymbolTypeParameter:
+		return int(protocol.SymbolKindVariable)
+	case symbol.SymbolBinding, symbol.SymbolExternBinding, symbol.SymbolLoopBinding:
+		return int(protocol.SymbolKindVariable)
+	default:
+		return int(protocol.SymbolKindVariable)
+	}
+}
+
+// typeSymbolLSPKind inspects a type symbol's Declaration node to pick a more
+// precise LSP kind than the generic fallback. For a TypeDecl (or ExternType)
+// node, it scans the child nodes for the underlying aggregate shape:
+// StructType/UnionType -> Struct, EnumType -> Enum. A non-aggregate underlying
+// type (e.g. a type alias to a primitive) returns 0 so the caller falls back to
+// Struct. Returns 0 when the declaration node cannot be resolved.
+func typeSymbolLSPKind(p *compiledProgram, sym symbol.Symbol) int {
+	n, ok := p.sourcesNode(sym.Declaration.Module, sym.Declaration.Node)
+	if !ok {
+		return 0
+	}
+	if n.Kind() != syntax.TypeDecl && n.Kind() != syntax.ExternType {
+		return 0
+	}
+	for _, child := range n.Children() {
+		cn, ok := p.sourcesNode(sym.Declaration.Module, child)
+		if !ok {
+			continue
+		}
+		switch cn.Kind() {
+		case syntax.StructType:
+			return int(protocol.SymbolKindStruct)
+		case syntax.UnionType:
+			return int(protocol.SymbolKindStruct)
+		case syntax.EnumType:
+			return int(protocol.SymbolKindEnum)
+		}
+	}
+	return 0
 }
 
 // realStdlibPath translates an embedded-stdlib module key path (e.g.

@@ -109,6 +109,11 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 			// possibly in a different file (an imported module or a stdlib
 			// file).
 			DefinitionProvider: protocol.Boolean(true),
+			// DocumentSymbolProvider advertises textDocument/documentSymbol
+			// support: a nested outline (functions and type declarations at
+			// the top level; a type's fields, variants, and methods nested
+			// underneath) built from the resolved symbol table.
+			DocumentSymbolProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
@@ -321,6 +326,67 @@ func (s *lspServer) Definition(ctx context.Context, params *protocol.DefinitionP
 			End:   protocol.Position{Line: uint32(resp.Definition.EndLine - 1), Character: uint32(resp.Definition.EndCol - 1)},
 		},
 	}, nil
+}
+
+// DocumentSymbol answers a textDocument/documentSymbol REQUEST: it resolves the
+// document URI to a filesystem path, asks the daemon for the file's outline
+// tree (no offset/position needed -- the whole file is the query), and returns
+// it as nested LSP DocumentSymbols. The 1-based source positions in the daemon
+// response are converted to the 0-based positions LSP expects, and each
+// symbol's Kind (an LSP SymbolKind integer) is cast directly. When the file
+// fails to resolve or the daemon is unavailable, it returns an empty slice
+// (LSP-correct: "no outline here").
+func (s *lspServer) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (protocol.DocumentSymbolResult, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+	s.log.Printf("documentSymbol: uri=%s", docURI)
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("documentSymbol: ensureDaemonForRoot(%q) failed: %v", s.root, err)
+		return protocol.DocumentSymbolSlice{}, nil
+	}
+	resp, err := daemonRPCForRoot(s.root, "documentSymbols", daemonRequest{Entry: fsPath})
+	if err != nil || !resp.OK {
+		s.log.Printf("documentSymbol: RPC err=%v ok=%v", err, resp.OK)
+		return protocol.DocumentSymbolSlice{}, nil
+	}
+	s.log.Printf("documentSymbol: symbols=%d", len(resp.DocumentSymbols))
+	return toProtocolDocumentSymbols(resp.DocumentSymbols), nil
+}
+
+// toProtocolDocumentSymbols converts the daemon's structured outline tree into
+// LSP protocol.DocumentSymbols, converting the 1-based source positions to the
+// 0-based positions LSP expects, recursively for nested children.
+func toProtocolDocumentSymbols(syms []structuredDocumentSymbol) protocol.DocumentSymbolResult {
+	out := make(protocol.DocumentSymbolSlice, 0, len(syms))
+	for _, s := range syms {
+		out = append(out, toProtocolDocumentSymbol(s))
+	}
+	return out
+}
+
+func toProtocolDocumentSymbol(s structuredDocumentSymbol) protocol.DocumentSymbol {
+	var children []protocol.DocumentSymbol
+	if len(s.Children) > 0 {
+		children = make([]protocol.DocumentSymbol, 0, len(s.Children))
+		for _, c := range s.Children {
+			children = append(children, toProtocolDocumentSymbol(c))
+		}
+	}
+	return protocol.DocumentSymbol{
+		Name:   s.Name,
+		Detail: &s.Detail,
+		Kind:   protocol.SymbolKind(s.Kind),
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(s.StartLine - 1), Character: uint32(s.StartCol - 1)},
+			End:   protocol.Position{Line: uint32(s.EndLine - 1), Character: uint32(s.EndCol - 1)},
+		},
+		SelectionRange: protocol.Range{
+			Start: protocol.Position{Line: uint32(s.SelStartLine - 1), Character: uint32(s.SelStartCol - 1)},
+			End:   protocol.Position{Line: uint32(s.SelEndLine - 1), Character: uint32(s.SelEndCol - 1)},
+		},
+		Children: children,
+	}
 }
 
 // offsetForPosition converts a 0-based LSP line/character to a byte offset into

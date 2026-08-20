@@ -354,6 +354,13 @@ func (d *daemon) handle(conn net.Conn) {
 			return
 		}
 		d.serveDefinition(conn, req)
+	case "documentSymbols":
+		d.touch()
+		if d.reexecIfStale() {
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			return
+		}
+		d.serveDocumentSymbols(conn, req)
 	case "stop":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
 		_ = d.listener.Close()
@@ -679,6 +686,21 @@ func (d *daemon) serveDefinition(conn net.Conn, req daemonRequest) {
 
 	def := definitionAtOffset(req.Entry, req.Offset)
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Definition: def})
+}
+
+// serveDocumentSymbols answers a read-only outline query for the whole entry
+// file: it runs the same fresh full check a build uses and walks the resolved
+// symbol table, returning a nested tree of document symbols (functions and type
+// declarations at the top level; a type's fields, variants, and methods nested
+// underneath it). Line/column values are 1-based, matching source.Position; the
+// LSP server converts them to 0-based.
+func (d *daemon) serveDocumentSymbols(conn net.Conn, req daemonRequest) {
+	// Serialize compilations; buildProgram is not required to be concurrent.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	syms := documentSymbolsForFile(req.Entry)
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, DocumentSymbols: syms})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

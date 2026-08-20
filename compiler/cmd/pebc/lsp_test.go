@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.lsp.dev/protocol"
 )
 
 // buildPEBC compiles the pebc binary to a fresh temp path and returns it.
@@ -1495,4 +1497,287 @@ func urlPathToFsPath(uri string) (string, error) {
 		return "", err
 	}
 	return p, nil
+}
+
+// documentSymbolRequest sends a real textDocument/documentSymbol REQUEST and
+// returns the parsed nested outline tree, failing the test on any transport or
+// error response.
+func documentSymbolRequest(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, docURI string, id int) []struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
+	Kind   int    `json:"kind"`
+	Range  struct {
+		Start struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"start"`
+		End struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"end"`
+	} `json:"range"`
+	SelectionRange struct {
+		Start struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"start"`
+		End struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"end"`
+	} `json:"selectionRange"`
+	Children []json.RawMessage `json:"children"`
+} {
+	t.Helper()
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":%q}}}`, id, docURI)
+	writeLSPFrame(t, stdin, []byte(req))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var resp struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing documentSymbol response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("documentSymbol returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != id {
+		t.Fatalf("documentSymbol response id = %d, want %d (body %s)", resp.ID, id, body)
+	}
+	var syms []struct {
+		Name   string `json:"name"`
+		Detail string `json:"detail"`
+		Kind   int    `json:"kind"`
+		Range  struct {
+			Start struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"start"`
+			End struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"end"`
+		} `json:"range"`
+		SelectionRange struct {
+			Start struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"start"`
+			End struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"end"`
+		} `json:"selectionRange"`
+		Children []json.RawMessage `json:"children"`
+	}
+	if err := json.Unmarshal(resp.Result, &syms); err != nil {
+		t.Fatalf("parsing documentSymbol result %s: %v", resp.Result, err)
+	}
+	return syms
+}
+
+// _symType is the shared shape of one document symbol as decoded by the helpers
+// above.
+type _symType = struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
+	Kind   int    `json:"kind"`
+	Range  struct {
+		Start struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"start"`
+		End struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"end"`
+	} `json:"range"`
+	SelectionRange struct {
+		Start struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"start"`
+		End struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"end"`
+	} `json:"selectionRange"`
+	Children []json.RawMessage `json:"children"`
+}
+
+// TestLSPDocumentSymbol exercises the textDocument/documentSymbol feature
+// against a real scratch project. It asserts the real nested outline tree:
+//
+//   - A struct type `Point` appears at the top level with kind Struct, and its
+//     two fields `x` and `y` appear NESTED as children with kind Field.
+//   - A top-level function `add` appears at the top level with kind Function
+//     and NO children (parameters are intentionally excluded, matching the
+//     gopls convention).
+//   - A top-level function `main` appears at the top level with kind Function.
+//   - Each symbol's enclosing Range spans the whole declaration, while its
+//     SelectionRange is the tight name span (a strict subset of Range).
+//   - A function's Detail carries its real signature ("fn add(Point, int)
+//     Point"), and a field's Detail carries its real type ("field x int").
+func TestLSPDocumentSymbol(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Short, shallow root -- NOT t.TempDir() directly (see the documented
+	// 104-byte Unix socket path limit note in TestLSPDiagnosticsOnSave).
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn add(p Point, scale int) Point {\n" +
+		"    return Point.{ x = p.x + scale, y = p.y + scale };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    return origin.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	syms := documentSymbolRequest(t, stdin, reader, docURI, 2)
+	t.Logf("documentSymbols: %+v", syms)
+
+	// Top-level order: Point (type), add (fn), main (fn).
+	if len(syms) != 3 {
+		t.Fatalf("top-level symbols = %d, want 3 (Point, add, main); got %+v", len(syms), syms)
+	}
+	if syms[0].Name != "Point" {
+		t.Fatalf("top[0] name = %q, want Point", syms[0].Name)
+	}
+	if syms[1].Name != "add" {
+		t.Fatalf("top[1] name = %q, want add", syms[1].Name)
+	}
+	if syms[2].Name != "main" {
+		t.Fatalf("top[2] name = %q, want main", syms[2].Name)
+	}
+
+	// Point is a Struct with two nested Field children (x, y).
+	if syms[0].Kind != int(protocol.SymbolKindStruct) {
+		t.Fatalf("Point kind = %d, want Struct(%d)", syms[0].Kind, int(protocol.SymbolKindStruct))
+	}
+	if len(syms[0].Children) != 2 {
+		t.Fatalf("Point children = %d, want 2 (x, y); got %+v", len(syms[0].Children), syms[0].Children)
+	}
+	var xChild, yChild _symType
+	if err := json.Unmarshal(syms[0].Children[0], &xChild); err != nil {
+		t.Fatalf("parsing Point child 0: %v", err)
+	}
+	if err := json.Unmarshal(syms[0].Children[1], &yChild); err != nil {
+		t.Fatalf("parsing Point child 1: %v", err)
+	}
+	if xChild.Name != "x" || xChild.Kind != int(protocol.SymbolKindField) {
+		t.Fatalf("Point child 0 = %q(kind %d), want x(Field=%d)", xChild.Name, xChild.Kind, int(protocol.SymbolKindField))
+	}
+	if yChild.Name != "y" || yChild.Kind != int(protocol.SymbolKindField) {
+		t.Fatalf("Point child 1 = %q(kind %d), want y(Field=%d)", yChild.Name, yChild.Kind, int(protocol.SymbolKindField))
+	}
+
+	// Functions add/main are Function kind with NO children (params excluded).
+	if syms[1].Kind != int(protocol.SymbolKindFunction) {
+		t.Fatalf("add kind = %d, want Function(%d)", syms[1].Kind, int(protocol.SymbolKindFunction))
+	}
+	if len(syms[1].Children) != 0 {
+		t.Fatalf("add children = %d, want 0 (parameters excluded from outline)", len(syms[1].Children))
+	}
+	if syms[2].Kind != int(protocol.SymbolKindFunction) {
+		t.Fatalf("main kind = %d, want Function(%d)", syms[2].Kind, int(protocol.SymbolKindFunction))
+	}
+	if len(syms[2].Children) != 0 {
+		t.Fatalf("main children = %d, want 0 (parameters excluded from outline)", len(syms[2].Children))
+	}
+
+	// Detail: add shows its real signature; a field shows its real type.
+	if syms[1].Detail != "fn add(Point, int) Point" {
+		t.Fatalf("add detail = %q, want \"fn add(Point, int) Point\"", syms[1].Detail)
+	}
+	if xChild.Detail != "field x int" {
+		t.Fatalf("x detail = %q, want \"field x int\"", xChild.Detail)
+	}
+
+	// Ranges: enclosing Range spans the whole declaration; SelectionRange is the
+	// tight name span and is a strict subset of Range.
+	// Point: decl occupies lines 0..3 (0-based), name "Point" on line 0.
+	if syms[0].Range.Start.Line != 0 || syms[0].Range.Start.Character != 0 {
+		t.Fatalf("Point range start = (%d,%d), want (0,0)", syms[0].Range.Start.Line, syms[0].Range.Start.Character)
+	}
+	if syms[0].Range.End.Line != 3 {
+		t.Fatalf("Point range end line = %d, want 3 (the closing `};`)", syms[0].Range.End.Line)
+	}
+	if syms[0].SelectionRange.Start.Line != 0 || syms[0].SelectionRange.End.Line != 0 {
+		t.Fatalf("Point selectionRange should be on the name line 0, got (%d,%d)-(%d,%d)", syms[0].SelectionRange.Start.Line, syms[0].SelectionRange.Start.Character, syms[0].SelectionRange.End.Line, syms[0].SelectionRange.End.Character)
+	}
+	// SelectionRange must be inside Range: same start line but name begins after
+	// the "type " keyword, and ends before the declaration-ending `};`.
+	if syms[0].SelectionRange.Start.Character <= syms[0].Range.Start.Character {
+		t.Fatalf("Point selection should start after the declaration start: selStartChar=%d rangeStartChar=%d", syms[0].SelectionRange.Start.Character, syms[0].Range.Start.Character)
+	}
+	if syms[0].SelectionRange.End.Character >= syms[0].Range.End.Character && syms[0].SelectionRange.End.Line >= syms[0].Range.End.Line {
+		t.Fatalf("Point selection should end before the declaration end")
+	}
+
+	// Field x: decl on line 1 (0-based), name at column 4 (after 4 spaces).
+	if xChild.Range.Start.Line != 1 {
+		t.Fatalf("x range start line = %d, want 1", xChild.Range.Start.Line)
+	}
+	if xChild.SelectionRange.Start.Line != 1 || xChild.SelectionRange.Start.Character != 4 {
+		t.Fatalf("x selection start = (%d,%d), want (1,4)", xChild.SelectionRange.Start.Line, xChild.SelectionRange.Start.Character)
+	}
+	if xChild.SelectionRange.End.Character <= xChild.Range.Start.Character {
+		t.Fatalf("x selection should be inside its range")
+	}
+
+	// Shut the server down cleanly.
+	shutReq := []byte(`{"jsonrpc":"2.0","id":3,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
 }
