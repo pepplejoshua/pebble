@@ -164,13 +164,24 @@ func serveDaemon(opts daemonOptions, stdout, stderr io.Writer) int {
 			return 0
 		}
 
-		// A live daemon responds on the socket; otherwise the socket is
-		// either absent or a stale leftover from a crashed daemon. Bind
-		// fresh.
+		// A live daemon responds on the socket; otherwise the socket path is
+		// either absent or a stale leftover from a crashed daemon (e.g.
+		// kill -9, an OOM, or the machine sleeping mid-run never lets the
+		// listener's own cleanup remove the file). net.Listen refuses to
+		// bind a unix socket path that already exists on disk even when
+		// nothing is listening on it, so a stale file left the daemon unable
+		// to ever start again -- confirmed by reproducing directly: killing
+		// a daemon and immediately restarting it failed with "address
+		// already in use" even though pingDaemon correctly reported no live
+		// daemon. Since the probe above already confirmed nothing is live,
+		// clearing a stale file here is safe; the narrow window against a
+		// concurrent starter is still covered by the post-Listen-failure
+		// reprobe below.
 		if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
 			fmt.Fprintf(stderr, "pebc daemon start: cannot create %q: %v\n", filepath.Dir(sockPath), err)
 			return 1
 		}
+		_ = os.Remove(sockPath)
 
 		l, err := net.Listen("unix", sockPath)
 		if err != nil {
