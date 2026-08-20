@@ -1,8 +1,15 @@
 module github.com/pepplejoshua/pebble/compiler
 
-go 1.24.4
+go 1.26.0
 
 require (
-	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	golang.org/x/sys v0.13.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1
+	go.lsp.dev/jsonrpc2 v1.0.1
+	go.lsp.dev/protocol v1.0.1
+)
+
+require (
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
+	go.lsp.dev/uri v1.0.1 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 )
