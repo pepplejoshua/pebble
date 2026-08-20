@@ -292,7 +292,7 @@ func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.F
 // description of the expression or literal at the position.
 func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
-	if fatal || p == nil || p.unit == nil {
+	if fatal || p == nil {
 		return ""
 	}
 	// The entry module is Graph.Root (EntryPath becomes Root during graph
@@ -335,14 +335,15 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		return ""
 	}
 
-	snap := p.unit.Snapshot()
 	resolve := types.ResolveFromResultQualified(p.resolution, entryMod.ID, types.QualifierMap(entryMod.Imports))
 
 	// A symbol-typed hover: resolve the position to a declaration or reference
 	// symbol when possible (a parameter name, a var binding name, a field, a
 	// variant, a function, or a type declaration), and render kind + type. This
 	// covers both later references (via the resolution reference table) and a
-	// declaration's OWN name (via the symbol's span matching the node).
+	// declaration's OWN name (via the symbol's span matching the node). This
+	// path needs no typed-IR unit, so it works even when the file has an
+	// unrelated error elsewhere.
 	if sym, ok := symbolForNode(p, entryMod.ID, best); ok {
 		if text, ok := renderSymbolHover(p, sym, resolve); ok {
 			return text
@@ -350,7 +351,14 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	}
 
 	// Fall back to the typed-IR source map: map the surface node to its typed
-	// IR node and describe the expression/literal's type.
+	// IR node and describe the expression/literal's type. This genuinely needs
+	// the full typed-IR unit (its source map only exists once the whole unit is
+	// built), so it is the LAST resort after the symbol-based paths above have
+	// already been tried.
+	if p.unit == nil {
+		return ""
+	}
+	snap := p.unit.Snapshot()
 	tirID, ok := p.unit.SourceMap(symbol.SyntaxRef{Module: entryMod.ID, Node: best})
 	if !ok {
 		return ""
@@ -383,7 +391,7 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 // navigation, not an error).
 func definitionAtOffset(entryPath string, offset uint32) structuredDefinition {
 	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
-	if fatal || p == nil || p.unit == nil {
+	if fatal || p == nil {
 		return structuredDefinition{}
 	}
 	// The entry module is Graph.Root (EntryPath becomes Root during graph
@@ -605,7 +613,7 @@ func toStructuredSymbol(p *compiledProgram, modID module.ModuleID, sym symbol.Sy
 	}
 
 	detail := ""
-	if !isTypeKind(sym.Kind) && p.unit != nil {
+	if !isTypeKind(sym.Kind) {
 		if mod, ok := p.graph.Module(sym.Module); ok {
 			resolve := types.ResolveFromResultQualified(p.resolution, sym.Module, types.QualifierMap(mod.Imports))
 			if txt, ok := renderSymbolHover(p, sym, resolve); ok {
@@ -807,21 +815,18 @@ func bindingTypeHint(p *compiledProgram, modID module.ModuleID, tree *syntax.Tre
 	if !ok {
 		return structuredInlayHint{}, false
 	}
-	if p.unit == nil {
-		return structuredInlayHint{}, false
-	}
 	typeResult, ok := p.result.SymbolType(sym.ID)
 	if !ok || typeResult.Type == 0 {
 		return structuredInlayHint{}, false
 	}
-	snap := p.unit.Snapshot()
-	key, ok := snap.Key(typeResult.Type)
+	lookup := types.LookupFromStore(p.store)
+	key, ok := lookup(typeResult.Type)
 	if !ok {
 		return structuredInlayHint{}, false
 	}
 	mod, _ := p.graph.Module(modID)
 	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
-	typ := types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
+	typ := types.DescribeKeyResolved(key, lookup, resolve)
 	return makeInlayHint(file, anchor, " "+typ, inlayHintType), true
 }
 
@@ -933,7 +938,7 @@ func symbolForNode(p *compiledProgram, modID module.ModuleID, nodeID syntax.Node
 // second return value reports whether a meaningful hover was produced.
 func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbol.SymbolID) string) (string, bool) {
 	name := sym.Name
-	snap := p.unit.Snapshot()
+	lookup := types.LookupFromStore(p.store)
 
 	// Type declarations (struct/union/enum/extern/type parameter) render as
 	// "type Name" without needing a value type.
@@ -955,14 +960,10 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 	if !ok || typeResult.Type == 0 {
 		return "", false
 	}
-	if snap == nil {
-		return "", false
-	}
-	key, keyOK := snap.Key(typeResult.Type)
+	key, keyOK := lookup(typeResult.Type)
 	if !keyOK {
 		return "", false
 	}
-	lookup := types.LookupFromSnapshot(snap)
 	typ := types.DescribeKeyResolved(key, lookup, resolve)
 
 	switch sym.Kind {
@@ -999,7 +1000,7 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 		}
 		return owner + "." + name, true
 	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
-		return renderFunctionHover(name, key, snap, resolve), true
+		return renderFunctionHover(name, key, lookup, resolve), true
 	default:
 		// Unknown symbol kinds degrade to the bare type description.
 		return typ, true
@@ -1008,9 +1009,8 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 
 // renderFunctionHover renders a function symbol's full signature in the form
 // "fn name(p1 T1, p2 T2) R" from its function type key.
-func renderFunctionHover(name string, key types.TypeKey, snap *types.Snapshot, resolve func(symbol.SymbolID) string) string {
+func renderFunctionHover(name string, key types.TypeKey, lookup func(types.TypeID) (types.TypeKey, bool), resolve func(symbol.SymbolID) string) string {
 	_, parameters, result, _, _ := key.Function()
-	lookup := types.LookupFromSnapshot(snap)
 	params := make([]string, len(parameters))
 	for i, parameter := range parameters {
 		params[i] = describeTypeID(lookup, parameter, resolve)
@@ -1060,7 +1060,7 @@ func (p *compiledProgram) sourcesNode(modID module.ModuleID, nodeID syntax.NodeI
 // handles this for inlay hints).
 func signatureHelpAtOffset(entryPath string, offset uint32) structuredSignatureHelp {
 	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
-	if fatal || p == nil || p.unit == nil {
+	if fatal || p == nil {
 		return structuredSignatureHelp{}
 	}
 	entryMod, ok := p.graph.Module(p.graph.Root)
@@ -1172,19 +1172,15 @@ func renderSignatureFromTypeKey(p *compiledProgram, sym symbol.Symbol, modID mod
 	if !ok || typeResult.Type == 0 {
 		return structuredSignatureHelp{}
 	}
-	snap := p.unit.Snapshot()
-	if snap == nil {
-		return structuredSignatureHelp{}
-	}
-	key, ok := snap.Key(typeResult.Type)
+	lookup := types.LookupFromStore(p.store)
+	key, ok := lookup(typeResult.Type)
 	if !ok {
 		return structuredSignatureHelp{}
 	}
 	mod, _ := p.graph.Module(modID)
 	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
-	label := renderFunctionHover(sym.Name, key, snap, resolve)
+	label := renderFunctionHover(sym.Name, key, lookup, resolve)
 	_, parameters, _, _, _ := key.Function()
-	lookup := types.LookupFromSnapshot(snap)
 	var paramLabels []string
 	for _, param := range parameters {
 		paramLabels = append(paramLabels, describeTypeID(lookup, param, resolve))
@@ -1206,24 +1202,20 @@ func buildSignatureHelp(sym symbol.Symbol, params []symbol.Symbol, activeParam i
 	if !ok || typeResult.Type == 0 {
 		return structuredSignatureHelp{}
 	}
-	snap := p.unit.Snapshot()
-	if snap == nil {
-		return structuredSignatureHelp{}
-	}
-	key, ok := snap.Key(typeResult.Type)
+	lookup := types.LookupFromStore(p.store)
+	key, ok := lookup(typeResult.Type)
 	if !ok {
 		return structuredSignatureHelp{}
 	}
 	mod, _ := p.graph.Module(modID)
 	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
-	label := renderFunctionHover(sym.Name, key, snap, resolve)
+	label := renderFunctionHover(sym.Name, key, lookup, resolve)
 
 	paramLabels := make([]string, len(params))
 	for i, param := range params {
 		paramTyp, err := p.result.SymbolType(param.ID)
 		if err && paramTyp.Type != 0 {
-			if pk, ok := snap.Key(paramTyp.Type); ok {
-				lookup := types.LookupFromSnapshot(snap)
+			if pk, ok := lookup(paramTyp.Type); ok {
 				paramLabels[i] = param.Name + " " + types.DescribeKeyResolved(pk, lookup, resolve)
 				continue
 			}

@@ -80,6 +80,18 @@ func LookupFromSnapshot(snap *Snapshot) func(TypeID) (TypeKey, bool) {
 	return func(id TypeID) (TypeKey, bool) { return snap.Key(id) }
 }
 
+// LookupFromStore builds a child-TypeID lookup closure from a *Store,
+// suitable for passing to DescribeKeyResolved. A nil store returns nil, which
+// makes composite children render as "<type>". Unlike LookupFromSnapshot it
+// reads the live, mutable store rather than a frozen copy, so it works even
+// when a full typed-IR unit was never built.
+func LookupFromStore(store *Store) func(TypeID) (TypeKey, bool) {
+	if store == nil {
+		return nil
+	}
+	return func(id TypeID) (TypeKey, bool) { return store.Key(id) }
+}
+
 // ResolveFromResult builds a declaration-name resolver closure from a
 // *symbol.Result, suitable for passing to DescribeKeyResolved. A nil result or
 // a result without a symbol store returns nil, which makes nominal and

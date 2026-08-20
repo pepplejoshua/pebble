@@ -2027,3 +2027,83 @@ func TestLSPDocumentSymbol(t *testing.T) {
 	readLSPFrameWithTimeout(t, reader, 10*time.Second)
 	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
 }
+
+// TestLSPHoverSurvivesUnrelatedError guards against a real, confirmed
+// regression: every point-lookup feature (hover, definition, inlayHint,
+// documentSymbol, signatureHelp) used to gate on the whole file's typed-IR
+// unit being non-nil, which is only true when the ENTIRE file checks with
+// zero errors anywhere -- so a single unrelated syntax error anywhere in the
+// file blacked out hover (and everything else) even at positions that are
+// themselves perfectly well-typed. This is the normal state of a file while
+// actively being edited, so the bug silently gutted real-world usefulness.
+// The fix routes type lookups through types.Store (populated from the start
+// of buildProgram, independent of whether checking ultimately succeeds)
+// instead of requiring a fully-built tir.Unit. This test's fixture has a
+// well-typed `origin` binding AND a separate, genuinely broken line (an
+// unclosed call) later in the same file -- hover on `origin` must still work.
+func TestLSPHoverSurvivesUnrelatedError(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "fn add(p int, scale int) int {\n" +
+		"    return p + scale;\n" +
+		"}\n" +
+		"fn main() int {\n" +
+		"    var origin int = 5;\n" +
+		"    var broken int = add(origin,\n" +
+		"    return origin;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	originLine, originCh := computeLSPPos(t, src, "var origin int")
+	originCh += len("var ")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	hoverAndExpect(t, stdin, reader, docURI, 2, originLine, originCh, "var origin int")
+
+	shutReq2 := []byte(`{"jsonrpc":"2.0","id":3,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq2)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
