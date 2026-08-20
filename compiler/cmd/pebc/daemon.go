@@ -51,6 +51,13 @@ const defaultIdleTimeout = 30 * time.Minute
 // staleCheckInterval is how often the daemon re-hashes its own executable.
 const staleCheckInterval = 5 * time.Second
 
+// fileChangeDebounce is how long the daemon waits for a watched file's events
+// to quiet down before hashing it. A single logical save commonly produces
+// several raw fsnotify events (and the file can be read mid-write), so events
+// are coalesced per path and only the settled final state is ever hashed. This
+// guarantees at most one real "changed" transition per logical edit.
+const fileChangeDebounce = 75 * time.Millisecond
+
 // daemonSocketDir is the project-local directory that holds daemon state.
 const daemonSocketDir = ".pebble"
 
@@ -229,6 +236,10 @@ type daemon struct {
 	// recent is a bounded, most-recent-first log of detected watch events,
 	// exposed via the watch-status RPC for observability.
 	recent []watchReport
+
+	// debounce coalesces raw fsnotify events per path so detectChange only
+	// ever observes a file's settled final state (see fileChangeDebounce).
+	debounce *debouncer
 }
 
 // watchReport describes one content-change detection for observability.
@@ -346,6 +357,14 @@ func (d *daemon) startWatching() {
 	d.fileHashes = map[string]string{}
 	d.watchEvents = make(chan string, 256)
 	d.recent = make([]watchReport, 0, watchReportCap)
+	d.debounce = newDebouncer(fileChangeDebounce, func(path string) {
+		select {
+		case d.watchEvents <- path:
+		default:
+			// Drop events if the daemon event loop is saturated rather than
+			// block the fsnotify goroutine.
+		}
+	})
 	if err := d.watchTree(d.opts.root); err != nil {
 		fmt.Fprintf(os.Stderr, "pebc daemon: cannot watch project root: %v (change detection disabled)\n", err)
 		w.Close()
@@ -394,12 +413,11 @@ func (d *daemon) watchLoop() {
 			if filepath.Ext(ev.Name) != ".peb" {
 				continue
 			}
-			select {
-			case d.watchEvents <- ev.Name:
-			default:
-				// Drop events if the daemon event loop is saturated rather
-				// than block the fsnotify goroutine.
-			}
+			// Coalesce rapid events for the same path into a single delivery
+			// after a quiet period, so detectChange never hashes a file while
+			// it is mid-write (the source of spurious duplicate "changed"
+			// transitions for one logical edit).
+			d.debounce.note(ev.Name)
 		case err, ok := <-d.watcher.Errors:
 			if !ok {
 				return
@@ -407,6 +425,55 @@ func (d *daemon) watchLoop() {
 			fmt.Fprintf(os.Stderr, "pebc daemon: watch error: %v\n", err)
 		}
 	}
+}
+
+// debouncer coalesces rapid per-key events: note(key) starts (or extends) a
+// quiet-period timer for that key, and only when the timer actually fires is
+// the key delivered to fire. A burst of notes for the same key therefore
+// produces exactly one delivery, made only after the burst has quieted down.
+type debouncer struct {
+	mu       sync.Mutex
+	timers   map[string]*time.Timer
+	interval time.Duration
+	// after is the timer scheduler; time.AfterFunc in production, a fake in
+	// tests that never runs on its own.
+	after func(time.Duration, func()) *time.Timer
+	fire  func(key string)
+}
+
+// newDebouncer returns a debouncer that waits interval of quiet before
+// delivering a noted key to fire.
+func newDebouncer(interval time.Duration, fire func(string)) *debouncer {
+	return &debouncer{
+		timers:   map[string]*time.Timer{},
+		interval: interval,
+		after:    time.AfterFunc,
+		fire:     fire,
+	}
+}
+
+// note records an event for key. If a timer for key is already pending it is
+// reset (the quiet window restarts) rather than delivering immediately; if
+// none exists a new timer is started.
+func (b *debouncer) note(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if t, ok := b.timers[key]; ok {
+		t.Reset(b.interval)
+		return
+	}
+	var t *time.Timer
+	t = b.after(b.interval, func() {
+		b.mu.Lock()
+		if b.timers[key] == t {
+			delete(b.timers, key)
+			b.mu.Unlock()
+			b.fire(key)
+			return
+		}
+		b.mu.Unlock()
+	})
+	b.timers[key] = t
 }
 
 // trackFiles re-derives the tracked-file set from the module graph of the
@@ -535,7 +602,16 @@ func (d *daemon) serveBuild(conn net.Conn, req daemonRequest) {
 		d.trackFilesLocked(res.files)
 	}
 	if res.code != 0 {
-		_ = writeDaemonMessage(conn, daemonResponse{OK: false, Diagnostics: res.diagnostics, Error: diag.String(), StructuredDiagnostics: res.structuredDiagnostics})
+		// compileOnce already renders diagnostics into res.diagnostics when a
+		// full diagnostic set exists; diag (the raw stderr capture) then holds
+		// that exact same text, so echoing both back would print it twice.
+		// diag only carries independent content (e.g. "cannot resolve entry")
+		// on the fatal paths where res.diagnostics is empty.
+		errMsg := diag.String()
+		if res.diagnostics != "" {
+			errMsg = ""
+		}
+		_ = writeDaemonMessage(conn, daemonResponse{OK: false, Diagnostics: res.diagnostics, Error: errMsg, StructuredDiagnostics: res.structuredDiagnostics})
 		return
 	}
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Output: res.binaryPath, StructuredDiagnostics: res.structuredDiagnostics})

@@ -42,6 +42,7 @@ func runDev(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	output := fs.String("o", "", "output executable path (default: entry file basename)")
 	poll := fs.Duration("poll", defaultDevPollInterval, "watch-status poll interval")
+	verbose := fs.Bool("verbose", false, "show daemon lifecycle and 'started' messages")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -55,21 +56,37 @@ func runDev(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := ensureDaemon(stderr); err != nil {
+	// The daemon is its own background process. By default its lifecycle
+	// chatter ("listening on ...", "restarting", etc.) is discarded so it
+	// never pollutes pebc dev's visible output; -verbose restores it.
+	daemonStderr := stderr
+	if !*verbose {
+		daemonStderr = io.Discard
+	}
+	if err := ensureDaemon(daemonStderr); err != nil {
 		fmt.Fprintf(stderr, "pebc dev: cannot ensure daemon: %v\n", err)
 		return 1
 	}
 
-	// Initial build: a runnable binary is required before supervision starts.
+	// Clear the screen before the very first build (Fix 1). Subsequent
+	// rebuilds clear again inside the watch loop.
+	clearScreen(stdout)
+
+	// Initial build. Unlike a later build failure, there is no running child
+	// to preserve yet — but the failure must NOT end the session (Fix 2): a
+	// file that starts broken should behave exactly like a file that breaks
+	// later, so we report the diagnostics and fall through into the same
+	// watch loop, waiting for a fix. The loop's rebuild-on-change logic then
+	// supervises the program once a successful build finally arrives.
 	outcome := devRPCBuild(entry, *output)
 	if !outcome.ok {
 		reportBuildFailure(stderr, outcome)
-		fmt.Fprintln(stderr, "pebc dev: initial build failed; nothing to run")
-		return 1
 	}
 
-	sup := &devSupervisor{stdout: stdout, stderr: stderr}
-	sup.launch(outcome.binaryPath)
+	sup := &devSupervisor{stdout: stdout, stderr: stderr, verbose: *verbose}
+	if outcome.ok {
+		sup.launch(outcome.binaryPath)
+	}
 
 	tracker := &devChangeTracker{}
 	pollTicker := time.NewTicker(*poll)
@@ -102,10 +119,12 @@ func runDev(args []string, stdout, stderr io.Writer) int {
 			if !tracker.hasNewChange(events) {
 				continue
 			}
-			// A tracked source file changed. Rebuild via the daemon. A
-			// successful build kills and relaunches the child; a failed build
-			// leaves the last-known-good child running and reports the
-			// diagnostics, waiting for the next fix.
+			// A tracked source file changed. Clear the screen so stale output
+			// from the previous run doesn't linger (Fix 1), then rebuild via
+			// the daemon. A successful build kills and relaunches the child; a
+			// failed build leaves the last-known-good child running and
+			// reports the diagnostics, waiting for the next fix.
+			clearScreen(stdout)
 			outcome := devRPCBuild(entry, *output)
 			if !outcome.ok {
 				reportBuildFailure(stderr, outcome)
@@ -274,9 +293,10 @@ func (t *devChangeTracker) hasNewChange(events []watchReport) bool {
 // its stdout/stderr to pebc dev's own so the user sees the program's real
 // output live.
 type devSupervisor struct {
-	stdout io.Writer
-	stderr io.Writer
-	cmd    *exec.Cmd
+	stdout  io.Writer
+	stderr  io.Writer
+	verbose bool
+	cmd     *exec.Cmd
 }
 
 // launch starts the given binary as the supervised child.
@@ -290,7 +310,18 @@ func (s *devSupervisor) launch(binaryPath string) {
 		return
 	}
 	s.cmd = cmd
-	fmt.Fprintf(s.stderr, "pebc dev: started %s (pid %d)\n", binaryPath, cmd.Process.Pid)
+	// The "started" line is routine chatter; gate it behind -verbose so a
+	// normal run only shows the program's own output (Fix 3).
+	if s.verbose {
+		fmt.Fprintf(s.stderr, "pebc dev: started %s (pid %d)\n", binaryPath, cmd.Process.Pid)
+	}
+}
+
+// clearScreen writes an ANSI clear-screen sequence (cursor home + erase
+// visible screen) to w, so each rebuild cycle starts from a clean view
+// without wiping the user's scrollback.
+func clearScreen(w io.Writer) {
+	fmt.Fprint(w, "\033[H\033[2J")
 }
 
 // restart kills the currently-running child (if any) and launches the new
