@@ -479,6 +479,9 @@ func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinitio
 	if m, ok := p.graph.Module(sym.Module); ok && m.Key.Path != "" {
 		path = realStdlibPath(string(m.Key.Path))
 		if path == "" {
+			path = realPreludePath(string(m.Key.Path))
+		}
+		if path == "" {
 			path = filepath.FromSlash(string(m.Key.Path))
 		}
 	}
@@ -738,6 +741,27 @@ func realStdlibPath(keyPath string) string {
 	}
 	relative := strings.TrimPrefix(keyPath, stdlib.StandardRoot+"/")
 	candidate := filepath.Join(stdRoot, filepath.FromSlash(relative))
+	if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+		return ""
+	}
+	return candidate
+}
+
+// realPreludePath translates the embedded-prelude module key path
+// ("prelude/runtime.peb" — see internal/module/build.go's embeddedPreludePath)
+// into the real on-disk file under the checkout's prelude/ directory, or ""
+// when the key path is not the prelude module, the on-disk prelude tree cannot
+// be located (pebc running outside a checkout), or the target file does not
+// exist on disk.
+func realPreludePath(keyPath string) string {
+	if keyPath != "prelude/runtime.peb" {
+		return ""
+	}
+	preludeRoot, err := locatePreludeRoot()
+	if err != nil {
+		return ""
+	}
+	candidate := filepath.Join(preludeRoot, "runtime.peb")
 	if info, err := os.Stat(candidate); err != nil || info.IsDir() {
 		return ""
 	}

@@ -581,6 +581,43 @@ func TestLocateStdRootNotFoundFallsThroughToEmbed(t *testing.T) {
 	}
 }
 
+func TestLocatePreludeRootNotFoundFallsThroughToEmbed(t *testing.T) {
+	defer setExecutableDirForTest(t, "")()
+	chdirForTest(t, t.TempDir())
+
+	if _, err := locatePreludeRoot(); err == nil {
+		t.Fatal("locatePreludeRoot unexpectedly succeeded with no prelude anywhere")
+	}
+	// realPreludePath returns "" when no on-disk prelude tree can be located,
+	// so the caller keeps the synthetic embedded path (the go:embed fallback).
+	if got := realPreludePath("prelude/runtime.peb"); got != "" {
+		t.Fatalf("realPreludePath = %q, want \"\" (fall back to embedded prelude)", got)
+	}
+}
+
+func TestRealPreludePathResolvesToRealFile(t *testing.T) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Skipf("cannot find repo root: %v", err)
+	}
+	chdirForTest(t, repoRoot)
+
+	got := realPreludePath("prelude/runtime.peb")
+	if got == "" {
+		t.Fatal("realPreludePath returned \"\" from within a real checkout")
+	}
+	info, err := os.Stat(got)
+	if err != nil || info.IsDir() {
+		t.Fatalf("realPreludePath = %q does not resolve to a real file: err=%v", got, err)
+	}
+	if got := realPreludePath("prelude/other.peb"); got != "" {
+		t.Fatalf("realPreludePath = %q, want \"\" for a non-prelude key", got)
+	}
+	if got := realPreludePath("std:embedded/set.peb"); got != "" {
+		t.Fatalf("realPreludePath = %q, want \"\" for a stdlib key", got)
+	}
+}
+
 func findRepoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {

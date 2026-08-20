@@ -398,3 +398,53 @@ func isStdDir(dir string) bool {
 	}
 	return true
 }
+
+// locatePreludeRoot returns the on-disk prelude/ directory the embedded prelude
+// was compiled from (compiler/prelude under the checkout root, the sibling
+// of runtime/), in this order:
+//
+//  1. A prelude/ sibling of the running binary's own location (the layout `make
+//     install` creates by symlinking compiler/prelude next to pebc).
+//  2. The working directory walked upward (up to 6 levels) exactly the way
+//     locateStdRoot does.
+//
+// It returns an error when no such directory can be found, so callers can fall
+// back to the synthetic embedded paths.
+func locatePreludeRoot() (string, error) {
+	if dir := executableDirFunc(); dir != "" {
+		if candidate := filepath.Join(dir, "prelude"); isPreludeDir(candidate) {
+			return candidate, nil
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine working directory: %v", err)
+	}
+	if found := walkUp(cwd, func(dir string) (string, bool) {
+		if !isRuntimeDir(dir) {
+			return "", false
+		}
+		for _, candidate := range []string{
+			filepath.Join(dir, "compiler", "prelude"),
+			filepath.Join(dir, "prelude"),
+		} {
+			if isPreludeDir(candidate) {
+				return candidate, true
+			}
+		}
+		return "", false
+	}); found != "" {
+		return found, nil
+	}
+	return "", errors.New("cannot locate prelude/ directory (no checkout found by walking up from the working directory)")
+}
+
+// isPreludeDir reports whether dir looks like the compiler's embedded prelude
+// source tree: the runtime.peb module that go:embed packs.
+func isPreludeDir(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "runtime.peb"))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
