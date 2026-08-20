@@ -280,9 +280,15 @@ func runLSP(args []string, stdout, stderr io.Writer) int {
 
 	server := &lspServer{done: make(chan struct{})}
 	stream := jsonrpc2.NewStream(stdioReadWriteCloser{in: os.Stdin, out: os.Stdout})
-	ctx, conn, _ := protocol.NewServer(context.Background(), server, stream)
+	// protocol.NewServer already wires up the handler and starts the read
+	// loop via conn.Go internally; calling conn.Go again here spawned a
+	// second readIncoming goroutine racing the first on the same
+	// bufio.Reader, corrupting its internal state under real (large) LSP
+	// traffic -- confirmed via direct reproduction with a realistic-sized
+	// initialize payload, which panicked with a bufio slice-bounds crash
+	// that traced back to two goroutines both created by conn.Go.
+	_, conn, _ := protocol.NewServer(context.Background(), server, stream)
 	server.conn = conn
-	conn.Go(ctx, protocol.ServerHandler(server, nil))
 
 	select {
 	case <-server.done:
