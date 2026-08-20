@@ -214,7 +214,7 @@ func (s *lspServer) Hover(ctx context.Context, params *protocol.HoverParams) (*p
 // URI to a filesystem path, converts the requested LSP range to byte offsets,
 // asks the daemon for the inlay hints in that range, and returns them as LSP
 // inlay hints (1-based source positions converted to 0-based LSP positions).
-// Type hints render as ": Type" after a binding name; parameter-name hints
+// Type hints render as " Type" after a binding name; parameter-name hints
 // render as "name: " before each call argument. When nothing is in range it
 // returns an empty slice (LSP-correct: "no hints here").
 func (s *lspServer) InlayHint(ctx context.Context, params *protocol.InlayHintParams) ([]protocol.InlayHint, error) {

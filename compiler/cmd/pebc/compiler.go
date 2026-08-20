@@ -281,8 +281,8 @@ func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.F
 // The rendered text is richer than a bare type name: when the hovered position
 // sits on a symbol's name or reference (a binding, parameter, field, variant,
 // function, or type declaration), the text reports what KIND of thing it is
-// plus its type, in gopls style ("var x: i32", "param p: str", "fn f(...) R",
-// "field f: i32", "type Color"). Otherwise it falls back to the plain type
+// plus its type, in gopls style ("var x i32", "param p str", "fn f(...) R",
+// "field f i32", "type Color"). Otherwise it falls back to the plain type
 // description of the expression or literal at the position.
 func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
@@ -368,7 +368,7 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 // endOffset]. Two categories are produced:
 //
 //   - Type hints on a `var`/`let` binding that has NO explicit type annotation:
-//     rendered as ": Type" and anchored right after the binding name (so the
+//     rendered as " Type" and anchored right after the binding name (so the
 //     editor shows `let x: i32 = ...`). The hint is suppressed entirely when
 //     the binding's BindingDecl already carries an explicit type, mirroring how
 //     gopls/rust-analyzer avoid redundant hints.
@@ -460,7 +460,7 @@ func bindingTypeHint(p *compiledProgram, modID module.ModuleID, tree *syntax.Tre
 	}
 	resolve := types.ResolveFromResult(p.resolution)
 	typ := types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
-	return makeInlayHint(file, anchor, ": "+typ, inlayHintType), true
+	return makeInlayHint(file, anchor, " "+typ, inlayHintType), true
 }
 
 // callParamHints produces parameter-name inlay hints for a function call. It
@@ -608,22 +608,22 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 		if name == "" {
 			return "", false
 		}
-		return bindingKeyword(p, sym) + " " + name + ": " + typ, true
+		return bindingKeyword(p, sym) + " " + name + " " + typ, true
 	case symbol.SymbolExternBinding, symbol.SymbolLoopBinding:
 		if name == "" {
 			return "", false
 		}
-		return "var " + name + ": " + typ, true
+		return "var " + name + " " + typ, true
 	case symbol.SymbolParameter:
 		if name == "" {
 			return "", false
 		}
-		return "param " + name + ": " + typ, true
+		return "param " + name + " " + typ, true
 	case symbol.SymbolField:
 		if name == "" {
 			return "", false
 		}
-		return "field " + name + ": " + typ, true
+		return "field " + name + " " + typ, true
 	case symbol.SymbolVariant:
 		owner := ""
 		if resolve != nil && sym.Containing != 0 {

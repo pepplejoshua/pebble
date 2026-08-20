@@ -512,7 +512,7 @@ func TestLSPHover(t *testing.T) {
 // RESPONSE. It asserts three things in one realistic program:
 //
 //   - A binding WITHOUT an explicit type (`let count = 99;`) gets a type hint
-//     ": i32" anchored right after the binding name.
+//     " i32" anchored right after the binding name.
 //   - A binding WITH an explicit type (`var origin Point = ...`) gets NO type
 //     hint (redundant-hint suppression, matching gopls/rust-analyzer).
 //   - A multi-parameter call (`add(origin, 5)`) gets a parameter-name hint
@@ -652,7 +652,7 @@ func TestLSPInlayHints(t *testing.T) {
 		return "", false
 	}
 
-	// 1. Unannotated binding `count` gets a ": int" type hint at its name end.
+	// 1. Unannotated binding `count` gets a " int" type hint at its name end.
 	// (An unannotated integer literal infers the default `int`, which is why
 	// this is "int" rather than "i32" — the point of the test is the hint
 	// appears at all, not which specific integer width is inferred.)
@@ -660,17 +660,17 @@ func TestLSPInlayHints(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected type hint at (count name end) (%d,%d); got hints %+v", countLine, countEndCh, resp.Result)
 	}
-	if label != ": int" {
-		t.Fatalf("type hint label = %q, want \": int\"", label)
+	if label != " int" {
+		t.Fatalf("type hint label = %q, want \" int\"", label)
 	}
 
-	// 2. Unannotated binding `moved` gets a ": Point" type hint at its name end.
+	// 2. Unannotated binding `moved` gets a " Point" type hint at its name end.
 	label, ok = findType(movedLine, movedEndCh)
 	if !ok {
 		t.Fatalf("expected type hint at (moved name end) (%d,%d); got hints %+v", movedLine, movedEndCh, resp.Result)
 	}
-	if label != ": Point" {
-		t.Fatalf("type hint label = %q, want \": Point\"", label)
+	if label != " Point" {
+		t.Fatalf("type hint label = %q, want \" Point\"", label)
 	}
 
 	// 3. Annotated binding `origin` gets NO type hint at its name end.
@@ -817,11 +817,11 @@ func TestLSPHoverVariableReference(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// First reference to `count` (left operand of the binary expression).
-	hoverAndExpect(t, stdin, reader, docURI, 2, firstCountLine, firstCountCh, "var count: i32")
+	hoverAndExpect(t, stdin, reader, docURI, 2, firstCountLine, firstCountCh, "var count i32")
 	// Second (distinct syntax node) reference to the same variable.
-	hoverAndExpect(t, stdin, reader, docURI, 3, secondCountLine, secondCountCh, "var count: i32")
+	hoverAndExpect(t, stdin, reader, docURI, 3, secondCountLine, secondCountCh, "var count i32")
 	// Reference to a different variable, `doubled`, in the return.
-	hoverAndExpect(t, stdin, reader, docURI, 4, doubledRefLine, doubledRefCh, "var doubled: i32")
+	hoverAndExpect(t, stdin, reader, docURI, 4, doubledRefLine, doubledRefCh, "var doubled i32")
 
 	shutReq := []byte(`{"jsonrpc":"2.0","id":5,"method":"shutdown"}`)
 	writeLSPFrame(t, stdin, shutReq)
@@ -834,8 +834,8 @@ func TestLSPHoverVariableReference(t *testing.T) {
 // hovering a variable's OWN declaration name (not a later reference), a
 // function parameter, a function's own declared name, a struct field, a
 // nominal (struct) type's declaration name, and a pointer-typed value. Each
-// asserts the richer kind-and-type rendering ("var x: T", "param p: T",
-// "fn f(...) R", "field f: T", "type T"), confirming real type names rather
+// asserts the richer kind-and-type rendering ("var x T", "param p T",
+// "fn f(...) R", "field f T", "type T"), confirming real type names rather
 // than the coarse placeholders.
 func TestLSPHoverDeclarationAndRicherContent(t *testing.T) {
 	bin := buildPEBC(t)
@@ -936,14 +936,14 @@ func TestLSPHoverDeclarationAndRicherContent(t *testing.T) {
 		id++
 	}
 
-	hover(fieldLine, fieldCh, "field x: int")
+	hover(fieldLine, fieldCh, "field x int")
 	hover(typeLine, typeCh, "type Point")
-	hover(paramLine, paramCh, "param p: Point")
+	hover(paramLine, paramCh, "param p Point")
 	hover(fnLine, fnCh, "fn add(Point, int) Point")
-	hover(varLine, varCh, "var origin: Point")
-	hover(ptrLine, ptrCh, "var ptr: *Point")
+	hover(varLine, varCh, "var origin Point")
+	hover(ptrLine, ptrCh, "var ptr *Point")
 	hover(nomTypeLine, nomTypeCh, "type Point")
-	hover(movedLine, movedCh, "let moved: Point")
+	hover(movedLine, movedCh, "let moved Point")
 	hover(retTypeLine, retTypeCh, "type Point")
 
 	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
