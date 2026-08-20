@@ -83,6 +83,11 @@ type daemonResponse struct {
 	// LSP SymbolKind integer (go.lsp.dev/protocol.SymbolKind) so the LSP layer
 	// only needs a cast, not a string round-trip.
 	DocumentSymbols []structuredDocumentSymbol `json:"document_symbols,omitempty"`
+	// SignatureHelp carries function-call signature information for the call
+	// expression enclosing the requested offset, populated by the
+	// "signatureHelp" RPC. A zero value (empty Signatures) means no callable
+	// callee was found at that position, not an error.
+	SignatureHelp structuredSignatureHelp `json:"signature_help,omitempty"`
 }
 
 // structuredDocumentSymbol is the machine-readable form of one outline symbol,
@@ -154,6 +159,29 @@ type structuredDefinition struct {
 	StartCol  int    `json:"startCol"`
 	EndLine   int    `json:"endLine"`
 	EndCol    int    `json:"endCol"`
+}
+
+// structuredSignatureHelp is the machine-readable form of a signature help
+// response. Signatures carries the callable's full signature label plus its
+// parameter list (each as a plain string like "name Type"); ActiveSignature
+// selects which entry in Signatures applies (0 when there is only one);
+// ActiveParameter indexes into that signature's Parameters slice to indicate
+// which argument slot the cursor currently fills. A zero value (empty
+// Signatures) means no resolvable callee was found at the requested position,
+// not an error.
+type structuredSignatureHelp struct {
+	Signatures      []structuredSignature `json:"signatures"`
+	ActiveSignature int                   `json:"activeSignature"`
+	ActiveParameter int                   `json:"activeParameter"`
+}
+
+// structuredSignature holds one overload of a callable's signature. Label is
+// the full rendered signature (e.g. "fn add(p Point, scale int) Point"). Each
+// entry in Parameters is a single parameter label string (e.g. "p Point" or
+// just "scale"), indexed by ActiveParameter.
+type structuredSignature struct {
+	Label      string   `json:"label"`
+	Parameters []string `json:"parameters,omitempty"`
 }
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.

@@ -503,7 +503,253 @@ func TestLSPHover(t *testing.T) {
 	t.Logf("hover over whitespace correctly returned null result")
 
 	// Shut the server down cleanly.
-	shutReq := []byte(`{"jsonrpc":"2.0","id":4,"method":"shutdown"}`)
+	shutReq := []byte(`{"jsonrpc":"2.0","id":3,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// TestLSPSignatureHelp exercises the textDocument/signatureHelp feature against
+// a real scratch project. It asserts three things in one realistic program:
+//
+//   - A request right after `(` in a multi-parameter call reports activeParameter
+//     0 and a label containing the function name plus all parameter types.
+//   - A request right after the first `,` reports activeParameter 1.
+//   - A request on a syntactically incomplete call (no closing paren yet) still
+//     resolves the callee and returns signature help rather than silently failing.
+func TestLSPSignatureHelp(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn add(p Point, scale int) Point {\n" +
+		"    return Point.{ x = p.x + scale, y = p.y + scale };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    let moved = add(origin, 5);\n" +
+		"    return moved.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Position right after `(` in `add(origin, 5)`: inside the call, before
+	// the first argument. Use "= add(" which is unique to the call site
+	// (the function definition has "fn add(" not "= add(").
+	callOpenLine, callOpenCh := computeLSPPos(t, src, "= add(")
+	callOpenCh += len("= add(") // skip past "= add(" to land on "("
+	callOpenCh++                // one more char to be right after "("
+
+	// Position right after the first comma: `add(origin, 5)` -- cursor is
+	// immediately after the "," character.
+	firstCommaLine, firstCommaCh := computeLSPPos(t, src, "origin, 5)")
+	firstCommaCh += len("origin,") // char right after ","
+
+	// Position of the literal `5` (inside the call, past both args).
+	lit5Line, lit5Ch := computeLSPPos(t, src, "5);")
+	// lit5Ch already points at the "5".
+
+	// Incomplete call: rewrite the source so the call has no closing paren.
+	incompleteSrc := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn add(p Point, scale int) Point {\n" +
+		"    return Point.{ x = p.x + scale, y = p.y + scale };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    let moved = add(origin, 5\n" +
+		"}\n"
+	incompletePath := filepath.Join(root, "incomplete.peb")
+	if err := os.WriteFile(incompletePath, []byte(incompleteSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	incompleteDocURI := "file://" + incompletePath
+
+	// Position right after `(` in the incomplete call `add(origin, 5`.
+	incompleteCallOpenLine, incompleteCallOpenCh := computeLSPPos(t, incompleteSrc, "= add(")
+	incompleteCallOpenCh += len("= add(")
+	incompleteCallOpenCh++
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// Helper: send a signatureHelp request and parse the response.
+	signatureHelpAt := func(id, line, ch int) (*struct {
+		Signatures []struct {
+			Label      string `json:"label"`
+			Parameters []struct {
+				Label string `json:"label"`
+			} `json:"parameters"`
+		} `json:"signatures"`
+		ActiveSignature uint32 `json:"activeSignature"`
+		ActiveParameter uint32 `json:"activeParameter"`
+	}, string) {
+		t.Helper()
+		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, id, docURI, line, ch)
+		writeLSPFrame(t, stdin, []byte(req))
+		body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+		var resp struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("parsing signatureHelp response %s: %v", body, err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("signatureHelp returned error: %s (body %s)", resp.Error, body)
+		}
+		if resp.ID != id {
+			t.Fatalf("signatureHelp response id = %d, want %d (body %s)", resp.ID, id, body)
+		}
+		if string(resp.Result) == "null" {
+			return nil, string(body)
+		}
+		var sig struct {
+			Signatures []struct {
+				Label      string `json:"label"`
+				Parameters []struct {
+					Label string `json:"label"`
+				} `json:"parameters"`
+			} `json:"signatures"`
+			ActiveSignature uint32 `json:"activeSignature"`
+			ActiveParameter uint32 `json:"activeParameter"`
+		}
+		if err := json.Unmarshal(resp.Result, &sig); err != nil {
+			t.Fatalf("parsing signatureHelp result %s: %v", resp.Result, err)
+		}
+		return &sig, string(body)
+	}
+
+	id := 2
+
+	// 1. Cursor right after `(` in `add(origin, 5)`: activeParameter should be 0.
+	sig, _ := signatureHelpAt(id, callOpenLine, callOpenCh)
+	if sig == nil {
+		t.Fatalf("signatureHelp at call open paren: got null result (body %s)", "")
+	}
+	if len(sig.Signatures) == 0 {
+		t.Fatalf("signatureHelp at call open paren: expected signatures, got none (body %s)", "")
+	}
+	if sig.ActiveParameter != 0 {
+		t.Fatalf("activeParameter = %d, want 0 (body %s)", sig.ActiveParameter, "")
+	}
+	if !strings.Contains(sig.Signatures[0].Label, "add") {
+		t.Fatalf("signature label = %q, want it to contain \"add\" (body %s)", sig.Signatures[0].Label, "")
+	}
+	t.Logf("signatureHelp after '(': label=%q activeParam=%d", sig.Signatures[0].Label, sig.ActiveParameter)
+	id++
+
+	// 2. Cursor right after first comma: activeParameter should be 1.
+	sig, _ = signatureHelpAt(id, firstCommaLine, firstCommaCh)
+	if sig == nil {
+		t.Fatalf("signatureHelp after first comma: got null result")
+	}
+	if len(sig.Signatures) == 0 {
+		t.Fatalf("signatureHelp after first comma: expected signatures, got none")
+	}
+	if sig.ActiveParameter != 1 {
+		t.Fatalf("activeParameter = %d, want 1", sig.ActiveParameter)
+	}
+	t.Logf("signatureHelp after ',': label=%q activeParam=%d", sig.Signatures[0].Label, sig.ActiveParameter)
+	id++
+
+	// 3. Cursor on the literal `5` (past both args): activeParameter should be
+	// clamped to the last parameter index (1 for a 2-param function).
+	sig, _ = signatureHelpAt(id, lit5Line, lit5Ch)
+	if sig == nil {
+		t.Fatalf("signatureHelp at literal 5: got null result")
+	}
+	if len(sig.Signatures) == 0 {
+		t.Fatalf("signatureHelp at literal 5: expected signatures, got none")
+	}
+	if sig.ActiveParameter != 1 {
+		t.Fatalf("activeParameter at literal = %d, want 1 (last param)", sig.ActiveParameter)
+	}
+	t.Logf("signatureHelp at literal: label=%q activeParam=%d", sig.Signatures[0].Label, sig.ActiveParameter)
+	id++
+
+	// 4. No-call position: hovering whitespace in the file should return null.
+	whitespaceLine, whitespaceCh := computeLSPPos(t, src, "fn add(p Point")
+	whitespaceCh += len("fn ") // the space after "fn"
+	sig, _ = signatureHelpAt(id, whitespaceLine, whitespaceCh)
+	if sig != nil {
+		t.Fatalf("signatureHelp on whitespace: expected null result, got %+v", sig)
+	}
+	t.Logf("signatureHelp on whitespace correctly returned null")
+	id++
+
+	// --- Now test with an incomplete call (no closing paren) ---
+	openIncompleteReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, incompleteDocURI, incompleteSrc)
+	writeLSPFrame(t, stdin, []byte(openIncompleteReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// 5. Incomplete call: cursor right after `(` in `add(origin, 5` (no closing paren).
+	// This must still resolve the callee and return signature help.
+	sig, _ = signatureHelpAt(id, incompleteCallOpenLine, incompleteCallOpenCh)
+	if sig == nil {
+		t.Fatalf("signatureHelp on incomplete call at '(': got null result")
+	}
+	if len(sig.Signatures) == 0 {
+		t.Fatalf("signatureHelp on incomplete call at '(': expected signatures, got none")
+	}
+	if sig.ActiveParameter != 0 {
+		t.Fatalf("signatureHelp on incomplete call: activeParameter = %d, want 0", sig.ActiveParameter)
+	}
+	if !strings.Contains(sig.Signatures[0].Label, "add") {
+		t.Fatalf("signatureHelp on incomplete call: label = %q, want it to contain \"add\"", sig.Signatures[0].Label)
+	}
+	t.Logf("signatureHelp on incomplete call: label=%q activeParam=%d", sig.Signatures[0].Label, sig.ActiveParameter)
+	id++
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
 	writeLSPFrame(t, stdin, shutReq)
 	readLSPFrameWithTimeout(t, reader, 10*time.Second)
 	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))

@@ -1044,6 +1044,201 @@ func (p *compiledProgram) sourcesNode(modID module.ModuleID, nodeID syntax.NodeI
 	return m.Tree.Node(nodeID)
 }
 
+// signatureHelpAtOffset performs a fresh full check of the entry module (the
+// same daemon build path a build uses) and finds the enclosing CallExpr whose
+// span covers the given byte offset, then resolves the callee to its function
+// symbol and returns the parameter list with the active parameter index. The
+// second return value reports whether a usable call expression was found; when
+// false the caller should return nil (no signature help available).
+//
+// Unlike hover/definition which search for the SMALLEST containing node,
+// signature help must find the CALL expression the cursor sits inside – the
+// cursor may be on whitespace between two arguments, on a trailing comma with
+// nothing typed after it yet, or even mid-callee while the call is syntactically
+// incomplete. The CallExpr node itself is always real and walkable even when
+// some children are Missing/Error placeholders (parseCallSuffix already
+// handles this for inlay hints).
+func signatureHelpAtOffset(entryPath string, offset uint32) structuredSignatureHelp {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil || p.unit == nil {
+		return structuredSignatureHelp{}
+	}
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok || entryMod.Tree == nil {
+		return structuredSignatureHelp{}
+	}
+	tree := entryMod.Tree
+	modID := entryMod.ID
+
+	// Find the smallest CallExpr whose span contains the offset. We scan all
+	// nodes but only consider CallExpr kinds so that nested calls resolve to
+	// the innermost one covering the cursor position.
+	var best syntax.NodeID
+	var bestWidth uint32
+	found := false
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok {
+			continue
+		}
+		if n.Kind() != syntax.CallExpr {
+			continue
+		}
+		span := n.Span()
+		if offset < span.Start || offset > span.End {
+			continue
+		}
+		width := span.End - span.Start
+		if !found || width < bestWidth {
+			best = id
+			bestWidth = width
+			found = true
+		}
+	}
+	if !found {
+		return structuredSignatureHelp{}
+	}
+
+	callNode, ok := tree.Node(best)
+	if !ok {
+		return structuredSignatureHelp{}
+	}
+	children := callNode.Children()
+	if len(children) < 2 {
+		return structuredSignatureHelp{}
+	}
+	callee := children[0]
+	sym, ok := symbolForNode(p, entryMod.ID, callee)
+	if !ok {
+		return structuredSignatureHelp{}
+	}
+
+	// Recover the callee's declared parameter names and types, ordered by
+	// SymbolID to match declaration order (same pattern callParamHints uses).
+	var params []symbol.Symbol
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Kind == symbol.SymbolParameter && candidate.Containing == sym.ID {
+			params = append(params, candidate)
+		}
+	}
+	if len(params) == 0 {
+		// No named parameters – still try to render the signature from the
+		// function type key so callers see at least the shape.
+		return renderSignatureFromTypeKey(p, sym, modID, 0)
+	}
+	sort.Slice(params, func(i, j int) bool { return params[i].ID < params[j].ID })
+
+	// Collect direct argument expressions (skip Missing/Error placeholders
+	// exactly as callParamHints does).
+	args := make([]syntax.NodeID, 0, len(children)-1)
+	for _, argID := range children[1:] {
+		argNode, ok := tree.Node(argID)
+		if !ok {
+			continue
+		}
+		if argNode.Kind() == syntax.Missing || argNode.Kind() == syntax.Error {
+			continue
+		}
+		args = append(args, argID)
+	}
+
+	// Determine the active parameter index by counting how many top-level
+	// comma-separated argument slots come BEFORE the offset within this call.
+	// Children are direct argument expressions (not a flattened token stream),
+	// so we simply count how many args end before the offset.
+	activeParam := 0
+	for _, argID := range args {
+		argNode, ok := tree.Node(argID)
+		if !ok {
+			continue
+		}
+		if argNode.Span().End <= offset {
+			activeParam++
+		}
+	}
+	if activeParam >= len(params) {
+		activeParam = len(params) - 1
+	}
+
+	return buildSignatureHelp(sym, params, activeParam, p, modID)
+}
+
+// renderSignatureFromTypeKey builds a structuredSignatureHelp from the
+// callee's function type key when there are no named parameters in the symbol
+// table (e.g. builtins or extern functions). It renders the raw parameter
+// types as labels.
+func renderSignatureFromTypeKey(p *compiledProgram, sym symbol.Symbol, modID module.ModuleID, activeParam int) structuredSignatureHelp {
+	typeResult, ok := p.result.SymbolType(sym.ID)
+	if !ok || typeResult.Type == 0 {
+		return structuredSignatureHelp{}
+	}
+	snap := p.unit.Snapshot()
+	if snap == nil {
+		return structuredSignatureHelp{}
+	}
+	key, ok := snap.Key(typeResult.Type)
+	if !ok {
+		return structuredSignatureHelp{}
+	}
+	mod, _ := p.graph.Module(modID)
+	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
+	label := renderFunctionHover(sym.Name, key, snap, resolve)
+	_, parameters, _, _, _ := key.Function()
+	lookup := types.LookupFromSnapshot(snap)
+	var paramLabels []string
+	for _, param := range parameters {
+		paramLabels = append(paramLabels, describeTypeID(lookup, param, resolve))
+	}
+	return structuredSignatureHelp{
+		Signatures: []structuredSignature{
+			{Label: label, Parameters: paramLabels},
+		},
+		ActiveSignature: 0,
+		ActiveParameter: min(activeParam, len(paramLabels)-1),
+	}
+}
+
+// buildSignatureHelp constructs a structuredSignatureHelp from a resolved
+// function symbol and its named parameters. The label includes each parameter
+// as "name Type" using the same DescribeKeyResolved machinery that hover uses.
+func buildSignatureHelp(sym symbol.Symbol, params []symbol.Symbol, activeParam int, p *compiledProgram, modID module.ModuleID) structuredSignatureHelp {
+	typeResult, ok := p.result.SymbolType(sym.ID)
+	if !ok || typeResult.Type == 0 {
+		return structuredSignatureHelp{}
+	}
+	snap := p.unit.Snapshot()
+	if snap == nil {
+		return structuredSignatureHelp{}
+	}
+	key, ok := snap.Key(typeResult.Type)
+	if !ok {
+		return structuredSignatureHelp{}
+	}
+	mod, _ := p.graph.Module(modID)
+	resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
+	label := renderFunctionHover(sym.Name, key, snap, resolve)
+
+	paramLabels := make([]string, len(params))
+	for i, param := range params {
+		paramTyp, err := p.result.SymbolType(param.ID)
+		if err && paramTyp.Type != 0 {
+			if pk, ok := snap.Key(paramTyp.Type); ok {
+				lookup := types.LookupFromSnapshot(snap)
+				paramLabels[i] = param.Name + " " + types.DescribeKeyResolved(pk, lookup, resolve)
+				continue
+			}
+		}
+		paramLabels[i] = param.Name
+	}
+	return structuredSignatureHelp{
+		Signatures: []structuredSignature{
+			{Label: label, Parameters: paramLabels},
+		},
+		ActiveSignature: 0,
+		ActiveParameter: min(activeParam, len(paramLabels)-1),
+	}
+}
+
 // bindingKeyword reports the source keyword ("let" or "var") a SymbolBinding
 // was actually declared with. `let` and `var` bindings share the single
 // SymbolBinding kind -- the resolved symbol table has no mutability field --

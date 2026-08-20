@@ -114,6 +114,14 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 			// the top level; a type's fields, variants, and methods nested
 			// underneath) built from the resolved symbol table.
 			DocumentSymbolProvider: protocol.Boolean(true),
+			// SignatureHelpProvider advertises textDocument/signatureHelp
+			// support: as the user types inside a call's parentheses (on "("
+			// or ","), the server resolves the enclosing call expression,
+			// finds the callee's function symbol, and returns the parameter
+			// list with the active parameter index.
+			SignatureHelpProvider: &protocol.SignatureHelpOptions{
+				TriggerCharacters: []string{"(", ","},
+			},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
@@ -352,6 +360,66 @@ func (s *lspServer) DocumentSymbol(ctx context.Context, params *protocol.Documen
 	}
 	s.log.Printf("documentSymbol: symbols=%d", len(resp.DocumentSymbols))
 	return toProtocolDocumentSymbols(resp.DocumentSymbols), nil
+}
+
+// SignatureHelp answers a textDocument/signatureHelp REQUEST: it resolves the
+// document URI to a filesystem path, converts the LSP position to a byte
+// offset, asks the daemon for the enclosing call expression's signature
+// information, and returns it as an LSP SignatureHelp. The active parameter
+// index from the daemon response maps directly to the LSP parameter index.
+// When no callable callee is found at the position (e.g. hovering whitespace
+// or a keyword inside an incomplete call), it returns a nil result with no
+// error, which is the LSP-correct way to say "no signature help here".
+func (s *lspServer) SignatureHelp(ctx context.Context, params *protocol.SignatureHelpParams) (*protocol.SignatureHelp, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+	s.log.Printf("signatureHelp: uri=%s line=%d char=%d", docURI, params.Position.Line, params.Position.Character)
+
+	offset, err := offsetForPosition(fsPath, int(params.Position.Line), int(params.Position.Character))
+	if err != nil {
+		s.log.Printf("signatureHelp: offsetForPosition failed: %v", err)
+		return nil, nil
+	}
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("signatureHelp: ensureDaemonForRoot(%q) failed: %v", s.root, err)
+		return nil, nil
+	}
+	resp, err := daemonRPCForRoot(s.root, "signatureHelp", daemonRequest{Entry: fsPath, Offset: uint32(offset)})
+	if err != nil || !resp.OK {
+		s.log.Printf("signatureHelp: RPC err=%v ok=%v", err, resp.OK)
+		return nil, nil
+	}
+	if len(resp.SignatureHelp.Signatures) == 0 {
+		s.log.Printf("signatureHelp: no signatures at offset %d", offset)
+		return nil, nil
+	}
+	s.log.Printf("signatureHelp: signatures=%d activeSig=%d activeParam=%d",
+		len(resp.SignatureHelp.Signatures), resp.SignatureHelp.ActiveSignature, resp.SignatureHelp.ActiveParameter)
+	return toProtocolSignatureHelp(resp.SignatureHelp), nil
+}
+
+// toProtocolSignatureHelp converts the daemon's structured signature help into
+// an LSP protocol.SignatureHelp, passing through the active signature and
+// parameter indices directly since both use zero-based indexing.
+func toProtocolSignatureHelp(help structuredSignatureHelp) *protocol.SignatureHelp {
+	sigs := make([]protocol.SignatureInformation, 0, len(help.Signatures))
+	for _, sig := range help.Signatures {
+		params := make([]protocol.ParameterInformation, 0, len(sig.Parameters))
+		for _, paramLabel := range sig.Parameters {
+			params = append(params, protocol.ParameterInformation{Label: protocol.String(paramLabel)})
+		}
+		sigs = append(sigs, protocol.SignatureInformation{
+			Label:      sig.Label,
+			Parameters: params,
+		})
+	}
+	activeSig := uint32(help.ActiveSignature)
+	return &protocol.SignatureHelp{
+		Signatures:      sigs,
+		ActiveSignature: &activeSig,
+		ActiveParameter: protocol.NewNullable(uint32(help.ActiveParameter)),
+	}
 }
 
 // toProtocolDocumentSymbols converts the daemon's structured outline tree into
