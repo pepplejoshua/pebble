@@ -1,11 +1,19 @@
 # 21 — persistent daemon, incremental compilation, and an LSP core
 
-**Status:** in progress. 21.1a, 21.1b, and 21.2a are implemented, committed,
-and pushed (`ca653de`, `c7ddf92`, `d4cdbb2`). This document is being
-updated in place as each slice lands, the same way `07`/`19` are — treat
-"Completed slices" below as authoritative fact and "Slice record and
-remaining work" as current plan, sharpened as each piece is actually
-built.
+**Status:** 21.1a, 21.1b, and 21.2a are implemented, committed, and pushed
+(`ca653de`, `c7ddf92`, `d4cdbb2`) — all three stand on their own regardless
+of what happens below. **21.2b (module-scoped resolve/check) is BLOCKED**:
+its own required design investigation (session `ses_6a864385d74fb0faae4048c7`,
+independently spot-verified) returned a decisive verdict — a correct
+module-scoped recheck is not achievable as a minimal wrapper around
+`check.Check`; it needs a real refactor (persistent cross-request identity,
+an explicit module-interface boundary, scoped solving, conservative
+prelude invalidation). Per an explicit decision (2026-08-19), that refactor
+is scoped as its own initiative — see
+`spec/compiler/proposals/22-incremental-check-refactor.md` — rather than
+being squeezed into this slice. 21.2b/21.2c in this document are
+superseded by that plan; do not implement them here. This document is
+updated in place as each slice lands, the same way `07`/`19` are.
 
 ## Completed slices (implemented, verified, committed)
 
@@ -175,37 +183,17 @@ doc" below) — the same bar every slice in `07`/`19`/`20` was held to.
 
 - **21.2a — reverse-dependency index.** Done — see "Completed slices"
   above.
-- **21.2b — module-scoped resolve/check entry points (highest-risk
-  slice).** `symbol.Resolve` and `check.Check` are whole-graph-only today
-  — `check.Check` builds one global `infer.Program`/`infer.Session` and
-  walks the full dependency order (confirmed by reading
-  `internal/check/check.go` and `internal/infer/program.go`/`session.go`).
-  The concreteness pass found no *algorithmic* reason a subset walk can't
-  work (the global session/program shape isn't inherently whole-graph-only
-  by necessity, just by current API surface) — but this needs its own
-  focused design-and-verify pass before implementation starts, not a blind
-  attempt. **Do not skip straight to implementing this slice** — dispatch
-  a scoped design investigation first: given a module's own content hash
-  is unchanged AND every module it transitively imports is either
-  unchanged or itself already-rechecked-and-still-type-compatible, what
-  exactly is safe to reuse from the previous `infer.Session`/`Program`
-  state, and what's the minimal new API surface (`check.CheckIncremental`?
-  a `Program` method that accepts a subset with an
-  already-resolved-context?) needed to express that. Bring back concrete
-  findings before writing the real implementation.
-  **Test (once implemented):** real multi-module program, edit one leaf
-  module, confirm (via instrumentation) only it and its direct importers
-  are rechecked — not the whole graph — and confirm output diagnostics are
-  identical to a full rebuild's for the same edit (correctness first,
-  speed second).
-- **21.2c — daemon wiring.** Connect 21.2a+21.2b into the daemon's request
-  loop: a file change triggers narrowly-scoped rechecking instead of full
-  re-check.
-  **Test:** real before/after wall-clock on a representative multi-module
-  program (reuse the 10-stdlib-module synthetic program from the earlier
-  perf-hunt work) — edit one leaf module, measure daemon-warm incremental
-  rebuild time vs. cold one-shot `pebc -check` time. This is the number
-  that actually validates the whole initiative's premise.
+- **21.2b — module-scoped resolve/check entry points.** BLOCKED — see
+  "Status" at the top of this document. Superseded by
+  `22-incremental-check-refactor.md`. Do not implement here.
+- **21.2c — daemon wiring for scoped rechecking.** BLOCKED on 21.2b, same
+  as above. Note: this does NOT block 21.3/21.4 below — both can proceed
+  today using the existing full-recheck-per-request daemon build (21.1a/
+  21.1b/21.2a already provide a working, measurably-faster-than-cold
+  rebuild trigger; they just don't skip unchanged work yet). 21.3/21.4
+  will automatically get faster once `22` lands, without needing their
+  own call sites to change — `pebc dev`/the LSP core call the same daemon
+  build path either way.
 
 ### 21.3 — `pebc dev`: the user-facing fast-rebuild-restart front end
 
