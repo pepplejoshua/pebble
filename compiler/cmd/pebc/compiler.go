@@ -373,7 +373,34 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	snap := p.unit.Snapshot()
 	tirID, ok := p.unit.SourceMap(symbol.SyntaxRef{Module: entryMod.ID, Node: best})
 	if !ok {
-		return ""
+		// The typed-IR source map is keyed on the whole MemberExpr node, not
+		// on the narrow member-name child. When hovering exactly on the name
+		// token, best resolves to that Name node and misses. Widen once to the
+		// direct parent MemberExpr when best is its second child.
+		var parentID syntax.NodeID
+		foundParent := false
+		for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+			n, ok := tree.Node(id)
+			if !ok {
+				continue
+			}
+			if n.Kind() != syntax.MemberExpr {
+				continue
+			}
+			children := n.Children()
+			if len(children) >= 2 && children[1] == best {
+				parentID = id
+				foundParent = true
+				break
+			}
+		}
+		if !foundParent {
+			return ""
+		}
+		tirID, ok = p.unit.SourceMap(symbol.SyntaxRef{Module: entryMod.ID, Node: parentID})
+		if !ok {
+			return ""
+		}
 	}
 	node, ok := p.unit.Node(tirID)
 	if !ok || node.Type == 0 {
@@ -1447,6 +1474,7 @@ func memberCompletions(p *compiledProgram, modID module.ModuleID, tree *syntax.T
 	if !ok {
 		return nil
 	}
+	effectiveID := typeID
 	// Auto-deref a pointer receiver exactly as structuralField does.
 	if key.Kind() == types.Pointer {
 		child, _ := key.Child()
@@ -1454,9 +1482,56 @@ func memberCompletions(p *compiledProgram, modID module.ModuleID, tree *syntax.T
 		if !ok {
 			return nil
 		}
+		effectiveID = child
 	}
 	decl, _, ok := key.Nominal()
 	if !ok {
+		// Structural pseudo-fields: array/slice/optional/str have no nominal
+		// declaration but still expose .len/.data/.has_value.
+		mod, _ := p.graph.Module(modID)
+		resolve := types.ResolveFromResultQualified(p.resolution, modID, types.QualifierMap(mod.Imports))
+		fieldKind := int(protocol.CompletionItemKindField)
+		if _, _, isArray := key.Array(); isArray {
+			uintID := p.store.Builtins().Uint
+			detail := "len uint"
+			if uk, ok := lookup(uintID); ok {
+				detail = "len " + types.DescribeKeyResolved(uk, lookup, resolve)
+			}
+			return []structuredCompletionItem{{Name: "len", Kind: fieldKind, Detail: detail}}
+		}
+		if key.Kind() == types.Slice {
+			uintID := p.store.Builtins().Uint
+			lenDetail := "len uint"
+			if uk, ok := lookup(uintID); ok {
+				lenDetail = "len " + types.DescribeKeyResolved(uk, lookup, resolve)
+			}
+			element, _ := key.Child()
+			elemDesc := "<type>"
+			if ek, ok := lookup(element); ok {
+				elemDesc = types.DescribeKeyResolved(ek, lookup, resolve)
+			}
+			dataDetail := "data *" + elemDesc
+			return []structuredCompletionItem{
+				{Name: "len", Kind: fieldKind, Detail: lenDetail},
+				{Name: "data", Kind: fieldKind, Detail: dataDetail},
+			}
+		}
+		if key.Kind() == types.Optional {
+			boolID := p.store.Builtins().Bool
+			detail := "has_value bool"
+			if bk, ok := lookup(boolID); ok {
+				detail = "has_value " + types.DescribeKeyResolved(bk, lookup, resolve)
+			}
+			return []structuredCompletionItem{{Name: "has_value", Kind: fieldKind, Detail: detail}}
+		}
+		if effectiveID == p.store.Builtins().Str {
+			uintID := p.store.Builtins().Uint
+			detail := "len uint"
+			if uk, ok := lookup(uintID); ok {
+				detail = "len " + types.DescribeKeyResolved(uk, lookup, resolve)
+			}
+			return []structuredCompletionItem{{Name: "len", Kind: fieldKind, Detail: detail}}
+		}
 		return nil
 	}
 
