@@ -217,14 +217,21 @@ Done — see "Completed slices" above.
   Minimal JSON-RPC-over-stdio wiring responding to `initialize`/`shutdown`
   only — prove an editor can connect without crashing before adding real
   features.
-- **21.4b — diagnostics on save.** Wire `textDocument/didSave` (or
-  `didChange` with debounce) to trigger an incremental recheck (reusing
-  21.2's machinery directly — this is why 21.4 depends on 21.2, not on the
-  deferred Phase 3) and publish `textDocument/publishDiagnostics` from the
-  real `DiagnosticSet`, converted to LSP diagnostic ranges.
-- **21.4c — hover.** Type-at-position lookup against the daemon's warm
-  checked state — a read-only query, no new invalidation machinery needed
-  beyond what 21.2 already built.
+- **21.4b — diagnostics on save.** UPDATED (2026-08-19): 21.2b is blocked
+  (see "Status" above), so this does NOT wire into real incremental
+  rechecking. Wire `textDocument/didSave` (or `didChange` with debounce)
+  to trigger a FULL recheck via the existing daemon build path (same
+  mechanism `pebc dev`/21.3 already uses) and publish
+  `textDocument/publishDiagnostics` from the real `DiagnosticSet`,
+  converted to LSP diagnostic ranges. Will get faster automatically once
+  `22` lands, without this slice's own code changing.
+- **21.4c — hover.** UPDATED (2026-08-19): the daemon has no warm checked
+  state to query yet (confirmed by the 21.2b investigation — `compileOnce`
+  rebuilds everything fresh on every request). A hover request therefore
+  triggers a fresh full check (same cost as one daemon build, ~60-70ms per
+  the measured baseline) just to answer one query — correct, but not
+  "instant." Acceptable for a v1 core; revisit once `22` gives the daemon
+  real warm state to query without a full recheck per hover.
   **Test:** connect a real LSP client (a minimal test harness or an actual
   editor) and confirm diagnostics appear and clear correctly as the file is
   edited; confirm hover reports real inferred types at real cursor
