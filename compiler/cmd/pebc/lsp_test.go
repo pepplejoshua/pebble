@@ -612,7 +612,7 @@ func TestLSPInlayHints(t *testing.T) {
 	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
 
 	var resp struct {
-		ID     int `json:"id"`
+		ID     int             `json:"id"`
 		Error  json.RawMessage `json:"error"`
 		Result []struct {
 			Position struct {
@@ -679,11 +679,11 @@ func TestLSPInlayHints(t *testing.T) {
 		t.Fatalf("annotated binding `origin` should NOT produce a type hint, but one was found at (%d,%d)", originLine, originEndCh)
 	}
 
-	// 4. Parameter hints: "p: " before `origin`, "scale: " before `5`. The
-	// call is written `add(origin, 5)` -- the first argument sits right
-	// after "(" (no source space, so the hint needs its own PaddingLeft),
-	// the second sits right after ", " (source already has a space, so
-	// PaddingLeft must be false or the gap would visibly double).
+	// 4. Parameter hints: "p: " before `origin`, "scale: " before `5`. Neither
+	// gets PaddingLeft -- the label's own trailing ": " is enough spacing on
+	// the right, and an unconditional PaddingLeft on the left previously
+	// double-spaced every non-first argument (already preceded by ", " in the
+	// source) and looked wrong even on the first argument once seen live.
 	plabel, ppad, ok := findParam(arg0Line, arg0Ch)
 	if !ok {
 		t.Fatalf("expected parameter hint before first arg `origin` at (%d,%d); got hints %+v", arg0Line, arg0Ch, resp.Result)
@@ -691,8 +691,8 @@ func TestLSPInlayHints(t *testing.T) {
 	if plabel != "p: " {
 		t.Fatalf("first parameter hint label = %q, want \"p: \"", plabel)
 	}
-	if !ppad {
-		t.Fatalf("first parameter hint (right after '(', no source space) should have PaddingLeft=true")
+	if ppad {
+		t.Fatalf("first parameter hint should have PaddingLeft=false (padding is never applied to parameter hints)")
 	}
 	plabel, ppad, ok = findParam(arg1Line, arg1Ch)
 	if !ok {
@@ -702,7 +702,7 @@ func TestLSPInlayHints(t *testing.T) {
 		t.Fatalf("second parameter hint label = %q, want \"scale: \"", plabel)
 	}
 	if ppad {
-		t.Fatalf("second parameter hint (right after an existing ', ') should have PaddingLeft=false to avoid doubling the gap")
+		t.Fatalf("second parameter hint should have PaddingLeft=false (padding is never applied to parameter hints)")
 	}
 
 	// Shut the server down cleanly.
@@ -726,6 +726,230 @@ func computeLSPPos(t *testing.T, src, sub string) (int, int) {
 	lastNL := strings.LastIndex(before, "\n")
 	ch := off - lastNL - 1
 	return line, ch
+}
+
+// definitionAt sends a real textDocument/definition REQUEST at the given
+// 0-based line/character and returns the parsed response's result Location
+// (nil when the response reports null) plus the raw body, failing the test on
+// a transport/error response.
+func definitionAt(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, docURI string, id, line, ch int) (*struct {
+	URI   string `json:"uri"`
+	Range struct {
+		Start struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"start"`
+		End struct {
+			Line      int `json:"line"`
+			Character int `json:"character"`
+		} `json:"end"`
+	} `json:"range"`
+}, string) {
+	t.Helper()
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/definition","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, id, docURI, line, ch)
+	writeLSPFrame(t, stdin, []byte(req))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var resp struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing definition response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("definition returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != id {
+		t.Fatalf("definition response id = %d, want %d (body %s)", resp.ID, id, body)
+	}
+	if string(resp.Result) == "null" {
+		return nil, string(body)
+	}
+	var loc struct {
+		URI   string `json:"uri"`
+		Range struct {
+			Start struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"start"`
+			End struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"end"`
+		} `json:"range"`
+	}
+	if err := json.Unmarshal(resp.Result, &loc); err != nil {
+		t.Fatalf("parsing definition result %s: %v", resp.Result, err)
+	}
+	return &loc, string(body)
+}
+
+// TestLSPDefinition exercises the textDocument/definition feature against a
+// real scratch project with a real LSP client round-trip. It asserts:
+//
+//   - A request at a variable NAME REFERENCE resolves to that variable's
+//     declaration location in the SAME file.
+//   - A request at a function CALL SITE resolves to the function's
+//     declaration location.
+//   - A request at a position with nothing resolvable (a literal) returns a
+//     null result, not an error.
+//   - A request at a symbol declared in a DIFFERENT file (a local import)
+//     resolves to the declaration in that other file, with the returned URI
+//     pointing at the imported file, not the request's.
+//   - A request ON a declaration's own name still resolves to itself (no-op
+//     navigation, not an error).
+func TestLSPDefinition(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Short, shallow root -- NOT t.TempDir() directly (see the documented
+	// 104-byte Unix socket path limit note in TestLSPDiagnosticsOnSave).
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	helperPath := filepath.Join(root, "helper.peb")
+	helperSrc := "fn helper_fn() i32 {\n    return 42;\n}\n"
+	if err := os.WriteFile(helperPath, []byte(helperSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mainPath := filepath.Join(root, "main.peb")
+	src := "import \"./helper\";\n" +
+		"\n" +
+		"fn add(a i32, b i32) i32 {\n" +
+		"    return a + b;\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var x i32 = 7;\n" +
+		"    let y = add(x, 5);\n" +
+		"    let z = helper::helper_fn();\n" +
+		"    return y as int + z as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon canonicalizes paths through EvalSymlinks (on macOS, /var
+	// resolves to /private/var), so the expected URIs must match the
+	// canonicalized forms.
+	canonMain, err := filepath.EvalSymlinks(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonHelper, err := filepath.EvalSymlinks(helperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainPath = canonMain
+	helperPath = canonHelper
+	docURI := "file://" + mainPath
+	helperDocURI := "file://" + helperPath
+	rootURI := "file://" + root
+
+	// Position of the reference to `x` inside `add(x, 5)`.
+	xRefLine, xRefCh := computeLSPPos(t, src, "add(x, 5)")
+	xRefCh += len("add(") // the "x" reference
+	// Position of the function call site `add(`.
+	callLine, callCh := computeLSPPos(t, src, "let y = add(")
+	callCh += len("let y = ") // the "add" callee name
+	// Position of a literal `7` (nothing resolvable).
+	litLine, litCh := computeLSPPos(t, src, "var x i32 = 7;")
+	litCh += len("var x i32 = ") // the "7"
+	// Position of the cross-file call `helper::helper_fn()`.
+	cfLine, cfCh := computeLSPPos(t, src, "helper::helper_fn")
+	cfCh += len("helper::") // the "helper_fn" member name
+	// Position of `x`'s own declaration name in `var x i32`.
+	xDeclLine, xDeclCh := computeLSPPos(t, src, "var x i32")
+	xDeclCh += len("var ") // the "x" declaration name
+
+	// Expected declaration positions (computed from the respective files).
+	// `x`'s declaration: `var x i32 = 7;` on its line, at its name.
+	expXLine, expXCh := computeLSPPos(t, src, "var x i32")
+	expXCh += len("var ")
+	// `add`'s declaration: `fn add(` on its line, at its name.
+	expAddLine, expAddCh := computeLSPPos(t, src, "fn add(")
+	expAddCh += len("fn ")
+	// `helper_fn`'s declaration lives in helper.peb: `fn helper_fn(`.
+	expHLine, expHCh := computeLSPPos(t, helperSrc, "fn helper_fn(")
+	expHCh += len("fn ")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	id := 2
+	expectLoc := func(line, ch int, wantURI string, wantLine, wantCh int, label string) {
+		t.Helper()
+		loc, body := definitionAt(t, stdin, reader, docURI, id, line, ch)
+		id++
+		if loc == nil {
+			t.Fatalf("%s: got null result (body %s)", label, body)
+		}
+		if loc.URI != wantURI {
+			t.Fatalf("%s: URI = %q, want %q (body %s)", label, loc.URI, wantURI, body)
+		}
+		if loc.Range.Start.Line != wantLine || loc.Range.Start.Character != wantCh {
+			t.Fatalf("%s: start = (%d,%d), want (%d,%d) (body %s)", label, loc.Range.Start.Line, loc.Range.Start.Character, wantLine, wantCh, body)
+		}
+		t.Logf("%s -> (%d,%d) at %s", label, wantLine, wantCh, wantURI)
+	}
+	expectNone := func(line, ch int, label string) {
+		t.Helper()
+		loc, body := definitionAt(t, stdin, reader, docURI, id, line, ch)
+		id++
+		if loc != nil {
+			t.Fatalf("%s: expected null result, got %+v (body %s)", label, loc, body)
+		}
+		t.Logf("%s -> null", label)
+	}
+
+	// 1. Variable reference `x` -> its declaration in the same file.
+	expectLoc(xRefLine, xRefCh, docURI, expXLine, expXCh, "var reference x")
+	// 2. Function call site `add(` -> its declaration.
+	expectLoc(callLine, callCh, docURI, expAddLine, expAddCh, "call site add")
+	// 3. Literal `7` -> no result.
+	expectNone(litLine, litCh, "literal 7")
+	// 4. Cross-file call `helper_fn()` -> declaration in helper.peb.
+	expectLoc(cfLine, cfCh, helperDocURI, expHLine, expHCh, "cross-file helper_fn")
+	// 5. Declaration's own name `x` -> itself (no-op navigation).
+	expectLoc(xDeclLine, xDeclCh, docURI, expXLine, expXCh, "declaration name x")
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
 }
 
 // hoverAndExpect sends a real textDocument/hover REQUEST at the given

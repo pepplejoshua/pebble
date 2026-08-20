@@ -104,6 +104,11 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 			// We compute both type and parameter-name hints (gopls/rust-analyzer
 			// style) via a fresh daemon check over the requested range.
 			InlayHintProvider: protocol.Boolean(true),
+			// DefinitionProvider advertises textDocument/definition support:
+			// jumping to the declaration of the symbol under the cursor,
+			// possibly in a different file (an imported module or a stdlib
+			// file).
+			DefinitionProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
@@ -248,10 +253,12 @@ func (s *lspServer) InlayHint(ctx context.Context, params *protocol.InlayHintPar
 
 // toProtocolInlayHints converts the daemon's structured hints into LSP
 // protocol.InlayHint values, converting the 1-based source positions to the
-// 0-based positions LSP expects. A parameter hint only gets PaddingLeft when
-// the daemon determined the source doesn't already have a space right before
-// it (h.PadLeft) -- most call arguments already have one from the preceding
-// comma, and padding those too would visibly double the gap.
+// 0-based positions LSP expects. No padding is applied: parameter hint labels
+// already carry their own trailing ": " space, and the first call argument
+// (right after "(") reads fine unpadded too -- an unconditional PaddingLeft
+// was previously tried but visibly double-spaced every non-first argument
+// (which already has a space from its preceding comma), and even the first
+// argument's padding looked wrong to a real reader once seen live.
 func toProtocolInlayHints(hints []structuredInlayHint) []protocol.InlayHint {
 	out := make([]protocol.InlayHint, 0, len(hints))
 	for _, h := range hints {
@@ -267,13 +274,53 @@ func toProtocolInlayHints(hints []structuredInlayHint) []protocol.InlayHint {
 			Label:    protocol.String(h.Label),
 			Kind:     kind,
 		}
-		if h.Kind == inlayHintParameter && h.PadLeft {
-			pad := true
-			hint.PaddingLeft = &pad
-		}
 		out = append(out, hint)
 	}
 	return out
+}
+
+// Definition answers a textDocument/definition REQUEST: it resolves the
+// document URI to a filesystem path, converts the LSP position to a byte
+// offset, asks the daemon for the symbol's declaration location, and returns
+// it as a single LSP Location. The target may live in a DIFFERENT file than
+// the request (an imported module or a stdlib file), so the returned
+// Location.URI is the target's real file:// URI, not the request's. When
+// nothing resolvable sits at the position -- a literal, whitespace, a keyword,
+// or a compiler-owned builtin with no source span -- it returns a nil result
+// with no error, which is the LSP-correct way to say "no definition here".
+func (s *lspServer) Definition(ctx context.Context, params *protocol.DefinitionParams) (protocol.DefinitionResult, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+	s.log.Printf("definition: uri=%s line=%d char=%d", docURI, params.Position.Line, params.Position.Character)
+
+	offset, err := offsetForPosition(fsPath, int(params.Position.Line), int(params.Position.Character))
+	if err != nil {
+		s.log.Printf("definition: offsetForPosition failed: %v", err)
+		// Cannot resolve a position in the file; answer "nothing here".
+		return nil, nil
+	}
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("definition: ensureDaemonForRoot(%q) failed: %v", s.root, err)
+		return nil, nil
+	}
+	resp, err := daemonRPCForRoot(s.root, "definition", daemonRequest{Entry: fsPath, Offset: uint32(offset)})
+	if err != nil || !resp.OK {
+		s.log.Printf("definition: RPC err=%v ok=%v", err, resp.OK)
+		return nil, nil
+	}
+	if resp.Definition.File == "" {
+		s.log.Printf("definition: no definition at offset %d", offset)
+		return nil, nil
+	}
+	s.log.Printf("definition: result file=%s (%d,%d)-(%d,%d)", resp.Definition.File, resp.Definition.StartLine, resp.Definition.StartCol, resp.Definition.EndLine, resp.Definition.EndCol)
+	return &protocol.Location{
+		URI: uri.File(resp.Definition.File),
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(resp.Definition.StartLine - 1), Character: uint32(resp.Definition.StartCol - 1)},
+			End:   protocol.Position{Line: uint32(resp.Definition.EndLine - 1), Character: uint32(resp.Definition.EndCol - 1)},
+		},
+	}, nil
 }
 
 // offsetForPosition converts a 0-based LSP line/character to a byte offset into

@@ -347,6 +347,13 @@ func (d *daemon) handle(conn net.Conn) {
 			return
 		}
 		d.serveInlayHints(conn, req)
+	case "definition":
+		d.touch()
+		if d.reexecIfStale() {
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			return
+		}
+		d.serveDefinition(conn, req)
 	case "stop":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
 		_ = d.listener.Close()
@@ -659,6 +666,19 @@ func (d *daemon) serveInlayHints(conn net.Conn, req daemonRequest) {
 
 	hints := inlayHintsInRange(req.Entry, req.StartOffset, req.EndOffset)
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, InlayHints: hints})
+}
+
+// serveDefinition answers a read-only definition query at a source offset: it
+// runs the same fresh full check a build uses and resolves the position to its
+// declaration's location (target file path + 1-based name span), or a
+// zero-value Definition when nothing resolvable is there.
+func (d *daemon) serveDefinition(conn net.Conn, req daemonRequest) {
+	// Serialize compilations; buildProgram is not required to be concurrent.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	def := definitionAtOffset(req.Entry, req.Offset)
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Definition: def})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

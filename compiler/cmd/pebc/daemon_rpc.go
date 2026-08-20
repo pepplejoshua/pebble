@@ -69,6 +69,12 @@ type daemonResponse struct {
 	// RPC. Line/column values are 1-based, matching source.Position; the LSP
 	// server converts them to 0-based.
 	InlayHints []structuredInlayHint `json:"inlay_hints,omitempty"`
+	// Definition carries the target location of a definition query, populated
+	// by the "definition" RPC. Line/column values are 1-based, matching
+	// source.Position; the LSP server converts them to 0-based. A zero value
+	// (empty File) means no definition is available at the requested offset,
+	// not an error.
+	Definition structuredDefinition `json:"definition,omitempty"`
 }
 
 // structuredDiagnostic is the machine-readable form of one compiler diagnostic,
@@ -92,17 +98,11 @@ type structuredDiagnostic struct {
 // anchor Position sits right after a binding name (type hints) or immediately
 // before a call argument (parameter hints). Kind is "type" or "parameter".
 type structuredInlayHint struct {
-	File string `json:"file"`
-	Line int    `json:"line"`
-	Col  int    `json:"col"`
-	// PadLeft reports whether the LSP layer should render an extra leading
-	// space before Label. Only true when the source byte immediately before
-	// the anchor is NOT already whitespace (e.g. right after "(" in a call
-	// with no space), so a comma-space that's already in the source doesn't
-	// get doubled up by also padding the hint.
-	PadLeft bool   `json:"padLeft,omitempty"`
-	Label   string `json:"label"`
-	Kind    string `json:"kind"`
+	File  string `json:"file"`
+	Line  int    `json:"line"`
+	Col   int    `json:"col"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
 }
 
 // inlayHint kinds, shared by the daemon's structured form and the LSP layer's
@@ -111,6 +111,20 @@ const (
 	inlayHintType      = "type"
 	inlayHintParameter = "parameter"
 )
+
+// structuredDefinition is the machine-readable form of one definition target,
+// following the structuredDiagnostic/structuredInlayHint pattern: a resolved
+// file path and 1-based line/column endpoints. The range is the declared
+// symbol's own NAME span (tight, name-only), which is the precise location a
+// "jump to definition" highlight wants. A zero value (empty File) is the
+// "no definition" sentinel, not an error.
+type structuredDefinition struct {
+	File      string `json:"file"`
+	StartLine int    `json:"startLine"`
+	StartCol  int    `json:"startCol"`
+	EndLine   int    `json:"endLine"`
+	EndCol    int    `json:"endCol"`
+}
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.
 func writeDaemonMessage(w io.Writer, payload any) error {

@@ -363,6 +363,102 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
 }
 
+// definitionAtOffset performs a fresh full check of the entry module (the same
+// daemon build path a build uses -- there is no warm checked state to query
+// yet) and resolves the syntax node at the given byte offset to its
+// declaration's location. It returns a structuredDefinition describing the
+// target file path and the 1-based line/column range of the declaration's
+// NAME span -- the symbol's own name node, tight and name-only, not the whole
+// declaration statement. A zero File reports "no definition": the position
+// sits on something with no resolvable declaration (a literal, whitespace, a
+// keyword, or a compiler-owned builtin with no source span). Requesting a
+// definition ON a declaration's own name resolves to that same declaration
+// (standard LSP behavior: jumping to a symbol you're already on is a no-op
+// navigation, not an error).
+func definitionAtOffset(entryPath string, offset uint32) structuredDefinition {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil || p.unit == nil {
+		return structuredDefinition{}
+	}
+	// The entry module is Graph.Root (EntryPath becomes Root during graph
+	// build), regardless of any separate prelude module.
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok || entryMod.Tree == nil {
+		return structuredDefinition{}
+	}
+	tree := entryMod.Tree
+
+	// Linear scan for the smallest (most specific) node whose span contains
+	// the offset -- the exact pattern and exclusions hoverTypeAtOffset uses.
+	var best syntax.NodeID
+	var bestWidth uint32
+	found := false
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok {
+			continue
+		}
+		kind := n.Kind()
+		if kind == syntax.File || kind == syntax.Error || kind == syntax.Missing || kind == syntax.EndOfFile {
+			continue
+		}
+		span := n.Span()
+		if offset < span.Start || offset > span.End {
+			continue
+		}
+		width := span.End - span.Start
+		if !found || width < bestWidth {
+			best = id
+			bestWidth = width
+			found = true
+		}
+	}
+	if !found {
+		return structuredDefinition{}
+	}
+
+	// Resolve the position to a declaration or reference symbol. Both a later
+	// USE of a name (via the resolution reference table) and a declaration's
+	// OWN name (via a span match against the symbol store) resolve here.
+	sym, ok := symbolForNode(p, entryMod.ID, best)
+	if !ok {
+		return structuredDefinition{}
+	}
+	return symbolDefinition(p, sym)
+}
+
+// symbolDefinition reports a symbol's declaration location: the canonical
+// filesystem path of the module the symbol was declared in, and the 1-based
+// line/column range of the symbol's own name-node span. The file path comes
+// from the module graph's canonical ModuleKey.Path (an absolute, symlink-
+// resolved path -- usable to build a file:// URI), not the module's display
+// basename, so a cross-file definition target resolves to its real location.
+// A zero value (empty File) means the symbol has no source location to jump
+// to (e.g. a compiler-owned builtin whose span is empty), which is
+// "no definition".
+func symbolDefinition(p *compiledProgram, sym symbol.Symbol) structuredDefinition {
+	file, ok := p.sources.File(sym.Span.Source)
+	if !ok {
+		return structuredDefinition{}
+	}
+	// Prefer the module's canonical path over the display basename so the
+	// returned location is an absolute, jump-able filesystem path even when
+	// the target is a different (e.g. imported) file.
+	path := file.Path()
+	if m, ok := p.graph.Module(sym.Module); ok && m.Key.Path != "" {
+		path = filepath.FromSlash(string(m.Key.Path))
+	}
+	start := file.Position(sym.Span.Start)
+	end := file.Position(sym.Span.End)
+	return structuredDefinition{
+		File:      path,
+		StartLine: start.Line,
+		StartCol:  start.Column,
+		EndLine:   end.Line,
+		EndCol:    end.Column,
+	}
+}
+
 // inlayHintsInRange walks the entry module's syntax tree once and returns
 // every inlay hint whose anchor byte offset falls within [startOffset,
 // endOffset]. Two categories are produced:
@@ -517,33 +613,9 @@ func callParamHints(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree
 		if argText := string(file.Slice(argNode.Span())); argText == params[i].Name {
 			continue
 		}
-		hint := makeInlayHint(file, anchor, params[i].Name+": ", inlayHintParameter)
-		hint.PadLeft = needsLeadingPad(file, anchor)
-		hints = append(hints, hint)
+		hints = append(hints, makeInlayHint(file, anchor, params[i].Name+": ", inlayHintParameter))
 	}
 	return hints
-}
-
-// needsLeadingPad reports whether the source byte immediately before offset
-// is NOT already whitespace (e.g. right after a call's "(" with no space),
-// so the LSP layer knows to add its own padding there. When the preceding
-// byte is already a space -- the overwhelmingly common case, a comma-space
-// between call arguments -- no extra padding is needed; adding one anyway
-// would visibly double the gap ("add(p: 1,  scale: 2)").
-func needsLeadingPad(file *source.File, offset uint32) bool {
-	if offset == 0 {
-		return false
-	}
-	prev := file.Slice(source.Span{Source: file.ID(), Start: offset - 1, End: offset})
-	if len(prev) == 0 {
-		return false
-	}
-	switch prev[0] {
-	case ' ', '\t', '\n', '\r':
-		return false
-	default:
-		return true
-	}
 }
 
 // makeInlayHint builds a structured inlay hint at a byte offset, resolving the
