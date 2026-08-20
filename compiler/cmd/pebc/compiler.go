@@ -722,19 +722,20 @@ func symbolKindToLSP(p *compiledProgram, sym symbol.Symbol) int {
 	}
 }
 
-// typeSymbolLSPKind inspects a type symbol's Declaration node to pick a more
-// precise LSP kind than the generic fallback. For a TypeDecl (or ExternType)
-// node, it scans the child nodes for the underlying aggregate shape:
-// StructType/UnionType -> Struct, EnumType -> Enum. A non-aggregate underlying
-// type (e.g. a type alias to a primitive) returns 0 so the caller falls back to
-// Struct. Returns 0 when the declaration node cannot be resolved.
-func typeSymbolLSPKind(p *compiledProgram, sym symbol.Symbol) int {
+// aggregateKeyword returns the aggregate keyword for a type symbol's
+// declaration, using the same node-walking approach as typeSymbolLSPKind.
+// It returns "struct", "union", "enum", or "" when no aggregate shape is
+// found (e.g. a type alias to a non-aggregate type). A tagged union
+// (UnionType containing a literal KwEnum child) is reported as "enum" so the
+// hover and LSP-kind paths agree: plain enums and tagged unions both render
+// as enum-like types.
+func aggregateKeyword(p *compiledProgram, sym symbol.Symbol) string {
 	n, ok := p.sourcesNode(sym.Declaration.Module, sym.Declaration.Node)
 	if !ok {
-		return 0
+		return ""
 	}
 	if n.Kind() != syntax.TypeDecl && n.Kind() != syntax.ExternType {
-		return 0
+		return ""
 	}
 	for _, child := range n.Children() {
 		cn, ok := p.sourcesNode(sym.Declaration.Module, child)
@@ -743,14 +744,39 @@ func typeSymbolLSPKind(p *compiledProgram, sym symbol.Symbol) int {
 		}
 		switch cn.Kind() {
 		case syntax.StructType:
-			return int(protocol.SymbolKindStruct)
+			return "struct"
 		case syntax.UnionType:
-			return int(protocol.SymbolKindStruct)
+			// A tagged union is "union enum { ... }": its UnionType node
+			// carries a literal KwEnum child as its first semantic child.
+			for _, gc := range cn.Children() {
+				if gcn, ok := p.sourcesNode(sym.Declaration.Module, gc); ok && gcn.Kind() == syntax.Literal && gcn.Token() == syntax.KwEnum {
+					return "enum"
+				}
+			}
+			return "union"
 		case syntax.EnumType:
-			return int(protocol.SymbolKindEnum)
+			return "enum"
 		}
 	}
-	return 0
+	return ""
+}
+
+// typeSymbolLSPKind inspects a type symbol's Declaration node to pick a more
+// precise LSP kind than the generic fallback. For a TypeDecl (or ExternType)
+// node, it scans the child nodes for the underlying aggregate shape:
+// StructType/UnionType -> Struct, EnumType -> Enum. A non-aggregate underlying
+// type (e.g. a type alias to a primitive) returns 0 so the caller falls back to
+// Struct. Returns 0 when the declaration node cannot be resolved.
+func typeSymbolLSPKind(p *compiledProgram, sym symbol.Symbol) int {
+	kw := aggregateKeyword(p, sym)
+	switch kw {
+	case "struct", "union":
+		return int(protocol.SymbolKindStruct)
+	case "enum":
+		return int(protocol.SymbolKindEnum)
+	default:
+		return 0
+	}
 }
 
 // realStdlibPath translates an embedded-stdlib module key path (e.g.
@@ -1004,12 +1030,203 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 	lookup := types.LookupFromStore(p.store)
 
 	// Type declarations (struct/union/enum/extern/type parameter) render as
-	// "type Name" without needing a value type.
+	// a multi-line aggregate description when an aggregate shape is present,
+	// or a bare "type Name" (or "type Name = Underlying" for an alias when
+	// cheaply resolvable) otherwise.
 	if sym.Kind == symbol.SymbolType || sym.Kind == symbol.SymbolExternType || sym.Kind == symbol.SymbolRuntimeType || sym.Kind == symbol.SymbolBuiltinType {
 		if name == "" {
 			return "", false
 		}
-		return "type " + name, true
+		kw := aggregateKeyword(p, sym)
+		if kw == "" {
+			// No aggregate shape: plain alias like "type Foo = i32".
+			// Attempt to render the underlying type when easily resolvable;
+			// otherwise fall back to the historic bare "type Name".
+			if tr, ok := p.result.SymbolType(sym.ID); ok && tr.Type != 0 {
+				if key, ok := lookup(tr.Type); ok {
+					typ := types.DescribeKeyResolved(key, lookup, resolve)
+					if typ != "" && typ != name {
+						return "type " + name + " = " + typ, true
+					}
+				}
+			}
+			return "type " + name, true
+		}
+		// Collect members belonging to this type, in declaration order
+		// (SymbolID ascending matches resolver insertion order, which is
+		// declaration order; see callParamHints and documentSymbolsForFile).
+		var members []symbol.Symbol
+		for _, cand := range p.resolution.Symbols.All() {
+			if cand.Containing != sym.ID {
+				continue
+			}
+			if kw == "struct" {
+				if cand.Kind != symbol.SymbolField {
+					continue
+				}
+			} else if kw == "union" {
+				// An untagged union's members are registered as SymbolVariant
+				// by the resolver, same as an enum/tagged-union's variants
+				// (see internal/check/member_validation.go's
+				// untaggedUnionDeclaration doc comment) -- they behave like
+				// fields (unsafe reinterpret-the-bytes access), not payload
+				// variants, so they're still rendered in the struct-like
+				// "name type;" form below, just collected under this kind.
+				if cand.Kind != symbol.SymbolField && cand.Kind != symbol.SymbolVariant {
+					continue
+				}
+			} else { // enum (covers plain enum and tagged union)
+				if cand.Kind != symbol.SymbolVariant {
+					continue
+				}
+			}
+			if cand.Name == "" || cand.Error {
+				continue
+			}
+			members = append(members, cand)
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+		const hoverMemberLimit = 64
+		total := len(members)
+		truncated := false
+		if total > hoverMemberLimit {
+			members = members[:hoverMemberLimit]
+			truncated = true
+		}
+		var b strings.Builder
+		b.WriteString("type " + name + " " + kw + " {\n")
+		for _, m := range members {
+			if kw == "struct" || kw == "union" {
+				typeStr := "<type>"
+				if tr, ok := p.result.SymbolType(m.ID); ok && tr.Type != 0 {
+					if key, ok := lookup(tr.Type); ok {
+						typeStr = types.DescribeKeyResolved(key, lookup, resolve)
+					}
+				}
+				b.WriteString("    " + m.Name + " " + typeStr + ";\n")
+			} else {
+				payload := ""
+				// First try the typed-IR: MemberTypes holds the resolved payload type
+				// (void for plain enum variants, concrete payload for tagged unions).
+				if p.unit != nil {
+					for _, td := range p.unit.TypeDeclarations() {
+						if td.Symbol != sym.ID {
+							continue
+						}
+						for idx, mid := range td.Members {
+							if mid != m.ID || idx >= len(td.MemberTypes) {
+								continue
+							}
+							pt := td.MemberTypes[idx]
+							if pt == 0 {
+								break
+							}
+							snap := p.unit.Snapshot()
+							var key types.TypeKey
+							var ok bool
+							if snap != nil {
+								key, ok = snap.Key(pt)
+							}
+							if !ok {
+								key, ok = lookup(pt)
+							}
+							if ok {
+								if bk, isB := key.Builtin(); isB && bk == types.Void {
+									// no payload for plain enum variants
+								} else {
+									lookupSnap := types.LookupFromSnapshot(snap)
+									if lookupSnap == nil {
+										lookupSnap = lookup
+									}
+									typ := types.DescribeKeyResolved(key, lookupSnap, resolve)
+									if typ == "" || typ == "<type>" {
+										typ = types.DescribeKeyResolved(key, lookup, resolve)
+									}
+									if typ != "" && typ != "void" && typ != "<type>" {
+										payload = typ
+									}
+								}
+							}
+							break
+						}
+						break
+					}
+				}
+				if payload == "" {
+					if declNode, ok := p.sourcesNode(m.Declaration.Module, m.Declaration.Node); ok {
+						if declNode.Kind() == syntax.VariantDecl {
+							children := declNode.Children()
+							var semis []syntax.NodeID
+							for _, cid := range children {
+								if cn, ok := p.sourcesNode(m.Declaration.Module, cid); ok && cn.Kind() != syntax.Missing && cn.Kind() != syntax.Error && cn.Kind() != syntax.EndOfFile {
+									semis = append(semis, cid)
+								}
+							}
+							var payloadID types.TypeID
+							found := false
+							for i := len(semis) - 1; i >= 0; i-- {
+								cid := semis[i]
+								cn, _ := p.sourcesNode(m.Declaration.Module, cid)
+								if cn.Kind() == syntax.Name {
+									continue
+								}
+								if sol := p.result.Solution(); sol != nil {
+									if tr, ok := sol.SyntaxType(symbol.SyntaxRef{Module: m.Declaration.Module, Node: cid}); ok && tr.Type != 0 {
+										if key, ok := lookup(tr.Type); ok {
+											if bk, isB := key.Builtin(); isB && bk == types.Void {
+												continue
+											}
+											payloadID = tr.Type
+											found = true
+											break
+										}
+									}
+								}
+							}
+							if found {
+								if key, ok := lookup(payloadID); ok {
+									typ := types.DescribeKeyResolved(key, lookup, resolve)
+									if typ != "" && typ != "void" && typ != "<type>" {
+										payload = typ
+									}
+								}
+							}
+						}
+					}
+				}
+				// Final fallback: SymbolType (for cases where TIR unavailable and
+				// syntax inspection missed, e.g. partial-failure resilience). Guard
+				// against the owning-type case where SymbolType is the enum itself.
+				if payload == "" {
+					if tr, ok := p.result.SymbolType(m.ID); ok && tr.Type != 0 {
+						if key, ok := lookup(tr.Type); ok {
+							if bk, isB := key.Builtin(); !isB || bk != types.Void {
+								typ := types.DescribeKeyResolved(key, lookup, resolve)
+								if typ != "" && typ != "void" && typ != "<type>" {
+									ownerName := ""
+									if resolve != nil && m.Containing != 0 {
+										ownerName = resolve(m.Containing)
+									}
+									if typ != ownerName {
+										payload = typ
+									}
+								}
+							}
+						}
+					}
+				}
+				if payload != "" {
+					b.WriteString("    " + m.Name + "(" + payload + ");\n")
+				} else {
+					b.WriteString("    " + m.Name + ";\n")
+				}
+			}
+		}
+		if truncated {
+			b.WriteString(fmt.Sprintf("    ... and %d more\n", total-hoverMemberLimit))
+		}
+		b.WriteString("}")
+		return b.String(), true
 	}
 	if sym.Kind == symbol.SymbolTypeParameter {
 		if name == "" {

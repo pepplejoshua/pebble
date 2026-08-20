@@ -1421,14 +1421,14 @@ func TestLSPHoverDeclarationAndRicherContent(t *testing.T) {
 	}
 
 	hover(fieldLine, fieldCh, "field x int")
-	hover(typeLine, typeCh, "type Point")
+	hover(typeLine, typeCh, "type Point struct {\n    x int;\n    y int;\n}")
 	hover(paramLine, paramCh, "param p Point")
 	hover(fnLine, fnCh, "fn add(Point, int) Point")
 	hover(varLine, varCh, "var origin Point")
 	hover(ptrLine, ptrCh, "var ptr *Point")
-	hover(nomTypeLine, nomTypeCh, "type Point")
+	hover(nomTypeLine, nomTypeCh, "type Point struct {\n    x int;\n    y int;\n}")
 	hover(movedLine, movedCh, "let moved Point")
-	hover(retTypeLine, retTypeCh, "type Point")
+	hover(retTypeLine, retTypeCh, "type Point struct {\n    x int;\n    y int;\n}")
 
 	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
 	writeLSPFrame(t, stdin, shutReq)
