@@ -13,4 +13,4 @@ path = "editors/syght/grammar"
 
 [language_servers.pebble]
 name = "Pebble Language Server"
-language = "Pebble"
+languages = ["Pebble"]
