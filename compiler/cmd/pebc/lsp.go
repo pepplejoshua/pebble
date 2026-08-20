@@ -100,6 +100,10 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 				Save:      protocol.Boolean(true),
 			},
 			HoverProvider: protocol.Boolean(true),
+			// InlayHintProvider advertises textDocument/inlayHint support.
+			// We compute both type and parameter-name hints (gopls/rust-analyzer
+			// style) via a fresh daemon check over the requested range.
+			InlayHintProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
@@ -204,6 +208,70 @@ func (s *lspServer) Hover(ctx context.Context, params *protocol.HoverParams) (*p
 			Value: resp.Hover,
 		},
 	}, nil
+}
+
+// InlayHint answers a textDocument/inlayHint REQUEST: it resolves the document
+// URI to a filesystem path, converts the requested LSP range to byte offsets,
+// asks the daemon for the inlay hints in that range, and returns them as LSP
+// inlay hints (1-based source positions converted to 0-based LSP positions).
+// Type hints render as ": Type" after a binding name; parameter-name hints
+// render as "name: " before each call argument. When nothing is in range it
+// returns an empty slice (LSP-correct: "no hints here").
+func (s *lspServer) InlayHint(ctx context.Context, params *protocol.InlayHintParams) ([]protocol.InlayHint, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+	s.log.Printf("inlayHint: uri=%s range=(%d,%d)-(%d,%d)", docURI, params.Range.Start.Line, params.Range.Start.Character, params.Range.End.Line, params.Range.End.Character)
+
+	startOff, err := offsetForPosition(fsPath, int(params.Range.Start.Line), int(params.Range.Start.Character))
+	if err != nil {
+		s.log.Printf("inlayHint: offsetForPosition(start) failed: %v", err)
+		return nil, nil
+	}
+	endOff, err := offsetForPosition(fsPath, int(params.Range.End.Line), int(params.Range.End.Character))
+	if err != nil {
+		s.log.Printf("inlayHint: offsetForPosition(end) failed: %v", err)
+		return nil, nil
+	}
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("inlayHint: ensureDaemonForRoot(%q) failed: %v", s.root, err)
+		return nil, nil
+	}
+	resp, err := daemonRPCForRoot(s.root, "inlayHints", daemonRequest{Entry: fsPath, StartOffset: uint32(startOff), EndOffset: uint32(endOff)})
+	if err != nil || !resp.OK {
+		s.log.Printf("inlayHint: RPC err=%v ok=%v", err, resp.OK)
+		return nil, nil
+	}
+	s.log.Printf("inlayHint: hints=%d", len(resp.InlayHints))
+	return toProtocolInlayHints(resp.InlayHints), nil
+}
+
+// toProtocolInlayHints converts the daemon's structured hints into LSP
+// protocol.InlayHint values, converting the 1-based source positions to the
+// 0-based positions LSP expects. Parameter hints get PaddingLeft so they don't
+// visually crowd the `(` or the argument they annotate.
+func toProtocolInlayHints(hints []structuredInlayHint) []protocol.InlayHint {
+	out := make([]protocol.InlayHint, 0, len(hints))
+	for _, h := range hints {
+		var kind protocol.InlayHintKind
+		switch h.Kind {
+		case inlayHintType:
+			kind = protocol.InlayHintKindType
+		case inlayHintParameter:
+			kind = protocol.InlayHintKindParameter
+		}
+		hint := protocol.InlayHint{
+			Position: protocol.Position{Line: uint32(h.Line - 1), Character: uint32(h.Col - 1)},
+			Label:    protocol.String(h.Label),
+			Kind:     kind,
+		}
+		if h.Kind == inlayHintParameter {
+			pad := true
+			hint.PaddingLeft = &pad
+		}
+		out = append(out, hint)
+	}
+	return out
 }
 
 // offsetForPosition converts a 0-based LSP line/character to a byte offset into

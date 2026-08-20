@@ -340,6 +340,13 @@ func (d *daemon) handle(conn net.Conn) {
 			return
 		}
 		d.serveHover(conn, req)
+	case "inlayHints":
+		d.touch()
+		if d.reexecIfStale() {
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			return
+		}
+		d.serveInlayHints(conn, req)
 	case "stop":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
 		_ = d.listener.Close()
@@ -639,6 +646,19 @@ func (d *daemon) serveHover(conn net.Conn, req daemonRequest) {
 
 	typ := hoverTypeAtOffset(req.Entry, req.Offset)
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Hover: typ})
+}
+
+// serveInlayHints answers a read-only inlay-hint query for a source range: it
+// runs the same fresh full check a build uses and walks the entry module's
+// syntax tree once, returning every type/parameter hint whose anchor position
+// falls within the requested byte range.
+func (d *daemon) serveInlayHints(conn net.Conn, req daemonRequest) {
+	// Serialize compilations; buildProgram is not required to be concurrent.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	hints := inlayHintsInRange(req.Entry, req.StartOffset, req.EndOffset)
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, InlayHints: hints})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

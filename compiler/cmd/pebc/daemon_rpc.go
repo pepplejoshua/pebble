@@ -31,6 +31,12 @@ type daemonRequest struct {
 	// Offset is a byte offset into Entry used by the "hover" RPC to ask for
 	// the checked type at a source position.
 	Offset uint32 `json:"offset,omitempty"`
+	// StartOffset and EndOffset bound an inlay-hint query (the "inlayHints"
+	// RPC): only hints whose anchor position falls within [StartOffset,
+	// EndOffset) into Entry are returned. A whole-file query passes 0 and the
+	// file length.
+	StartOffset uint32 `json:"startOffset,omitempty"`
+	EndOffset   uint32 `json:"endOffset,omitempty"`
 }
 
 // daemonResponse is the JSON body of a response sent back to a client.
@@ -58,6 +64,11 @@ type daemonResponse struct {
 	// available at that position (e.g. whitespace or a keyword), not an
 	// error.
 	Hover string `json:"hover,omitempty"`
+	// InlayHints carries machine-readable inlay hints (with file/line/column
+	// anchors and a kind) for a source range, populated by the "inlayHints"
+	// RPC. Line/column values are 1-based, matching source.Position; the LSP
+	// server converts them to 0-based.
+	InlayHints []structuredInlayHint `json:"inlay_hints,omitempty"`
 }
 
 // structuredDiagnostic is the machine-readable form of one compiler diagnostic,
@@ -74,6 +85,26 @@ type structuredDiagnostic struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 }
+
+// structuredInlayHint is the machine-readable form of one inlay hint, following
+// the structuredDiagnostic pattern. Line/Column are 1-based (matching
+// source.Position); the LSP server converts them to 0-based LSP positions. The
+// anchor Position sits right after a binding name (type hints) or immediately
+// before a call argument (parameter hints). Kind is "type" or "parameter".
+type structuredInlayHint struct {
+	File  string `json:"file"`
+	Line  int    `json:"line"`
+	Col   int    `json:"col"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+}
+
+// inlayHint kinds, shared by the daemon's structured form and the LSP layer's
+// protocol.InlayHintKind mapping.
+const (
+	inlayHintType      = "type"
+	inlayHintParameter = "parameter"
+)
 
 // writeDaemonMessage writes a length-prefixed JSON message to w.
 func writeDaemonMessage(w io.Writer, payload any) error {

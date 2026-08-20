@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/backend"
@@ -360,6 +361,183 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		return ""
 	}
 	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
+}
+
+// inlayHintsInRange walks the entry module's syntax tree once and returns
+// every inlay hint whose anchor byte offset falls within [startOffset,
+// endOffset]. Two categories are produced:
+//
+//   - Type hints on a `var`/`let` binding that has NO explicit type annotation:
+//     rendered as ": Type" and anchored right after the binding name (so the
+//     editor shows `let x: i32 = ...`). The hint is suppressed entirely when
+//     the binding's BindingDecl already carries an explicit type, mirroring how
+//     gopls/rust-analyzer avoid redundant hints.
+//   - Parameter-name hints before each argument of a resolved function call:
+//     rendered as "name: " and anchored immediately before the argument (so the
+//     editor shows `add(p: origin, scale: 5)`). The callee's real parameter
+//     NAMES come from the symbol table (a function TypeKey only carries
+//     parameter types), ordered by SymbolID to recover declaration order, and
+//     each positional argument is matched to its parameter by index.
+//
+// The hint's own position must sit inside the requested range, so a partial
+// (e.g. visible-region) query only returns the hints that apply to what the
+// client actually requested.
+func inlayHintsInRange(entryPath string, startOffset, endOffset uint32) []structuredInlayHint {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil {
+		return nil
+	}
+	// The entry module is Graph.Root, regardless of any separate prelude.
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok || entryMod.Tree == nil {
+		return nil
+	}
+	tree := entryMod.Tree
+	file, ok := p.sources.File(entryMod.Source)
+	if !ok {
+		return nil
+	}
+	modID := entryMod.ID
+
+	var hints []structuredInlayHint
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok {
+			continue
+		}
+		switch n.Kind() {
+		case syntax.BindingDecl:
+			if h, ok := bindingTypeHint(p, modID, tree, file, n, startOffset, endOffset); ok {
+				hints = append(hints, h)
+			}
+		case syntax.CallExpr:
+			hints = append(hints, callParamHints(p, modID, tree, file, n, startOffset, endOffset)...)
+		}
+	}
+	return hints
+}
+
+// bindingTypeHint produces a type inlay hint for a `var`/`let` binding whose
+// name node is `nameNodeID`, or reports no hint. It is only emitted when the
+// binding carries no explicit type annotation and a checked type is available.
+func bindingTypeHint(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree, file *source.File, node syntax.Node, startOffset, endOffset uint32) (structuredInlayHint, bool) {
+	// Already-annotated bindings (e.g. `let x: i32 = ...`) get no redundant
+	// type hint. This flag is set exactly as symbol/visit.go's resolveBinding
+	// checks it.
+	if node.Data()&syntax.BindingTypePresent != 0 {
+		return structuredInlayHint{}, false
+	}
+	children := node.Children()
+	if len(children) == 0 {
+		return structuredInlayHint{}, false
+	}
+	nameNode, ok := tree.Node(children[0])
+	if !ok || nameNode.Kind() != syntax.Name {
+		return structuredInlayHint{}, false
+	}
+	// Anchor right after the binding name, before the `=`.
+	anchor := nameNode.Span().End
+	if !inlayHintInRange(anchor, startOffset, endOffset) {
+		return structuredInlayHint{}, false
+	}
+	// Resolve the binding through its NAME node (the symbol's span is the
+	// name node, not the whole BindingDecl), exactly as the hover path does.
+	sym, ok := symbolForNode(p, modID, children[0])
+	if !ok {
+		return structuredInlayHint{}, false
+	}
+	if p.unit == nil {
+		return structuredInlayHint{}, false
+	}
+	typeResult, ok := p.result.SymbolType(sym.ID)
+	if !ok || typeResult.Type == 0 {
+		return structuredInlayHint{}, false
+	}
+	snap := p.unit.Snapshot()
+	key, ok := snap.Key(typeResult.Type)
+	if !ok {
+		return structuredInlayHint{}, false
+	}
+	resolve := types.ResolveFromResult(p.resolution)
+	typ := types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
+	return makeInlayHint(file, anchor, ": "+typ, inlayHintType), true
+}
+
+// callParamHints produces parameter-name inlay hints for a function call. It
+// resolves the callee to its function symbol, recovers the declared parameter
+// names from the symbol table, and emits one "name: " hint before each
+// positional argument. The whole call is skipped when the argument count does
+// not match the parameter count, or when the callee cannot be resolved to a
+// real function symbol. A given argument is also skipped when its own source
+// text already visually equals the parameter name.
+func callParamHints(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree, file *source.File, node syntax.Node, startOffset, endOffset uint32) []structuredInlayHint {
+	children := node.Children()
+	if len(children) < 2 {
+		return nil
+	}
+	callee := children[0]
+	sym, ok := symbolForNode(p, modID, callee)
+	if !ok {
+		return nil
+	}
+	// Recover the callee's declared parameter names, ordered by SymbolID to
+	// match declaration order (verified against a real multi-parameter fn).
+	var params []symbol.Symbol
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Kind == symbol.SymbolParameter && candidate.Containing == sym.ID {
+			params = append(params, candidate)
+		}
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	sort.Slice(params, func(i, j int) bool { return params[i].ID < params[j].ID })
+
+	args := children[1:]
+	// Skip the whole call when arity mismatches: matching by index would be
+	// wrong (defaulted params, varargs, or a partially-written call).
+	if len(args) != len(params) {
+		return nil
+	}
+
+	var hints []structuredInlayHint
+	for i, argID := range args {
+		argNode, ok := tree.Node(argID)
+		if !ok {
+			continue
+		}
+		if argNode.Kind() == syntax.Missing || argNode.Kind() == syntax.Error {
+			continue
+		}
+		anchor := argNode.Span().Start
+		if !inlayHintInRange(anchor, startOffset, endOffset) {
+			continue
+		}
+		// Suppress when the argument already reads like the parameter name.
+		if argText := string(file.Slice(argNode.Span())); argText == params[i].Name {
+			continue
+		}
+		hints = append(hints, makeInlayHint(file, anchor, params[i].Name+": ", inlayHintParameter))
+	}
+	return hints
+}
+
+// makeInlayHint builds a structured inlay hint at a byte offset, resolving the
+// offset to a 1-based line/column through the source file.
+func makeInlayHint(file *source.File, offset uint32, label, kind string) structuredInlayHint {
+	pos := file.Position(offset)
+	return structuredInlayHint{
+		File:  file.Path(),
+		Line:  pos.Line,
+		Col:   pos.Column,
+		Label: label,
+		Kind:  kind,
+	}
+}
+
+// inlayHintInRange reports whether anchor falls within [start, end].
+func inlayHintInRange(anchor, start, end uint32) bool {
+	return anchor >= start && anchor <= end
 }
 
 // symbolForNode resolves the syntax node to a declaration symbol. It first

@@ -506,6 +506,201 @@ func TestLSPHover(t *testing.T) {
 	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
 }
 
+// TestLSPInlayHints exercises the textDocument/inlayHint feature against a real
+// scratch project: initialize, open a type-correct file, send a real
+// textDocument/inlayHint REQUEST over the whole file range, and read the
+// RESPONSE. It asserts three things in one realistic program:
+//
+//   - A binding WITHOUT an explicit type (`let count = 99;`) gets a type hint
+//     ": i32" anchored right after the binding name.
+//   - A binding WITH an explicit type (`var origin Point = ...`) gets NO type
+//     hint (redundant-hint suppression, matching gopls/rust-analyzer).
+//   - A multi-parameter call (`add(origin, 5)`) gets a parameter-name hint
+//     before each argument: "p: " before `origin`, "scale: " before `5`, in
+//     declared-parameter order and at the right positions.
+func TestLSPInlayHints(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Short, shallow root -- NOT t.TempDir() directly (see the documented
+	// 104-byte Unix socket path limit note in TestLSPDiagnosticsOnSave).
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn add(p Point, scale int) Point {\n" +
+		"    return Point.{ x = p.x + scale, y = p.y + scale };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    let count = 99;\n" +
+		"    let moved = add(origin, 5);\n" +
+		"    return moved.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Expected anchor positions (0-based line/character).
+	countLine, countCh := computeLSPPos(t, src, "let count =")
+	countCh += len("let ") // start of "count" name
+	countEndCh := countCh + len("count")
+
+	movedLine, movedCh := computeLSPPos(t, src, "let moved =")
+	movedCh += len("let ") // start of "moved" name
+	movedEndCh := movedCh + len("moved")
+
+	// origin is explicitly annotated, so its name-end must carry NO type hint.
+	originLine, originCh := computeLSPPos(t, src, "var origin Point")
+	originCh += len("var ") // start of "origin" name
+	originEndCh := originCh + len("origin")
+
+	// First argument `origin` of the call `add(origin, 5)`.
+	arg0Line, arg0Ch := computeLSPPos(t, src, "origin, 5)")
+	// Second argument `5` of the call `add(origin, 5)`.
+	arg1Line, arg1Ch := computeLSPPos(t, src, "5);")
+	// arg1Ch already points at the "5".
+
+	// Whole-file request range: start (0,0) to a far-beyond end that the
+	// server clamps to the file end.
+	endLine := strings.Count(src, "\n")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	inlayReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":%q},"range":{"start":{"line":0,"character":0},"end":{"line":%d,"character":100000}}}}`, docURI, endLine)
+	writeLSPFrame(t, stdin, []byte(inlayReq))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+
+	var resp struct {
+		ID     int `json:"id"`
+		Error  json.RawMessage `json:"error"`
+		Result []struct {
+			Position struct {
+				Line      int `json:"line"`
+				Character int `json:"character"`
+			} `json:"position"`
+			Label string `json:"label"`
+			Kind  int    `json:"kind"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing inlayHint response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("inlayHint returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != 2 {
+		t.Fatalf("inlayHint response id = %d, want 2 (body %s)", resp.ID, body)
+	}
+	t.Logf("inlayHint response: %+v", resp.Result)
+
+	// Find helpers over the returned hints.
+	findType := func(line, ch int) (string, bool) {
+		for _, h := range resp.Result {
+			if h.Kind == 1 && h.Position.Line == line && h.Position.Character == ch {
+				return h.Label, true
+			}
+		}
+		return "", false
+	}
+	findParam := func(line, ch int) (string, bool) {
+		for _, h := range resp.Result {
+			if h.Kind == 2 && h.Position.Line == line && h.Position.Character == ch {
+				return h.Label, true
+			}
+		}
+		return "", false
+	}
+
+	// 1. Unannotated binding `count` gets a ": int" type hint at its name end.
+	// (An unannotated integer literal infers the default `int`, which is why
+	// this is "int" rather than "i32" — the point of the test is the hint
+	// appears at all, not which specific integer width is inferred.)
+	label, ok := findType(countLine, countEndCh)
+	if !ok {
+		t.Fatalf("expected type hint at (count name end) (%d,%d); got hints %+v", countLine, countEndCh, resp.Result)
+	}
+	if label != ": int" {
+		t.Fatalf("type hint label = %q, want \": int\"", label)
+	}
+
+	// 2. Unannotated binding `moved` gets a ": Point" type hint at its name end.
+	label, ok = findType(movedLine, movedEndCh)
+	if !ok {
+		t.Fatalf("expected type hint at (moved name end) (%d,%d); got hints %+v", movedLine, movedEndCh, resp.Result)
+	}
+	if label != ": Point" {
+		t.Fatalf("type hint label = %q, want \": Point\"", label)
+	}
+
+	// 3. Annotated binding `origin` gets NO type hint at its name end.
+	if _, ok := findType(originLine, originEndCh); ok {
+		t.Fatalf("annotated binding `origin` should NOT produce a type hint, but one was found at (%d,%d)", originLine, originEndCh)
+	}
+
+	// 4. Parameter hints: "p: " before `origin`, "scale: " before `5`.
+	plabel, ok := findParam(arg0Line, arg0Ch)
+	if !ok {
+		t.Fatalf("expected parameter hint before first arg `origin` at (%d,%d); got hints %+v", arg0Line, arg0Ch, resp.Result)
+	}
+	if plabel != "p: " {
+		t.Fatalf("first parameter hint label = %q, want \"p: \"", plabel)
+	}
+	plabel, ok = findParam(arg1Line, arg1Ch)
+	if !ok {
+		t.Fatalf("expected parameter hint before second arg `5` at (%d,%d); got hints %+v", arg1Line, arg1Ch, resp.Result)
+	}
+	if plabel != "scale: " {
+		t.Fatalf("second parameter hint label = %q, want \"scale: \"", plabel)
+	}
+
+	// Shut the server down cleanly.
+	shutReq := []byte(`{"jsonrpc":"2.0","id":3,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
 // computeLSPPos returns the 0-based (line, character) of the byte offset of
 // sub within src, emulating how the LSP server converts a position back to a
 // byte offset (line-start byte + character) for ASCII content with no tabs.
