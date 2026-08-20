@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 
@@ -56,6 +57,11 @@ type lspServer struct {
 	// mu guards the open document set.
 	mu   sync.Mutex
 	open map[uri.URI]bool
+	// log writes to stderr, which the editor captures into its own
+	// per-server log panel -- the only real observability we have into what
+	// a real client actually sends, since our own test harnesses can only
+	// approximate real editor traffic.
+	log *log.Logger
 }
 
 func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeParams) (*protocol.InitializeResult, error) {
@@ -78,6 +84,7 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 		}
 	}
 	s.root = root
+	s.log.Printf("initialize: root=%q", root)
 	syncKind := protocol.TextDocumentSyncKindFull
 	openClose := true
 	return &protocol.InitializeResult{
@@ -103,6 +110,7 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 // DidOpen records that a document is open. A real editor sends didOpen before
 // didSave; we track it so the workspace state mirrors a real session.
 func (s *lspServer) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) error {
+	s.log.Printf("didOpen: uri=%s", params.TextDocument.URI)
 	s.mu.Lock()
 	if s.open == nil {
 		s.open = make(map[uri.URI]bool)
@@ -117,9 +125,11 @@ func (s *lspServer) DidOpen(ctx context.Context, params *protocol.DidOpenTextDoc
 func (s *lspServer) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) error {
 	docURI := params.TextDocument.URI
 	fsPath := docURI.FsPath()
+	s.log.Printf("didSave: uri=%s path=%q", docURI, fsPath)
 
 	// Ensure a daemon is running for this server's resolved root.
 	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("didSave: ensureDaemonForRoot(%q) failed: %v", s.root, err)
 		// Cannot build; still publish an empty set so stale markers clear.
 		s.publishDiagnostics(ctx, docURI, nil)
 		return nil
@@ -127,6 +137,7 @@ func (s *lspServer) DidSave(ctx context.Context, params *protocol.DidSaveTextDoc
 
 	resp, err := daemonRPCForRoot(s.root, "build", daemonRequest{Entry: fsPath, Output: ""})
 	if err != nil {
+		s.log.Printf("didSave: build RPC failed: %v", err)
 		s.publishDiagnostics(ctx, docURI, nil)
 		return nil
 	}
@@ -135,6 +146,7 @@ func (s *lspServer) DidSave(ctx context.Context, params *protocol.DidSaveTextDoc
 	for _, sd := range resp.StructuredDiagnostics {
 		protos = append(protos, toProtocolDiagnostic(sd))
 	}
+	s.log.Printf("didSave: build ok=%v diagnostics=%d", resp.OK, len(protos))
 	s.publishDiagnostics(ctx, docURI, protos)
 	return nil
 }
@@ -163,23 +175,29 @@ func (s *lspServer) publishDiagnostics(ctx context.Context, docURI uri.URI, diag
 func (s *lspServer) Hover(ctx context.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
 	docURI := params.TextDocument.URI
 	fsPath := docURI.FsPath()
+	s.log.Printf("hover: uri=%s line=%d char=%d", docURI, params.Position.Line, params.Position.Character)
 
 	offset, err := offsetForPosition(fsPath, int(params.Position.Line), int(params.Position.Character))
 	if err != nil {
+		s.log.Printf("hover: offsetForPosition failed: %v", err)
 		// Cannot resolve a position in the file; answer "nothing here".
 		return nil, nil
 	}
 
 	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		s.log.Printf("hover: ensureDaemonForRoot(%q) failed: %v", s.root, err)
 		return nil, nil
 	}
 	resp, err := daemonRPCForRoot(s.root, "hover", daemonRequest{Entry: fsPath, Offset: uint32(offset)})
 	if err != nil || !resp.OK {
+		s.log.Printf("hover: RPC err=%v ok=%v", err, resp.OK)
 		return nil, nil
 	}
 	if resp.Hover == "" {
+		s.log.Printf("hover: empty result at offset %d", offset)
 		return nil, nil
 	}
+	s.log.Printf("hover: result=%q", resp.Hover)
 	return &protocol.Hover{
 		Contents: &protocol.MarkupContent{
 			Kind:  protocol.MarkupKindPlainText,
@@ -292,7 +310,9 @@ func runLSP(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	server := &lspServer{done: make(chan struct{})}
+	logger := log.New(stderr, "pebc lsp: ", log.LstdFlags)
+	server := &lspServer{done: make(chan struct{}), log: logger}
+	logger.Printf("starting, pid=%d", os.Getpid())
 	stream := jsonrpc2.NewStream(stdioReadWriteCloser{in: os.Stdin, out: os.Stdout})
 	// protocol.NewServer already wires up the handler and starts the read
 	// loop via conn.Go internally; calling conn.Go again here spawned a
