@@ -14,6 +14,8 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/source"
 	"github.com/pepplejoshua/pebble/compiler/internal/stdlib"
 	"github.com/pepplejoshua/pebble/compiler/internal/symbol"
+	"github.com/pepplejoshua/pebble/compiler/internal/syntax"
+	"github.com/pepplejoshua/pebble/compiler/internal/tir"
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
@@ -66,12 +68,35 @@ type compileResult struct {
 	structuredDiagnostics []structuredDiagnostic
 }
 
-// compileOnce runs the full pebc pipeline (module discovery, name resolution,
-// type checking, C emission, and linking) for one entry file, constructing
-// fresh state for the compilation exactly as the historical one-shot CLI did.
-// It returns the process exit code and, on success, the path of the built
-// executable. Every caller builds fresh state; nothing here is incremental.
-func compileOnce(req compileRequest) *compileResult {
+// compiledProgram is the shared output of the pipeline's front half: module
+// discovery, name resolution, and type checking. Both the build (compileOnce)
+// and the read-only hover query (hoverTypeAtOffset) consume it; the build
+// continues into C emission and linking, while hover only needs the typed IR
+// and source graph to resolve a position to a type.
+type compiledProgram struct {
+	graph       *module.Graph
+	sources     *source.FileSet
+	resolution  *symbol.Result
+	store       *types.Store
+	unit        *tir.Unit
+	diagnostics *diagnostic.DiagnosticSet
+	entryID     symbol.SymbolID
+	// graphFiles is the set of source file paths that this compilation
+	// actually loaded (the resolved module graph). Populated only when
+	// req.trackFiles is set.
+	graphFiles []string
+}
+
+// buildProgram runs module graph build, name resolution, and type checking for
+// one entry file, sharing the exact front half of the compilation between the
+// build path and the read-only hover query. It does NOT emit C or link. The
+// returned bool reports a fatal/infrastructure failure (entry unresolvable,
+// type store init failure, or no main function): in that case the program is
+// nil and the caller should treat the compilation as failed. A program with
+// ordinary type errors still returns (non-nil, false); its unit field is nil in
+// that case (typed IR is only published on a fully successful check), which the
+// hover query reads as "no type here".
+func buildProgram(req compileRequest) (*compiledProgram, bool) {
 	if req.stderr == nil {
 		req.stderr = io.Discard
 	}
@@ -81,7 +106,7 @@ func compileOnce(req compileRequest) *compileResult {
 	entryPath, err := provider.Canonicalize(req.entryPath)
 	if err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot resolve entry %q: %v\n", req.entryPath, err)
-		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
+		return nil, true
 	}
 	graph := module.Build(module.BuildConfig{EntryPath: string(entryPath), Package: "main", PreludePath: req.prelude, StandardRoot: stdlib.StandardRoot}, provider, sources, diagnostics)
 	var graphFiles []string
@@ -105,7 +130,7 @@ func compileOnce(req compileRequest) *compileResult {
 	store, err := types.New(types.Config{})
 	if err != nil {
 		fmt.Fprintf(req.stderr, "pebc: cannot initialize type store: %v\n", err)
-		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
+		return nil, true
 	}
 
 	var entryID symbol.SymbolID
@@ -120,7 +145,7 @@ func compileOnce(req compileRequest) *compileResult {
 			_ = diagnostic.RenderText(req.stderr, sources, diagnostics.Items())
 		}
 		fmt.Fprintln(req.stderr, "pebc: no main function found")
-		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
+		return nil, true
 	}
 
 	inputs := check.Inputs{
@@ -130,25 +155,40 @@ func compileOnce(req compileRequest) *compileResult {
 	result := check.Check(inputs, diagnostics, check.Config{
 		Entry: check.EntryPoint{Mode: check.EntryRequired, Symbol: entryID},
 	})
-	if !result.Successful() || diagnostics.Len() > 0 {
-		var rendered stringsBuilder
-		_ = diagnostic.RenderText(&rendered, sources, diagnostics.Items())
-		_, _ = io.WriteString(req.stderr, rendered.String())
-		return &compileResult{code: 1, diagnostics: rendered.String(), structuredDiagnostics: buildStructuredDiagnostics(diagnostics.Items(), sources)}
-	}
-	if req.mode == modeCheck {
-		return &compileResult{code: 0, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
-	}
-	unit := result.IR()
-	if unit == nil {
-		fmt.Fprintln(req.stderr, "pebc: internal error: checker returned no typed IR")
+	return &compiledProgram{
+		graph:       graph,
+		sources:     sources,
+		resolution:  resolution,
+		store:       store,
+		unit:        result.IR(),
+		diagnostics: diagnostics,
+		entryID:     entryID,
+		graphFiles:  graphFiles,
+	}, false
+}
+
+// compileOnce runs the full pebc pipeline (module discovery, name resolution,
+// type checking, C emission, and linking) for one entry file, constructing
+// fresh state for the compilation exactly as the historical one-shot CLI did.
+// It returns the process exit code and, on success, the path of the built
+// executable. Every caller builds fresh state; nothing here is incremental.
+func compileOnce(req compileRequest) *compileResult {
+	p, fatal := buildProgram(req)
+	if fatal || p == nil {
 		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
-
+	if p.unit == nil {
+		var rendered stringsBuilder
+		_ = diagnostic.RenderText(&rendered, p.sources, p.diagnostics.Items())
+		_, _ = io.WriteString(req.stderr, rendered.String())
+		return &compileResult{code: 1, diagnostics: rendered.String(), structuredDiagnostics: buildStructuredDiagnostics(p.diagnostics.Items(), p.sources)}
+	}
+	if req.mode == modeCheck {
+		return &compileResult{code: 0, files: p.graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
+	}
+	unit := p.unit
 	emitPath := req.emitCPath
-	if req.mode == modeEmitC {
-		// emitCPath is authoritative for modeEmitC.
-	} else {
+	if req.mode != modeEmitC {
 		dir, err := os.MkdirTemp("", "pebc-emit-")
 		if err != nil {
 			fmt.Fprintf(req.stderr, "pebc: cannot create temp dir: %v\n", err)
@@ -162,7 +202,7 @@ func compileOnce(req compileRequest) *compileResult {
 		fmt.Fprintf(req.stderr, "pebc: cannot create output %q: %v\n", emitPath, err)
 		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
-	if err := backend.Emit(unit, unit.Snapshot(), entryID, sources, resolution, file); err != nil {
+	if err := backend.Emit(unit, unit.Snapshot(), p.entryID, p.sources, p.resolution, file); err != nil {
 		file.Close()
 		fmt.Fprintf(req.stderr, "pebc: emission failed: %v\n", err)
 		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
@@ -172,17 +212,17 @@ func compileOnce(req compileRequest) *compileResult {
 		return &compileResult{code: 1, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 	if req.mode == modeEmitC {
-		return &compileResult{code: 0, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
+		return &compileResult{code: 0, files: p.graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 	}
 
 	binaryPath := req.outputPath
 	if binaryPath == "" {
-		binaryPath = defaultBinaryPath(string(entryPath))
+		binaryPath = defaultBinaryPath(req.entryPath)
 	}
 	if code := buildExecutable(req.runtimeRoot, req.release, emitPath, binaryPath, req.linkLibs, req.linkPaths, req.includePaths, req.stderr); code != 0 {
-		return &compileResult{code: code, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
+		return &compileResult{code: code, files: p.graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 	}
-	return &compileResult{code: 0, binaryPath: binaryPath, files: graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
+	return &compileResult{code: 0, binaryPath: binaryPath, files: p.graphFiles, structuredDiagnostics: []structuredDiagnostic{}}
 }
 
 // stringsBuilder is a minimal thread-free string accumulator used to capture
@@ -225,4 +265,75 @@ func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.F
 		})
 	}
 	return out
+}
+
+// hoverTypeAtOffset performs a fresh full check of the entry module (the same
+// daemon build path a build uses -- there is no warm checked state to query
+// yet) and returns the rendered checked type at the given byte offset within
+// the entry file. It returns "" when no type information is available at that
+// position (e.g. hovering whitespace or a keyword), not an error. The offset is
+// a byte count into the entry file's source as the daemon reads it from disk.
+func hoverTypeAtOffset(entryPath string, offset uint32) string {
+	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
+	if fatal || p == nil || p.unit == nil {
+		return ""
+	}
+	// The entry module is Graph.Root (EntryPath becomes Root during graph
+	// build), regardless of any separate prelude module.
+	entryMod, ok := p.graph.Module(p.graph.Root)
+	if !ok || entryMod.Tree == nil {
+		return ""
+	}
+	tree := entryMod.Tree
+
+	// Linear scan for the smallest (most specific) node whose span contains
+	// the offset. A larger enclosing node (e.g. the whole call expression, or
+	// the File root) is never preferred over the name/literal inside it.
+	var best syntax.NodeID
+	var bestWidth uint32
+	found := false
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok {
+			continue
+		}
+		kind := n.Kind()
+		// The File root, recovery, and EOF nodes span huge or meaningless
+		// ranges and are never useful hover targets.
+		if kind == syntax.File || kind == syntax.Error || kind == syntax.Missing || kind == syntax.EndOfFile {
+			continue
+		}
+		span := n.Span()
+		if offset < span.Start || offset > span.End {
+			continue
+		}
+		width := span.End - span.Start
+		if !found || width < bestWidth {
+			best = id
+			bestWidth = width
+			found = true
+		}
+	}
+	if !found {
+		return ""
+	}
+
+	// Map the surface node to its typed-IR node via the unit's source map.
+	tirID, ok := p.unit.SourceMap(symbol.SyntaxRef{Module: entryMod.ID, Node: best})
+	if !ok {
+		return ""
+	}
+	node, ok := p.unit.Node(tirID)
+	if !ok || node.Type == 0 {
+		return ""
+	}
+	snap := p.unit.Snapshot()
+	if snap == nil {
+		return ""
+	}
+	key, ok := snap.Key(node.Type)
+	if !ok {
+		return ""
+	}
+	return types.DescribeKey(key)
 }

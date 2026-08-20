@@ -362,6 +362,278 @@ func TestLSPDiagnosticsOnSave(t *testing.T) {
 	}
 }
 
+// TestLSPHover exercises the 21.4c hover flow against a real scratch project:
+// initialize with a real rootUri, open a file with a variable of a known type,
+// send a real textDocument/hover REQUEST at the position of the literal, and
+// read the RESPONSE (a request/response, not an async notification, so we read
+// it directly) confirming it reports the exact type "i32". It also hovers over
+// whitespace (no type info) and confirms a clean nil result, not an error or
+// crash.
+func TestLSPHover(t *testing.T) {
+	bin := buildPEBC(t)
+
+	// Short, shallow root -- NOT t.TempDir() directly (see the documented
+	// 104-byte Unix socket path limit note in TestLSPDiagnosticsOnSave).
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	// A complete, type-checking program: hover needs a successful full check
+	// (the daemon has no warm state, so it re-checks the whole file). main must
+	// return int (the entry-point requirement), and the literal 42 is i32.
+	src := "fn main() int {\n  var x i32 = 42;\n  return 0;\n}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Compute the 0-based LSP line/character of the literal "42" by its byte
+	// offset in the source.
+	litIdx := strings.Index(src, "42")
+	if litIdx < 0 {
+		t.Fatal("test fixture missing literal 42")
+	}
+	before := src[:litIdx]
+	litLine := strings.Count(before, "\n")
+	lastNL := strings.LastIndex(before, "\n")
+	litChar := litIdx - lastNL - 1
+
+	// Whitespace: the space between "var" and "x" on line 1 (0-based). Hovering
+	// there must yield a clean nil result, not an error or crash.
+	wsIdx := strings.Index(src, "var ")
+	if wsIdx < 0 {
+		t.Fatal("test fixture missing 'var '")
+	}
+	wsOffset := wsIdx + 3 // the space immediately after "var"
+	wsBefore := src[:wsOffset]
+	wsLine := strings.Count(wsBefore, "\n")
+	wsLastNL := strings.LastIndex(wsBefore, "\n")
+	wsChar := wsOffset - wsLastNL - 1
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	// open the document so the server tracks it as open.
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// A real hover REQUEST at the literal "42".
+	hoverReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, docURI, litLine, litChar)
+	writeLSPFrame(t, stdin, []byte(hoverReq))
+	hoverBody := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+
+	var hoverResp struct {
+		ID     int `json:"id"`
+		Result struct {
+			Contents struct {
+				Kind  string `json:"kind"`
+				Value string `json:"value"`
+			} `json:"contents"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(hoverBody, &hoverResp); err != nil {
+		t.Fatalf("parsing hover response %s: %v", hoverBody, err)
+	}
+	if hoverResp.Error != nil {
+		t.Fatalf("hover returned error: %s (body %s)", hoverResp.Error, hoverBody)
+	}
+	if hoverResp.ID != 2 {
+		t.Fatalf("hover response id = %d, want 2 (body %s)", hoverResp.ID, hoverBody)
+	}
+	if hoverResp.Result.Contents.Value != "i32" {
+		t.Fatalf("hover reported type %q, want \"i32\" (body %s)", hoverResp.Result.Contents.Value, hoverBody)
+	}
+	t.Logf("hover at literal 42 reported: %q", hoverResp.Result.Contents.Value)
+
+	// Hover over whitespace: must be a clean nil result, not an error/crash.
+	wsReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, docURI, wsLine, wsChar)
+	writeLSPFrame(t, stdin, []byte(wsReq))
+	wsBody := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var wsResp struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(wsBody, &wsResp); err != nil {
+		t.Fatalf("parsing whitespace hover response %s: %v", wsBody, err)
+	}
+	if wsResp.Error != nil {
+		t.Fatalf("whitespace hover returned error: %s (body %s)", wsResp.Error, wsBody)
+	}
+	if wsResp.ID != 3 {
+		t.Fatalf("whitespace hover response id = %d, want 3 (body %s)", wsResp.ID, wsBody)
+	}
+	if string(wsResp.Result) != "null" {
+		t.Fatalf("whitespace hover result = %s, want null (body %s)", wsResp.Result, wsBody)
+	}
+	t.Logf("hover over whitespace correctly returned null result")
+
+	// Shut the server down cleanly.
+	shutReq := []byte(`{"jsonrpc":"2.0","id":4,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// computeLSPPos returns the 0-based (line, character) of the byte offset of
+// sub within src, emulating how the LSP server converts a position back to a
+// byte offset (line-start byte + character) for ASCII content with no tabs.
+func computeLSPPos(t *testing.T, src, sub string) (int, int) {
+	t.Helper()
+	off := strings.Index(src, sub)
+	if off < 0 {
+		t.Fatalf("fixture missing %q", sub)
+	}
+	before := src[:off]
+	line := strings.Count(before, "\n")
+	lastNL := strings.LastIndex(before, "\n")
+	ch := off - lastNL - 1
+	return line, ch
+}
+
+// hoverAndExpect sends a real textDocument/hover REQUEST at the given
+// 0-based line/character and asserts the response reports exactly wantType.
+func hoverAndExpect(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, docURI string, id, line, ch int, wantType string) {
+	t.Helper()
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/hover","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, id, docURI, line, ch)
+	writeLSPFrame(t, stdin, []byte(req))
+	body := readLSPFrameWithTimeout(t, reader, 20*time.Second)
+	var resp struct {
+		ID     int `json:"id"`
+		Result struct {
+			Contents struct {
+				Kind  string `json:"kind"`
+				Value string `json:"value"`
+			} `json:"contents"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parsing hover response %s: %v", body, err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("hover returned error: %s (body %s)", resp.Error, body)
+	}
+	if resp.ID != id {
+		t.Fatalf("hover response id = %d, want %d (body %s)", resp.ID, id, body)
+	}
+	if resp.Result.Contents.Value != wantType {
+		t.Fatalf("hover reported type %q, want %q (body %s)", resp.Result.Contents.Value, wantType, body)
+	}
+	t.Logf("hover at (%d,%d) reported: %q", line, ch, resp.Result.Contents.Value)
+}
+
+// TestLSPHoverVariableReference exercises the far more common real-world hover
+// case: hovering over a variable NAME REFERENCE (a genuine read of the
+// variable, not its declaration or a literal) and confirming the resolved
+// checked type comes back. Uses a type-correct program of the same shape as
+// the 21.4c report's reproduction: a variable declared once and referenced
+// twice inside a binary expression, plus a reference to a second variable.
+// All three references resolve through a real LSP client round-trip.
+func TestLSPHoverVariableReference(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	// Type-correct variant: entry returns int, so the i32-typed `doubled`
+	// needs an explicit `as int` cast on return. `count` and `doubled` are
+	// both declared as i32, so their references must report "i32".
+	src := "fn main() int {\n  var count i32 = 99;\n  var doubled i32 = count + count;\n  return doubled as int;\n}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// Positions of the three references we exercise.
+	firstCountLine, firstCountCh := computeLSPPos(t, src, "count + count")
+	firstCountCh += len("count") // middle of the first "count" operand
+	secondCountLine, secondCountCh := computeLSPPos(t, src, "+ count;")
+	secondCountCh += len("+ ") // start of the second "count" operand
+	doubledRefLine, doubledRefCh := computeLSPPos(t, src, "return doubled")
+	doubledRefCh += len("return ") // middle of "doubled" in the return
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// First reference to `count` (left operand of the binary expression).
+	hoverAndExpect(t, stdin, reader, docURI, 2, firstCountLine, firstCountCh, "i32")
+	// Second (distinct syntax node) reference to the same variable.
+	hoverAndExpect(t, stdin, reader, docURI, 3, secondCountLine, secondCountCh, "i32")
+	// Reference to a different variable, `doubled`, in the return.
+	hoverAndExpect(t, stdin, reader, docURI, 4, doubledRefLine, doubledRefCh, "i32")
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":5,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
 // TestLSPGarbageInputDoesNotCrash confirms that sending garbage bytes to a
 // fresh `pebc lsp` process's stdin does not crash it or hang forever: the
 // LSP header framing should simply fail to parse a Content-Length, and the

@@ -28,6 +28,9 @@ type daemonRequest struct {
 	// Output is the requested executable path for a "build". Empty selects
 	// the default binary path derived from Entry.
 	Output string `json:"output,omitempty"`
+	// Offset is a byte offset into Entry used by the "hover" RPC to ask for
+	// the checked type at a source position.
+	Offset uint32 `json:"offset,omitempty"`
 }
 
 // daemonResponse is the JSON body of a response sent back to a client.
@@ -50,6 +53,11 @@ type daemonResponse struct {
 	// rendered Diagnostics string. Line/column values are 1-based, matching
 	// source.Position; LSP clients convert to 0-based.
 	StructuredDiagnostics []structuredDiagnostic `json:"structured_diagnostics,omitempty"`
+	// Hover carries the rendered checked type at a requested source offset,
+	// populated by the "hover" RPC. Empty means no type information is
+	// available at that position (e.g. whitespace or a keyword), not an
+	// error.
+	Hover string `json:"hover,omitempty"`
 }
 
 // structuredDiagnostic is the machine-readable form of one compiler diagnostic,

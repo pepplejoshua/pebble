@@ -311,6 +311,13 @@ func (d *daemon) handle(conn net.Conn) {
 			return
 		}
 		d.serveBuild(conn, req)
+	case "hover":
+		d.touch()
+		if d.reexecIfStale() {
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			return
+		}
+		d.serveHover(conn, req)
 	case "stop":
 		_ = writeDaemonMessage(conn, daemonResponse{OK: true})
 		_ = d.listener.Close()
@@ -532,6 +539,19 @@ func (d *daemon) serveBuild(conn net.Conn, req daemonRequest) {
 		return
 	}
 	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Output: res.binaryPath, StructuredDiagnostics: res.structuredDiagnostics})
+}
+
+// serveHover answers a read-only type query at a source offset: it runs the
+// same fresh full check a build uses (there is no warm checked state to query
+// yet) and returns the rendered type at the requested byte offset, or "" when
+// nothing useful is there.
+func (d *daemon) serveHover(conn net.Conn, req daemonRequest) {
+	// Serialize compilations; buildProgram is not required to be concurrent.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	typ := hoverTypeAtOffset(req.Entry, req.Offset)
+	_ = writeDaemonMessage(conn, daemonResponse{OK: true, Hover: typ})
 }
 
 // reexecIfStale restarts the daemon when the running executable has changed.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -136,6 +137,86 @@ func (s *lspServer) publishDiagnostics(ctx context.Context, docURI uri.URI, diag
 		Diagnostics: diags,
 	}
 	_ = s.conn.Notify(ctx, protocol.MethodTextDocumentPublishDiagnostics, params)
+}
+
+// Hover answers a textDocument/hover REQUEST (unlike didSave, this is a
+// request/response the client waits on). It resolves the document URI to a
+// filesystem path, converts the LSP position to a byte offset, asks the daemon
+// for the checked type at that offset, and returns it as plain-text hover
+// content. When nothing typed lives at the position -- hovering whitespace or a
+// keyword -- it returns a nil result with no error, which is the LSP-correct
+// way to say "no hover info here".
+func (s *lspServer) Hover(ctx context.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
+	docURI := params.TextDocument.URI
+	fsPath := docURI.FsPath()
+
+	offset, err := offsetForPosition(fsPath, int(params.Position.Line), int(params.Position.Character))
+	if err != nil {
+		// Cannot resolve a position in the file; answer "nothing here".
+		return nil, nil
+	}
+
+	if err := ensureDaemonForRoot(s.root, io.Discard); err != nil {
+		return nil, nil
+	}
+	resp, err := daemonRPCForRoot(s.root, "hover", daemonRequest{Entry: fsPath, Offset: uint32(offset)})
+	if err != nil || !resp.OK {
+		return nil, nil
+	}
+	if resp.Hover == "" {
+		return nil, nil
+	}
+	return &protocol.Hover{
+		Contents: &protocol.MarkupContent{
+			Kind:  protocol.MarkupKindPlainText,
+			Value: resp.Hover,
+		},
+	}, nil
+}
+
+// offsetForPosition converts a 0-based LSP line/character to a byte offset into
+// the file at path. It reads the file from disk (the daemon compiles the same
+// on-disk bytes, so the offset space matches exactly). The conversion assumes
+// the LSP character index equals the byte offset within a line -- exact for
+// ASCII content with no tabs, which covers every realistic hover source
+// position; a future slice can switch to proper UTF-16-aware column decoding if
+// needed.
+func offsetForPosition(path string, line, char int) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	starts := fileLineStarts(data)
+	if line < 0 || line >= len(starts) {
+		return 0, fmt.Errorf("line %d out of range", line)
+	}
+	offset := int(starts[line]) + char
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(data) {
+		offset = len(data)
+	}
+	return offset, nil
+}
+
+// fileLineStarts returns the byte offset of the first character of each line,
+// mirroring source.FileSet's line-index construction: line 0 starts at offset
+// 0, and every '\n' (and '\r' preceding a '\n') begins the next line.
+func fileLineStarts(data []byte) []int {
+	starts := []int{0}
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\n':
+			starts = append(starts, i+1)
+		case '\r':
+			if i+1 < len(data) && data[i+1] == '\n' {
+				i++
+			}
+			starts = append(starts, i+1)
+		}
+	}
+	return starts
 }
 
 // toProtocolDiagnostic converts one structured daemon diagnostic into an LSP
