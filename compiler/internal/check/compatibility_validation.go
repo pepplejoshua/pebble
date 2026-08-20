@@ -47,7 +47,7 @@ func describeTypeForDiagnostic(snapshot *infer.SemanticSnapshot, id types.TypeID
 	if !ok {
 		return "<unknown>"
 	}
-	return types.DescribeKey(key)
+	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snapshot.Types()), types.ResolveFromResult(snapshot.Resolution()))
 }
 
 // sameConcreteIntegerWidth reports whether sourceID and destinationID are both

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pepplejoshua/pebble/compiler/internal/backend"
 	"github.com/pepplejoshua/pebble/compiler/internal/check"
@@ -79,6 +80,7 @@ type compiledProgram struct {
 	resolution  *symbol.Result
 	store       *types.Store
 	unit        *tir.Unit
+	result      *check.Result
 	diagnostics *diagnostic.DiagnosticSet
 	entryID     symbol.SymbolID
 	// graphFiles is the set of source file paths that this compilation
@@ -161,6 +163,7 @@ func buildProgram(req compileRequest) (*compiledProgram, bool) {
 		resolution:  resolution,
 		store:       store,
 		unit:        result.IR(),
+		result:      result,
 		diagnostics: diagnostics,
 		entryID:     entryID,
 		graphFiles:  graphFiles,
@@ -273,6 +276,13 @@ func buildStructuredDiagnostics(diags []diagnostic.Diagnostic, sources *source.F
 // the entry file. It returns "" when no type information is available at that
 // position (e.g. hovering whitespace or a keyword), not an error. The offset is
 // a byte count into the entry file's source as the daemon reads it from disk.
+//
+// The rendered text is richer than a bare type name: when the hovered position
+// sits on a symbol's name or reference (a binding, parameter, field, variant,
+// function, or type declaration), the text reports what KIND of thing it is
+// plus its type, in gopls style ("var x: i32", "param p: str", "fn f(...) R",
+// "field f: i32", "type Color"). Otherwise it falls back to the plain type
+// description of the expression or literal at the position.
 func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	p, fatal := buildProgram(compileRequest{entryPath: entryPath, stderr: io.Discard})
 	if fatal || p == nil || p.unit == nil {
@@ -318,7 +328,22 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		return ""
 	}
 
-	// Map the surface node to its typed-IR node via the unit's source map.
+	snap := p.unit.Snapshot()
+	resolve := types.ResolveFromResult(p.resolution)
+
+	// A symbol-typed hover: resolve the position to a declaration or reference
+	// symbol when possible (a parameter name, a var binding name, a field, a
+	// variant, a function, or a type declaration), and render kind + type. This
+	// covers both later references (via the resolution reference table) and a
+	// declaration's OWN name (via the symbol's span matching the node).
+	if sym, ok := symbolForNode(p, entryMod.ID, best); ok {
+		if text, ok := renderSymbolHover(p, sym, resolve); ok {
+			return text
+		}
+	}
+
+	// Fall back to the typed-IR source map: map the surface node to its typed
+	// IR node and describe the expression/literal's type.
 	tirID, ok := p.unit.SourceMap(symbol.SyntaxRef{Module: entryMod.ID, Node: best})
 	if !ok {
 		return ""
@@ -327,7 +352,6 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	if !ok || node.Type == 0 {
 		return ""
 	}
-	snap := p.unit.Snapshot()
 	if snap == nil {
 		return ""
 	}
@@ -335,5 +359,164 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 	if !ok {
 		return ""
 	}
-	return types.DescribeKey(key)
+	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
+}
+
+// symbolForNode resolves the syntax node to a declaration symbol. It first
+// checks the resolution reference table (a later USE of a name), then falls
+// back to scanning the symbol store for a declaration whose name span matches
+// the node exactly (a declaration's own name identifier).
+func symbolForNode(p *compiledProgram, modID module.ModuleID, nodeID syntax.NodeID) (symbol.Symbol, bool) {
+	ref := symbol.SyntaxRef{Module: modID, Node: nodeID}
+	if res, ok := p.resolution.Reference(ref); ok && res.Symbol != 0 && res.State == symbol.ResolutionResolved {
+		if sym, ok := p.resolution.Symbols.Symbol(res.Symbol); ok {
+			return sym, true
+		}
+	}
+	node, ok := p.sourcesNode(modID, nodeID)
+	if !ok {
+		return symbol.Symbol{}, false
+	}
+	nspan := node.Span()
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Module != modID {
+			continue
+		}
+		if candidate.Span.Source == nspan.Source && candidate.Span.Start == nspan.Start && candidate.Span.End == nspan.End {
+			return candidate, true
+		}
+	}
+	return symbol.Symbol{}, false
+}
+
+// renderSymbolHover produces the kind-and-type hover text for a symbol. The
+// second return value reports whether a meaningful hover was produced.
+func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbol.SymbolID) string) (string, bool) {
+	name := sym.Name
+	snap := p.unit.Snapshot()
+
+	// Type declarations (struct/union/enum/extern/type parameter) render as
+	// "type Name" without needing a value type.
+	if sym.Kind == symbol.SymbolType || sym.Kind == symbol.SymbolExternType || sym.Kind == symbol.SymbolRuntimeType || sym.Kind == symbol.SymbolBuiltinType {
+		if name == "" {
+			return "", false
+		}
+		return "type " + name, true
+	}
+	if sym.Kind == symbol.SymbolTypeParameter {
+		if name == "" {
+			return "", false
+		}
+		return "type parameter " + name, true
+	}
+
+	// Resolve the symbol's own type from the solved semantic state.
+	typeResult, ok := p.result.SymbolType(sym.ID)
+	if !ok || typeResult.Type == 0 {
+		return "", false
+	}
+	if snap == nil {
+		return "", false
+	}
+	key, keyOK := snap.Key(typeResult.Type)
+	if !keyOK {
+		return "", false
+	}
+	lookup := types.LookupFromSnapshot(snap)
+	typ := types.DescribeKeyResolved(key, lookup, resolve)
+
+	switch sym.Kind {
+	case symbol.SymbolBinding:
+		if name == "" {
+			return "", false
+		}
+		return bindingKeyword(p, sym) + " " + name + ": " + typ, true
+	case symbol.SymbolExternBinding, symbol.SymbolLoopBinding:
+		if name == "" {
+			return "", false
+		}
+		return "var " + name + ": " + typ, true
+	case symbol.SymbolParameter:
+		if name == "" {
+			return "", false
+		}
+		return "param " + name + ": " + typ, true
+	case symbol.SymbolField:
+		if name == "" {
+			return "", false
+		}
+		return "field " + name + ": " + typ, true
+	case symbol.SymbolVariant:
+		owner := ""
+		if resolve != nil && sym.Containing != 0 {
+			owner = resolve(sym.Containing)
+		}
+		if owner == "" {
+			owner = "<type>"
+		}
+		if name == "" {
+			return "", false
+		}
+		return owner + "." + name, true
+	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
+		return renderFunctionHover(name, key, snap, resolve), true
+	default:
+		// Unknown symbol kinds degrade to the bare type description.
+		return typ, true
+	}
+}
+
+// renderFunctionHover renders a function symbol's full signature in the form
+// "fn name(p1 T1, p2 T2) R" from its function type key.
+func renderFunctionHover(name string, key types.TypeKey, snap *types.Snapshot, resolve func(symbol.SymbolID) string) string {
+	_, parameters, result, _, _ := key.Function()
+	lookup := types.LookupFromSnapshot(snap)
+	params := make([]string, len(parameters))
+	for i, parameter := range parameters {
+		params[i] = describeTypeID(lookup, parameter, resolve)
+	}
+	prefix := "fn "
+	if name != "" {
+		prefix += name
+	}
+	return prefix + "(" + strings.Join(params, ", ") + ") " + describeTypeID(lookup, result, resolve)
+}
+
+// describeTypeID describes a store type ID through the snapshot, resolving
+// nominal and type-parameter names via resolve.
+func describeTypeID(lookup func(types.TypeID) (types.TypeKey, bool), id types.TypeID, resolve func(symbol.SymbolID) string) string {
+	if lookup == nil {
+		return "<type>"
+	}
+	key, ok := lookup(id)
+	if !ok {
+		return "<type>"
+	}
+	return types.DescribeKeyResolved(key, lookup, resolve)
+}
+
+// sourcesNode looks up a syntax node in the entry module's tree.
+func (p *compiledProgram) sourcesNode(modID module.ModuleID, nodeID syntax.NodeID) (syntax.Node, bool) {
+	m, ok := p.graph.Module(modID)
+	if !ok || m.Tree == nil {
+		return syntax.Node{}, false
+	}
+	return m.Tree.Node(nodeID)
+}
+
+// bindingKeyword reports the source keyword ("let" or "var") a SymbolBinding
+// was actually declared with. `let` and `var` bindings share the single
+// SymbolBinding kind -- the resolved symbol table has no mutability field --
+// so the distinction only survives in the syntax tree: sym.Declaration points
+// at the BindingDecl node, whose Token() is KwLet or KwVar. Defaults to "var"
+// if the declaration node can't be found, matching prior behavior.
+func bindingKeyword(p *compiledProgram, sym symbol.Symbol) string {
+	node, ok := p.sourcesNode(sym.Declaration.Module, sym.Declaration.Node)
+	if !ok {
+		return "var"
+	}
+	if node.Token() == syntax.KwLet {
+		return "let"
+	}
+	return "var"
 }

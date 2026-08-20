@@ -622,13 +622,136 @@ func TestLSPHoverVariableReference(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// First reference to `count` (left operand of the binary expression).
-	hoverAndExpect(t, stdin, reader, docURI, 2, firstCountLine, firstCountCh, "i32")
+	hoverAndExpect(t, stdin, reader, docURI, 2, firstCountLine, firstCountCh, "var count: i32")
 	// Second (distinct syntax node) reference to the same variable.
-	hoverAndExpect(t, stdin, reader, docURI, 3, secondCountLine, secondCountCh, "i32")
+	hoverAndExpect(t, stdin, reader, docURI, 3, secondCountLine, secondCountCh, "var count: i32")
 	// Reference to a different variable, `doubled`, in the return.
-	hoverAndExpect(t, stdin, reader, docURI, 4, doubledRefLine, doubledRefCh, "i32")
+	hoverAndExpect(t, stdin, reader, docURI, 4, doubledRefLine, doubledRefCh, "var doubled: i32")
 
 	shutReq := []byte(`{"jsonrpc":"2.0","id":5,"method":"shutdown"}`)
+	writeLSPFrame(t, stdin, shutReq)
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))
+}
+
+// TestLSPHoverDeclarationAndRicherContent exercises the richer hover content
+// and the declaration-site coverage gaps reported by the project owner:
+// hovering a variable's OWN declaration name (not a later reference), a
+// function parameter, a function's own declared name, a struct field, a
+// nominal (struct) type's declaration name, and a pointer-typed value. Each
+// asserts the richer kind-and-type rendering ("var x: T", "param p: T",
+// "fn f(...) R", "field f: T", "type T"), confirming real type names rather
+// than the coarse placeholders.
+func TestLSPHoverDeclarationAndRicherContent(t *testing.T) {
+	bin := buildPEBC(t)
+
+	root, err := os.MkdirTemp("", "pebclsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	mainPath := filepath.Join(root, "main.peb")
+	src := "type Point = struct {\n" +
+		"    x int;\n" +
+		"    y int;\n" +
+		"};\n" +
+		"\n" +
+		"fn add(p Point, scale int) Point {\n" +
+		"    return Point.{ x = p.x + scale, y = p.y + scale };\n" +
+		"}\n" +
+		"\n" +
+		"fn main() int {\n" +
+		"    var origin Point = Point.{ x = 0, y = 0 };\n" +
+		"    var ptr *Point = &origin;\n" +
+		"    let moved = add(origin, 5);\n" +
+		"    return moved.x as int;\n" +
+		"}\n"
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docURI := "file://" + mainPath
+	rootURI := "file://" + root
+
+	// The struct field `x`'s declared name in the type declaration.
+	fieldLine, fieldCh := computeLSPPos(t, src, "    x int;")
+	fieldCh += len("    x")
+	// The type declaration name `Point`.
+	typeLine, typeCh := computeLSPPos(t, src, "type Point =")
+	typeCh += len("type ")
+	// The parameter name `p` in `fn add(p Point, ...)`.
+	paramLine, paramCh := computeLSPPos(t, src, "fn add(p Point")
+	paramCh += len("fn add(")
+	// The function's own declared name `add`.
+	fnLine, fnCh := computeLSPPos(t, src, "fn add(")
+	fnCh += len("fn ")
+	// The declaration name `origin` in `var origin Point`.
+	varLine, varCh := computeLSPPos(t, src, "var origin Point")
+	varCh += len("var ")
+	// The pointer-typed declaration name `ptr` in `var ptr *Point`.
+	ptrLine, ptrCh := computeLSPPos(t, src, "var ptr *Point")
+	ptrCh += len("var ")
+	// The nominal type name `Point` in a type position (`var origin Point`).
+	nomTypeLine, nomTypeCh := computeLSPPos(t, src, "var origin Point")
+	nomTypeCh += len("var origin ")
+	// A later reference to `moved` (value use, not declaration).
+	movedLine, movedCh := computeLSPPos(t, src, "return moved.x")
+	movedCh += len("return ")
+	// The nominal type name `Point` in the return type of `fn add`.
+	retTypeLine, retTypeCh := computeLSPPos(t, src, ") Point {")
+	retTypeCh += len(") ")
+
+	cmd := exec.Command(bin, "lsp")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting pebc lsp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		stopCmd := exec.Command(bin, "daemon", "stop")
+		stopCmd.Dir = root
+		_ = stopCmd.Run()
+		t.Logf("lsp stderr: %s", stderr.String())
+	}()
+
+	reader := bufio.NewReader(stdout)
+
+	initReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":%q,"workspaceFolders":[{"uri":%q,"name":"scratch"}],"capabilities":{}}}`, rootURI, rootURI)
+	writeLSPFrame(t, stdin, []byte(initReq))
+	readLSPFrameWithTimeout(t, reader, 10*time.Second)
+
+	openReq := fmt.Sprintf(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":%q,"languageId":"pebble","version":1,"text":%q}}}`, docURI, src)
+	writeLSPFrame(t, stdin, []byte(openReq))
+	time.Sleep(200 * time.Millisecond)
+
+	// id counter for hover requests.
+	id := 2
+	hover := func(line, ch int, want string) {
+		t.Helper()
+		hoverAndExpect(t, stdin, reader, docURI, id, line, ch, want)
+		id++
+	}
+
+	hover(fieldLine, fieldCh, "field x: int")
+	hover(typeLine, typeCh, "type Point")
+	hover(paramLine, paramCh, "param p: Point")
+	hover(fnLine, fnCh, "fn add(Point, int) Point")
+	hover(varLine, varCh, "var origin: Point")
+	hover(ptrLine, ptrCh, "var ptr: *Point")
+	hover(nomTypeLine, nomTypeCh, "type Point")
+	hover(movedLine, movedCh, "let moved: Point")
+	hover(retTypeLine, retTypeCh, "type Point")
+
+	shutReq := []byte(`{"jsonrpc":"2.0","id":` + fmt.Sprint(id) + `,"method":"shutdown"}`)
 	writeLSPFrame(t, stdin, shutReq)
 	readLSPFrameWithTimeout(t, reader, 10*time.Second)
 	writeLSPFrame(t, stdin, []byte(`{"jsonrpc":"2.0","method":"exit"}`))

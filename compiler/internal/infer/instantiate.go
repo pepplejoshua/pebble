@@ -595,7 +595,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 		}
 		declaration, ids, nominal := key.Nominal()
 		if !nominal {
-			return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(types.DescribeKey(key)), origin)
+			return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))), origin)
 		}
 		arguments := make([]Term, len(ids))
 		for i, argument := range ids {
@@ -606,7 +606,7 @@ func (s *Session) receiverNominal(receiver Term, origin Origin) (symbol.SymbolID
 	if receiver.kind == termKnown {
 		name := "<type>"
 		if key, ok := s.program.typeKey(receiver.known); ok {
-			name = types.DescribeKey(key)
+			name = types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))
 		}
 		return 0, nil, false, s.receiverConflict(receiver, CodeCapability, s.methodReceiverNotNominal(name), origin)
 	}
@@ -700,6 +700,12 @@ func (s *Session) methodReceiverNotNominal(name string) string {
 	return fmt.Sprintf("cannot call method: %s is not a struct, union, or enum type", name)
 }
 
+// typeKeyLookup builds a child-TypeID lookup closure from the session's
+// prepared program, for use with types.DescribeKeyResolved.
+func (s *Session) typeKeyLookup() func(types.TypeID) (types.TypeKey, bool) {
+	return func(id types.TypeID) (types.TypeKey, bool) { return s.program.typeKey(id) }
+}
+
 // receiverShapeName returns a short human-readable name for a receiver whose
 // inference shape is not nominal, for use in the method-receiver diagnostic.
 func (s *Session) receiverShapeName(shape *Shape) string {
@@ -722,7 +728,7 @@ func (s *Session) receiverShapeName(shape *Shape) string {
 	case shapeLeaf:
 		if id, known := s.resolvedType(shape.term); known {
 			if key, ok := s.program.typeKey(id); ok {
-				return types.DescribeKey(key)
+				return types.DescribeKeyResolved(key, s.typeKeyLookup(), types.ResolveFromResult(s.program.inputs.Resolution))
 			}
 		}
 		return "value"

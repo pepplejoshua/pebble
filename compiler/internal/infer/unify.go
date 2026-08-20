@@ -580,5 +580,7 @@ func childOrigin(origin Origin, index int) Origin {
 func (s *Session) describeTypeConflict(a, b types.TypeID) string {
 	ka, _ := s.program.typeKey(a)
 	kb, _ := s.program.typeKey(b)
-	return fmt.Sprintf("cannot unify %s with %s", types.DescribeKey(ka), types.DescribeKey(kb))
+	lookup := func(id types.TypeID) (types.TypeKey, bool) { return s.program.typeKey(id) }
+	resolve := types.ResolveFromResult(s.program.inputs.Resolution)
+	return fmt.Sprintf("cannot unify %s with %s", types.DescribeKeyResolved(ka, lookup, resolve), types.DescribeKeyResolved(kb, lookup, resolve))
 }
