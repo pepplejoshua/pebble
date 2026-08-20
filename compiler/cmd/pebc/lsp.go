@@ -78,8 +78,22 @@ func (s *lspServer) Initialize(ctx context.Context, params *protocol.InitializeP
 		}
 	}
 	s.root = root
+	syncKind := protocol.TextDocumentSyncKindFull
+	openClose := true
 	return &protocol.InitializeResult{
-		Capabilities: protocol.ServerCapabilities{},
+		Capabilities: protocol.ServerCapabilities{
+			// A real client only sends the requests/notifications a server
+			// actually advertises here; DidOpen/DidSave/Hover being
+			// implemented isn't enough on its own -- confirmed against a real
+			// Zed session, which reported empty server capabilities and never
+			// called any of them.
+			TextDocumentSync: &protocol.TextDocumentSyncOptions{
+				OpenClose: &openClose,
+				Change:    &syncKind,
+				Save:      protocol.Boolean(true),
+			},
+			HoverProvider: protocol.Boolean(true),
+		},
 		ServerInfo: protocol.ServerInfo{
 			Name: "pebc",
 		},
