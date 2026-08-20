@@ -1,9 +1,11 @@
-// Package stdlib serves the Pebble standard library from an embed.FS.
+// Package stdlib serves the Pebble standard library from a real on-disk std/
+// directory when one is available, falling back to the embedded go:embed copy.
 package stdlib
 
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,17 +20,31 @@ import (
 // prefixed by a relative name containing a colon.
 const StandardRoot = "std:embedded"
 
-// Provider serves std: imports from the embedded standard library and
-// delegates every other path to the wrapped provider.
+// Provider serves std: imports from either a real on-disk std/ directory or the
+// embedded standard library, and delegates every other path to the wrapped
+// provider.
 type Provider struct {
 	standardRoot string
 	stdFS        fs.FS
 	delegate     module.SourceProvider
 }
 
-// New returns a Provider that serves std: imports from the embedded standard
-// library and delegates everything else to delegate.
-func New(delegate module.SourceProvider) *Provider {
+// New returns a Provider that serves std: imports from delegate and the
+// embedded standard library.
+//
+// When diskRoot is non-empty, std: imports are read from that real on-disk std/
+// directory (via os.DirFS), so local edits to compiler/std/*.peb take effect on
+// the very next compilation with no rebuild -- the layout `make install`
+// creates by symlinking compiler/std next to the pebc binary. When diskRoot is
+// empty, or the directory cannot be opened, std: imports fall back to the
+// embedded go:embed copy, so a portable standalone pebc binary with no real
+// std/ next to it keeps working exactly as before.
+func New(delegate module.SourceProvider, diskRoot string) *Provider {
+	if diskRoot != "" {
+		if fsys, err := os.Stat(diskRoot); err == nil && fsys.IsDir() {
+			return &Provider{standardRoot: StandardRoot, stdFS: os.DirFS(diskRoot), delegate: delegate}
+		}
+	}
 	return &Provider{standardRoot: StandardRoot, stdFS: std.FS, delegate: delegate}
 }
 

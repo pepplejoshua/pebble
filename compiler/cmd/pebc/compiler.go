@@ -103,7 +103,12 @@ func buildProgram(req compileRequest) (*compiledProgram, bool) {
 	if req.stderr == nil {
 		req.stderr = io.Discard
 	}
-	provider := stdlib.New(module.FileSystemProvider{})
+	// Resolve a real on-disk std/ directory (binary-relative, then cwd-walk-up)
+	// so actual compilation reads std: imports from disk when one is available,
+	// not just the go:embed copy. An empty result on the error case means "no
+	// real root found, use the embed".
+	stdRoot, _ := locateStdRoot()
+	provider := stdlib.New(module.FileSystemProvider{}, stdRoot)
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 	entryPath, err := provider.Canonicalize(req.entryPath)

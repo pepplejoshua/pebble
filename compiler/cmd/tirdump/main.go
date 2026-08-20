@@ -17,7 +17,7 @@ import (
 
 func main() {
 	flag.Parse()
-	provider := stdlib.New(module.FileSystemProvider{})
+	provider := stdlib.New(module.FileSystemProvider{}, "")
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 	path, err := provider.Canonicalize(flag.Arg(0))

@@ -74,7 +74,7 @@ func compilePebbleTestFile(t *testing.T, relPath string) (int, string) {
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()
 
-	provider := stdlib.New(module.FileSystemProvider{})
+	provider := stdlib.New(module.FileSystemProvider{}, "")
 	graph := module.Build(module.BuildConfig{
 		EntryPath:    absPath,
 		Package:      "main",

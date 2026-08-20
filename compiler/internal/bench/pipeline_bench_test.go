@@ -53,7 +53,7 @@ type built struct {
 }
 
 func newPipeline(b *testing.B) *pipeline {
-	provider := stdlib.New(module.FileSystemProvider{})
+	provider := stdlib.New(module.FileSystemProvider{}, "")
 	entry, err := provider.Canonicalize(fixturePath)
 	if err != nil {
 		b.Fatalf("bench: cannot canonicalize fixture: %v", err)
