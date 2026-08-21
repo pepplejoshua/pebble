@@ -362,11 +362,37 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		}
 	}
 
+	// A member-NAME token (the "field"/"method" identifier itself in
+	// `receiver.field`) is never resolved by symbolForNode above: member
+	// names aren't tracked in the resolution reference table at all, real
+	// declared fields/methods included. Resolve it directly the same way
+	// memberCompletions resolves candidates after a '.': find the enclosing
+	// MemberExpr, resolve its receiver's checked type (auto-derefing a
+	// pointer), get the nominal declaration, then find the field/method/
+	// variant symbol under that declaration matching this name token's own
+	// text. This works regardless of what wraps the member access (a plain
+	// statement, an index `x.field[i]`, a call, nested field chains, ...) --
+	// unlike the typed-IR source-map fallback below, which depends on the
+	// checker having published a standalone TIR node for the MemberExpr
+	// itself, and it does NOT for `x.field[i]`: the checker fuses the field
+	// access and the index into one combined place-projection node, so the
+	// bare MemberExpr has no source-map entry to find at all. Confirmed by
+	// direct reproduction: hovering the `data` token in `s.data` hovers fine
+	// standalone but returned empty in `s.data[i]` before this fallback.
+	if parentID, ok := enclosingMemberExpr(tree, best); ok {
+		if text, ok := memberNameHover(p, entryMod.ID, tree, parentID, best, resolve); ok {
+			return text
+		}
+	}
+
 	// Fall back to the typed-IR source map: map the surface node to its typed
 	// IR node and describe the expression/literal's type. This genuinely needs
 	// the full typed-IR unit (its source map only exists once the whole unit is
 	// built), so it is the LAST resort after the symbol-based paths above have
-	// already been tried.
+	// already been tried. It's still needed for a structural pseudo-field name
+	// token (array/slice .len/.data, optional .has_value) -- those have no
+	// symbol at all for the lookup above to find, only a checked expression
+	// type on the enclosing MemberExpr node.
 	if p.unit == nil {
 		return ""
 	}
@@ -377,23 +403,7 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		// on the narrow member-name child. When hovering exactly on the name
 		// token, best resolves to that Name node and misses. Widen once to the
 		// direct parent MemberExpr when best is its second child.
-		var parentID syntax.NodeID
-		foundParent := false
-		for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
-			n, ok := tree.Node(id)
-			if !ok {
-				continue
-			}
-			if n.Kind() != syntax.MemberExpr {
-				continue
-			}
-			children := n.Children()
-			if len(children) >= 2 && children[1] == best {
-				parentID = id
-				foundParent = true
-				break
-			}
-		}
+		parentID, foundParent := enclosingMemberExpr(tree, best)
 		if !foundParent {
 			return ""
 		}
@@ -414,6 +424,102 @@ func hoverTypeAtOffset(entryPath string, offset uint32) string {
 		return ""
 	}
 	return types.DescribeKeyResolved(key, types.LookupFromSnapshot(snap), resolve)
+}
+
+// enclosingMemberExpr finds the syntax.MemberExpr node whose member-NAME
+// child (its second child) is exactly nameNode, i.e. the member access that
+// nameNode is the name of. Linear tree scan, matching the same pattern
+// memberCompletions/hoverTypeAtOffset's TIR-widening fallback already use
+// elsewhere in this file.
+func enclosingMemberExpr(tree *syntax.Tree, nameNode syntax.NodeID) (syntax.NodeID, bool) {
+	for id := syntax.NodeID(1); uint64(id) <= uint64(tree.Root()); id++ {
+		n, ok := tree.Node(id)
+		if !ok || n.Kind() != syntax.MemberExpr {
+			continue
+		}
+		children := n.Children()
+		if len(children) >= 2 && children[1] == nameNode {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// memberNameHover resolves a member-NAME token (nameNode, the second child
+// of memberExprID) directly to its declared field/method/variant symbol and
+// renders that symbol's hover text -- the same receiver-type-to-nominal-
+// declaration resolution memberCompletions already performs for the '.'
+// completion case, reused here so hovering the name itself doesn't depend
+// on the checker having published a standalone typed-IR node for the
+// MemberExpr (it does not for every wrapping context, e.g. `x.field[i]`).
+func memberNameHover(p *compiledProgram, modID module.ModuleID, tree *syntax.Tree, memberExprID, nameNode syntax.NodeID, resolve func(symbol.SymbolID) string) (string, bool) {
+	memberExpr, ok := tree.Node(memberExprID)
+	if !ok {
+		return "", false
+	}
+	children := memberExpr.Children()
+	if len(children) < 1 {
+		return "", false
+	}
+	receiver := children[0]
+
+	typeID, ok := receiverTypeID(p, modID, receiver)
+	if !ok {
+		return "", false
+	}
+	lookup := types.LookupFromStore(p.store)
+	key, ok := lookup(typeID)
+	if !ok {
+		return "", false
+	}
+	if key.Kind() == types.Pointer {
+		child, _ := key.Child()
+		key, ok = lookup(child)
+		if !ok {
+			return "", false
+		}
+	}
+	decl, _, ok := key.Nominal()
+	if !ok {
+		return "", false
+	}
+
+	nameSpan := func() (source.Span, bool) {
+		n, ok := p.sourcesNode(modID, nameNode)
+		if !ok {
+			return source.Span{}, false
+		}
+		return n.Span(), true
+	}
+	span, ok := nameSpan()
+	if !ok {
+		return "", false
+	}
+	file, ok := p.sources.File(span.Source)
+	if !ok {
+		return "", false
+	}
+	data := file.Text()
+	if uint64(span.End) > uint64(len(data)) {
+		return "", false
+	}
+	name := string(data[span.Start:span.End])
+	if name == "" {
+		return "", false
+	}
+
+	for _, candidate := range p.resolution.Symbols.All() {
+		if candidate.Containing != decl || candidate.Name != name {
+			continue
+		}
+		switch candidate.Kind {
+		case symbol.SymbolField, symbol.SymbolMethod, symbol.SymbolVariant:
+		default:
+			continue
+		}
+		return renderSymbolHover(p, candidate, resolve)
+	}
+	return "", false
 }
 
 // definitionAtOffset performs a fresh full check of the entry module (the same

@@ -77,3 +77,33 @@ func TestHoverOnSlicePseudoFieldNameToken(t *testing.T) {
 		t.Fatal("expected non-empty hover on the 'len' pseudo-field token")
 	}
 }
+
+func TestHoverOnRealFieldFollowedByIndexing(t *testing.T) {
+	// x.field[i] fuses the field access and the index into one combined
+	// typed-IR node -- the bare MemberExpr (x.field) has no standalone
+	// source-map entry, so hovering the "field" token can't rely on the
+	// typed-IR fallback the way a non-indexed x.field hover can. Confirmed
+	// broken by direct user report before this test existed.
+	dir := t.TempDir()
+	src := "type Box = struct {\n" +
+		"    data []int;\n" +
+		"};\n" +
+		"fn main() int {\n" +
+		"    var b Box = Box.{ data = [1,2,3] };\n" +
+		"    var j = 0;\n" +
+		"    var c = b.data[j];\n" +
+		"    return 0;\n" +
+		"}\n"
+	path := filepath.Join(dir, "main.peb")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off := uint32(searchOffset(src, "b.data[j]")) + uint32(len("b.")) + 1
+	hover := hoverTypeAtOffset(path, off)
+	if hover == "" {
+		t.Fatal("expected non-empty hover on the 'data' field token in b.data[j]")
+	}
+	if hover != "field data []int" {
+		t.Fatalf("hover = %q, want %q", hover, "field data []int")
+	}
+}
