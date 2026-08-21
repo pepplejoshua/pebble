@@ -24,8 +24,21 @@ func TestDaemonRPCRetriesOnRestartingError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// Redirect the shared daemon-socket state directory into this test's own
+	// scratch dir -- daemonSocketPath now resolves to a shared OS cache
+	// directory outside any project, so without this override the test would
+	// write a real socket file into the developer's actual cache directory.
+	stateDir := filepath.Join(dir, "state")
+	origStateDir := daemonStateDir
+	daemonStateDir = func() (string, error) {
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			return "", err
+		}
+		return stateDir, nil
+	}
+	t.Cleanup(func() { daemonStateDir = origStateDir })
 	root := filepath.Join(dir, "r")
-	if err := os.MkdirAll(filepath.Join(root, daemonSocketDir), 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sockPath := daemonSocketPath(root)

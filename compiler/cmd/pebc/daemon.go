@@ -66,11 +66,21 @@ const daemonRestartingError = "daemon is restarting; please retry"
 // guarantees at most one real "changed" transition per logical edit.
 const fileChangeDebounce = 75 * time.Millisecond
 
-// daemonSocketDir is the project-local directory that holds daemon state.
-const daemonSocketDir = ".pebble"
+// daemonStateDirName is the subdirectory of the OS cache directory that
+// holds every project's daemon socket, keyed by canonical root -- see
+// daemonSocketPath. Previously each project root got its own ".pebble/"
+// directory INSIDE the project itself (a real complaint: visible clutter in
+// every checked-out subdirectory a daemon ever ran from, unrelated to the
+// project's actual source). All daemon state now lives in one place outside
+// any project tree, matching how Go's own build/module caches
+// (GOCACHE/GOMODCACHE) never live inside the module they're caching.
+const daemonStateDirName = "pebble-daemons"
 
-// daemonSocketFile is the daemon's Unix socket file within the socket dir.
-const daemonSocketFile = "daemon.sock"
+// unixSocketPathLimit is a conservative cap under the platform sun_path
+// limits (macOS ~104 bytes, Linux ~108 bytes) that daemonSocketPath falls
+// back to a short hash name under, for a canonical root path deep enough
+// that the human-readable slug wouldn't fit.
+const unixSocketPathLimit = 100
 
 // daemonInheritFdEnv names the env var carrying an inherited listener fd.
 const daemonInheritFdEnv = "PEBC_DAEMON_INHERIT_FD"
@@ -79,9 +89,68 @@ const daemonInheritFdEnv = "PEBC_DAEMON_INHERIT_FD"
 // so it must not re-announce "started" or remove the socket on shutdown.
 const daemonReexecEnv = "PEBC_DAEMON_REEXEC"
 
-// daemonSocketPath returns the daemon socket path for a project root.
+// daemonSocketPath returns the daemon socket path for a project root. root
+// is first canonicalized via canonicalDaemonRoot, so a request rooted
+// anywhere inside the same real checkout (a nested Zed workspace folder, a
+// one-shot CLI invocation from a subdirectory, ...) resolves to the exact
+// same socket path and therefore the exact same daemon instance -- this is
+// the single chokepoint every spawn/dial call site in this package already
+// goes through, so canonicalizing here is sufficient on its own; no other
+// call site needs to change.
+//
+// The path itself lives under the OS cache directory (os.UserCacheDir,
+// e.g. ~/Library/Caches on macOS, $XDG_CACHE_HOME or ~/.cache on Linux),
+// never inside the project tree. The filename is the canonical root's own
+// absolute path with path separators replaced by "-" (matching the same
+// convention this harness's own per-project state directories under
+// ~/.claude/projects/ already use) so `ls` on the daemon state directory is
+// directly readable -- e.g. "-Users-me-code-pebble.sock" -- rather than an
+// opaque hash. Falls back to a short content hash of the canonical root
+// only when the readable form would exceed a Unix domain socket's platform
+// path-length limit.
 func daemonSocketPath(root string) string {
-	return filepath.Join(root, daemonSocketDir, daemonSocketFile)
+	canonical := canonicalDaemonRoot(root)
+	stateDir, err := daemonStateDir()
+	if err != nil {
+		// No usable OS cache directory (a very unusual environment) --
+		// degrade to the historic project-local location rather than fail
+		// outright.
+		return filepath.Join(canonical, ".pebble", daemonSocketFile)
+	}
+	name := slugifyPath(canonical) + ".sock"
+	if len(filepath.Join(stateDir, name)) > unixSocketPathLimit {
+		sum := sha256.Sum256([]byte(canonical))
+		name = hex.EncodeToString(sum[:])[:16] + ".sock"
+	}
+	return filepath.Join(stateDir, name)
+}
+
+// daemonSocketFile is the daemon's socket filename under the historic
+// project-local fallback path (see daemonSocketPath's degraded case).
+const daemonSocketFile = "daemon.sock"
+
+// daemonStateDir returns (creating if needed) the shared directory that
+// holds every project's daemon socket. A package var (matching
+// executableDirFunc's pattern) so tests can redirect it into an isolated
+// scratch directory rather than writing real socket files into the
+// developer's actual OS cache directory on every test run.
+var daemonStateDir = func() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cacheDir, daemonStateDirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// slugifyPath turns an absolute path into a single readable filename
+// component: every path separator becomes "-". Mirrors the same convention
+// this harness's own ~/.claude/projects/-Users-... state directories use.
+func slugifyPath(path string) string {
+	return strings.ReplaceAll(strings.Trim(path, string(filepath.Separator)), string(filepath.Separator), "-")
 }
 
 // daemonOptions carries the runtime configuration for one daemon process.

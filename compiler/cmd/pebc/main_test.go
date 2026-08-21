@@ -618,6 +618,56 @@ func TestRealPreludePathResolvesToRealFile(t *testing.T) {
 	}
 }
 
+func TestCanonicalDaemonRootUnifiesSubdirectories(t *testing.T) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Skipf("cannot find repo root: %v", err)
+	}
+	// Any two real subdirectories of the same checkout (mirroring examples/,
+	// playground/, compiler/std/ in the real repo -- the exact scattering
+	// that motivated this) must canonicalize to the SAME root, not each get
+	// treated as its own project.
+	subA := filepath.Join(repoRoot, "compiler")
+	subB := filepath.Join(repoRoot, "compiler", "std")
+	if got := canonicalDaemonRoot(subA); got != repoRoot {
+		t.Fatalf("canonicalDaemonRoot(%q) = %q, want %q", subA, got, repoRoot)
+	}
+	if got := canonicalDaemonRoot(subB); got != repoRoot {
+		t.Fatalf("canonicalDaemonRoot(%q) = %q, want %q", subB, got, repoRoot)
+	}
+	// A root with no runtime/ ancestor anywhere above it (outside any real
+	// checkout) is returned unchanged -- there's no real project to unify
+	// against, so daemon rooting degrades to today's per-directory behavior.
+	outside := t.TempDir()
+	if got := canonicalDaemonRoot(outside); got != outside {
+		t.Fatalf("canonicalDaemonRoot(%q) = %q, want unchanged %q", outside, got, outside)
+	}
+}
+
+func TestDaemonSocketPathSharedAcrossSubdirectories(t *testing.T) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Skipf("cannot find repo root: %v", err)
+	}
+	stateDir := t.TempDir()
+	orig := daemonStateDir
+	daemonStateDir = func() (string, error) { return stateDir, nil }
+	t.Cleanup(func() { daemonStateDir = orig })
+
+	subA := filepath.Join(repoRoot, "examples")
+	subB := filepath.Join(repoRoot, "playground")
+	pathA := daemonSocketPath(subA)
+	pathB := daemonSocketPath(subB)
+	if pathA != pathB {
+		t.Fatalf("daemonSocketPath differs across subdirectories of the same checkout: %q (from %q) vs %q (from %q)", pathA, subA, pathB, subB)
+	}
+	// And it lives under the shared state directory, not inside either
+	// project subdirectory -- the other half of the original complaint.
+	if !strings.HasPrefix(pathA, stateDir) {
+		t.Fatalf("daemonSocketPath = %q, want a path under the shared state dir %q", pathA, stateDir)
+	}
+}
+
 func findRepoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {

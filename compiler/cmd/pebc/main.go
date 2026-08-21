@@ -348,6 +348,36 @@ func locateStdRoot() (string, error) {
 	return "", errors.New("cannot locate std/ directory (no checkout found by walking up from the working directory)")
 }
 
+// canonicalDaemonRoot resolves an arbitrary requested daemon root (an LSP
+// client's workspace rootUri, or a one-shot CLI invocation's cwd) to the
+// real project root, so that pebc files opened from different subdirectories
+// of the same checkout (e.g. a Zed workspace folder opened a few levels
+// below the actual repo root) share one daemon instead of each spawning its
+// own. It walks up from start looking for the nearest ancestor that is a
+// real Pebble checkout (isRuntimeDir, the exact same anchor
+// locateRuntimeRoot/locateStdRoot already use to find runtime/ and std/) --
+// this deliberately reuses the compiler's own existing "what runtime/std
+// does this file build against" resolution as the project-identity boundary
+// rather than inventing a new, separate marker file convention (Pebble has
+// no go.mod equivalent): two files that resolve to the same runtime/std
+// root are, by construction, the same project already, since they'd use the
+// same stdlib and runtime. Falls back to start itself, unchanged, when no
+// such ancestor is found (e.g. pebc run entirely outside any checkout, the
+// embedded-stdlib fallback case) -- daemon rooting degrades to exactly
+// today's per-directory behavior there, which is the correct fallback since
+// there's no real checkout to unify against.
+func canonicalDaemonRoot(start string) string {
+	if found := walkUp(start, func(dir string) (string, bool) {
+		if isRuntimeDir(dir) {
+			return dir, true
+		}
+		return "", false
+	}); found != "" {
+		return found
+	}
+	return start
+}
+
 // walkUp checks start and each ancestor toward the filesystem root (up to 6
 // levels) and returns the first result probe accepts. It returns "" when no
 // level matches.
