@@ -184,16 +184,27 @@ func ensureDaemonForRoot(root string, stderr io.Writer) error {
 	}
 	// Detach: the daemon continues running after pebc dev exits.
 	_ = cmd.Process.Release()
-	// Poll until the daemon's socket is live; it may take a moment to bind and
-	// enter its event loop.
-	deadline := time.Now().Add(5 * time.Second)
+	if waitForDaemon(sockPath, 5*time.Second) {
+		return nil
+	}
+	return errors.New("daemon did not come up within 5s")
+}
+
+// waitForDaemon polls a socket path until a daemon answers ping or timeout
+// elapses. Used both to wait for a freshly spawned daemon to bind (see
+// ensureDaemonForRoot) and to wait out a stale-binary self-restart (see
+// daemonRPCForRoot's retry on daemonRestartingError) -- in both cases the
+// old/no listener means a fresh one needs a moment to bind and start
+// accepting connections.
+func waitForDaemon(sockPath string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if live, _ := pingDaemon(sockPath); live {
-			return nil
+			return true
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return errors.New("daemon did not come up within 5s")
+	return false
 }
 
 // daemonRPC performs one daemon RPC round-trip for the current project root.
@@ -208,7 +219,27 @@ func daemonRPC(method string, req daemonRequest) (daemonResponse, error) {
 // daemonRPCForRoot performs one daemon RPC round-trip for an explicit project
 // root (used by the LSP server, whose root comes from the editor's initialize
 // params rather than the process working directory).
+//
+// If the request lands on a daemon that just detected its own binary is
+// stale and re-exec'd (daemonRestartingError -- see reexecIfStale in
+// daemon.go), the old listener is already gone and this single round-trip
+// would otherwise surface as an empty/no-result response to every LSP
+// caller (hover, completion, etc. all treat any non-OK response as "nothing
+// here" and give up silently) even though the real answer is just "ask
+// again in a moment." Wait for the freshly re-exec'd daemon to come up and
+// retry the exact same request once before giving up for real.
 func daemonRPCForRoot(root string, method string, req daemonRequest) (daemonResponse, error) {
+	resp, err := daemonRPCOnce(root, method, req)
+	if err == nil && !resp.OK && resp.Error == daemonRestartingError {
+		if waitForDaemon(daemonSocketPath(root), 3*time.Second) {
+			return daemonRPCOnce(root, method, req)
+		}
+	}
+	return resp, err
+}
+
+// daemonRPCOnce performs exactly one daemon RPC round-trip with no retry.
+func daemonRPCOnce(root string, method string, req daemonRequest) (daemonResponse, error) {
 	conn, err := net.DialTimeout("unix", daemonSocketPath(root), 2*time.Second)
 	if err != nil {
 		return daemonResponse{}, fmt.Errorf("no daemon running for %s: %w", root, err)

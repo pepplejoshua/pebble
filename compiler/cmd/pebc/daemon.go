@@ -51,6 +51,14 @@ const defaultIdleTimeout = 30 * time.Minute
 // staleCheckInterval is how often the daemon re-hashes its own executable.
 const staleCheckInterval = 5 * time.Second
 
+// daemonRestartingError is returned to a client whose request landed on a
+// daemon that just detected its own executable is stale and re-exec'd. The
+// old process's listener is already closed by the time this is sent, so the
+// caller should briefly wait for the new daemon to come up (see
+// waitForDaemon in dev.go) and retry the exact same request once, rather
+// than surfacing this as "no result" the way a genuine query miss would be.
+const daemonRestartingError = "daemon is restarting; please retry"
+
 // fileChangeDebounce is how long the daemon waits for a watched file's events
 // to quiet down before hashing it. A single logical save commonly produces
 // several raw fsnotify events (and the file can be read mid-write), so events
@@ -329,49 +337,49 @@ func (d *daemon) handle(conn net.Conn) {
 		d.touch()
 		if d.reexecIfStale() {
 			// A stale binary restarts the daemon; tell the client to retry.
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveBuild(conn, req)
 	case "hover":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveHover(conn, req)
 	case "inlayHints":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveInlayHints(conn, req)
 	case "definition":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveDefinition(conn, req)
 	case "documentSymbols":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveDocumentSymbols(conn, req)
 	case "signatureHelp":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveSignatureHelp(conn, req)
 	case "completions":
 		d.touch()
 		if d.reexecIfStale() {
-			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: "daemon is restarting; please retry"})
+			_ = writeDaemonMessage(conn, daemonResponse{OK: false, Error: daemonRestartingError})
 			return
 		}
 		d.serveCompletions(conn, req)
