@@ -1,5 +1,6 @@
 import "std:io";
 import "std:string";
+import "std:hmap";
 
 type Stats = struct {
     lines uint;
@@ -63,43 +64,39 @@ fn count_file(filename str, stats *Stats) bool {
 fn main() int {
     var total_stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
     var successful_files = 0;
-    var paths = 10;
+    var paths = [
+        "compiler/std/func.peb",
+        "compiler/std/hash.peb",
+        "compiler/std/hmap.peb",
+        "compiler/std/io.peb",
+        "compiler/std/libc.peb",
+        "compiler/std/mem.peb",
+        "compiler/std/set.peb",
+        "compiler/std/string.peb",
+        "compiler/std/vec.peb",
+        "compiler/std/mem/arena.peb",
+    ];
 
     // Count and report each file.
-    var index = 0;
-    while index < paths {
-        var filename str = "";
-        switch index {
-        case 0: filename = "compiler/std/func.peb";
-        case 1: filename = "compiler/std/hash.peb";
-        case 2: filename = "compiler/std/hmap.peb";
-        case 3: filename = "compiler/std/io.peb";
-        case 4: filename = "compiler/std/libc.peb";
-        case 5: filename = "compiler/std/mem.peb";
-        case 6: filename = "compiler/std/set.peb";
-        case 7: filename = "compiler/std/string.peb";
-        case 8: filename = "compiler/std/vec.peb";
-        case 9: filename = "compiler/std/mem/arena.peb";
-        }
-
+    loop 0..paths.len : index {
+        var filename str = paths[index];
         var stats Stats = Stats.{ lines = 0, words = 0, chars = 0 };
         if count_file(filename, &stats) {
             total_stats.lines += stats.lines;
             total_stats.words += stats.words;
             total_stats.chars += stats.chars;
             successful_files++;
-            print filename, ": ", stats.lines, " lines, ", stats.words, " words, ", stats.chars, " chars";
+            println filename, ": ", stats.lines, " lines, ", stats.words, " words, ", stats.chars, " chars";
         } else {
-            print "Error reading ", filename;
+            println "Error reading ", filename;
         }
-        index++;
     }
 
-    print "";
-    print "Summary for ", successful_files, "/", paths, " files:";
-    print "Total lines: ", total_stats.lines;
-    print "Total words: ", total_stats.words;
-    print "Total chars: ", total_stats.chars;
+    println "";
+    println "Summary for ", successful_files, "/", paths.len, " files:";
+    println "Total lines: ", total_stats.lines;
+    println "Total words: ", total_stats.words;
+    println "Total chars: ", total_stats.chars;
 
     return 0;
 }
