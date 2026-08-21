@@ -1127,6 +1127,16 @@ func pointerTypeNameForUnit(st *emitState, unit *tir.Unit, snapshot *types.Snaps
 				// always declared as int32_t in emitted C (see the
 				// char-typed-parameter case in buildHelperFunctions).
 				return "int32_t *"
+			case types.Str:
+				// str is a builtin kind, so it always reaches this switch
+				// rather than falling through to the isStr check below --
+				// that check was genuine dead code for this call path before
+				// this case existed (str's Builtin() always reports ok=true,
+				// so execution can never fall through the enclosing `if` to
+				// reach it). cType has no Str case either, so without this,
+				// pointerTypeNameForUnit returned "" for every *str pointee,
+				// making `let p *str = &msg;` fail emission outright.
+				return "PebbleStr *"
 			case types.F32, types.F64:
 				// A float pointee (*f32, *f64) is declared with its plain C
 				// float/double pointer type, the pointer form of the same
