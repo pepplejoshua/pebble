@@ -227,10 +227,16 @@ func (s *lspServer) Hover(ctx context.Context, params *protocol.HoverParams) (*p
 		return nil, nil
 	}
 	s.log.Printf("hover: result=%q", resp.Hover)
+	// Markdown with a fenced code block, not PlainText: most LSP clients
+	// (Zed included) flow PlainText hover content as a single paragraph and
+	// don't reliably preserve literal newlines, which flattened a multi-line
+	// struct/enum body (see renderSymbolHover) onto one line. A fenced block
+	// is rendered verbatim by every markdown-capable client, matching the
+	// convention gopls/rust-analyzer use for hover text.
 	return &protocol.Hover{
 		Contents: &protocol.MarkupContent{
-			Kind:  protocol.MarkupKindPlainText,
-			Value: resp.Hover,
+			Kind:  protocol.MarkupKindMarkdown,
+			Value: "```\n" + resp.Hover + "\n```",
 		},
 	}, nil
 }

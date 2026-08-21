@@ -474,8 +474,8 @@ func TestLSPHover(t *testing.T) {
 	if hoverResp.ID != 2 {
 		t.Fatalf("hover response id = %d, want 2 (body %s)", hoverResp.ID, hoverBody)
 	}
-	if hoverResp.Result.Contents.Value != "i32" {
-		t.Fatalf("hover reported type %q, want \"i32\" (body %s)", hoverResp.Result.Contents.Value, hoverBody)
+	if got := unwrapHoverFence(hoverResp.Result.Contents.Value); got != "i32" {
+		t.Fatalf("hover reported type %q, want \"i32\" (body %s)", got, hoverBody)
 	}
 	t.Logf("hover at literal 42 reported: %q", hoverResp.Result.Contents.Value)
 
@@ -1203,6 +1203,13 @@ func TestLSPDefinition(t *testing.T) {
 
 // hoverAndExpect sends a real textDocument/hover REQUEST at the given
 // 0-based line/character and asserts the response reports exactly wantType.
+// unwrapHoverFence strips the ```\n...\n``` markdown fence the Hover handler
+// wraps its content in (see lsp.go's Hover), so tests can assert against the
+// raw rendered text instead of the wire-level markdown wrapping.
+func unwrapHoverFence(value string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(value, "```\n"), "\n```")
+}
+
 func hoverAndExpect(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, docURI string, id, line, ch int, wantType string) {
 	t.Helper()
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"textDocument/hover","params":{"textDocument":{"uri":%q},"position":{"line":%d,"character":%d}}}`, id, docURI, line, ch)
@@ -1227,8 +1234,8 @@ func hoverAndExpect(t *testing.T, stdin io.WriteCloser, reader *bufio.Reader, do
 	if resp.ID != id {
 		t.Fatalf("hover response id = %d, want %d (body %s)", resp.ID, id, body)
 	}
-	if resp.Result.Contents.Value != wantType {
-		t.Fatalf("hover reported type %q, want %q (body %s)", resp.Result.Contents.Value, wantType, body)
+	if got := unwrapHoverFence(resp.Result.Contents.Value); got != wantType {
+		t.Fatalf("hover reported type %q, want %q (body %s)", got, wantType, body)
 	}
 	t.Logf("hover at (%d,%d) reported: %q", line, ch, resp.Result.Contents.Value)
 }
