@@ -1705,22 +1705,31 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 	}
 	if initValue.Kind == tir.Load {
 		// A str value read back out of a compound local through a Load — a
-		// tuple-ordinal read (`let s str = t.0;` for a (str, int) tuple) or a
+		// tuple-ordinal read (`let s str = t.0;` for a (str, int) tuple), a
 		// struct-field read-back (`let s str = b.v;` for a Box.{ v = "hi" }
-		// struct) — lowered by the checker to Load(TuplePlace)/
-		// Load(FieldPlace), the same place shapes buildExpr's int Load case
-		// accepts, and both previously rejected together by this switch's
-		// final rejection (it had no Load case at all). The place is resolved
-		// via buildPlaceLValue, the same machinery buildTuplePlaceRead /
-		// buildStructFieldRead use, and the resolved element type must be
+		// struct), or a str-array/slice element read (`var s str = paths[i];`
+		// for a `[]str`/`[N]str` local -- confirmed by a real crash report on
+		// examples/count_lines.peb's `var filename str = paths[index];` loop
+		// body) — lowered by the checker to Load(TuplePlace)/Load(FieldPlace)/
+		// Load(CheckedIndexPlace), the same place shapes buildExpr's int Load
+		// case accepts (buildArrayPlaceRead in places.go already supports str
+		// as a valid array/slice element type -- see its own "str, tuple,
+		// optional, struct, or enum" element-type error text; this switch
+		// simply never accepted CheckedIndexPlace as a place kind for a
+		// str-typed LOCAL declaration specifically, even though the
+		// underlying read machinery already produced a correct PebbleStr
+		// lvalue for it). The place is resolved via buildPlaceLValue, the
+		// same machinery buildTuplePlaceRead/buildStructFieldRead/
+		// buildArrayPlaceRead use, and the resolved element type must be
 		// str: str carries no per-declaration type ID the way
 		// tuple/struct/enum do — every str is the same PebbleStr C type — so
 		// the check is on the element type the place resolution returns from
-		// the tuple/struct type, mirroring how the SymbolValue case above
-		// validates its str local. The emitted C is a declaration-with-
-		// initializer `PebbleStr pebble_local_<new> = <lvalue>;` —
-		// pebble_local_<symbol>._<ordinal> for a tuple element,
-		// pebble_local_<symbol>.pebble_field_<member> for a struct field —
+		// the tuple/struct/array/slice type, mirroring how the SymbolValue
+		// case above validates its str local. The emitted C is a
+		// declaration-with-initializer `PebbleStr pebble_local_<new> =
+		// <lvalue>;` — pebble_local_<symbol>._<ordinal> for a tuple element,
+		// pebble_local_<symbol>.pebble_field_<member> for a struct field,
+		// base[pebble_rt_checked_index_...(...)] for an array/slice element —
 		// PebbleStr is a genuine C struct ({data, len}), so the by-value copy
 		// is trivially valid C, the same convention str call arguments and
 		// returns already use.
@@ -1731,8 +1740,8 @@ func buildStrLocalDeclaration(st *emitState, unit *tir.Unit, snapshot *types.Sna
 		if !ok {
 			return "", fmt.Errorf("%s declares a str-typed local from a Load referencing invalid place node %d", context, initValue.Children[0])
 		}
-		if placeNode.Kind != tir.TuplePlace && placeNode.Kind != tir.FieldPlace {
-			return "", fmt.Errorf("%s declares a str-typed local from a Load whose place is a %s, want a TuplePlace (a str tuple-element read) or a FieldPlace (a str struct-field read)", context, placeNode.Kind)
+		if placeNode.Kind != tir.TuplePlace && placeNode.Kind != tir.FieldPlace && placeNode.Kind != tir.CheckedIndexPlace {
+			return "", fmt.Errorf("%s declares a str-typed local from a Load whose place is a %s, want a TuplePlace (a str tuple-element read), a FieldPlace (a str struct-field read), or a CheckedIndexPlace (a str array/slice-element read)", context, placeNode.Kind)
 		}
 		lvalue, elemType, err := buildPlaceLValue(st, unit, snapshot, fileSet, initValue.Children[0], scope, width)
 		if err != nil {

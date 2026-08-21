@@ -3133,6 +3133,40 @@ func TestEmitStrStructFieldReadBackIntoLocalCompilesAndRuns(t *testing.T) {
 	emitAndRun(t, "type S = struct { s str; n int; };\nfn main() int { let x S = S.{ s = \"hi\", n = 5 }; let y str = x.s; if y == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
 }
 
+func TestEmitStrArrayElementReadBackIntoLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// The str array-element read-back into a str-typed LOCAL (`var s str =
+	// paths[i];` for a `[N]str` array): a real crash reported from running
+	// examples/count_lines.peb, whose files-to-process loop declares
+	// `var filename str = paths[index];` inside a `loop 0..paths.len : index`
+	// body. buildArrayPlaceRead (places.go) already resolved a str array
+	// element correctly in a str VALUE position (it lists str explicitly
+	// among the supported element types), but the str-local-declaration
+	// switch in buildStrLocalDeclaration only accepted TuplePlace/FieldPlace
+	// for a Load, rejecting CheckedIndexPlace with "declares a str-typed
+	// local from a Load whose place is a CheckedIndexPlace, want a
+	// TuplePlace ... or a FieldPlace ...". CheckedIndexPlace is now resolved
+	// through the same buildPlaceLValue call the other two kinds already
+	// use, its resolved element type validated as str, and emitted as the
+	// plain C declaration-with-initializer
+	// `PebbleStr pebble_local_<s> = pebble_local_<paths>[pebble_rt_checked_index_...];`.
+	// The equality against the indexed literal proves the str value landed
+	// in the local (exit 7, else 3).
+	emitAndRun(t, "fn main() int { var paths [2]str = [\"no\", \"hi\"]; var i = 1; var s str = paths[i]; if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
+func TestEmitStrSliceElementReadBackIntoLocalCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+	// Same shape as TestEmitStrArrayElementReadBackIntoLocalCompilesAndRuns
+	// but through a slice-typed base (buildArrayPlaceRead's slice-base
+	// branch, `.data[checked_index(...)]`, not the array-base branch) --
+	// confirms the fix covers both bases the CheckedIndexPlace place kind
+	// can name, matching the same array-vs-slice split every other
+	// CheckedIndexPlace-accepting local-declaration case in this file
+	// already exercises for non-str element types.
+	emitAndRun(t, "fn main() int { var paths [2]str = [\"no\", \"hi\"]; var sl []str = paths[0:2]; var i = 1; var s str = sl[i]; if s == \"hi\" { return 7; } else { return 3; } }", false, 7, false)
+}
+
 func TestEmitStrStructFieldReadGenericKeyCompilesAndRuns(t *testing.T) {
 	t.Parallel()
 	// The exact std/hmap.peb shape without touching the std module: a generic
