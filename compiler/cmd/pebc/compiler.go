@@ -1287,6 +1287,49 @@ func renderSymbolHover(p *compiledProgram, sym symbol.Symbol, resolve func(symbo
 	}
 }
 
+// completionDetailForSymbol produces the short, type-only text shown next to
+// a completion candidate: just the resolved type (e.g. "int"), or a bare
+// signature for a callable (e.g. "(int, int) int") -- never the
+// keyword-and-name prose renderSymbolHover produces for actual hover
+// requests ("var n int"), since the completion item's own Name/Label field
+// already shows the identifier right next to this text; repeating it read
+// as hover-flavored noise in the completion list.
+func completionDetailForSymbol(p *compiledProgram, sym symbol.Symbol, resolve func(symbol.SymbolID) string) (string, bool) {
+	lookup := types.LookupFromStore(p.store)
+
+	if sym.Kind == symbol.SymbolType || sym.Kind == symbol.SymbolExternType || sym.Kind == symbol.SymbolRuntimeType || sym.Kind == symbol.SymbolBuiltinType {
+		if kw := aggregateKeyword(p, sym); kw != "" {
+			return kw, true
+		}
+		return "", false
+	}
+	if sym.Kind == symbol.SymbolTypeParameter {
+		return "", false
+	}
+
+	typeResult, ok := p.result.SymbolType(sym.ID)
+	if !ok || typeResult.Type == 0 {
+		return "", false
+	}
+	key, keyOK := lookup(typeResult.Type)
+	if !keyOK {
+		return "", false
+	}
+
+	switch sym.Kind {
+	case symbol.SymbolFunction, symbol.SymbolMethod, symbol.SymbolExternFunction, symbol.SymbolBuiltinFunction:
+		return renderFunctionHover("", key, lookup, resolve), true
+	case symbol.SymbolVariant:
+		// SymbolType(variant.ID) does not resolve to a useful payload type
+		// here (renderSymbolHover's own SymbolVariant case ignores it too,
+		// for the same reason) -- leave variant completions with no detail
+		// rather than guess at an unverified rendering.
+		return "", false
+	default:
+		return types.DescribeKeyResolved(key, lookup, resolve), true
+	}
+}
+
 // renderFunctionHover renders a function symbol's full signature in the form
 // "fn name(p1 T1, p2 T2) R" from its function type key.
 func renderFunctionHover(name string, key types.TypeKey, lookup func(types.TypeID) (types.TypeKey, bool), resolve func(symbol.SymbolID) string) string {
@@ -1815,7 +1858,7 @@ func receiverTypeID(p *compiledProgram, modID module.ModuleID, nodeID syntax.Nod
 // the hover description path.
 func completionItemForSymbol(p *compiledProgram, sym symbol.Symbol, resolve func(symbol.SymbolID) string) structuredCompletionItem {
 	detail := ""
-	if txt, ok := renderSymbolHover(p, sym, resolve); ok {
+	if txt, ok := completionDetailForSymbol(p, sym, resolve); ok {
 		detail = txt
 	}
 	return structuredCompletionItem{

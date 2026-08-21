@@ -2279,8 +2279,8 @@ func TestLSPCompletion(t *testing.T) {
 	if !memLabels["x"] || !memLabels["y"] {
 		t.Fatalf("member completion after origin. missing field names; got %+v", memItems)
 	}
-	if xDetail != "field x int" {
-		t.Fatalf("member completion field x detail = %q, want %q", xDetail, "field x int")
+	if xDetail != "int" {
+		t.Fatalf("member completion field x detail = %q, want %q (type only, not hover-style \"field x int\")", xDetail, "int")
 	}
 
 	// 3. Pointer auto-deref: member completion after `ptr.` yields the same
