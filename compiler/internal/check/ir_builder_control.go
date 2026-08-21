@@ -584,7 +584,7 @@ func (s *irBuildState) buildSwitch(ctrl *controlRecord) (tir.NodeID, bool, bool,
 	// loops, case bodies that themselves fall through are treated conservatively:
 	// the switch's own missing-else contribution is the part that matters for
 	// exit-set correctness.
-	diverges := ctrl.ElsePresent || switchIsExhaustive(s.handoff, s.records, ctrl, s.bySyntax)
+	diverges := ctrl.ElsePresent || switchIsExhaustive(s.handoff, s.records, ctrl, s.bySyntax, s.variantBySyntax)
 	return node, ok, false, diverges
 }
 

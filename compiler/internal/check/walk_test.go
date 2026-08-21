@@ -12,7 +12,13 @@ import (
 	"github.com/pepplejoshua/pebble/compiler/internal/types"
 )
 
-func factInputs(t *testing.T, files checkProvider) (Inputs, *diagnostic.DiagnosticSet) {
+type testHelper interface {
+	Helper()
+	Fatal(...any)
+	Fatalf(string, ...any)
+}
+
+func factInputs(t testHelper, files checkProvider) (Inputs, *diagnostic.DiagnosticSet) {
 	t.Helper()
 	sources := source.NewFileSet()
 	diagnostics := diagnostic.NewDiagnosticSet()

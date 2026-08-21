@@ -52,6 +52,15 @@ func validateAssignmentRecords(handoff *solveHandoff, records *solvedRecords, di
 	}
 
 	failed := false
+	// No activeOperatorRecord filter here: the original scan this replaces
+	// matched by syntax ref and operator family alone (see
+	// place_validation.go's identical precompute for the same note).
+	addressOperators := make(addressOperatorsBySyntax)
+	for _, retained := range handoff.Records.Records() {
+		if retained.Operator != nil && retained.Operator.Family == operatorAddress {
+			addressOperators[retained.Header.Syntax] = true
+		}
+	}
 	for _, retained := range handoff.Records.Records() {
 		assignment := retained.Assignment
 		if assignment == nil || !activeOperatorRecord(handoff, retained.Header) {
@@ -61,7 +70,7 @@ func validateAssignmentRecords(handoff *solveHandoff, records *solvedRecords, di
 		if place == nil {
 			continue
 		}
-		writability := placeWritability(handoff, records, place)
+		writability := placeWritability(handoff, records, place, addressOperators)
 		if writability == placeWritabilityUnresolved {
 			continue
 		}

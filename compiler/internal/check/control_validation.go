@@ -37,7 +37,7 @@ const (
 // Wider integer widths (u16/i16 and up) are intentionally not enumerated:
 // their domains are too large to prove exhaustive case-by-case, so they
 // conservatively always require a fallback arm.
-func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *controlRecord, bySyntax map[symbol.SyntaxRef]*controlRecord) bool {
+func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *controlRecord, bySyntax map[symbol.SyntaxRef]*controlRecord, variantBySyntax map[symbol.SyntaxRef]symbol.SymbolID) bool {
 	if ctrl == nil || ctrl.Kind != controlSwitch || ctrl.ElsePresent {
 		return false
 	}
@@ -67,26 +67,6 @@ func switchIsExhaustive(handoff *solveHandoff, records *solvedRecords, ctrl *con
 	coveredBools := make(map[bool]bool)
 	coveredIntegers := make(map[int64]bool)
 	coveredEnumVariants := make(map[symbol.SymbolID]bool)
-	variantBySyntax := make(map[symbol.SyntaxRef]symbol.SymbolID)
-	for _, record := range handoff.Records.Records() {
-		if !activeOperatorRecord(handoff, record.Header) {
-			continue
-		}
-		if record.Member != nil && record.Member.Kind == memberVariant && record.Member.Member != 0 {
-			variantBySyntax[record.Header.Syntax] = record.Member.Member
-			continue
-		}
-		// A base-less `.name` switch case label (e.g. `case .red:`) produces an
-		// aggregateEnumVariant/aggregateTaggedVariant aggregate record, not a
-		// memberVariant member record, because the resolver defers partial-member
-		// names — mirrors validateSwitches' identical indexing in
-		// switch_validation.go and caseVariantMember's doc comment there.
-		if record.Aggregate != nil && (record.Aggregate.Kind == aggregateEnumVariant || record.Aggregate.Kind == aggregateTaggedVariant) && len(record.Aggregate.Fields) != 0 {
-			if member := caseVariantMember(handoff, record.Aggregate); member != 0 {
-				variantBySyntax[record.Header.Syntax] = member
-			}
-		}
-	}
 
 	for _, child := range ctrl.Composition {
 		if child.Role != roleCase {

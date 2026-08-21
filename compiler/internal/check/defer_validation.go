@@ -32,6 +32,7 @@ func validateDefers(handoff *solveHandoff, records *solvedRecords, diagnostics *
 	byRegion := make(map[controlID][]*controlRecord)
 	owner := make(map[controlID]*controlRecord)
 	bySyntax := make(map[symbol.SyntaxRef]*controlRecord)
+	variantBySyntax := collectVariantBySyntax(handoff)
 	for i := range retained {
 		record := &retained[i]
 		if !activeOperatorRecord(handoff, record.Header) {
@@ -226,7 +227,7 @@ func validateDefers(handoff *solveHandoff, records *solvedRecords, diagnostics *
 					}
 				}
 			}
-			if ctrl.Kind == controlSwitch && !ctrl.ElsePresent && !switchIsExhaustive(handoff, records, ctrl, bySyntax) {
+			if ctrl.Kind == controlSwitch && !ctrl.ElsePresent && !switchIsExhaustive(handoff, records, ctrl, bySyntax, variantBySyntax) {
 				result = addExit(result, deferExit{kind: exitFallthrough})
 			}
 			return result

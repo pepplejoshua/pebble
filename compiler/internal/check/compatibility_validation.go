@@ -140,7 +140,7 @@ func sameConcreteIntegerWidth(snapshot *infer.SemanticSnapshot, sourceID, destin
 // a width mismatch; for composite expressions the builder inserts coercions
 // into each child so the top-level compatibility record is just structural
 // bookkeeping.
-func compositeCoercionSkipsValidation(handoff *solveHandoff, sourceVal valueID, snapshot *infer.SemanticSnapshot, sourceType, destinationID types.TypeID) bool {
+func compositeCoercionSkipsValidation(handoff *solveHandoff, sourceVal valueID, snapshot *infer.SemanticSnapshot, sourceType, destinationID types.TypeID, compositeSources map[valueID]map[types.Kind]bool) bool {
 	if handoff == nil || snapshot == nil || snapshot.Types() == nil {
 		return false
 	}
@@ -168,7 +168,7 @@ func compositeCoercionSkipsValidation(handoff *solveHandoff, sourceVal valueID, 
 		}
 		// Also verify the source value is a struct-literal expression, not a
 		// bare local: only struct literals trigger field-coercion insertion.
-		return isCompositeExpressionSource(handoff, sourceVal, types.Nominal)
+		return compositeSources[sourceVal][types.Nominal]
 	}
 	// Tuples: matching element count means the IR builder will handle
 	// element-wise coercion via TupleCoerce nodes — but only when the source
@@ -181,7 +181,7 @@ func compositeCoercionSkipsValidation(handoff *solveHandoff, sourceVal valueID, 
 	if len(srcElems) != len(dstElems) {
 		return false
 	}
-	return isCompositeExpressionSource(handoff, sourceVal, types.Tuple)
+	return compositeSources[sourceVal][types.Tuple]
 }
 
 // isCompositeExpressionSource reports whether a value ID corresponds to a
@@ -211,6 +211,23 @@ func validateCompatibilityRecords(handoff *solveHandoff, records *solvedRecords,
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
 	failed := false
+	// No activeOperatorRecord filter: the original isCompositeExpressionSource
+	// scan this replaces matched by expression result value alone, with no
+	// active-record check.
+	compositeSources := make(map[valueID]map[types.Kind]bool)
+	for _, retained := range handoff.Records.Records() {
+		if retained.Expression == nil {
+			continue
+		}
+		kind := types.Nominal
+		if retained.Expression.Kind == expressionTuple {
+			kind = types.Tuple
+		}
+		if compositeSources[retained.Expression.Result] == nil {
+			compositeSources[retained.Expression.Result] = make(map[types.Kind]bool)
+		}
+		compositeSources[retained.Expression.Result][kind] = true
+	}
 	for _, retained := range handoff.Records.Records() {
 		compatibility := retained.Compatibility
 		if compatibility == nil || !activeOperatorRecord(handoff, retained.Header) {
@@ -259,7 +276,7 @@ func validateCompatibilityRecords(handoff *solveHandoff, records *solvedRecords,
 			// explicit cast when concrete widths differ.
 			switch compatibility.Role {
 			case compatibilityAssignment:
-				if compositeCoercionSkipsValidation(handoff, compatibility.Source, handoff.Semantics, source.Type, destination.Type) {
+				if compositeCoercionSkipsValidation(handoff, compatibility.Source, handoff.Semantics, source.Type, destination.Type, compositeSources) {
 					continue
 				}
 				if sameConcreteIntegerWidth(handoff.Semantics, source.Type, destination.Type) {

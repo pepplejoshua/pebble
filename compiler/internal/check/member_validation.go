@@ -32,6 +32,13 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 	resolution := handoff.Semantics.Resolution()
 	typeSnapshot := handoff.Semantics.Types()
 	failed := false
+	variantBySyntax := collectVariantBySyntax(handoff)
+	assignmentsByPlace := make(map[valueID]bool)
+	for _, retained := range handoff.Records.Records() {
+		if retained.Assignment != nil && activeOperatorRecord(handoff, retained.Header) {
+			assignmentsByPlace[retained.Assignment.Place] = true
+		}
+	}
 
 	report := func(header recordHeader) {
 		failed = true
@@ -126,7 +133,7 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 					break
 				}
 			}
-			if !matched && !narrowedUnionVariantAccess(handoff, resolution, declaration, member) && !unionVariantPayloadWrite(handoff, resolution, declaration, member) {
+			if !matched && !narrowedUnionVariantAccess(handoff, resolution, declaration, member, variantBySyntax) && !unionVariantPayloadWrite(handoff, resolution, declaration, member, assignmentsByPlace) {
 				report(member.Header)
 			}
 		case memberTuple:
@@ -147,7 +154,7 @@ func validateMemberRecords(handoff *solveHandoff, records *solvedRecords, diagno
 // field of its base's declaration only when that declaration is a union and
 // the access reads one of its variants by name (self.Ok) while lexically
 // inside a switch-case arm narrowed to that exact variant.
-func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord) bool {
+func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord, variantBySyntax map[symbol.SyntaxRef]symbol.SymbolID) bool {
 	if handoff == nil || resolution == nil || member == nil || declaration == 0 {
 		return false
 	}
@@ -166,7 +173,7 @@ func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result
 	if !variant {
 		return false
 	}
-	return switchCaseNarrowing(handoff, resolution, member)
+	return switchCaseNarrowing(handoff, resolution, member, variantBySyntax)
 }
 
 // unionVariantPayloadWrite accepts a member access that matched no real field
@@ -178,7 +185,7 @@ func narrowedUnionVariantAccess(handoff *solveHandoff, resolution *symbol.Result
 // needs no enclosing switch-case narrowing and is legal on a pointer receiver,
 // a value receiver, or a plain local. A member whose name is not one of the
 // union's declared variants stays rejected, exactly as an unknown field does.
-func unionVariantPayloadWrite(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord) bool {
+func unionVariantPayloadWrite(handoff *solveHandoff, resolution *symbol.Result, declaration symbol.SymbolID, member *memberRecord, assignmentsByPlace map[valueID]bool) bool {
 	if handoff == nil || resolution == nil || member == nil || declaration == 0 {
 		return false
 	}
@@ -197,13 +204,5 @@ func unionVariantPayloadWrite(handoff *solveHandoff, resolution *symbol.Result, 
 	if !variant {
 		return false
 	}
-	for _, retained := range handoff.Records.Records() {
-		if retained.Assignment == nil || !activeOperatorRecord(handoff, retained.Header) {
-			continue
-		}
-		if retained.Assignment.Place == member.Result {
-			return true
-		}
-	}
-	return false
+	return assignmentsByPlace[member.Result]
 }

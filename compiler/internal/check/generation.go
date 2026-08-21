@@ -442,7 +442,7 @@ func (g *generation) freeze() (frozenGeneration, bool) {
 	}
 	frozen := frozenGeneration{
 		inputs: g.inputs, values: values,
-		roots:    frozenRoots{values: cloneRootedValues(g.roots.values)},
+		roots:    frozenRoots{values: cloneRootedValues(g.roots.values), byValue: cloneRootIndex(g.roots.byValue)},
 		records:  frozenRecords{values: records, controls: controls, components: g.records.components},
 		counters: g.counters,
 	}

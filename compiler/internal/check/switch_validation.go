@@ -166,11 +166,10 @@ func collectVariantBySyntax(handoff *solveHandoff) map[symbol.SyntaxRef]symbol.S
 // narrowest enclosing arm; only that arm's variants may justify the access. A
 // case arm owned by a different callable is never counted, so a nested closure
 // body cannot inherit the enclosing case arm's narrowing.
-func switchCaseNarrowing(handoff *solveHandoff, resolution *symbol.Result, member *memberRecord) bool {
+func switchCaseNarrowing(handoff *solveHandoff, resolution *symbol.Result, member *memberRecord, variantBySyntax map[symbol.SyntaxRef]symbol.SymbolID) bool {
 	if handoff == nil || resolution == nil || member == nil {
 		return false
 	}
-	variantBySyntax := collectVariantBySyntax(handoff)
 	var bestSpan source.Span
 	var bestValues []controlValue
 	best := false

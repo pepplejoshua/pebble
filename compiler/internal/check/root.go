@@ -90,12 +90,24 @@ func cloneRootedValues(values []rootedValue) []rootedValue {
 	return append([]rootedValue(nil), values...)
 }
 
+func cloneRootIndex(index map[valueID]int) map[valueID]int {
+	if index == nil {
+		return nil
+	}
+	copy := make(map[valueID]int, len(index))
+	for value, position := range index {
+		copy[value] = position
+	}
+	return copy
+}
+
 type frozenRoots struct {
-	values []rootedValue
+	values  []rootedValue
+	byValue map[valueID]int
 }
 
 func (f frozenRoots) All() []rootedValue { return cloneRootedValues(f.values) }
 
 func (f frozenRoots) Root(value valueID) (valueRoot, bool) {
-	return (&rootArena{values: f.values}).root(value)
+	return (&rootArena{values: f.values, byValue: f.byValue}).root(value)
 }

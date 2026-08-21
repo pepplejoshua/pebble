@@ -11,6 +11,8 @@ const CodePlace diagnostic.Code = "C0606"
 
 type placeWritabilityResult uint8
 
+type addressOperatorsBySyntax map[symbol.SyntaxRef]bool
+
 const (
 	placeWritable placeWritabilityResult = iota + 1
 	placeNotWritable
@@ -21,7 +23,7 @@ const (
 // placeWritability returns whether a place is writable. Unresolved projections
 // are distinct from non-writable places so validation can suppress them;
 // string indexes remain reportable because they are never places.
-func placeWritability(handoff *solveHandoff, records *solvedRecords, place *placeRecord) placeWritabilityResult {
+func placeWritability(handoff *solveHandoff, records *solvedRecords, place *placeRecord, addressOperators addressOperatorsBySyntax) placeWritabilityResult {
 	if handoff == nil || handoff.Semantics == nil || handoff.Semantics.Types() == nil || records == nil || place == nil {
 		return placeWritabilityUnresolved
 	}
@@ -43,12 +45,7 @@ func placeWritability(handoff *solveHandoff, records *solvedRecords, place *plac
 					writable = true
 				}
 			}
-			for _, candidate := range handoff.Records.Records() {
-				if candidate.Operator != nil && candidate.Header.Syntax == retained.Binding.InitializerSyntax && candidate.Operator.Family == operatorAddress {
-					writable = true
-					break
-				}
-			}
+			writable = writable || addressOperators[retained.Binding.InitializerSyntax]
 			break
 		}
 	}
@@ -85,7 +82,7 @@ func placeWritability(handoff *solveHandoff, records *solvedRecords, place *plac
 }
 
 func placeIsWritable(handoff *solveHandoff, records *solvedRecords, place *placeRecord) bool {
-	return placeWritability(handoff, records, place) == placeWritable
+	return placeWritability(handoff, records, place, nil) == placeWritable
 }
 
 func validatePlaceRecords(handoff *solveHandoff, records *solvedRecords, diagnostics *diagnostic.DiagnosticSet, config Config) bool {
@@ -94,6 +91,18 @@ func validatePlaceRecords(handoff *solveHandoff, records *solvedRecords, diagnos
 	}
 	reporter := newValidationReporter(diagnostics, normalizeConfig(config).MaxDiagnostics)
 	failed := false
+	// No activeOperatorRecord filter: the original inner scan this replaces
+	// (inside placeWritability, before this precompute existed) matched by
+	// syntax ref and operator family alone, with no active-record check --
+	// adding one here would silently drop address-of operators tied to a
+	// record activeOperatorRecord excludes (an unselected guarded
+	// alternative), which the original scan would still have found.
+	addressOperators := make(addressOperatorsBySyntax)
+	for _, retained := range handoff.Records.Records() {
+		if retained.Operator != nil && retained.Operator.Family == operatorAddress {
+			addressOperators[retained.Header.Syntax] = true
+		}
+	}
 	type operatorKey struct {
 		syntaxRef symbol.SyntaxRef
 		owner     symbol.SymbolID
@@ -121,7 +130,7 @@ func validatePlaceRecords(handoff *solveHandoff, records *solvedRecords, diagnos
 		if place == nil || !activeOperatorRecord(handoff, retained.Header) {
 			continue
 		}
-		writability := placeWritability(handoff, records, place)
+		writability := placeWritability(handoff, records, place, addressOperators)
 		if writability == placeWritabilityUnresolved {
 			continue
 		}

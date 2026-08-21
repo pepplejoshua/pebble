@@ -49,6 +49,7 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 	byRegion := make(map[controlID][]*controlRecord)
 	owner := make(map[controlID]*controlRecord)
 	bySyntax := make(map[symbol.SyntaxRef]*controlRecord)
+	variantBySyntax := collectVariantBySyntax(handoff)
 	for i := range retained {
 		if retained[i].Control == nil || !activeOperatorRecord(handoff, retained[i].Header) {
 			continue
@@ -365,7 +366,7 @@ func validateControlFlow(handoff *solveHandoff, records *solvedRecords, diagnost
 					}
 				}
 			}
-			if ctrl.Kind == controlSwitch && !ctrl.ElsePresent && !switchIsExhaustive(handoff, records, ctrl, bySyntax) {
+			if ctrl.Kind == controlSwitch && !ctrl.ElsePresent && !switchIsExhaustive(handoff, records, ctrl, bySyntax, variantBySyntax) {
 				result = addExit(result, controlExit{kind: exitFallthrough})
 			}
 			return result

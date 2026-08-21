@@ -221,6 +221,8 @@ type irBuildState struct {
 	deferByStatement             map[symbol.SyntaxRef]*deferRecord
 	deferByHeader                map[symbol.SyntaxRef]*deferRecord
 	variantBySyntax              map[symbol.SyntaxRef]symbol.SymbolID
+	bindingsBySyntax             map[symbol.SyntaxRef]*bindingRecord
+	assignmentsBySyntax          map[symbol.SyntaxRef]*assignmentRecord
 	functionDecls                []irFunctionDecl
 	functionRegions              map[symbol.SymbolID]controlID
 }
@@ -611,6 +613,9 @@ func (s *irBuildState) buildReturnValue(id valueID) (tir.NodeID, bool) {
 }
 
 func (s *irBuildState) bindingForSyntax(ref symbol.SyntaxRef) *bindingRecord {
+	if s.bindingsBySyntax != nil {
+		return s.bindingsBySyntax[ref]
+	}
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Binding != nil && retained.Header.Syntax == ref {
 			return retained.Binding
@@ -620,6 +625,9 @@ func (s *irBuildState) bindingForSyntax(ref symbol.SyntaxRef) *bindingRecord {
 }
 
 func (s *irBuildState) assignmentForSyntax(ref symbol.SyntaxRef) *assignmentRecord {
+	if s.assignmentsBySyntax != nil {
+		return s.assignmentsBySyntax[ref]
+	}
 	for _, retained := range s.handoff.Records.Records() {
 		if retained.Assignment != nil && retained.Assignment.Statement == ref {
 			return retained.Assignment
@@ -703,6 +711,26 @@ func (s *irBuildState) indexExpressions() bool {
 	s.contextFlowsBySyntax = make(map[symbol.SyntaxRef]*contextFlowRecord)
 	s.places = make(map[symbol.SyntaxRef]*placeRecord)
 	s.variantBySyntax = make(map[symbol.SyntaxRef]symbol.SymbolID)
+	s.bindingsBySyntax = make(map[symbol.SyntaxRef]*bindingRecord)
+	s.assignmentsBySyntax = make(map[symbol.SyntaxRef]*assignmentRecord)
+	// bindingForSyntax/assignmentForSyntax's original linear scans matched
+	// by syntax ref alone, with NO activeOperatorRecord filter -- unlike
+	// every other index built in the loop below. Populating these two maps
+	// inside that filtered loop silently dropped bindings/assignments tied
+	// to a record activeOperatorRecord excludes (an unselected guarded
+	// alternative), which the original unfiltered scan would still have
+	// found. Confirmed as a real regression: internal/backend's loop/switch
+	// runtime tests (range loops, break/continue, switch-inside-loop,
+	// zero-length range loop) started crashing ("exited -1") once these
+	// lookups moved to the filtered map without this separate pass.
+	for _, retained := range s.handoff.Records.Records() {
+		if retained.Binding != nil {
+			s.bindingsBySyntax[retained.Header.Syntax] = retained.Binding
+		}
+		if retained.Assignment != nil {
+			s.assignmentsBySyntax[retained.Assignment.Statement] = retained.Assignment
+		}
+	}
 	for _, retained := range s.handoff.Records.Records() {
 		if !activeOperatorRecord(s.handoff, retained.Header) {
 			continue
